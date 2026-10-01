@@ -179,7 +179,7 @@ Deployment on 2026-10-01 used the [Management API function deploy endpoint](http
 
 ## Findings, trackers and calendars
 
-After the Workspace access check, the app loads every page of records and trackers from the explicit `scout` client. Findings support text, type, organization, applicable-date and event-timing filters. Date filters use the event's source calendar date, announcement publication date, or treaty action date; a range includes overlapping multi-day events. Unknown dates are excluded only when a date filter is present. Source details distinguish publication, collection, record updates and the tracker's last successful collection.
+After the Workspace access check, the app loads every page of records and trackers from the explicit `scout` client. Findings open in a table, with icon controls to switch between table and card views and a single text search field. Table rows keep summaries and supporting sources under “Summary & sources”; both views retain event links and calendar downloads. Source details distinguish publication, collection, record updates and the tracker's last successful collection. The signed-in page starts with a small Sign out link, without the branding, introductory header or access panel.
 
 Every tracker remains visible, including paused, unconfigured and unimplemented collectors. Cadence notes retain meeting-period overrides. Null success displays “Never”; partial/failure outcomes do not replace the stored last-success value. Null next-run displays “Not scheduled”. Overdue labels and event timing update from the browser clock every 30 seconds and on visibility changes; this does not run or schedule collection. HSA is labelled manual-only, and other collectors remain unimplemented.
 

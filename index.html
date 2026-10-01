@@ -5,21 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="Source-backed BBNJ events, announcements, and treaty updates." />
     <title>BBNJ Scout</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🪇%3C/text%3E%3C/svg%3E" />
     <script type="module" src="/src/main.js"></script>
   </head>
   <body>
-    <header><a class="brand" href="/">BBNJ <strong>Scout</strong></a><span>Ocean Agentics</span></header>
     <main>
-      <p class="eyebrow">Following the high seas</p>
-      <h1>A clearer view of BBNJ.</h1>
-      <p class="intro">Events, announcements, and treaty updates, with the sources behind them.</p>
-      <section class="panel" aria-labelledby="access-title">
-        <div class="panel-heading"><h2 id="access-title">Scout access</h2><button id="sign-out" hidden>Sign out</button></div>
-        <p id="status" role="status">Connecting…</p>
-        <form id="sign-in" hidden>
-          <button type="submit">Sign in with Google</button>
-        </form>
-      </section>
+      <div class="account-bar"><button id="sign-out" type="button" hidden>Sign out</button></div>
+      <p id="status" role="status">Connecting…</p>
+      <form id="sign-in" hidden>
+        <button type="submit">Sign in with Google</button>
+      </form>
       <div id="workspace" hidden></div>
     </main>
     <footer>BBNJ Scout · A project by Ocean Agentics</footer>

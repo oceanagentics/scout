@@ -12,6 +12,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
     workspace.replaceChildren(); workspace.hidden = true;
     form.hidden = Boolean(session);
     signOut.hidden = !session;
+    status.hidden = false;
     if (!session) {
       status.textContent = 'Use your Ocean Agentics Google Workspace account to sign in.';
       return;
@@ -27,7 +28,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
       status.textContent = 'Scout is available to verified oceanagentics.com Google Workspace accounts. Sign out to use a different account.';
       return;
     }
-    status.textContent = 'Signed in · Ocean Agentics Workspace access';
+    status.hidden = true;
     closeDashboard = mount(workspace, () => loadScout(client));
   }
 
