@@ -27,8 +27,13 @@ article a { display: block; margin-top: 8px; }
 .workspace-heading { justify-content: space-between; border-bottom: 1px solid #c7d6cd; padding-bottom: 18px; }
 nav button[aria-pressed="false"], .view-switch button[aria-pressed="false"], .secondary { background: #fff; color: #185c4a; border: 1px solid #b4c7be; }
 .findings-toolbar { display: flex; align-items: flex-end; gap: 16px; }
-.filters { flex: 1; min-width: 0; max-width: none; }
+.filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px; flex: 1; min-width: 0; max-width: none; }
 .filters label { margin: 0; min-width: 0; }
+.filters .search { flex: 1 1 220px; }
+.kind-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+.kind-filters span { display: block; padding: 12px 14px; border: 1px solid #b4c7be; border-radius: 5px; background: #fff; color: #185c4a; font-weight: 400; cursor: pointer; }
+.kind-filters input:checked + span { background: #185c4a; border-color: #185c4a; color: #fff; }
+.kind-filters input:focus-visible + span { outline: 3px solid #d29237; outline-offset: 3px; }
 .view-switch { display: flex; gap: 4px; }
 .view-switch button { display: grid; place-items: center; width: 44px; height: 44px; padding: 10px; border: 1px solid #185c4a; }
 .view-switch svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; }

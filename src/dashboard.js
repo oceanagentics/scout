@@ -53,6 +53,11 @@ export function mountDashboard(root, load) {
     <p id="load-status" role="status"></p>
     <section id="findings" aria-label="Records"><div class="findings-toolbar"><form id="filters" class="filters">
       <label class="search">Search records<input name="search" type="search" placeholder="Title, organization, topic…"></label>
+      <div class="kind-filters" role="group" aria-label="Record type">
+        <label><input class="visually-hidden" type="radio" name="kind" value="" checked><span>All</span></label>
+        <label><input class="visually-hidden" type="radio" name="kind" value="announcement"><span>Announcements</span></label>
+        <label><input class="visually-hidden" type="radio" name="kind" value="event"><span>Events</span></label>
+      </div>
       </form><div class="view-switch" role="group" aria-label="Records layout">
         <button type="button" data-layout="table" aria-label="Table view" title="Table view" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M10 9v11"/></svg></button>
         <button type="button" data-layout="cards" aria-label="Card view" title="Card view" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
