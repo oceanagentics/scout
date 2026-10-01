@@ -40,8 +40,8 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 
 ## Current delivery and outstanding work
 
-- **Last reviewed hosted baseline:** Firebase release `1790868487090000` / version `95bc9afd5408b180`; real Google reader login, 12 HSA records, 22 trackers and secret-only manual HSA collection verified. Two Slack receipts/content checks came from the manual **local** notifier, not hosted delivery-state integration.
-- **Coordinated deployment authorized (SCOUT-02/03/04/05):** cleanup through `e55983e` and the UI layout work, including migrations `20261001150000` → `20261001160000` → `20261001170000` → `20261001180000`. All 37 tests/build pass. A rolled-back live rehearsal preserved 25 trackers, 12 records and 14 captures, with five tables/59 columns and ten shortened descriptions. Firebase requires Google reauthentication (`invalid_rapt`); hosted schema/function/frontend remain unchanged until the release can proceed together. The updated notifier remains local-only; hosted delivery integration is separate work.
+- **Current hosted release (2026-10-01):** Firebase `1790882919308000` / version `e863491667652e73`, collector version 5, and all migrations through `20261001180000`. Five tables/59 columns are deployed. All three frontend assets match `dist`; billing remains disabled and Ryu's release is unchanged. Two earlier Slack receipts/content checks came from the manual **local** notifier, not hosted delivery-state integration.
+- **Cleanup verification (SCOUT-02/03/04/05):** all 37 tests/build pass. Atomic migration preserved 25 trackers, 12 existing records and 14 original captures while shortening ten descriptions. The collector then found one new announcement; its repeat returned `no_change` without duplicates. Current totals: 13 records, 25 trackers, 29 captures. Existing Workspace identity SQL checks pass, anonymous access is denied, and other-schema/default-grant state is unchanged. The user elected to verify the signed-in dashboard. The notifier remains local-only.
 - **SCOUT-06 remains incomplete:** integrate hosted records and durable delivery state, update stale hosted-access-pending wording and provide real record links; preserve the verified local baseline/dedup/receipt behavior. Slack visual layout remains an approved deferral, distinct from verified receipt/content. There is no calendar obligation.
 - **Coverage boundary:** HSA quoted posts, multi-event listings, unsupported date formats and semantic cross-URL matching remain bounded limitations. Revisit before claiming complete HSA or broader source coverage.
 - **Later prerequisites:** model access is verified but not integrated; enforce approved caps before use. Notification scheduling is undecided (SCOUT-07), Tavily paid-use checks wait for SCOUT-11, Slack mention setup for SCOUT-12, and admin identity/management for SCOUT-13. SCOUT-07+ are future work, not milestone-one failures. Milestone one is not yet complete.
@@ -107,10 +107,10 @@ Acceptance criteria:
 - [x] Enforce Scout-specific access within the project's shared Auth setup. Verify unauthorized writes and access to private records across service boundaries fail; authentication in another service does not confer Scout administrator access. Keep project-wide service-role credentials backend-only and absent from browser assets and logs.
 - [x] Google-verified `oceanagentics.com` Workspace users obtain hosted reader access automatically. Deny Gmail, other/no domains, unverified identities, forged metadata/tokens, anonymous requests and unauthorized writes. Preserve shared Auth/provider/redirect settings and default-denied administrator/collector access; remove rendered data on sign-out. Distinguish synthetic policy tests from real Google login.
 - [x] Review existing migration history before applying Scout migrations. Verify they succeed in an empty development database and preserve other services' schema objects, data, and permissions in a shared development database. Never reset the shared remote project as a setup step.
-- [ ] Coordinate the four pending migrations (`20261001150000` through `20261001180000`) with matching collector/frontend deployment. Verify five tables, preserved captures/deliveries, `tracker_status`/`source_details`, unchanged other-service controls and real hosted reader access. Unmatched/conflicting source evidence must stop migration for reconciliation.
-- [ ] Verify the deployed replacement of memberships with backend-controlled `raw_app_meta_data.scout.admin`; user-editable metadata cannot grant admin, and verified Workspace identity remains required. Preserve existing explicit admins without provisioning a new one.
+- [x] Deploy the four cleanup migrations (`20261001150000` through `20261001180000`) with the matching collector/frontend. Verify five tables, preserved captures/deliveries, `tracker_status`/`source_details`, unchanged other-service controls and SQL access under the existing verified Workspace identity. Signed-in browser verification remains in SCOUT-05. Unmatched/conflicting source evidence must stop migration for reconciliation.
+- [x] Verify the deployed replacement of memberships with backend-controlled `raw_app_meta_data.scout.admin`; user-editable metadata cannot grant admin, and verified Workspace identity remains required. Preserve existing explicit admins without provisioning a new one.
 
-Current status: the original hosted foundation/login is complete. Cleanup through `e55983e` implements the approved five-table schema and removes `record_changes`. Local verification and the live migration rehearsal pass; coordinated deployment remains open pending Firebase reauthentication.
+Current status: the five-table cleanup is deployed and verified. All ten migration bodies match local SQL. Existing records and original captures are preserved, descriptions are bounded, and the backend derives tracker status. The existing Workspace identity has reader access, zero tracker writes and no raw-evidence/delivery access; anonymous API requests return 401. No admin was provisioned and other-service controls are unchanged.
 
 Historical verification and deviations (2026-10-01):
 
@@ -169,7 +169,7 @@ Acceptance criteria:
 - [x] Retain enabled state and derive attempt/success/outcome/warnings from collection runs through `tracker_status` in the local schema. An imported tracker is uncollected, not successful; stored status and `next_run_at` are no longer required.
 - [x] Verify one website, one Bluesky feed, and the discovery tracker retain their distinct methods and cadences.
 
-Current status: the original 22-row hosted import is complete. The revised seed requires the pending lean migration; deploy/reverify its field mapping under SCOUT-02 without re-importing new sheet content. Email-subscription planning is separate and has not changed this inventory.
+Current status: the original 22-row import is complete. Hosted inventory now contains 25 trackers; the deployed migration preserved every identity and retained configuration field. The revised seed matches the deployed lean schema and preserves existing app edits. No new sheet import occurred during deployment; email-subscription planning remains separate.
 
 Historical verification and deviations (2026-10-01):
 
@@ -205,9 +205,9 @@ Acceptance criteria:
 - [x] A changed event date or cancellation updates the existing event and records a material change; cosmetic source edits do not become new announcements. Prefer the organizer's authoritative correction over stale third-party reports, retain supporting evidence, and verify that collecting an older repost later cannot undo a reschedule or cancellation.
 - [x] Persist success, no-change, partial, failure, and quota outcomes accurately. A failed fetch leaves previous records intact.
 - [x] Verify a real source example and repeatable cases for initial collection, repeat collection, changed date, missing date, irrelevant content, and failed fetch.
-- [ ] Deploy/reverify the updated collector with SCOUT-02's pending migrations: bounded success/stable repeat, correction precedence, captured evidence, derived freshness and secret-only authorization.
+- [x] Deploy/reverify the updated collector with SCOUT-02's migrations: live bounded success/stable repeat, preserved captured evidence, derived freshness and secret-only authorization. Local regression tests cover correction precedence.
 
-Current status: the older hosted collector and repeat run are accepted. The lean writer is local only; reverify after coordinated deployment. Quoted posts, multi-event listings, unsupported date formats and semantic cross-URL merging remain explicit limits, not complete source coverage.
+Current status: collector version 5 is deployed. Its first run found one new announcement without changing existing record facts/versions; the repeat returned `no_change`, preserved all 13 records and 29 captures, and advanced last success. Each run used three requests for 14 posts and one page, without warnings. The original 14 captures and proven UTC event time are intact. Missing/publishable credentials return 401. Quoted posts, multi-event listings, unsupported date formats and semantic cross-URL merging remain explicit limits.
 
 Historical verification and deviations (2026-10-01):
 
@@ -248,9 +248,10 @@ Acceptance criteria:
 - [x] Verify that a successful no-change run advances the displayed last-success time, a failed or partial run preserves it and shows its outcome, and an uncollected tracker shows "Never".
 - [x] Show rescheduled and cancelled events accurately. Do not present past events as upcoming.
 - [x] Remove calendar generation and render supported timestamps in UTC. Date-only/unsupported evidence remains in captures and must not become an invented record timestamp.
-- [ ] Deploy the matching frontend after the pending schema/views. Verify real Workspace reads, the current Records/tracker layouts, source metadata, UTC/unknown timing and sign-out against the revised hosted data.
+- [x] Deploy the matching frontend after the schema/views; verify all live assets match the build and retain security headers.
+- [ ] Verify signed-in Workspace reads, Records/tracker layouts, source metadata, UTC/unknown timing and sign-out against the revised hosted data. The user elected to perform this browser check.
 
-Current status: reader login and all 12 records/22 trackers were verified on the older release. Current layout/lean-field/UTC changes are local only. Calendar import is removed from scope, so it is no longer an outstanding check.
+Current status: layout, lean fields and UTC changes are deployed in release `1790882919308000`. The login shell and all asset bytes are verified. SQL under the existing verified Workspace identity reads records, trackers and source metadata with the expected restrictions. The user is handling the signed-in browser check. Calendar import remains outside scope.
 
 Historical assignment (2026-10-01): manager accepted SCOUT-04 correction commit `89c762e` after reviewing the 11 passing tests and live success/no-change evidence. Independent frontend work is approved using the existing vanilla Vite app and local evidence, while remote plan/paid-use verification and explicit member identities remain open. Keep the production membership gate and unconfigured setup state closed. Verify all-record and all-tracker views, date/status/filter behavior, source-safe rendering, and calendar downloads with a clearly marked local browser fixture; exclude verification data from production assets. A scoped Hosting shell update is authorized after verification. No alternate production backend, remote database writes, scheduling, or SCOUT-06 work. Stop for manager review after a focused commit.
 
