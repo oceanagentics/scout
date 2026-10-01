@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 
 const migration = await readFile(new URL('../supabase/migrations/20261001050000_scout_foundation.sql', import.meta.url), 'utf8');
+const trackerMigration = await readFile(new URL('../supabase/migrations/20261001060000_scout_tracker_import.sql', import.meta.url), 'utf8');
+const trackerSeed = await readFile(new URL('../supabase/seeds/trackers.sql', import.meta.url), 'utf8');
 const reader = '00000000-0000-0000-0000-000000000001';
 const admin = '00000000-0000-0000-0000-000000000002';
 const outsider = '00000000-0000-0000-0000-000000000003';
@@ -62,6 +64,7 @@ for (const shared of [false, true]) {
       if (shared) await db.exec(fixture);
       const before = shared ? (await db.query(sharedState)).rows : null;
       await db.exec(migration);
+      await db.exec(trackerMigration);
       if (shared) assert.deepEqual((await db.query(sharedState)).rows, before);
       assert.equal((await db.query("select count(*)::int n from pg_class where relnamespace = 'scout'::regnamespace and relkind = 'r' and relrowsecurity")).rows[0].n, 6);
       await db.exec(`
@@ -112,3 +115,56 @@ for (const shared of [false, true]) {
     }
   });
 }
+
+test('all tracker seeds are uncollected and repeat safely after app edits', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(auth + fixture);
+    const beforeOtherService = (await db.query(sharedState)).rows;
+    await db.exec(migration);
+    await db.exec(trackerMigration);
+    await db.exec(trackerSeed);
+    const initial = (await db.query('select * from scout.trackers order by seed_key')).rows;
+    assert.equal(initial.length, 22);
+    assert.deepEqual(new Set(initial.map(row => row.seed_key)), new Set(Array.from({ length: 22 }, (_, i) => `bbnj-trackers-2026-10-01:${i}`)));
+    for (const row of initial) {
+      for (const key of ['last_attempt_at', 'last_success_at', 'last_outcome', 'last_error', 'next_run_at']) assert.equal(row[key], null);
+    }
+    const website = initial.find(row => row.seed_key.endsWith(':0'));
+    const feed = initial.find(row => row.seed_key.endsWith(':17'));
+    const discovery = initial.find(row => row.seed_key.endsWith(':21'));
+    assert.equal(website.channel, 'Website');
+    assert.equal(website.method, 'Web retrieval + extraction');
+    assert.equal(website.cadence, '7 days');
+    assert.equal(feed.url, 'https://bsky.app/profile/highseasalliance.bsky.social');
+    assert.equal(feed.method, 'Bluesky API: getAuthorFeed');
+    assert.equal(feed.cadence, '1 day');
+    assert.equal(discovery.method, 'Bluesky API: searchPosts; separate keyword queries');
+    assert.equal(discovery.cadence_note, 'Weekly; daily during major BBNJ meetings');
+    assert.match(discovery.coverage, /traité sur la haute mer/);
+    assert.equal(initial.filter(row => row.channel === 'Website').length, 17);
+    assert.equal(initial.filter(row => row.method === feed.method).length, 4);
+    assert.equal(initial.filter(row => row.cadence_note.includes('; daily')).length, 5);
+    const incomplete = initial.find(row => row.seed_key.endsWith(':8'));
+    assert.equal(incomplete.url, null);
+    assert.equal(incomplete.enabled, false);
+    assert.equal(incomplete.configuration_note, 'Set per conference');
+    await db.query("insert into scout.memberships (user_id,role) values ($1,'admin')", [admin]);
+    await db.exec('set role authenticated');
+    await db.query("select set_config('request.jwt.claim.sub', $1, false)", [admin]);
+    await db.query(`update scout.trackers set name = 'Edited source', url = 'https://example.org/edited',
+      method = 'Edited method', coverage = 'Edited coverage', cadence = '2 days', cadence_note = 'Every other day', enabled = false
+      where id = $1`, [feed.id]);
+    await assert.rejects(db.query("update scout.trackers set seed_key = 'edited' where id = $1", [feed.id]), { code: '42501' });
+    await assert.rejects(db.query('update scout.trackers set enabled = true where id = $1', [incomplete.id]), { code: '23514' });
+    await db.exec('reset role');
+    await db.query("update scout.trackers set last_attempt_at = now(), last_success_at = now(), last_outcome = 'no_change', next_run_at = now() + interval '2 days' where id = $1", [feed.id]);
+    const edited = (await db.query('select * from scout.trackers order by seed_key')).rows;
+    await db.exec(trackerSeed);
+    await db.exec(trackerSeed);
+    assert.deepEqual((await db.query('select * from scout.trackers order by seed_key')).rows, edited);
+    assert.deepEqual((await db.query(sharedState)).rows, beforeOtherService);
+  } finally {
+    await db.close();
+  }
+});

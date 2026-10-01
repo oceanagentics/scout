@@ -107,9 +107,21 @@ supabase db push --linked --dry-run
 supabase db push --linked
 ```
 
-Current remote limitation: the CLI's linked-query path fails its IPv6 connection preflight even after relinking, and unattended token access is currently unavailable. Remote inspection and migration have not run. If this CLI preflight remains a problem after authentication is restored, use Supabase's documented [Management API](https://supabase.com/docs/reference/api/introduction) with the same authorized project access; inspect before applying a migration.
+The saved token now works noninteractively when explicitly loaded from `.env.local` into the authorized process. Project-scoped [Management API](https://supabase.com/docs/reference/api/introduction) reads and read-only SQL succeed, avoiding the CLI's IPv6 preflight. Inspection found no application tables or migration history and approximately 10.8 MB of database usage. Organization-entitlement access returns 403; plan verification remains open. No remote migration has been applied.
 
 After migration, append `scout` to the project's existing Data API exposed-schema list, preserving every existing service setting. Do not push a replacement project configuration. RLS and explicit grants are included in the migration; no client receives future-table defaults. Provision reader/admin membership only for explicitly approved Auth user IDs through trusted backend access. An admin can manage trackers but cannot provision membership, modify collected evidence, or read delivery state through the browser. Project-wide service-role access bypasses RLS and belongs only in trusted backend processes.
+
+## Tracker import
+
+`supabase/seeds/trackers.sql` is a frozen, manually reviewed snapshot of all 22 sheet entries, read on 2026-10-01. Apply both migrations before this seed. Once remote foundation checks pass, an authorized SQL operator can run:
+
+```sh
+supabase db query --linked --project-ref vhlfumeyhkeospnemukq --file supabase/seeds/trackers.sql
+```
+
+If the CLI preflight is unavailable, submit the same SQL through the documented Management API query endpoint after those checks. The seed's immutable `seed_key` is independent of editable URL/method. Reapplying it skips existing seed identities and preserves app edits, pauses, and collection history. It never synchronizes later sheet changes. A conflicting URL/method on a different identity fails the transaction rather than silently dropping a source.
+
+The inventory contains 17 websites, four daily `getAuthorFeed` accounts, and one weekly `searchPosts` discovery tracker. Original cadence text and coverage are preserved, including meeting-period overrides and discovery keywords. The conference-specific row has no URL: it is retained with `configuration_note = 'Set per conference'`, `url = null`, and `enabled = false`. It cannot be enabled until configured. All imported rows have null attempt, success, outcome, error, and next-run values; import is not a collection attempt. Collector support and scheduling arrive in their assigned later tasks.
 
 ## Hosting deployment
 
