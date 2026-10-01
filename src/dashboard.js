@@ -8,6 +8,13 @@ const RECORD_FIELDS = [
   ['event_url', 'Event URL'], ['registration_url', 'Registration URL'], ['collected_at', 'Collected at (UTC)'],
   ['updated_at', 'Updated at (UTC)'], ['id', 'ID'], ['date_evidence', 'Date evidence'],
 ];
+const TRACKER_FIELDS = [
+  ['name', 'Name'], ['url', 'URL'], ['coverage', 'Coverage'], ['channel', 'Channel'], ['method', 'Method'],
+  ['cadence', 'Cadence'], ['cadence_note', 'Cadence note'], ['configuration_note', 'Configuration note'], ['enabled', 'Enabled'],
+  ['last_attempt_at', 'Last attempt (UTC)'], ['last_success_at', 'Last success (UTC)'], ['last_outcome', 'Last outcome'],
+  ['last_error', 'Last error'], ['next_run_at', 'Next run (UTC)'], ['created_at', 'Created at (UTC)'],
+  ['updated_at', 'Updated at (UTC)'], ['seed_key', 'Seed key'], ['id', 'ID'],
+];
 
 export async function loadScout(client) {
   async function all(table, columns, order) {
@@ -21,7 +28,7 @@ export async function loadScout(client) {
   }
   const [records, trackers] = await Promise.all([
     all('records', `${RECORD_FIELDS.map(([field]) => field).join(',')},sources(url,tracker_id,published_at,published_on,collected_at,authoritative)`, 'updated_at'),
-    all('trackers', 'id,name,url,coverage,channel,method,cadence,cadence_note,configuration_note,enabled,last_attempt_at,last_success_at,last_outcome,last_error,next_run_at', 'name'),
+    all('trackers', TRACKER_FIELDS.map(([field]) => field).join(','), 'name'),
   ]);
   return { records, trackers };
 }
@@ -50,11 +57,11 @@ export function mountDashboard(root, load) {
         <button type="button" data-layout="table" aria-label="Table view" title="Table view" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M10 9v11"/></svg></button>
         <button type="button" data-layout="cards" aria-label="Card view" title="Card view" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
       </div></div><p id="record-count" role="status"></p><div id="record-list" tabindex="0" role="region" aria-label="Findings results"></div></section>
-    <section id="trackers" aria-label="Trackers" hidden><h2>Every source, including gaps</h2><p class="hint">Cadence is the requested collection frequency. “Not scheduled” means no automatic run is configured. Manual collection is currently available only for the HSA Bluesky feed.</p>
-      <p id="tracker-count"></p><div class="table-scroll" tabindex="0" aria-label="Tracker inventory"><table><caption class="visually-hidden">Source methods, status and freshness</caption><thead><tr><th scope="col">Source</th><th scope="col">Method & cadence</th><th scope="col">Collection status</th><th scope="col">Freshness</th></tr></thead><tbody id="tracker-list"></tbody></table></div></section>`;
+    <section id="trackers" aria-label="Trackers" hidden><h2>Every source, including gaps</h2><p class="hint">Cadence is the requested collection frequency. An empty next run means no automatic run is configured. Manual collection is currently available only for the HSA Bluesky feed.</p>
+      <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>`;
   const status = root.querySelector('#load-status'), refresh = root.querySelector('#refresh');
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
-  let data = null, active = true, loadedAt = null, clocks = [], calendarUrls = [], timings = new Map(), layout = 'table';
+  let data = null, active = true, loadedAt = null, calendarUrls = [], timings = new Map(), layout = 'table';
 
   function renderRecords() {
     calendarUrls.forEach(url => URL.revokeObjectURL(url)); calendarUrls = [];
@@ -69,7 +76,7 @@ export function mountDashboard(root, load) {
     if (!records.length) { recordList.append(node('p', data.records.length ? 'No findings match your search.' : 'No records yet. Collected findings will appear here with their sources.', 'empty')); return; }
     let body = recordList;
     if (tableView) {
-      const table = node('table', null, 'findings-table');
+      const table = node('table', null, 'data-table');
       table.append(node('caption', 'Finding record fields, calendars and sources', 'visually-hidden'));
       const head = node('thead'), row = node('tr');
       for (const label of [...RECORD_FIELDS.map(([, label]) => label), 'Calendar', 'Sources']) {
@@ -140,22 +147,27 @@ export function mountDashboard(root, load) {
   }
 
   function renderTrackers() {
-    const body = root.querySelector('#tracker-list'); body.replaceChildren(); clocks = [];
+    const body = root.querySelector('#tracker-list'); body.replaceChildren();
+    const head = root.querySelector('#tracker-head'), headings = node('tr');
+    for (const [, label] of TRACKER_FIELDS) {
+      const heading = node('th', label); heading.scope = 'col'; headings.append(heading);
+    }
+    head.replaceChildren(headings);
     root.querySelector('#tracker-count').textContent = `${data.trackers.length} trackers`;
     if (!data.trackers.length) root.querySelector('#tracker-count').textContent = 'No trackers have been imported yet.';
     for (const tracker of data.trackers) {
-      const row = node('tr'), source = node('td'), method = node('td'), collection = node('td'), freshness = node('td');
-      source.append(link(tracker.name, tracker.url), node('p', tracker.channel, 'meta'), node('p', tracker.coverage, 'meta'));
-      method.append(node('p', tracker.method), node('p', tracker.cadence_note || tracker.cadence, 'meta'));
-      if (tracker.configuration_note) method.append(node('p', tracker.configuration_note, 'hint'));
-      const state = trackerState(tracker);
-      collection.append(node('p', state.availability, 'badge'), node('p', `Last outcome · ${state.outcome}`));
-      if (tracker.last_error) collection.append(node('p', tracker.last_error, 'error'));
-      freshness.append(node('p', `Last success · ${state.success}`), node('p', `Last attempt · ${tracker.last_attempt_at ? stamp(tracker.last_attempt_at) : 'Never'}`, 'meta'));
-      const schedule = node('p');
-      const tick = () => { const current = trackerState(tracker); schedule.textContent = current.schedule; schedule.className = current.overdue ? 'overdue' : 'meta'; };
-      tick(); clocks.push(tick); freshness.append(schedule);
-      row.append(source, method, collection, freshness); body.append(row);
+      const row = node('tr');
+      for (const [field] of TRACKER_FIELDS) {
+        const value = tracker[field], cell = node('td', null, `field-${field}`);
+        if (field === 'url' && value) cell.append(link(value, value));
+        else cell.textContent = value == null || value === '' ? '—' : typeof value === 'boolean' ? value ? 'Yes' : 'No'
+          : field.endsWith('_at') ? stamp(value) : value;
+        if (cell.textContent.length > 240 && ['coverage', 'cadence_note', 'configuration_note', 'last_error'].includes(field)) {
+          const text = node('div', cell.textContent, 'field-value'); text.tabIndex = 0; cell.replaceChildren(text);
+        }
+        row.append(cell);
+      }
+      body.append(row);
     }
   }
 
@@ -185,7 +197,6 @@ export function mountDashboard(root, load) {
   filters.addEventListener('submit', event => event.preventDefault());
   refresh.addEventListener('click', reload);
   const tick = () => {
-    clocks.forEach(update => update());
     if (data?.records.some(record => record.kind === 'event' && timings.get(record.id) !== eventTiming(record))) renderRecords();
   };
   const timer = setInterval(tick, 30000);
