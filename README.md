@@ -2,7 +2,7 @@
 
 Scout is Ocean Agentics' planned app for keeping up with BBNJ: treaty ratifications, NGO webinars, official DOALOS announcements, conferences, and side events. It will maintain a central database, surface useful changes in Slack, and make events easy to find and add to a calendar.
 
-The static app and database foundation are implemented; remote database integration is pending. The proof-of-concept target is **$0/month in recurring service fees**.
+The deployed app, remote database, Workspace sign-in, manual HSA collection, and manual Slack delivery are verified. Scheduling and broader collection remain pending. The proof-of-concept target is **$0/month in recurring service fees**.
 
 ## Original documentation
 
@@ -12,7 +12,7 @@ The original documents are the source of truth for product direction. They are l
 | --- | --- |
 | [Letter](https://docs.google.com/document/d/13HIEN45IEKQN-i29pQuoRD-eeFOl-t70a1_2TBpV7zI/edit?tab=t.0) | The original request and the problem Scout should solve. |
 | [Features](https://docs.google.com/document/d/13HIEN45IEKQN-i29pQuoRD-eeFOl-t70a1_2TBpV7zI/edit?tab=t.98p2iu4vdtbg) | Planned content, record fields, and ways users receive and act on findings. |
-| [Services](https://docs.google.com/document/d/13HIEN45IEKQN-i29pQuoRD-eeFOl-t70a1_2TBpV7zI/edit?tab=t.1h6brasprb8e) | Proposed infrastructure, free-tier assumptions, collection cadence, and budget constraints. |
+| [Services](https://docs.google.com/document/d/13HIEN45IEKQN-i29pQuoRD-eeFOl-t70a1_2TBpV7zI/edit?tab=t.1h6brasprb8e) | Configured services, verified setup status, remaining work, and cost target. |
 | [BBNJ Scout Trackers](https://docs.google.com/spreadsheets/d/1VtpaC83ybg7zet7VvNXmvctN9s5WJK_NTlJ9wx5NIbM/edit) | Initial source inventory, channels, collection methods, and cadences. |
 
 Before starting feature work, re-read the relevant original documents and compare them with this README and the affected tasks. Reconcile changed requirements with the latest user direction before coding; resolve material ambiguities with the project owner. If the live documents are unavailable, report that limitation rather than assuming this snapshot is current.
@@ -44,26 +44,32 @@ Use direct feeds, public APIs, and website collectors where possible. The sheet 
 
 Persist each tracker's last attempt, last successful collection, latest outcome or error, and next scheduled run. Failed collection or exhausted quotas must preserve existing records. Collection and notification schedules are independent.
 
-## Proposed services
+## Configured services
 
-These choices reflect the agreed recommendations in the Services tab; account access and free quotas still need verification before implementation.
+Status as of 2026-10-01, matching the Services tab. See [tasks.md](tasks.md) for verification evidence and remaining acceptance criteria.
 
-| Component | Proposed setup |
-| --- | --- |
-| App/backend and database | Firebase Hosting on Spark for Scout's own static site, using OA's existing Google account; Supabase Free project `chm`, with Scout's tables in its `scout` schema, for Postgres, API, and authentication. |
-| Scheduler and worker | Supabase Cron and Edge Functions running small jobs for due trackers and scheduled digests. |
-| Trackers | Direct webpage/RSS collection and Bluesky's public API; Tavily Free for discovery; a free Gemini Flash-Lite API tier accessed through OA's Google Workspace account for extraction and summaries where needed. |
-| Slack integration | A custom Scout app connected to the backend for findings, digests, and questions. |
+| Service | Purpose | Current status |
+| --- | --- | --- |
+| Firebase Hosting | Hosts [Scout's website](https://bbnj-scout.web.app) in project `ryustatic`, with its own `bbnj-scout` site. | Deployed on Spark, with billing disabled. |
+| Supabase database and API | Stores trackers, findings, sources, collection history, and delivery records in shared project `chm`, schema `scout`. | Working: 22 trackers and 12 collected records, with access restrictions enforced. Free plan, no paid add-ons. |
+| Google sign-in through Supabase Auth | Gives verified `oceanagentics.com` Workspace users automatic reader access. | OAuth configured and frontend deployed. Real sign-in, all 12 findings/22 trackers, and the event calendar control verified. |
+| Supabase Edge Functions | Runs collection in the cloud. | Private `scout-collect-hsa` function deployed and tested; currently triggered manually. |
+| Bluesky public API | Collects High Seas Alliance posts and follows supporting event links. | Working: 11 announcements and one event collected; repeat collection produced no duplicates. |
+| Slack Scout app | Posts findings and digests into [#scout](https://oceanagentics.slack.com/archives/C0C5PE21KN1). | Webhook delivery verified with a finding and a digest. Signing secret saved; answering mentions remains pending. |
+| Gemini API / Google AI Studio | Intended for extraction, summaries, and answering questions, using project `bbnj-chm`. | Free-tier access and a model request verified. Not yet integrated into collection. |
+| Tavily | Intended to discover additional relevant websites and events. | API authentication and the 1,000-credit monthly allowance verified. Discovery integration and paid-use controls remain pending. |
 
-Use one shared Supabase project named `chm`, with a schema per service: `scout` now and names such as `otherservice` for future services. These schemas live in the default `postgres` database; `chm.scout` describes project/schema, while SQL table names are `scout.events` and `scout.trackers`. Configure [custom-schema API access](https://supabase.com/docs/guides/api/using-custom-schemas) explicitly, with Data API on, automatic table exposure off, and RLS on. Schemas share project quotas and Auth; allocate Scout's budget from remaining shared capacity. Use Scout-specific permissions and migrations, and prefix its deployed functions and scheduled jobs with `scout-`. Project-wide service-role credentials remain backend-only; schemas do not isolate that privileged access. Other service implementations are outside Scout's scope.
+Still to add: Supabase Cron scheduling, automatic daily and weekly Slack delivery, remaining collectors, and Slack questions. Collection and notification schedules are independent; delivery times and time zone still need to be set. Calendar links and downloads are part of the frontend and require no separate service.
+
+Use one shared Supabase project named `chm`, with a schema per service: `scout` now and names such as `otherservice` for future services. These schemas live in the default `postgres` database; `chm.scout` describes project/schema, while SQL table names are `scout.records` and `scout.trackers`. Configure [custom-schema API access](https://supabase.com/docs/guides/api/using-custom-schemas) explicitly, with Data API on, automatic table exposure off, and RLS on. Schemas share project quotas and Auth; allocate Scout's budget from remaining shared capacity. Use Scout-specific permissions and migrations, and prefix its deployed functions and scheduled jobs with `scout-`. Project-wide service-role credentials remain backend-only; schemas do not isolate that privileged access. Other service implementations are outside Scout's scope.
 
 Use recurring free allowances, keep paid upgrades and automatic top-ups off, and confirm account eligibility and quotas during setup. Only process new or changed content with the model, reuse stored results, and stop work at configured usage limits. Record quota exhaustion against the tracker and resume when allowance becomes available.
 
-Reuse the Firebase Hosting approach already used for Ryu, with a separate Scout deployment. The [Spark hosting allowance](https://firebase.google.com/docs/hosting/usage-quotas-pricing) is 10 GB storage and 10 GB/month transfer; verify the selected project's plan and available quota. Cloudflare signup is no longer needed. [AI Studio supports Workspace accounts](https://ai.google.dev/gemini-api/docs/workspace), subject to administrator controls; create a Scout API key in an OA-controlled project and verify its free quota. Workspace's included Gemini features do not replace the API's separate quotas and pricing.
+Scout reuses the Firebase Hosting approach already used for Ryu, with a separate deployment. The [Spark hosting allowance](https://firebase.google.com/docs/hosting/usage-quotas-pricing) is 10 GB storage and 10 GB/month transfer; recheck shared capacity before deployment. Cloudflare signup is no longer needed. [AI Studio supports Workspace accounts](https://ai.google.dev/gemini-api/docs/workspace), subject to administrator controls; the existing OA-controlled `bbnj-chm` key and free-tier model access are verified for Scout. Workspace's included Gemini features do not replace the API's separate quotas and pricing.
 
 Retain Supabase Free and Tavily Free. Firestore offers a free database allowance, but a Firebase backend using Cloud Functions requires the [Blaze billing plan](https://firebase.google.com/docs/projects/billing/firebase-pricing-plans). Sheets and Apps Script would require a backend redesign. [Google's nonprofit cloud offering](https://support.google.com/nonprofits/answer/16245748?hl=en) does not establish a recurring entitlement covering this backend or discovery search. Tavily's free allowance remains 1,000 credits/month without a card; [Google Search grounding terms](https://ai.google.dev/gemini-api/terms#grounding-with-google-search) restrict collecting returned links for indexing or crawling, so it is not a substitute for Scout's discovery pipeline.
 
-The free setup has practical limits: low-activity Supabase projects may pause, worker limits may require local/manual handling of heavy browser or PDF collection, and Gemini's free-tier content may be used to improve Google's products. Keep model inputs to public source material and the specific Scout question. The Services tab contains the detailed assumptions and provider references to verify before setup.
+The free setup has practical limits: low-activity Supabase projects may pause, worker limits may require local/manual handling of heavy browser or PDF collection, and Gemini's free-tier content may be used to improve Google's products. Keep model inputs to public source material and the specific Scout question. See [tasks.md](tasks.md) for account checks, operating caps, and remaining quota verification before enabling model or discovery work.
 
 ## Build plan
 
