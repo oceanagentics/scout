@@ -49,14 +49,14 @@ function link(text, url) {
 
 export function mountDashboard(root, load) {
   // Static markup only; every source-supplied value is rendered with textContent.
-  root.innerHTML = `<div class="workspace-heading"><nav aria-label="Scout views"><button type="button" data-view="findings" aria-pressed="true">Findings</button><button type="button" data-view="trackers" aria-pressed="false">Trackers</button></nav><button type="button" id="refresh" class="secondary">Refresh data</button></div>
+  root.innerHTML = `<div class="workspace-heading"><nav aria-label="Scout views"><button type="button" data-view="findings" aria-pressed="true">Records</button><button type="button" data-view="trackers" aria-pressed="false">Trackers</button></nav><button type="button" id="refresh" class="secondary">Refresh data</button></div>
     <p id="load-status" role="status"></p>
-    <section id="findings" aria-label="Findings"><div class="findings-toolbar"><form id="filters" class="filters">
-      <label class="search">Search findings<input name="search" type="search" placeholder="Title, organization, topic…"></label>
-      </form><div class="view-switch" role="group" aria-label="Findings layout">
+    <section id="findings" aria-label="Records"><div class="findings-toolbar"><form id="filters" class="filters">
+      <label class="search">Search records<input name="search" type="search" placeholder="Title, organization, topic…"></label>
+      </form><div class="view-switch" role="group" aria-label="Records layout">
         <button type="button" data-layout="table" aria-label="Table view" title="Table view" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M10 9v11"/></svg></button>
         <button type="button" data-layout="cards" aria-label="Card view" title="Card view" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
-      </div></div><p id="record-count" role="status"></p><div id="record-list" tabindex="0" role="region" aria-label="Findings results"></div></section>
+      </div></div><p id="record-count" role="status"></p><div id="record-list" tabindex="0" role="region" aria-label="Records results"></div></section>
     <section id="trackers" aria-label="Trackers" hidden>
       <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>`;
   const status = root.querySelector('#load-status'), refresh = root.querySelector('#refresh');
@@ -72,8 +72,8 @@ export function mountDashboard(root, load) {
     timings = new Map(data.records.filter(record => record.kind === 'event').map(record => [record.id, eventTiming(record)]));
     const values = Object.fromEntries(new FormData(filters));
     const records = filterRecords(data.records, values);
-    root.querySelector('#record-count').textContent = `${records.length} of ${data.records.length} findings`;
-    if (!records.length) { recordList.append(node('p', data.records.length ? 'No findings match your search.' : 'No records yet. Collected findings will appear here with their sources.', 'empty')); return; }
+    root.querySelector('#record-count').textContent = `${records.length} of ${data.records.length} records`;
+    if (!records.length) { recordList.append(node('p', data.records.length ? 'No records match your search.' : 'No records yet. Collected records will appear here with their sources.', 'empty')); return; }
     let body = recordList;
     if (tableView) {
       const table = node('table', null, 'data-table');
@@ -174,7 +174,7 @@ export function mountDashboard(root, load) {
   async function reload() {
     refresh.disabled = true;
     status.classList.remove('loaded');
-    status.textContent = data ? 'Refreshing data…' : 'Loading findings and trackers…';
+    status.textContent = data ? 'Refreshing data…' : 'Loading records and trackers…';
     root.setAttribute('aria-busy', 'true');
     try {
       const next = await load();
