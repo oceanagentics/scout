@@ -6,6 +6,7 @@ import { PGlite } from '@electric-sql/pglite';
 const migration = await readFile(new URL('../supabase/migrations/20261001050000_scout_foundation.sql', import.meta.url), 'utf8');
 const trackerMigration = await readFile(new URL('../supabase/migrations/20261001060000_scout_tracker_import.sql', import.meta.url), 'utf8');
 const trackerSeed = await readFile(new URL('../supabase/seeds/trackers.sql', import.meta.url), 'utf8');
+const collectionMigration = await readFile(new URL('../supabase/migrations/20261001070000_scout_collection.sql', import.meta.url), 'utf8');
 const reader = '00000000-0000-0000-0000-000000000001';
 const admin = '00000000-0000-0000-0000-000000000002';
 const outsider = '00000000-0000-0000-0000-000000000003';
@@ -65,8 +66,9 @@ for (const shared of [false, true]) {
       const before = shared ? (await db.query(sharedState)).rows : null;
       await db.exec(migration);
       await db.exec(trackerMigration);
+      await db.exec(collectionMigration);
       if (shared) assert.deepEqual((await db.query(sharedState)).rows, before);
-      assert.equal((await db.query("select count(*)::int n from pg_class where relnamespace = 'scout'::regnamespace and relkind = 'r' and relrowsecurity")).rows[0].n, 6);
+      assert.equal((await db.query("select count(*)::int n from pg_class where relnamespace = 'scout'::regnamespace and relkind = 'r' and relrowsecurity")).rows[0].n, 8);
       await db.exec(`
         insert into scout.memberships (user_id, role) values ('${reader}', 'reader'), ('${admin}', 'admin');
         insert into scout.trackers (name, url, channel, method, cadence) values ('Fixture source', 'https://example.org', 'web', 'http', '1 day');
@@ -90,6 +92,8 @@ for (const shared of [false, true]) {
       await assert.rejects(db.query("insert into scout.records (kind,title) values ('announcement','Not allowed')"), { code: '42501' });
       await assert.rejects(db.query("update scout.memberships set role = 'admin'"), { code: '42501' });
       await assert.rejects(db.query('select * from scout.deliveries'), { code: '42501' });
+      await assert.rejects(db.query('select * from scout.source_versions'), { code: '42501' });
+      assert.equal((await db.query('select * from scout.record_changes')).rows.length, 0);
       await db.query("select set_config('request.jwt.claim.sub', $1, false)", [admin]);
       assert.equal((await db.query("update scout.trackers set enabled = false returning id")).rows.length, 1);
       await assert.rejects(db.query('update scout.trackers set last_success_at = now()'), { code: '42501' });

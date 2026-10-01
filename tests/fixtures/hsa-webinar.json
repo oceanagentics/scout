@@ -1,0 +1,43 @@
+{
+  "post": {
+    "uri": "at://did:plc:mj2ygegzodk3fdjdgihjko23/app.bsky.feed.post/3mw7xgyguen2r",
+    "indexedAt": "2026-09-24T00:05:05.479Z",
+    "author": {
+      "handle": "highseasalliance.bsky.social"
+    },
+    "record": {
+      "text": "Book your place for the next Let’s Talk BBNJ webinar: Marine Genetic Resources (MGRs).\n\nThe third Treaty Pillar provides a framework for monitoring the collection, use and sharing of MGRs.\n\n💻Build your understanding before #BBNJCOP1: https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ",
+      "createdAt": "2026-09-24T00:05:01.743406829Z",
+      "facets": [
+        {
+          "features": [
+            {
+              "$type": "app.bsky.richtext.facet#tag",
+              "did": null,
+              "tag": "BBNJCOP1",
+              "uri": null
+            }
+          ],
+          "index": {
+            "byteEnd": 237,
+            "byteStart": 228
+          }
+        },
+        {
+          "features": [
+            {
+              "$type": "app.bsky.richtext.facet#link",
+              "did": null,
+              "tag": null,
+              "uri": "https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ"
+            }
+          ],
+          "index": {
+            "byteEnd": 305,
+            "byteStart": 239
+          }
+        }
+      ]
+    }
+  }
+}

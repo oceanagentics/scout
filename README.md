@@ -113,7 +113,7 @@ After migration, append `scout` to the project's existing Data API exposed-schem
 
 ## Tracker import
 
-`supabase/seeds/trackers.sql` is a frozen, manually reviewed snapshot of all 22 sheet entries, read on 2026-10-01. Apply both migrations before this seed. Once remote foundation checks pass, an authorized SQL operator can run:
+`supabase/seeds/trackers.sql` is a frozen, manually reviewed snapshot of all 22 sheet entries, read on 2026-10-01. Apply the versioned migrations before this seed. Once remote foundation checks pass, an authorized SQL operator can run:
 
 ```sh
 supabase db query --linked --project-ref vhlfumeyhkeospnemukq --file supabase/seeds/trackers.sql
@@ -122,6 +122,24 @@ supabase db query --linked --project-ref vhlfumeyhkeospnemukq --file supabase/se
 If the CLI preflight is unavailable, submit the same SQL through the documented Management API query endpoint after those checks. The seed's immutable `seed_key` is independent of editable URL/method. Reapplying it skips existing seed identities and preserves app edits, pauses, and collection history. It never synchronizes later sheet changes. A conflicting URL/method on a different identity fails the transaction rather than silently dropping a source.
 
 The inventory contains 17 websites, four daily `getAuthorFeed` accounts, and one weekly `searchPosts` discovery tracker. Original cadence text and coverage are preserved, including meeting-period overrides and discovery keywords. The conference-specific row has no URL: it is retained with `configuration_note = 'Set per conference'`, `url = null`, and `enabled = false`. It cannot be enabled until configured. All imported rows have null attempt, success, outcome, error, and next-run values; import is not a collection attempt. Collector support and scheduling arrive in their assigned later tasks.
+
+## Manual HSA collection
+
+```sh
+npm run collect:hsa
+# Or choose an explicit coverage window:
+npm run collect:hsa -- --since=2026-09-01
+```
+
+This command uses persistent local PostgreSQL at `.cache/hsa-database`, applies the local migrations/seed, and collects only the configured HSA Bluesky tracker. It cannot connect to the hosted database and needs no service credentials. A process lock protects the local database; after an interrupted process, confirm it has stopped before removing `.cache/hsa-collector.lock`. This development database uses minimal Auth fixtures; it is not a hosted Supabase environment.
+
+The default window is the previous 30 days, using feed/repost indexing time for coverage and original publication time for evidence ordering. The collector requests at most two feed pages of 25 posts, follows up to two event/registration links per post and six pages per run, allows three redirects per request, and caps the total at 24 HTTP requests. Every request uses `BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)`. HTTPS/DNS checks reject private destinations; responses are limited to 512 KiB, each request to 12 seconds, and the run checks a 120-second budget before starting another request. No retries, models, Tavily, or paid APIs are used.
+
+BBNJ feed updates are stored with verbatim source summaries. Events use stable event/registration URLs where available; other posts use their Bluesky identity. Structured JSON-LD event data and the observed Zoom registration metadata supply explicit dates. Ambiguous dates, missing years/time zones, and unsupported page formats stay unknown and are retained in evidence. Zoom's displayed local time is preserved in the description when its page does not supply a zone; it is not converted to an invented timestamp. Quoted posts are not expanded. This is bounded HSA coverage, not a general website collector or semantic cross-post merger.
+
+Source versions and material changes are stored in `scout` and survive separate runs. Unchanged posts reuse extraction; event pages are checked again for corrections and compared by extracted facts so changing page scripts do not create updates. The `hsa-v1` fingerprint prefix invalidates cached extraction when the parser is intentionally revised. Newer organizer/registration evidence takes precedence over older reports; source references remain attached. Cosmetic edits do not create a new event or material change.
+
+The command prints its coverage window, outcome, counts, and limitations. Exit code 2 means `partial`, `failed`, or `quota`; existing records are preserved. Only fully successful runs, including `no_change`, advance `last_success_at`. A remaining feed cursor at the page bound, unavailable/unsupported pages, quoted content, or incomplete registration metadata keeps the result partial. Scheduling and hosted deployment are separate pending work.
 
 ## Hosting deployment
 

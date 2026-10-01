@@ -142,23 +142,30 @@ Verification and deviations (2026-10-01):
 
 ## SCOUT-04 — Collect HSA's Bluesky feed end to end
 
-Status: todo
+Status: blocked
 Depends on: SCOUT-03
 
 Outcome: A manual collection run produces usable events and announcements from High Seas Alliance's public feed.
 
 Acceptance criteria:
 
-- [ ] Fetch HSA's configured public feed using the sheet's Bluesky `getAuthorFeed` method, identify relevant BBNJ items, and follow relevant organizer/registration links within bounded collection limits.
+- [x] Fetch HSA's configured public feed using the sheet's Bluesky `getAuthorFeed` method, identify relevant BBNJ items, and follow relevant organizer/registration links within bounded collection limits.
 - [ ] Store structured records with supporting source links, organization, available dates/time zones, summary, and collection timestamps. Preserve unknown values.
-- [ ] Use direct structured extraction where sufficient and the agreed free model only where needed. Validate model output before storing it and apply the configured usage caps.
-- [ ] Unchanged content does not trigger repeat model work. Repeated collection does not create duplicate records.
-- [ ] A changed event date or cancellation updates the existing event and records a material change; cosmetic source edits do not become new announcements. Prefer the organizer's authoritative correction over stale third-party reports, retain supporting evidence, and verify that collecting an older repost later cannot undo a reschedule or cancellation.
-- [ ] Persist success, no-change, partial, failure, and quota outcomes accurately. A failed fetch leaves previous records intact.
-- [ ] Verify a real source example and repeatable cases for initial collection, repeat collection, changed date, missing date, irrelevant content, and failed fetch.
+- [x] Use direct structured extraction where sufficient and the agreed free model only where needed. Validate model output before storing it and apply the configured usage caps.
+- [x] Unchanged content does not trigger repeat model work. Repeated collection does not create duplicate records.
+- [x] A changed event date or cancellation updates the existing event and records a material change; cosmetic source edits do not become new announcements. Prefer the organizer's authoritative correction over stale third-party reports, retain supporting evidence, and verify that collecting an older repost later cannot undo a reschedule or cancellation.
+- [x] Persist success, no-change, partial, failure, and quota outcomes accurately. A failed fetch leaves previous records intact.
+- [x] Verify a real source example and repeatable cases for initial collection, repeat collection, changed date, missing date, irrelevant content, and failed fetch.
 
-Verification: Pending.
-Blockers: None recorded.
+Verification and deviations (2026-10-01):
+
+- **Manager-approved local delivery:** After accepting SCOUT-03 commit `13af6ea`, the manager assigned independent manual HSA collection against the reviewed local schema/seed. Re-read the live brief. `npm run collect:hsa` uses persistent PGlite at `.cache/hsa-database`, applies versioned local migrations/seed, and prevents overlapping local processes with a lock. It cannot connect to hosted Supabase. Remote integration remains deferred; this is partial SCOUT-04 delivery.
+- **Bounded collection:** HSA `getAuthorFeed` only, at most two pages of 25 posts, two links per event post, six follow-up pages, three redirects per request, and 24 total requests. Each response is capped at 512 KiB and 12 seconds; a 120-second budget is checked before another request. Every request uses `BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)`. HTTPS/DNS checks reject private destinations. Zero model, Tavily, Slack, or paid-service calls; no retries, scheduling, other collectors, or SCOUT-05 work.
+- **Extraction decision and persistent evidence:** Use verbatim post text, unambiguous JSON-LD Event data, and the observed public Zoom registration fields. No model is needed for this supported path, so model accounting remains zero; any future fallback must implement the already approved persistent caps before its first call. Store source versions, parsed facts, material changes, and outcomes in `scout`. Unchanged posts reuse extraction; event pages are checked for corrections and fingerprinted by extracted facts to ignore volatile scripts. Exact event/registration URLs join related posts; original publication time orders reports and current observation time orders organizer pages. Lower-rank or older reports cannot undo organizer corrections. Cosmetic edits leave material timestamps unchanged.
+- **Database and repeatable verification:** The additive migration brings Scout to eight RLS-enabled tables. Raw source versions are backend-only; members may read record changes. All nine tests pass, including empty/shared database isolation, preserved tracker edits, initial/repeat/no-change runs, reschedule/cancellation, older reposts, an organizer returning to a previously observed date, missing/date-only/timed dates, irrelevant content, fetch/page failures, page bounds, quota responses, and the recorded HSA/Zoom fixture. Frontend build and whitespace checks pass.
+- **Live evidence across separate invocations:** `npm run collect:hsa -- --since=2026-09-01` stored 12 local records: 11 announcements and one webinar. The registration page supplies September 29, 2026 and 07:30 AM; its missing zone leaves the structured timestamp/time zone null and the local time in the description. The last two separate CLI invocations (`474f6907-538c-404f-9f50-69951dee6809`, `a8ad1a7c-a6f9-4f4c-801a-8b2e2f3f26e9`) each examined 13 posts and one page using three requests, with zero new records, zero material changes, and zero model calls. Both honestly return `partial` (exit 2) for the incomplete registration metadata; `last_success_at` stays null.
+- **Remaining coverage/revisit conditions:** An older HSA post explicitly includes EDT, but this conservative parser does not yet combine that post's natural-language time with the registration date; the available-dates/time-zones criterion remains open. Parsing covers explicit ISO dates, one JSON-LD event, and the observed Zoom fields. Quoted posts, multiple-event listings, unsupported formats, natural-language dates, and semantic cross-URL deduplication are incomplete and must not be called full coverage. Revisit these gaps before claiming complete extraction; preserve unknown values until supported by validated extraction.
+- **Remote boundary and review:** Firebase target/permissions are resolved and the shell is already deployed. Supabase authentication and read-only SQL pass; actual Free-plan/paid-add-on verification remains unavailable because the relevant reads return 403. No remote schema, seed, collector, exposure, or membership mutation occurred. Complete the remote SCOUT-02/03 checks before hosted collection. Stop for manager review before SCOUT-05.
 
 ## SCOUT-05 — Build record and tracker lists and calendar actions
 
