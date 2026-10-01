@@ -8,7 +8,7 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 - [BBNJ Scout Trackers](https://docs.google.com/spreadsheets/d/1VtpaC83ybg7zet7VvNXmvctN9s5WJK_NTlJ9wx5NIbM/edit): source inventory, collection methods, and cadences; 22 is the last imported app inventory, not a claim about the sheet's current row count. Read the live sheet before any authorized import.
 - This file is the authoritative implementation checklist. The letter remains the product brief. Resolve material conflicts with the user before implementing the affected behavior.
 - Confirmed POC scope: events, announcements, treaty-status changes, daily Slack findings, a weekly Slack digest, Slack questions, a searchable Records table/card view, a tracker table with derived collection health, and tracker management.
-- Current deployed implementation: descriptions capped at 280 characters, UTC display/query/digest dates, and four tables/46 columns through migration 20261001190000: trackers, collection runs, records and evidence. Evidence links captures directly to records; source history and a communication timestamp replace the record-edit/delivery logs. Full/date-only/treaty evidence stays in captures. Backend-controlled Auth metadata grants admin access only to an eligible Workspace identity. SCOUT-15 and minimal communication state are deployed; the bounded fresh pull remains partial and awaits manager review before expansion.
+- Current deployed implementation: descriptions capped at 280 characters, UTC display/query/digest dates, and four tables/46 columns through migration 20261001190000: trackers, collection runs, records and evidence. Evidence links captures directly to records; source history and a communication timestamp replace the record-edit/delivery logs. Full/date-only/treaty evidence stays in captures. Backend-controlled Auth metadata grants admin access only to an eligible Workspace identity. SCOUT-15 core, minimal communication state and four additional collectors are deployed and reviewed; source coverage remains partial.
 - Calendar generation/actions and native calendar import are out of scope by explicit user choice, not pending verification. Outbound email digests and a separate calendar view remain deferred.
 - [Email subscriptions planning tab](https://docs.google.com/spreadsheets/d/1VtpaC83ybg7zet7VvNXmvctN9s5WJK_NTlJ9wx5NIbM/edit?gid=20261001#gid=20261001): four starter subscriptions were Planned with mailbox blank at the approved checkpoint. This is inbound-source planning only; subscription signup, mailbox ingestion and outbound email delivery are not implemented or authorized by this reconciliation. Further sheet edits do not change the last imported count of 22.
 - Deferred: embeddings and semantic search. Use structured queries for the POC.
@@ -40,12 +40,12 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 
 ## Current delivery and outstanding work
 
-- **Current hosted release (2026-10-01):** Firebase `1790890018095000` / version `9de0d0e7519c9d10`, collector version 12, and all eleven migrations through `20261001190000`. Four tables/46 columns are deployed; all three frontend assets match the build and security headers. Billing remains disabled and Ryu release `1790266049490000` is unchanged. Two earlier Slack receipts/content checks came from the manual **local** notifier; no new Slack message was sent.
-- **Fresh cutover verification:** all 44 tests/build pass. The authorized reset deleted 13 hosted records/29 captures, preserving all 25 trackers, eight existing run/accounting rows, Auth/access, migration history and other-service controls. Current totals are two records, nine captures and eleven runs; seven source assessments remain pending. Existing Workspace identity SQL checks pass; the browser session had expired and no login was repeated. Local records/evidence are empty after the narrow reset, with 22 trackers and six runs preserved. Detailed metrics and limitations are under SCOUT-15.
+- **Current hosted release (2026-10-01):** Firebase `1790892171758000` / version `9ddf94ac63279126`, collector version 18, and all eleven migrations through `20261001190000`. Four tables/46 columns remain; all three frontend assets match the build and security headers. Billing remains disabled and Ryu release `1790266049490000` is unchanged. No new Slack message was sent.
+- **Expansion verification:** all 49 tests/build pass. HSA fixes and four additional trackers have live assessments. Current totals are five findings, 22 captures and 28 runs, with eleven pending source assessments. All 25 tracker configurations and eleven pre-expansion run/accounting rows are preserved. Reader SQL checks pass for five findings; no login was repeated. The previous authorized reset is not repeated. Detailed counts, quality misses and remaining coverage are in the SCOUT-15 expansion checkpoint below.
 - **SCOUT-06 hosted preview verified:** minimal timestamp state, model selection, hosted-record CLI access and real record links are implemented and tested with injected Slack. A preview read the two fresh hosted records using an injected selector, with no extra model call or Slack send. Communication timestamps remain null. Slack visual layout remains an approved deferral, distinct from verified receipt/content. There is no calendar obligation.
-- **Coverage boundary:** HSA quoted posts, multi-event listings, unsupported date formats and semantic cross-URL matching remain bounded limitations. Revisit before claiming complete HSA or broader source coverage.
-- **Authorized implementation — SCOUT-15 first:** the user requested review/commit, SCOUT-15, at least four additional working trackers, metric review and a fresh repull. Manager accepted local checkpoint `160be36` and authorized this live cutover, including local-state cleanup. The bounded HSA pull and deployment are complete with explicit pending work; stop for manager review before the already-requested manual SCOUT-08–11 expansion. Four live attempts were used and 13 daily attempts remain. No scheduler/heartbeat restart, paid fallback or further live Slack sends.
-- **Later prerequisites:** production model access and persistent caps are verified. Notification scheduling is undecided (SCOUT-07), Tavily paid-use checks wait for SCOUT-11, Slack mention setup for SCOUT-12, and admin identity/management for SCOUT-13. Scheduling and SCOUT-08–13 remain future work. SCOUT-15 remains in-progress through review/pattern adoption; the overall user request is not complete at this checkpoint.
+- **Coverage boundary:** HSA official proof/supporting pages remain pending; DOSI second-hop newsletter items are missed; GFW's concrete AI partnership was classified Low, a potential false negative. These limitations are separate from working transport, source gating and valid completed assessments. No overall accuracy estimate or full coverage claim is made.
+- **Accepted implementation checkpoint:** manager accepted `160be36`, cutover `1bddfb0` and expansion `e348e57`. HSA validation and the four additional DOSI/GFW/IDDRI feeds and HUB Ocean JSON/ICS collector are reviewed; the authorized manual scope is done with documented coverage/relevance limitations. Two HSA attempts and nine expansion attempts used 14,373 input / 3,352 output tokens, with no automatic retries. Eighteen attempts are accounted today and two remain. No scheduler, heartbeat, paid fallback, Tavily or Slack send was added.
+- **Later prerequisites:** notification scheduling is undecided (SCOUT-07), Tavily paid-use checks wait for SCOUT-11, Slack mention setup for SCOUT-12, and admin identity/management for SCOUT-13. SCOUT-15 adoption in SCOUT-09/11 and remaining website collectors, plus documented source/relevance gaps, remain open. The overall POC is not declared complete.
 
 Acceptance below follows the latest scope. Older dated implementation/checkpoint paragraphs are historical evidence for their named versions; superseded calendar, membership, record-edit history, delivery-workflow, stored-status and setup instructions in them are not current requirements.
 
@@ -208,7 +208,7 @@ Acceptance criteria:
 - [x] Verify a real source example and repeatable cases for initial collection, repeat collection, changed date, missing date, irrelevant content, and failed fetch.
 - [x] Deploy/reverify the updated collector with SCOUT-02's migrations: live bounded success/stable repeat, preserved captured evidence, derived freshness and secret-only authorization. Local regression tests cover correction precedence.
 
-Current status: collector version 12 is deployed after SCOUT-15's authorized reset. Five fresh-window posts produced two announcements and nine captures, with seven source assessments pending. The enabled-model resume skipped all six previously fetched sources and preserved both record versions, but newly available supporting pages added captures. This is partial coverage, not a fully completed live `no_change` run. Missing/publishable credentials return 401. Source failures, request-input bounds and identity/official-verification uncertainty remain explicit limits; see SCOUT-15 for exact runs and fixes.
+Current status: collector version 18 is deployed. HSA has four findings and nine captures, with five source assessments pending after the distinct EOI and bounded webinar input were validated live. The enabled-model resume skipped all six previously fetched sources and preserved both record versions, but newly available supporting pages added captures. This is partial coverage, not a fully completed live `no_change` run. Missing/publishable credentials return 401. Source failures, request-input bounds and identity/official-verification uncertainty remain explicit limits; see SCOUT-15 for exact runs and fixes.
 
 Historical verification and deviations (2026-10-01):
 
@@ -333,21 +333,21 @@ Prerequisite: notification time, digest weekday/time and IANA time zone are unde
 
 ## SCOUT-08 — Add the remaining Bluesky feeds
 
-Status: todo
-Depends on: SCOUT-04, SCOUT-07, SCOUT-15
+Status: done (reviewed authorized manual scope; scheduling remains SCOUT-07)
+Depends on: SCOUT-04, SCOUT-15; SCOUT-07 for scheduling only.
 
 Outcome: DOSI, Global Fishing Watch, and IDDRI collect through the established Bluesky pattern.
 
 Acceptance criteria:
 
-- [ ] Use the exact accounts in the tracker inventory and verify bounded live collection for all three feeds.
-- [ ] Each feed retains its own cadence, collection history and run-derived status. One feed's failure does not stop the others. Use the required identifiable User-Agent on every HTTP collector.
-- [ ] Cross-posted events merge into one record while preserving all supporting sources. Different events with similar titles remain separate.
-- [ ] Verify pagination or collection-window limits and report partial coverage when a run cannot catch up within its budget.
-- [ ] Verify repeat collection and one cross-source duplicate using recorded examples.
+- [x] Use the exact accounts in the tracker inventory and verify bounded live collection for all three feeds.
+- [x] Each feed retains its own cadence, collection history and run-derived status. One feed's failure does not stop the others. Use the required identifiable User-Agent on every HTTP collector.
+- [x] Cross-posted events merge into one record while preserving all supporting sources. Different events with similar titles remain separate. Verified with injected cross-feed and recurring-session cases; no live cross-feed merge is claimed.
+- [x] Verify pagination or collection-window limits and report partial coverage when a run cannot catch up within its budget.
+- [x] Verify repeat collection and one cross-source duplicate using recorded examples.
 
-Verification: Pending.
-Blockers: None recorded.
+Verification: implemented, exercised manually and accepted by the manager in the expansion checkpoint below. DOSI and GFW have completed valid Low assessments, with pending coverage retained. IDDRI completed a Low/no-record assessment and a normal zero-call repeat. GFW's cached uncertainty was reused live with its reason/count intact. All tracker IDs, settings and cadence remain unchanged. SCOUT-07 scheduling is explicitly deferred for this authorized manual expansion.
+Limitations: DOSI's second-hop, multi-item newsletter is not collected; GFW's concrete AI partnership was classified Low, a potential relevance false negative. Exact misses, gate corrections and usage are in the SCOUT-15 expansion metrics.
 
 ## SCOUT-09 — Collect authoritative treaty-status changes
 
@@ -369,7 +369,7 @@ Blockers: None recorded.
 
 ## SCOUT-10 — Add website and document collectors
 
-Status: todo
+Status: in-progress
 Depends on: SCOUT-03, SCOUT-04, SCOUT-07, SCOUT-15
 
 Outcome: The remaining website trackers have verified collection methods or explicitly documented coverage limitations.
@@ -391,6 +391,16 @@ Completion criteria:
 
 Verification: Pending.
 Blockers: None recorded; source-specific methods remain to be validated.
+
+### SCOUT-10.01 — HUB Ocean events calendar
+
+Status: done (reviewed authorized manual scope; scheduling remains SCOUT-07)
+Source: https://www.hubocean.earth/events-calendar, existing tracker `98bce44c-60bc-4159-84d0-fa6daa503c59`.
+Method: public Squarespace JSON calendar (`?format=json`) for event content/identity, with each event's linked ICS (`?format=ical`) for explicit UTC times. RSS was checked but JSON supplies richer structured event data. Preserve the configured tracker URL/cadence; no new tracker or table.
+Expected records: technical ocean-data webinars and practical training, including the October 22, 2026 “Ocean Data Platform: Working with AI-agents” event. Its ICS explicitly supplies 13:30–14:15 UTC; do not infer the zone from the listing's displayed clock.
+Checks: bounded current/upcoming coverage, initial/repeat/material update/failed-format behavior, complete source-supported extraction, cross-source identity and separate recurring sessions, live assessment/repeat with durable model accounting. Historical calendar coverage remains bounded by the returned feed and requested window. Manual implementation is authorized despite SCOUT-07; scheduling remains deferred.
+
+Verification: the live October 22 event is stored at High priority with explicit UTC times, Teams registration and organizer/location evidence. Its normal repeat made zero model calls/captures/record changes. Recorded tests cover rescheduling, malformed JSON/ICS, source fact preservation and repeat gating. One overclaimed priority reason was corrected through the assessed supporting-evidence path; the record remained unchanged. Unsupported website trackers still display “Collector not implemented.”
 
 ## SCOUT-11 — Add discovery search
 
@@ -473,7 +483,7 @@ Blockers: None recorded.
 
 ## SCOUT-15 — Detect source changes before assessing findings and relevance
 
-Status: in-progress
+Status: in-progress (core and adoption in four additional collectors reviewed; broader adoption and source/relevance limitations remain open)
 Depends on: SCOUT-04's working HSA collector; SCOUT-01 model budgets before stage 3; SCOUT-05 and SCOUT-06 for stage 4 integration.
 
 Outcome: Unchanged sources produce no additional stored content and no agent calls. New or changed source content enters a bounded agentic flow that determines whether it creates a finding, updates an existing finding, or adds no substantive information, and assesses its relevance to the Letter.
@@ -530,7 +540,7 @@ Flow: **Fetch → scripted comparison with last consumed state → no updates, o
 - [x] Verify omitted applicable extraction keys and blank strings are rejected, explicit unknowns are accepted for otherwise nullable fields, and known values satisfy type/enum/date-order constraints. Check Unknown versus Not applicable rendering, preservation of established values when a new source is incomplete, and evidence-backed clearing of a withdrawn value. Complete extraction must still produce only the necessary field updates.
 - [x] Evaluate technical ChM content without BBNJ keywords, generic high-seas noise, conference/side-event recognition, cross-source duplicates, authoritative corrections, distinct recurring sessions and official treaty actions. Record expected/actual priority and identity decisions, missed important items, false promotions and incorrect merges before enabling assessment-driven notifications.
 - [x] Once implementation is authorized, verify locally with recorded sources and injected model/Slack responses, then make a bounded live model/collection check under the configured caps. Inspect decisions before enabling real notifications. Record source counts, skipped duplicates, changed candidates, model usage, record effects and remaining limitations.
-- [ ] Carry the verified gate and assessment contract into SCOUT-08–11, adjusting source-specific extraction only. Update README behavior/limitations after implementation and include these acceptance cases in SCOUT-14. Keep the work in the supplied checkout and create a focused commit for each authorized implementation assignment.
+- [ ] Carry the verified gate and assessment contract into SCOUT-08–11, adjusting source-specific extraction only. Update README behavior/limitations after implementation and include these acceptance cases in SCOUT-14. Keep the work in the supplied checkout and create a focused commit for each authorized implementation assignment. SCOUT-08 and SCOUT-10.01 adoption is implemented/reviewed; SCOUT-09/11, remaining website collectors and broader SCOUT-14 verification remain open.
 
 Historical local verification checkpoint (2026-10-01, commit 160be36): implementation complete locally; manager review precedes any deployment or record deletion. All 41 tests, the production build and diff checks pass. Local fixture reset deletes evidence then records and repulls through assessment while preserving tracker configuration and collection/model accounting. Real PostgreSQL semantics through the hosted adapter prove a failed record transaction cannot roll back a pre-call reservation. Browser fixture checks cover priority/unassessed filters, date ordering, table/cards, direct record selection and Unknown/Not applicable labels; this is not a claim of hosted signed-in verification. The auth regression verifies a validated record UUID survives Google sign-in through tab-scoped storage, preserving the exact approved callback URL and reader access check. Direct record views offer a link back to all records.
 
@@ -584,4 +594,38 @@ The enabled-model resume did not reassess completed sources or change either rec
 
 Verification: **44 tests**, production build and diff checks pass. All eleven remote migration bodies match. SQL under the established Google Workspace identity reads the two records, accepted priority reasons/source links and all 25 trackers, with zero tracker writes and no record-write/raw-evidence privileges. Missing, invalid and publishable collector credentials return 401. The existing browser session was expired; the deployed sign-in gate was inspected without another login, so fresh signed-in rendering remains unverified. An injected-selection preview read real hosted records and included only the high-priority finding; no Slack transport was invoked and communication timestamps stayed null. Temporary test servers/tabs from local UI verification were closed; the existing Scout tab remains.
 
-Review handoff: cutover and bounded repull are complete within the authorized checkpoint. Review the recorded EOI/identity, input and uncertainty-reuse fixes, then allocate their next live validation together with the already-requested **at least four additional working trackers** and expanded metrics using the remaining shared allowance. Do not mark the overall request complete, start scheduling/SCOUT-07, restart the heartbeat, or send Slack messages from this checkpoint.
+Historical review handoff (superseded by the accepted expansion below): cutover and bounded repull are complete within the authorized checkpoint. Review the recorded EOI/identity, input and uncertainty-reuse fixes, then allocate their next live validation together with the already-requested **at least four additional working trackers** and expanded metrics using the remaining shared allowance. Do not mark the overall request complete, start scheduling/SCOUT-07, restart the heartbeat, or send Slack messages from this checkpoint.
+
+
+### Manual expansion checkpoint — 2026-10-01
+
+**Manager acceptance (2026-10-01):** reviewed implementation `e348e57` is accepted after review of the 49-test/build output, code/fixtures, live runs/usage, repaired HUB metadata, DOSI captures and preservation checks. SCOUT-08's authorized manual scope and SCOUT-10.01 are done. SCOUT-15 core and adoption in these four collectors are reviewed; scheduling, broader collector adoption and the documented source/relevance limitations remain open. No further implementation, model calls, deployment, collection or testing is needed for this assignment.
+
+Manager accepted cutover `1bddfb0` and authorized this work in the same checkout. Two HSA attempts validated the previously blocked EOI as a distinct High announcement (date unknown), and the previously oversized MGR webinar input at 7,064 bytes. Its schedule/supporting Zoom page remains pending; no date was invented. A targeted enabled-model repeat preserved records/captures with zero calls. Nine further attempts were allocated across the four new trackers, including the rejected and accepted HUB reason corrections. All caps remain unchanged; this assignment used **11 attempts, 14,373 input / 3,352 output tokens**, no automatic retries. **18 attempts today; 2 remain.** The maximum new request bound was 7,839 bytes; actual per-response outputs stayed below 1,024 tokens.
+
+Counts below aggregate this assignment's runs, including repeats. Fetches are post/page observations, not unique source counts; “captures” includes new sources, changed versions and the explicitly noted DOSI boundary transition. Record changes are material updates. Pending is the final latest-source count. Assessed decisions include uncertainty; working-source acceptance requires at least one completed decision.
+
+| Tracker / window | Runs; fetched posts/pages | Captures; skipped; pending | Attempts; input/output tokens | Records created / changed | Expected versus observed relevance and identity |
+| --- | --- | --- | --- | --- | --- |
+| HSA / Sep 24 | 3; 15 / 8 | 0; 23; 5 | 2; 2,757 / 629 | 2 / 0 | EOI High and distinct from policy brief; MGR webinar Normal. Both match expected identity; event dates remain unknown pending supporting evidence. |
+| DOSI Bluesky / Sep 24 | 4; 8 / 4 | 5; 7; 2 | 2; 2,306 / 469 | 0 / 0 | Teaser Low/no record is a completed assessment, but its newsletter contains missed substantive BBNJ items. Page uncertainty/pending remains visible. |
+| GFW Bluesky / Sep 24 | 4; 16 / 5 | 6; 15; 4 | 3; 3,433 / 1,048 | 0 / 0 | AIS explainer Low is reasonable; AI panel remains uncertain. The concrete Ai2 partnership was completed as Low/no record: potential false negative against its technical ocean-data scope. |
+| IDDRI Bluesky / Sep 1 | 2; 2 / 0 | 1; 1; 0 | 1; 772 / 136 | 0 / 0 | Climate-only September 7 post Low/no record matches expected relevance. No newer post was returned; older BBNJ posts are outside this window. |
+| HUB Ocean / Sep 24 | 4; 0 / 8 | 1; 3; 0 | 3; 5,105 / 1,070 | 1 / 0 | Technical ocean-data/AI webinar High without BBNJ keywords. Title, organizer, online location and registration are source-backed; ICS proves Oct 22, 13:30–14:15 UTC. |
+
+All four additional configured trackers have at least one completed valid live assessment: DOSI one, GFW two, IDDRI one, HUB one current source (new plus corroboration decisions). They are not configuration-only or wholly pending pulls. No new tracker was inserted; all 25 configurations/IDs/cadences are unchanged. The 11 pre-expansion run/accounting rows remain byte-equivalent after normalized JSON comparison. Final state: **5 findings, 22 captures, 28 runs, 11 pending assessments**, zero running collectors and zero communicated findings. Existing accepted records retained their material versions; no incorrect merge or duplicate finding was observed. Cross-feed duplicates, recurring sessions and material corrections are additionally tested with injected responses, not claimed as live multi-source merge evidence.
+
+**Quality/coverage findings and revisit conditions:**
+
+- HSA EOI was recovered from the prior identity-guard miss, with literal technical prototype evidence. Five other source assessments remain pending, including official ratification proof and event/supporting pages; intermittent HTTP 400, TLS EOF and the 512-KiB bound remain visible.
+- HUB's first High reason incorrectly asserted a source focus on clearing-house architecture/interoperability. High is defensible for its practical ocean-data tooling workshop, but those topical claims were unsupported. The shared prompt now separates source focus from inferred relevance. One reassessment was rejected for unsupported field clearing (charged normally, record unchanged); a single retry with explicit empty `clear_fields` guidance accepted the corrected workflow-based reason. This was not an automatic retry. The accepted record stayed unchanged.
+- That corroboration exposed nullable candidate fields overwriting parsed source dates/URLs. Supporting/no-substantive-change decisions now preserve factual source metadata as well as records. The exact HUB schedule/event/registration fields were restored from its unchanged raw event+ICS and inspected pre-correction evidence, retaining the corrected assessment and every evidence timestamp/hash. The regression checks later assessment input retains those known facts. No capture, finding, timestamp or assessment decision was fabricated.
+- DOSI's [October 1 newsletter](https://mailchi.mp/soton.ac.uk/dosi-deep-sea-roundup-01-10-2026) is a second hop from the captured teaser and contains multiple independent items. A bounded review found “Connecting international ocean, climate and biodiversity governance to protect deep-sea life” and “Science for BBNJ Implementation in Africa: Closing Knowledge Gaps and Building Partnerships for the High Seas,” dated October 6, 2026, an ANDR/Nairobi Convention COP12 side event. Neither became a finding. Revisit with bounded second-hop retrieval and per-item identity/extraction before calling DOSI coverage complete; the Low teaser does not classify the newsletter. No production records were manually injected.
+- DOSI's first repeat added a false change from randomized related-post titles/dates/links. The source-specific correction now uses the observed title/article content and actual links, excluding relative age, reactions, sharing, site navigation and related posts; full raw HTML is retained. The two actual captures are compressed in `tests/fixtures/dosi-roundup-captures.json.gz`. Their regression proves zero extra capture/model work, while article text, date and newsletter-link changes proceed and missing bounds fail visibly. The deployment made **one honest new comparison baseline**; the next live targeted enabled-model repeat skipped all three observations with zero captures/calls/record changes. Old captures remain in history. The pending baseline still needs a deliberately budgeted assessment; this is not a claim of completed full-feed `no_change`.
+- GFW's [Ai2/ocean-monitoring partnership announcement](https://bsky.app/profile/did:plc:i4kytxgsu3yfsrt2ml3o7tgq/post/3mw7f7ynpse2h) is concrete new technical activity, not generic advocacy. Its Low reason excludes it for lacking direct BBNJ/ChM architecture focus. Treat this as a potential missed opportunity and rubric-boundary review item; do not infer that missing treaty terms establish irrelevance. No repeated score chasing used the remaining quota. Other pending posts/pages and oversized YouTube/unavailable linked content keep coverage partial.
+
+Normal enabled-model repeats of HUB and IDDRI returned `no_change`, with zero calls/captures/record changes. Targeted completed-source repeats of HSA/GFW also made zero calls. GFW's unchanged uncertain panel decision was reused live (`reused_uncertain:1`) with its reason and four pending assessments still visible, and no call. DOSI's earlier rotating-page run did **not** prove uncertainty reuse; the recorded regression now covers that case with stable article bounds. One overlapping manual request was rejected with HTTP 409 before any run/reservation; subsequent invocations were serialized.
+
+**Deployment and verification:** collector **v18**, SHA-256 `1a6a786dd7b2ef6d114ce5ed1a388ea985a6e025b2756ef4518447c2d2ed1807`, uses the same six files and existing secret/auth boundary. No schema, secret, scheduling or notification change. Firebase **1790892171758000** / **9ddf94ac63279126** deploys only the supported-tracker status update (three compressed files, 62,667 bytes); exact live bytes/security headers match. Unsupported websites stay unimplemented. Billing remains disabled; Ryu release **1790266049490000** is unchanged. Shared reported storage (~11 MB) and transfer (<4 MB) remain far below 10-GiB limits; storage reporting lags releases.
+
+**49 tests**, production build, diff and secret scans pass. New tests cover configured-feed isolation/recovery, cross-feed identity, targeted pending selection, recorded HUB UTC dates/reschedule/malformed response, nullable source-fact preservation, actual DOSI cosmetic changes and reader status. The established Workspace identity reads five findings and all 25 trackers with zero tracker writes and no record-write/raw-evidence privilege. No new login was attempted. No Slack/Tavily/model-notification calls, paid fallback, extra worker, branch/worktree, scheduler or heartbeat was used. Manager accepted this checkpoint; the authorized implementation is closed. The documented misses, broader POC and unsupported collectors remain open.

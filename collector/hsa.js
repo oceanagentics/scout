@@ -4,7 +4,7 @@ import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
 import { isIP } from 'node:net';
 import { isDeepStrictEqual } from 'node:util';
-import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTENT_FIELDS, normalize, fingerprint, visibleText, ASSESSMENT_VERSION } from './assessment.js';
+import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTENT_FIELDS, normalize, fingerprint, visibleText, dosiArticle, ASSESSMENT_VERSION } from './assessment.js';
 
 export const HSA = 'highseasalliance.bsky.social';
 export const USER_AGENT = 'BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)';
@@ -302,11 +302,14 @@ async function save(db, identity, source, rank, observedAt, stats) {
   return {warning:dateWarning,recordId:existing.id,sourceId:source.id};
 }
 
-export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000, model, makeModel } = {}) {
+export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000, model, makeModel, sourceId = null, trackerId = null } = {}) {
   if (!Number.isFinite(Date.parse(since))) throw new Error('A valid coverage start is required');
-  const tracker = (await db.query("select * from scout.trackers where seed_key='bbnj-trackers-2026-10-01:17'")).rows[0];
-  if (!tracker?.enabled) throw new Error('HSA tracker is missing or paused');
-  if (tracker.url !== `https://bsky.app/profile/${HSA}` || tracker.collector !== 'bluesky_feed') throw new Error('HSA tracker configuration changed; review before collecting');
+  const tracker = (await db.query("select * from scout.trackers where id=$1 or ($1::uuid is null and seed_key='bbnj-trackers-2026-10-01:17')",[trackerId])).rows[0];
+  if (!tracker?.enabled) throw new Error('Tracker is missing or paused');
+  const actor=tracker.collector==='bluesky_feed' && tracker.url?.match(/^https:\/\/bsky\.app\/profile\/([a-z0-9.-]+)$/)?.[1];
+  const hub=tracker.collector==='web' && tracker.url==='https://www.hubocean.earth/events-calendar';
+  if (!actor && !hub) throw new Error('Unsupported tracker configuration; review before collecting');
+  const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at) values ($1,$2,$3) returning id', [tracker.id, since, started])).rows[0];
   const stats = { created: 0, changed: 0, posts: 0, pages: 0, candidates: 0, skipped: 0, assessed: 0, reused_uncertain: 0, warnings: [] };
@@ -316,8 +319,39 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const dateWarnings = new Map();
   let cursor, covered = false, quota = false, feedFailed = false;
   try {
-    for (let page = 0; page < LIMITS.feedPages; page++) {
-      const params = new URLSearchParams({ actor: HSA, limit: String(LIMITS.postsPerPage), filter: 'posts_no_replies', includePins: 'false' });
+    if (hub) {
+      const feedURL=tracker.url+'?format=json';
+      const response=await read(feedURL,budget);stats.pages++;
+      const feed=JSON.parse(response.body);
+      if (!Array.isArray(feed.upcoming)||!Array.isArray(feed.past)) throw new Error('Invalid HUB Ocean calendar response');
+      if ([...feed.upcoming,...feed.past].some(event=>!event||!Number.isFinite(event.endDate))) throw new Error('Invalid calendar event date');
+      const events=[...feed.upcoming,...feed.past].filter(event=>Number.isFinite(event.endDate)&&event.endDate>=Date.parse(since));
+      covered=events.length<LIMITS.pages;
+      if (!covered) stats.warnings.push('Calendar event limit reached');
+      for (const event of events.slice(0,LIMITS.pages-1)) {
+        try {
+          const url=sourceURL(new URL(event.fullUrl,tracker.url).href);
+          if (new URL(url).origin!==new URL(tracker.url).origin || typeof event.title!=='string' || typeof event.body!=='string') throw new Error('Invalid calendar event');
+          const calendar=await read(url+'?format=ical',budget);stats.pages++;
+          if (!calendar.body.includes(`UID:${event.id}@squarespace.com`)) throw new Error('Calendar event identity mismatch');
+          const times=['DTSTART','DTEND'].map(name=>{
+            const match=calendar.body.match(new RegExp(`^${name}:(\\d{4})(\\d{2})(\\d{2})T(\\d{2})(\\d{2})(\\d{2})Z\\r?$`,'m'));
+            return match?`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z`:null;
+          });
+          const schedule=dates(...times);
+          if (!schedule.starts_at || !schedule.ends_at) throw new Error('Calendar lacks an unambiguous UTC schedule');
+          const registration=[...event.body.matchAll(/href\s*=\s*"([^"]+)"/gi)].map(match=>{try{return sourceURL(match[1].replaceAll('&amp;','&'));}catch{return null;}})
+            .find(link=>link && new URL(link).hostname==='events.teams.microsoft.com')??null;
+          const scripted={kind:'event',title:event.title,organization:feed.website?.siteTitle?.includes('HUB Ocean')?'HUB Ocean':null,
+            description:visibleText(event.excerpt||event.body),...schedule,location:event.location?.addressTitle??null,event_url:url,registration_url:registration,status:null};
+          const meaningful={title:event.title,body:visibleText(event.body),...schedule,location:scripted.location,registration_url:registration};
+          const source=await observe(db,tracker.id,url,JSON.stringify({...event,calendar:calendar.body}),Number.isFinite(event.publishOn)?new Date(event.publishOn).toISOString():null,
+            scripted,meaningful,{rank:2,identity:`event:${url}`,feed_url:feedURL,links:[url+'?format=ical',registration].filter(Boolean)},now());
+          stats[source.changed?'candidates':'skipped']++;
+        } catch(error) { quota ||= Boolean(error.quota);stats.warnings.push(error.message); }
+      }
+    } else for (let page = 0; page < LIMITS.feedPages; page++) {
+      const params = new URLSearchParams({ actor, limit: String(LIMITS.postsPerPage), filter: 'posts_no_replies', includePins: 'false' });
       if (cursor) params.set('cursor', cursor);
       const response = await read(`https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?${params}`, budget);
       const feed = JSON.parse(response.body);
@@ -341,7 +375,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         const scripted = postRecord(post, urls);
         const doc = await observe(db, tracker.id, postURL, content, post.record.createdAt, scripted,
           { text:post.record.text.replace(/https:\/\/[^\s]+/g,value=>{try{return sourceURL(value);}catch{return value;}}), author:post.author.handle, organizer:post.author.displayName??null, urls, createdAt:post.record.createdAt },
-          {rank:post.author.handle === HSA ? 2 : 0, identity:`post:${post.uri}`}, now());
+          {rank:post.author.handle === actor ? 2 : 0, identity:`post:${post.uri}`}, now());
         stats[doc.changed ? 'candidates' : 'skipped']++;
         if (post.embed?.$type?.includes('record')) stats.warnings.push('Quoted post content is not expanded');
         // Supporting technical/official links are checked even on unchanged posts.
@@ -355,9 +389,10 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
               stats.pages++;
               if (!/text\/html/i.test(fetched.headers['content-type'] ?? '')) throw new Error('Unsupported page format');
               const parsed = structuredEvents(fetched.body, fetched.url);
-              const authoritative = new URL(fetched.url).hostname.replace(/^www\./, '') === 'highseasalliance.org' || (post.author.handle === HSA && url === doc.parsed.registration_url);
-              const text = visibleText(fetched.body);
-              const pageLinks=[...new Set([...fetched.body.matchAll(/\bhref\s*=\s*["']([^"']+)["']/gi)].map(match=>{
+              const authoritative = new URL(fetched.url).hostname.replace(/^www\./, '') === publisherHost || (post.author.handle === actor && url === doc.parsed.registration_url);
+              const article=dosiArticle(fetched.body,fetched.url);
+              const text = visibleText(article);
+              const pageLinks=[...new Set([...article.matchAll(/\bhref\s*=\s*["']([^"']+)["']/gi)].map(match=>{
                 try{return sourceURL(new URL(match[1].replaceAll('&amp;','&'),fetched.url).href);}catch{return null;}
               }).filter(Boolean))].sort();
               const meaningful = {text:normalized(text), structured:parsed, links:pageLinks};
@@ -382,11 +417,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url) * from scout.evidence where tracker_id=$1
     order by url,coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (await db.query(`${pendingQuery} order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id])).rows;
+  const queued = (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows;
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
@@ -429,7 +464,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         const assessment={...decision,state:decision.action==='uncertain'?'uncertain':'complete',version:ASSESSMENT_VERSION,
           fingerprint:source.content_hash,accepted_at:now()};
         if (evaluatedUncertainty) assessment.input_fingerprint=fingerprint({source:source.content_hash,coverage:input.coverage,candidates:JSON.stringify(input.candidates)});
-        const parsed={...source.parsed,...(decision.candidate??{}),assessment};
+        const parsed={...source.parsed,...(['supporting_evidence','no_substantive_change'].includes(decision.action)?{}:decision.candidate??{}),assessment};
         await db.transaction(async tx=>{
           const before={created:stats.created,changed:stats.changed};
           let target;

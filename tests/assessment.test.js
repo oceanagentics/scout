@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
+import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
 import {collectHSA,HSA} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
@@ -214,6 +215,106 @@ test('unchanged evaluated uncertainty stays visible without repeat calls; new, f
   await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{assessment,state}','\"pending\"') where parsed#>>'{assessment,state}'='uncertain'");
   await collectHSA(db,options);assert.equal(calls,6); // Explicit reprocessing remains available.
   assert.equal((await db.query("select parsed#>>'{assessment,reason}' reason from scout.evidence where parsed#>>'{assessment,state}'='uncertain'")).rows[0].reason,'Official verification unavailable');
+ }finally{await db.close();}
+});
+
+test('targeted resume assesses only selected pending evidence and retains all pending coverage',async()=>{
+ const db=await database();
+ try{
+  const tracker=(await db.query("select id from scout.trackers where seed_key='bbnj-trackers-2026-10-01:17'")).rows[0].id;
+  const docs=[];
+  for(const key of ['one','two'])docs.push(await observe(db,tracker,`https://example.org/${key}`,'Interoperability consultation',null,{}, {text:key},{identity:key,rank:2},'2026-10-01T00:00:00Z'));
+  const options={sourceId:docs[1].id,read:async()=>({body:'{"feed":[]}'}),model:async(_instruction,inputs)=>{
+   assert.deepEqual(inputs.map(i=>i.source_id),[docs[1].id]);return [{...result,source_id:docs[1].id}];}};
+  const first=await collectHSA(db,options);assert.equal(first.assessed,1);assert.equal(first.created,1);assert.equal(first.pending,1);assert.equal(first.outcome,'partial');
+  const repeat=await collectHSA(db,{...options,model:async()=>{assert.fail('completed source reassessed');}});assert.equal(repeat.assessed,0);assert.equal(repeat.pending,1);
+  const untouched=(await db.query('select * from scout.evidence where id=$1',[docs[0].id])).rows[0];
+  assert.deepEqual(untouched.parsed,docs[0].parsed);assert.deepEqual(untouched.collected_at,docs[0].collected_at);
+ }finally{await db.close();}
+});
+
+test('configured Bluesky feeds retain separate health, skip repeats and recover one failed feed',async()=>{
+ const db=await database(),feeds=JSON.parse(await readFile(new URL('./fixtures/expansion-feeds.json',import.meta.url),'utf8'));
+ const dosi=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/dosi-roundup-captures.json.gz',import.meta.url))));
+ const trackers=(await db.query("select * from scout.trackers where seed_key in ('bbnj-trackers-2026-10-01:18','bbnj-trackers-2026-10-01:19','bbnj-trackers-2026-10-01:20') order by seed_key")).rows;
+ let calls=0,fail=null;
+ const read=async(url,budget)=>{budget.requests++;const actor=new URL(url).searchParams.get('actor');if(actor && actor===fail)throw new Error('Recorded source unavailable');
+  return {url,headers:{'content-type':'text/html'},body:actor?JSON.stringify(feeds[actor]):url.includes('dosi-deep-sea-round-up')?dosi[0].content:'<p>Supporting context</p>'};};
+ const model=async(_instruction,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,action:'no_substantive_change',candidate:null,priority:'low',quotes:[],reason:'Injected no-finding decision for transport verification'}));};
+ try{
+  for(const tracker of trackers){const first=await collectHSA(db,{trackerId:tracker.id,since:'2026-09-01',read,model});assert.ok(first.assessed>0);assert.equal(first.pending,0);
+   const before=calls;const repeat=await collectHSA(db,{trackerId:tracker.id,since:'2026-09-01',read,model});assert.equal(repeat.outcome,'no_change');assert.equal(calls,before);assert.equal(repeat.candidates,0);}
+  fail='deepstewardship.bsky.social';assert.equal((await collectHSA(db,{trackerId:trackers[0].id,since:'2026-09-01',read,model})).outcome,'failed');
+  assert.equal((await collectHSA(db,{trackerId:trackers[1].id,since:'2026-09-01',read,model})).outcome,'no_change');
+  fail=null;assert.equal((await collectHSA(db,{trackerId:trackers[0].id,since:'2026-09-01',read,model})).outcome,'no_change');
+  assert.equal((await db.query('select count(distinct tracker_id)::int n from scout.collection_runs')).rows[0].n,3);
+  for(const tracker of trackers)assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('actual DOSI captures gate rotating related posts while article, date and newsletter-link changes resume',async()=>{
+ const db=await database(),captures=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/dosi-roundup-captures.json.gz',import.meta.url))));
+ const feeds=JSON.parse(await readFile(new URL('./fixtures/expansion-feeds.json',import.meta.url),'utf8'));
+ let html=captures[0].content,calls=0;
+ const url='https://www.dosi-project.org/dosi-deep-sea-round-up-110/';
+ const read=async(source,budget)=>{budget.requests++;return {url:source,headers:{'content-type':'text/html'},body:source.includes('getAuthorFeed')?JSON.stringify(feeds['deepstewardship.bsky.social']):html};};
+ const model=async(_instruction,inputs)=>{calls+=inputs.length;return inputs.map(i=>({...result,source_id:i.source_id,action:i.url===url?'uncertain':'no_substantive_change',candidate:null,priority:null,quotes:[],reason:'Newsletter details require another hop'}));};
+ try{
+  const tracker=(await db.query("select * from scout.trackers where seed_key='bbnj-trackers-2026-10-01:18'")).rows[0];
+  const options={trackerId:tracker.id,since:'2026-09-24',read,model};
+  await collectHSA(db,options);const baseline=calls;
+  html=captures[1].content;assert.notEqual(html,captures[0].content);
+  const repeat=await collectHSA(db,options);assert.equal(repeat.candidates,0);assert.equal(repeat.skipped,2);assert.equal(repeat.reused_uncertain,1);assert.equal(calls,baseline);
+  assert.equal((await db.query('select content from scout.evidence where url=$1',[url])).rows[0].content,captures[0].content);
+  html=html.replaceAll('This week: Discover new research connecting ocean, climate and biodiversity governance','This week: New technical implementation workshop connecting ocean, climate and biodiversity governance');
+  assert.equal((await collectHSA(db,options)).candidates,1);assert.equal(calls,baseline+1);
+  html=html.replaceAll('https://mailchi.mp/soton.ac.uk/dosi-deep-sea-roundup-01-10-2026','https://mailchi.mp/soton.ac.uk/dosi-deep-sea-roundup-08-10-2026');
+  assert.equal((await collectHSA(db,options)).candidates,1);assert.equal(calls,baseline+2);
+  html=html.replaceAll('1 October 2026','8 October 2026');
+  assert.equal((await collectHSA(db,options)).candidates,1);assert.equal(calls,baseline+3);
+  html=html.replace('id="trx_addons_emotions"','id="layout-changed"');
+  const failed=await collectHSA(db,options);assert.equal(failed.outcome,'partial');assert.equal(failed.candidates,0);assert.equal(calls,baseline+3);assert.ok(failed.warnings.some(w=>w.includes('DOSI article layout unavailable')));
+ }finally{await db.close();}
+});
+
+test('the same finding across configured feeds retains each source without a duplicate or version bump',async()=>{
+ const db=await database();let calls=0;
+ try{
+  const trackers=(await db.query("select * from scout.trackers where seed_key in ('bbnj-trackers-2026-10-01:17','bbnj-trackers-2026-10-01:18') order by seed_key")).rows;
+  const read=async()=>({body:JSON.stringify({feed:[{post:{uri:'at://did:plc:original/app.bsky.feed.post/shared',author:{handle:HSA},indexedAt:'2026-10-01T00:00:00Z',record:{text:'Interoperability consultation',createdAt:'2026-10-01T00:00:00Z'}}}]})});
+  const model=async(_instruction,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,action:i.exact_ids.length?'supporting_evidence':'new',record_id:i.exact_ids[0]??null}));};
+  await collectHSA(db,{trackerId:trackers[0].id,read,model});const original=(await db.query('select * from scout.records')).rows[0];
+  const second=await collectHSA(db,{trackerId:trackers[1].id,read,model});assert.equal(second.created,0);assert.equal(second.changed,0);assert.equal(calls,2);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[original]);assert.equal((await db.query('select count(distinct tracker_id)::int n from scout.evidence where record_id=$1',[original.id])).rows[0].n,2);
+ }finally{await db.close();}
+});
+
+test('recorded HUB calendar uses explicit UTC evidence, gates repeats and preserves records on malformed schedules',async()=>{
+ const db=await database(),recorded=JSON.parse(await readFile(new URL('./fixtures/hub-calendar.json',import.meta.url),'utf8'));
+ let calls=0,malformed=false,supporting=false;let feed=structuredClone(recorded);
+ const read=async(url,budget)=>{budget.requests++;return {url,headers:{},body:url.endsWith('format=json')?JSON.stringify(feed):malformed?'BEGIN:VCALENDAR':feed.calendar};};
+ const model=async(_instruction,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,
+   action:supporting?'supporting_evidence':i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,
+   candidate:{...Object.fromEntries(CONTENT_FIELDS.map(field=>[field,i.scripted[field]??null])),...(supporting?{starts_at:null,ends_at:null,event_url:null,registration_url:null}:{})},quotes:['This practical webinar demonstrates how large language models can help people work with real ocean data in the Ocean Data Platform.']}));};
+ try{
+  const tracker=(await db.query("insert into scout.trackers(name,url,collector,coverage,cadence) values('HUB Ocean events calendar','https://www.hubocean.earth/events-calendar','web','Ocean data and AI training','7 days') returning *")).rows[0];
+  const options={trackerId:tracker.id,since:'2026-09-24',read,model};
+  const first=await collectHSA(db,options);assert.equal(first.created,1,JSON.stringify(first));assert.equal(calls,1);
+  let row=(await db.query('select * from scout.records')).rows[0];assert.equal(row.priority,'high');assert.equal(row.starts_at.toISOString(),'2026-10-22T13:30:00.000Z');assert.equal(row.ends_at.toISOString(),'2026-10-22T14:15:00.000Z');
+  assert.equal(row.organization,'HUB Ocean');assert.equal(row.location,'Online (Teams)');assert.match(row.registration_url,/events.teams.microsoft.com/);
+  const repeat=await collectHSA(db,options);assert.equal(repeat.outcome,'no_change');assert.equal(calls,1);assert.equal(repeat.skipped,1);
+  const source=(await db.query('select * from scout.evidence where record_id=$1',[row.id])).rows[0];
+  await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{assessment,state}','\"pending\"') where id=$1",[source.id]);supporting=true;
+  assert.equal((await collectHSA(db,options)).changed,0);assert.deepEqual((await db.query('select * from scout.records')).rows[0],row);
+  const preserved=(await db.query('select parsed from scout.evidence where id=$1',[source.id])).rows[0].parsed;
+  for(const field of CONTENT_FIELDS)assert.deepEqual(preserved[field],source.parsed[field]);
+  const next=await assessmentInput(db,{...source,parsed:preserved},tracker);
+  for(const field of ['starts_at','ends_at','event_url','registration_url'])assert.deepEqual(next.scripted[field],source.parsed[field]);supporting=false;
+  feed.calendar=feed.calendar.replaceAll('20261022','20261023');feed.upcoming[0].endDate+=86400000;
+  const changed=await collectHSA(db,options);assert.equal(changed.changed,1,JSON.stringify(changed));assert.equal(calls,3);
+  row=(await db.query('select * from scout.records')).rows[0];assert.equal(row.starts_at.toISOString(),'2026-10-23T13:30:00.000Z');assert.equal(row.status,'rescheduled');
+  malformed=true;const failed=await collectHSA(db,options);assert.equal(failed.outcome,'partial');assert.equal(calls,3);assert.deepEqual((await db.query('select * from scout.records')).rows[0],row);
+  feed={unexpected:true};assert.equal((await collectHSA(db,options)).outcome,'failed');assert.deepEqual((await db.query('select * from scout.records')).rows[0],row);
  }finally{await db.close();}
 });
 

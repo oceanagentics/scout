@@ -1,0 +1,385 @@
+{
+  "deepstewardship.bsky.social": {
+    "feed": [
+      {
+        "post": {
+          "uri": "at://did:plc:d2kekyg6gt42ubsdap53shlf/app.bsky.feed.post/3mwtf47wzl72z",
+          "cid": "bafyreif76b6xekrwpnblngmmohdk7y4hrmotnih4xgmtclzxrns4r33l5i",
+          "author": {
+            "did": "did:plc:d2kekyg6gt42ubsdap53shlf",
+            "handle": "deepstewardship.bsky.social",
+            "displayName": "Deep-Ocean Stewardship Initiative",
+            "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:d2kekyg6gt42ubsdap53shlf/bafkreiftxs3lgbwl4gp4tlq3v7k7geby7b4a3qcm4w3nfcf3ez5gfhkp2u",
+            "associated": {
+              "chat": {
+                "allowIncoming": "none",
+                "allowGroupInvites": "none"
+              },
+              "activitySubscription": {
+                "allowSubscriptions": "followers"
+              }
+            },
+            "labels": [],
+            "createdAt": "2024-02-16T19:41:43.140Z"
+          },
+          "record": {
+            "$type": "app.bsky.feed.post",
+            "createdAt": "2026-10-01T17:30:07.755Z",
+            "embed": {
+              "$type": "app.bsky.embed.images",
+              "images": [
+                {
+                  "alt": "",
+                  "aspectRatio": {
+                    "height": 1200,
+                    "width": 1200
+                  },
+                  "image": {
+                    "$type": "blob",
+                    "ref": {
+                      "$link": "bafkreicopqnqpkgjz3qqin63y6car2iga6q6xtxncrvh2tafpqz76mmtfy"
+                    },
+                    "mimeType": "image/png",
+                    "size": 945392
+                  }
+                }
+              ]
+            },
+            "facets": [
+              {
+                "features": [
+                  {
+                    "$type": "app.bsky.richtext.facet#tag",
+                    "tag": "Climate"
+                  }
+                ],
+                "index": {
+                  "byteEnd": 105,
+                  "byteStart": 97
+                }
+              },
+              {
+                "features": [
+                  {
+                    "$type": "app.bsky.richtext.facet#tag",
+                    "tag": "DeepOcean"
+                  }
+                ],
+                "index": {
+                  "byteEnd": 148,
+                  "byteStart": 138
+                }
+              },
+              {
+                "features": [
+                  {
+                    "$type": "app.bsky.richtext.facet#link",
+                    "uri": "https://www.dosi-project.org/dosi-deep-sea-round-up-110/"
+                  }
+                ],
+                "index": {
+                  "byteEnd": 266,
+                  "byteStart": 230
+                }
+              }
+            ],
+            "text": "The latest Deep-Sea Round-Up is here! This week discover new research on: \n🔹Connecting ocean, #Climate and biodiversity governance for #DeepOcean protection and\n🔹The potential and power of blue philanthropy. \n\nRead it here: www.dosi-project.org/dosi-deep-se... \n\n📸 NOAA Ocean Exploration"
+          },
+          "embed": {
+            "images": [
+              {
+                "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:d2kekyg6gt42ubsdap53shlf/bafkreicopqnqpkgjz3qqin63y6car2iga6q6xtxncrvh2tafpqz76mmtfy",
+                "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:d2kekyg6gt42ubsdap53shlf/bafkreicopqnqpkgjz3qqin63y6car2iga6q6xtxncrvh2tafpqz76mmtfy",
+                "alt": "",
+                "aspectRatio": {
+                  "height": 1200,
+                  "width": 1200
+                }
+              }
+            ],
+            "$type": "app.bsky.embed.images#view"
+          },
+          "bookmarkCount": 0,
+          "replyCount": 0,
+          "repostCount": 0,
+          "likeCount": 0,
+          "quoteCount": 0,
+          "indexedAt": "2026-10-01T17:30:13.576Z",
+          "labels": []
+        }
+      }
+    ]
+  },
+  "globalfishingwatch.org": {
+    "feed": [
+      {
+        "post": {
+          "uri": "at://did:plc:2uyb5qno7evcal62puikbs3a/app.bsky.feed.post/3mwdsupqgag2b",
+          "cid": "bafyreidhzpaeo7xqzdxbfk7cw226z5m3twf5r5esontu3n437xelfywi4q",
+          "author": {
+            "did": "did:plc:2uyb5qno7evcal62puikbs3a",
+            "handle": "globalfishingwatch.org",
+            "displayName": "Global Fishing Watch",
+            "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:2uyb5qno7evcal62puikbs3a/bafkreifyh2uepm4i2rzw7glratzxjvl5l22er4v3qxku2kkcajotbkj3ge",
+            "associated": {
+              "chat": {
+                "allowIncoming": "none",
+                "allowGroupInvites": "none"
+              },
+              "activitySubscription": {
+                "allowSubscriptions": "followers"
+              }
+            },
+            "labels": [],
+            "createdAt": "2023-10-16T00:10:33.879Z"
+          },
+          "record": {
+            "$type": "app.bsky.feed.post",
+            "allow": [],
+            "createdAt": "2026-09-25T12:53:52.610095739Z",
+            "embed": {
+              "$type": "app.bsky.embed.external",
+              "captions": [],
+              "external": {
+                "description": "YouTube video by Devex",
+                "thumb": {
+                  "$type": "blob",
+                  "ref": {
+                    "$link": "bafkreiaz4awxoxgjapnovy6tv35zdye3g2pvgqzthtqwqiiibm3vymzs2i"
+                  },
+                  "mimeType": "image/jpeg",
+                  "size": 31281
+                },
+                "title": "The Digital Ocean  Reshaping Ocean Governance through AI and Technology",
+                "uri": "https://www.youtube.com/watch?v=AD25NnMD9rQ"
+              },
+              "images": [],
+              "record": null,
+              "video": null
+            },
+            "facets": [
+              {
+                "features": [
+                  {
+                    "$type": "app.bsky.richtext.facet#mention",
+                    "did": "did:plc:bzbqq3xierqt53aavlcvarby",
+                    "tag": null,
+                    "uri": null
+                  }
+                ],
+                "index": {
+                  "byteEnd": 80,
+                  "byteStart": 53
+                }
+              },
+              {
+                "features": [
+                  {
+                    "$type": "app.bsky.richtext.facet#mention",
+                    "did": "did:plc:i4kytxgsu3yfsrt2ml3o7tgq",
+                    "tag": null,
+                    "uri": null
+                  }
+                ],
+                "index": {
+                  "byteEnd": 104,
+                  "byteStart": 88
+                }
+              },
+              {
+                "features": [
+                  {
+                    "$type": "app.bsky.richtext.facet#tag",
+                    "did": null,
+                    "tag": "ClimateWeekNYC",
+                    "uri": null
+                  }
+                ],
+                "index": {
+                  "byteEnd": 51,
+                  "byteStart": 36
+                }
+              },
+              {
+                "features": [
+                  {
+                    "$type": "app.bsky.richtext.facet#link",
+                    "did": null,
+                    "tag": null,
+                    "uri": "https://www.youtube.com/watch?v=AD25NnMD9rQ"
+                  }
+                ],
+                "index": {
+                  "byteEnd": 303,
+                  "byteStart": 260
+                }
+              }
+            ],
+            "hiddenReplies": [],
+            "text": "🌊 From ocean data to action.\n\nAt #ClimateWeekNYC, @ceo.globalfishingwatch.org joined @ai2.bsky.social Namrata Kolla to explore how AI can reveal hidden activity at sea, support enforcement and accelerate ocean protection.\n\n🎥 Watch the full conversation: https://www.youtube.com/watch?v=AD25NnMD9rQ"
+          },
+          "embed": {
+            "external": {
+              "uri": "https://www.youtube.com/watch?v=AD25NnMD9rQ",
+              "title": "The Digital Ocean  Reshaping Ocean Governance through AI and Technology",
+              "description": "YouTube video by Devex",
+              "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:2uyb5qno7evcal62puikbs3a/bafkreiaz4awxoxgjapnovy6tv35zdye3g2pvgqzthtqwqiiibm3vymzs2i"
+            },
+            "$type": "app.bsky.embed.external#view"
+          },
+          "bookmarkCount": 0,
+          "replyCount": 0,
+          "repostCount": 0,
+          "likeCount": 3,
+          "quoteCount": 0,
+          "indexedAt": "2026-09-25T12:53:53.168Z",
+          "labels": []
+        }
+      }
+    ]
+  },
+  "iddri.bsky.social": {
+    "feed": [
+      {
+        "post": {
+          "uri": "at://did:plc:ih4rj3opefabzzbv5kmaento/app.bsky.feed.post/3muwt6zgpzs2q",
+          "cid": "bafyreih6fbqffullsdukmtqb3jyixtppc5r5lndsbn4wj4v3gao4s2dize",
+          "author": {
+            "did": "did:plc:ih4rj3opefabzzbv5kmaento",
+            "handle": "iddri.bsky.social",
+            "displayName": "IDDRI",
+            "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:ih4rj3opefabzzbv5kmaento/bafkreidj5drrwy7h4lkh5egjkma373fnhv75znoaliamrruxzgvc23lv4a",
+            "associated": {
+              "activitySubscription": {
+                "allowSubscriptions": "followers"
+              }
+            },
+            "labels": [],
+            "createdAt": "2023-11-09T09:52:26.817Z"
+          },
+          "record": {
+            "$type": "app.bsky.feed.post",
+            "createdAt": "2026-09-07T15:29:50.114Z",
+            "embed": {
+              "$type": "app.bsky.embed.images",
+              "images": [
+                {
+                  "alt": "",
+                  "aspectRatio": {
+                    "height": 1200,
+                    "width": 1200
+                  },
+                  "image": {
+                    "$type": "blob",
+                    "ref": {
+                      "$link": "bafkreic644dpycxcylktjzsro72khbiwv6xsw5c53srvmaq6ivnjl4mksi"
+                    },
+                    "mimeType": "image/jpeg",
+                    "size": 1522562
+                  }
+                },
+                {
+                  "alt": "",
+                  "aspectRatio": {
+                    "height": 1200,
+                    "width": 1200
+                  },
+                  "image": {
+                    "$type": "blob",
+                    "ref": {
+                      "$link": "bafkreiaqgrcrysqksx72qrijjqgaa6za3daa4k6nbn5blzgxpsfllak5vq"
+                    },
+                    "mimeType": "image/jpeg",
+                    "size": 309263
+                  }
+                },
+                {
+                  "alt": "",
+                  "aspectRatio": {
+                    "height": 1200,
+                    "width": 1200
+                  },
+                  "image": {
+                    "$type": "blob",
+                    "ref": {
+                      "$link": "bafkreidurxyoqa6xckiygoksab27iav7cnhvlru73u3qzykrvcrxkm3vzi"
+                    },
+                    "mimeType": "image/jpeg",
+                    "size": 438427
+                  }
+                },
+                {
+                  "alt": "",
+                  "aspectRatio": {
+                    "height": 1200,
+                    "width": 1200
+                  },
+                  "image": {
+                    "$type": "blob",
+                    "ref": {
+                      "$link": "bafkreifkvgvjufvo5l4dnh5pkujpzyx3ziavt6eqhw5v2kbb5p5mzcruv4"
+                    },
+                    "mimeType": "image/jpeg",
+                    "size": 321138
+                  }
+                }
+              ]
+            },
+            "langs": [
+              "es"
+            ],
+            "text": "+1.5°C is now considered unavoidable.\n\nThe latest UNEP report shows even the most optimistic scenario reaching 1.8°C.\n\nThe priority now: keep the overshoot as low and short as possible. But this also raises urgent questions of justice: who decides what is protected, rebuilt or left behind?"
+          },
+          "embed": {
+            "images": [
+              {
+                "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:ih4rj3opefabzzbv5kmaento/bafkreic644dpycxcylktjzsro72khbiwv6xsw5c53srvmaq6ivnjl4mksi",
+                "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:ih4rj3opefabzzbv5kmaento/bafkreic644dpycxcylktjzsro72khbiwv6xsw5c53srvmaq6ivnjl4mksi",
+                "alt": "",
+                "aspectRatio": {
+                  "height": 1200,
+                  "width": 1200
+                }
+              },
+              {
+                "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:ih4rj3opefabzzbv5kmaento/bafkreiaqgrcrysqksx72qrijjqgaa6za3daa4k6nbn5blzgxpsfllak5vq",
+                "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:ih4rj3opefabzzbv5kmaento/bafkreiaqgrcrysqksx72qrijjqgaa6za3daa4k6nbn5blzgxpsfllak5vq",
+                "alt": "",
+                "aspectRatio": {
+                  "height": 1200,
+                  "width": 1200
+                }
+              },
+              {
+                "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:ih4rj3opefabzzbv5kmaento/bafkreidurxyoqa6xckiygoksab27iav7cnhvlru73u3qzykrvcrxkm3vzi",
+                "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:ih4rj3opefabzzbv5kmaento/bafkreidurxyoqa6xckiygoksab27iav7cnhvlru73u3qzykrvcrxkm3vzi",
+                "alt": "",
+                "aspectRatio": {
+                  "height": 1200,
+                  "width": 1200
+                }
+              },
+              {
+                "thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:ih4rj3opefabzzbv5kmaento/bafkreifkvgvjufvo5l4dnh5pkujpzyx3ziavt6eqhw5v2kbb5p5mzcruv4",
+                "fullsize": "https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:ih4rj3opefabzzbv5kmaento/bafkreifkvgvjufvo5l4dnh5pkujpzyx3ziavt6eqhw5v2kbb5p5mzcruv4",
+                "alt": "",
+                "aspectRatio": {
+                  "height": 1200,
+                  "width": 1200
+                }
+              }
+            ],
+            "$type": "app.bsky.embed.images#view"
+          },
+          "bookmarkCount": 0,
+          "replyCount": 0,
+          "repostCount": 2,
+          "likeCount": 1,
+          "quoteCount": 0,
+          "indexedAt": "2026-09-07T15:30:10.265Z",
+          "labels": []
+        }
+      }
+    ]
+  }
+}
