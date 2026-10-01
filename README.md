@@ -2,7 +2,7 @@
 
 Scout is Ocean Agentics' planned app for keeping up with BBNJ: treaty ratifications, NGO webinars, official DOALOS announcements, conferences, and side events. It will maintain a central database, surface useful changes in Slack, and make events easy to find with their supporting sources.
 
-The deployed app, remote database, Workspace sign-in, manual HSA collection, and manual Slack delivery are verified. Scheduling and broader collection remain pending. The proof-of-concept target is **$0/month in recurring service fees**.
+The deployed app, remote database, Workspace sign-in, manual HSA collection, and manual Slack delivery are verified. SCOUT-15 is implemented locally and awaits coordinated deployment/review; its four-table migration, model assessment and minimal notifier are not live yet. Scheduling and broader collection remain pending. The proof-of-concept target is **$0/month in recurring service fees**.
 
 ## Original documentation
 
@@ -38,21 +38,20 @@ The Letter mentions an optional weekly email digest; Features currently specifie
 
 Records keep a title, type, organization, description of at most 280 characters, location, event/registration links, supported UTC start/end timestamps and status. Publication and collection timestamps belong to sources. Full text, date-only values and treaty details remain in captured source evidence; records no longer duplicate them in summary, date-only, publication, country, treaty-action, recorded-date or collection columns. `updated_at` remains the record version. Compact `date_evidence` references the schedule and zone captures used to establish a UTC instant; the component values stay in those captures. Calendar generation has been removed.
 
-The schema has **five tables and 59 columns**:
+After pending migration `20261001190000`, the local schema has **four tables and 46 columns**. Production still has five tables/59 columns until the reviewed cutover:
 
 | Table | Columns | Purpose |
 | --- | ---: | --- |
 | `trackers` | 8 | Source configuration: name, URL, coverage, collector, cadence, enabled flag, ID and seed identity. |
 | `collection_runs` | 7 | Collection attempts, outcomes, coverage and statistics, with warnings stored once. |
-| `records` | 16 | Current finding, supported event times, identity and compact evidence references. |
+| `records` | 18 | Current finding, priority, last communication time, supported event times, identity and evidence references. |
 | `evidence` | 13 | Captured content and parsed facts, linked directly to a record and tracker, with source URL and observation times. |
-| `deliveries` | 15 | Exact Slack payloads, comparison snapshots, send state and receipt evidence. |
 
 A tracker defines where to collect; evidence stores what its returned URLs contained; a record holds the current finding supported by those captures. One record can have many captures. Shared captures are copied per record, avoiding a separate source-link table. Captures without a record remain stored. `current_evidence` selects the most recently seen capture for each record/URL, including returns to older content. Capture time, last-seen time and fact-change evidence time remain distinct.
 
 The browser reads current source metadata through `source_details`; raw evidence stays backend-only. `tracker_status` derives attempt/success/outcome/error from runs. These views store no additional data. Trackers have no cadence/configuration notes, cached status, timestamps or next-run field. There is no `memberships` table: backend-controlled Auth app metadata grants admin access to an otherwise eligible Workspace identity.
 
-Source captures and deliveries provide history; there is no separate record-edit log. Exact before/after changes between notifications are not retained. Slack compares current records with the last notification or baseline snapshot. Existing delivery payloads and snapshots remain intact; pending snapshot formats before version 3 require explicit `reprepare`. New snapshots retain only comparison fields, and the aggregate baseline stores only its count.
+Source captures provide history. The pending migration removes deliveries and adds nullable `priority` and `last_communicated_at`; it neither infers priorities nor announces old records. A restricted source projection exposes the latest accepted relevance reason without raw captures. Records filter/order by priority or date, label null priority **Not yet assessed**, and distinguish **Unknown** from **Not applicable**. Notification selection uses the current assessment, dates and communication recency; there are no baseline, receipt, snapshot or replacement tables.
 
 Cards, filters and digest windows use UTC; records store no time zone, creation time or material hash. New parser captures omit duplicate summaries, publication dates and schedule prose while retaining raw content. See [Database deployment](#database-deployment) for the coordinated migration and release status.
 
@@ -74,7 +73,7 @@ Status as of 2026-10-01, matching the Services tab. See [tasks.md](tasks.md) for
 | Supabase Edge Functions | Runs collection in the cloud. | Private `scout-collect-hsa` version 5 deployed and tested; currently triggered manually. |
 | Bluesky public API | Collects High Seas Alliance posts and follows supporting event links. | Working: 12 announcements and one event collected; repeat collection produced no duplicates. |
 | Slack Scout app | Posts findings and digests into [#scout](https://oceanagentics.slack.com/archives/C0C5PE21KN1). | Webhook delivery verified with a finding and a digest. Signing secret saved; answering mentions remains pending. |
-| Gemini API / Google AI Studio | Intended for extraction, summaries, and answering questions, using project `bbnj-chm`. | Free-tier access and a model request verified. Not yet integrated into collection. |
+| Gemini API / Google AI Studio | Intended for extraction, summaries, and answering questions, using project `bbnj-chm`. | Free-tier access and bounded assessment requests verified. Integrated locally; production activation awaits SCOUT-15 review. |
 | Tavily | Intended to discover additional relevant websites and events. | API authentication and the 1,000-credit monthly allowance verified. Discovery integration and paid-use controls remain pending. |
 
 Still to add: Supabase Cron scheduling, automatic daily and weekly Slack delivery, remaining collectors, and Slack questions. Collection and notification schedules are independent; delivery times and time zone still need to be set. Calendar generation has been removed.
@@ -135,11 +134,11 @@ Before the schema cleanup, a real Google sign-in as `danny@oceanagentics.com` lo
 
 ## Database deployment
 
-The shared Supabase project is `chm` (`vhlfumeyhkeospnemukq`), using database `postgres`. Migrations through `20261001180000` are deployed with the matching collector and frontend. The current frontend requires `tracker_status` and `source_details`; it cannot run against the older schema. The notifier remains local-only and applies these migrations to its own database.
+The shared Supabase project is `chm` (`vhlfumeyhkeospnemukq`), using database `postgres`. Migrations through `20261001180000` are deployed with collector v5 and the earlier frontend. Migration `20261001190000`, the matching assessment collector and the priority UI are local pending manager review; do not deploy just one component. The current frontend requires `tracker_status` and `source_details`; it cannot run against the older schema. The notifier remains local-only and applies these migrations to its own database.
 
 On 2026-10-01, migrations `20261001150000` through `20261001180000` passed a rolled-back live rehearsal, then applied in one transaction. All ten remote migration bodies match local SQL. The cleanup reshaped all 12 existing records, shortened ten descriptions to at most 280 characters, and preserved all 25 trackers and 14 original captures. The hosted schema now has five tables/59 columns. Other-schema objects, policies and default grants are unchanged.
 
-All 37 local tests and the production build pass. A rolled-back transaction using the existing verified Workspace identity confirmed reader access to records, derived tracker status and source metadata, zero tracker writes, and no raw-evidence/delivery access. Anonymous API requests return 401. The deployed admin check uses backend-controlled app metadata, ignores editable user metadata, and has no provisioned admins. The new login shell and exact deployed asset bytes are verified; the user is handling the signed-in dashboard check.
+The previous deployed cleanup passed its 37 tests/build. SCOUT-15 verification and the bounded reset/deployment plan are recorded under SCOUT-15 in tasks.md. A rolled-back transaction using the existing verified Workspace identity confirmed reader access to records, derived tracker status and source metadata, zero tracker writes, and no raw-evidence/delivery access. Anonymous API requests return 401. The deployed admin check uses backend-controlled app metadata, ignores editable user metadata, and has no provisioned admins. The new login shell and exact deployed asset bytes are verified; the user is handling the signed-in dashboard check.
 
 The user confirmed on 2026-10-01 that `chm` is on Free with no paid add-ons. This resolves the plan prerequisite; the denied organization/add-on reads need no retry or broader token scopes. Before later remote changes, inspect remaining capacity, schemas, default grants, exposed schemas and full migration history. Never reset the remote project or repair another service's migration history merely to allow Scout's deployment. The foundation migration refuses an existing `scout` schema or global client table defaults that would undermine private future tables.
 
@@ -181,23 +180,25 @@ npm run collect:hsa
 npm run collect:hsa -- --since=2026-09-01
 ```
 
-This command uses persistent local PostgreSQL at `.cache/hsa-database`, applies the local migrations/seed, and collects only the configured HSA Bluesky tracker. It cannot connect to the hosted database and needs no service credentials. A process lock protects the local database; after an interrupted process, confirm it has stopped before removing `.cache/hsa-collector.lock`. This development database uses minimal Auth fixtures; it is not a hosted Supabase environment.
+This command uses persistent local PostgreSQL at `.cache/hsa-database`, applies local migrations/seed, and fetches the HSA tracker. Without a model it stores pending assessments and reports partial coverage. Add `--assess` to use the existing `GEMINI_API_KEY` and `SUPABASE_ACCESS_TOKEN` from ignored `.env.local`: records remain local, but reservations go to the hosted Scout ledger, sharing the production allowance. A process lock protects the local database. This local Auth fixture is not hosted Supabase.
 
-The default window is the previous 30 days, using feed/repost indexing time for coverage and original publication time for evidence ordering. The collector requests at most two feed pages of 25 posts, follows up to two event/registration links per post and six pages per run, allows three redirects per request, and caps the total at 24 HTTP requests. Every request uses `BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)`. HTTPS/DNS checks reject private destinations; responses are limited to 512 KiB, each request to 12 seconds, and the run checks a 120-second budget before starting another request. No retries, models, Tavily, or paid APIs are used.
+The default window is 30 days; later fresh production collection should use the bounded window in tasks.md. Feed limits remain two pages of 25 posts, two supporting links per post, six pages, three redirects, 24 requests, 512 KiB/response and 12 seconds/request within 120 seconds locally or 100 seconds hosted. The explicit User-Agent and HTTPS/socket-level DNS checks remain. Technical/official links are followed even when the parent post is unchanged. PDFs, quoted posts and unresolved multi-event pages remain explicit coverage limits. Tavily is unused.
 
-BBNJ records store source excerpts of at most 280 characters; source captures retain the full text. Events use stable event/registration URLs where available; other posts use their Bluesky identity. Structured JSON-LD event data and the observed Zoom registration metadata supply explicit dates. Date-only evidence stays in captures and never becomes an invented UTC timestamp. For the observed HSA format `29 Sept, 7:30 AM EDT`, the collector combines the post's zone with Zoom's full date only when the event URL, month/day, and wall time agree. `date_evidence` keeps only the `schedule_source` and `zone_source` evidence IDs; disagreements report the exact conflicting values and remain partial. Missing evidence stays unknown. Quoted posts are not expanded. This is bounded HSA coverage, not a general website collector or semantic cross-post merger.
+The `hsa-v4` gate compares normalized text, author, links and structured facts before model work, retaining hashes per field and changed-field names. Whitespace, tracking parameters and page scripts do not create captures. A→B→A reuses A's capture but reassesses the transition. Full captures remain reconstructable; unchanged content produces no new evidence or record versions. Pending/uncertain work resumes independently of fetch changes. Assessment-version changes do not silently reprocess completed sources; explicitly mark selected current evidence pending before a deliberate reprocessing run.
 
-Captures are stored in `scout.evidence` and survive separate runs. Unchanged posts reuse extraction; event pages are checked again for corrections and compared by extracted facts so changing page scripts do not create updates. The `hsa-v3` fingerprint prefix identifies the current parser's cache. HSA-authored posts and organizer/registration pages are authoritative. A page's first snapshot has unknown publication chronology and cannot reverse an explicit HSA correction; subsequent changes in its facts receive an evidence observation time. Re-fetching unchanged facts preserves that evidence time. Newer authoritative corrections can replace older ones; old third-party reposts cannot. Compatible date-only observations preserve a supported timestamp. Cosmetic edits do not create a new event or material change.
+Assessment uses bounded useful text (including changed text beyond a long HTML head), deterministic extraction, tracker coverage and up to three candidate records. Requests batch at most two independent sources, splitting when the input bound requires it. Sources are data, not instructions. Every applicable field must be present with a supported value or explicit null; blank/omitted keys, unsupported dates/URLs, invalid identity choices and unverified treaty changes are rejected. A first-batch possible duplicate remains pending for a refreshed shortlist. Sessions/editions sharing a URL stay distinct. Unknown facts preserve established facts; explicit supported withdrawals pass authority checks before clearing them. Relevance is accepted separately from fact authority: weaker evidence can change priority without overwriting an authoritative cancellation or date.
 
-Evidence history is retained across runs. Slack compares current records against delivery snapshots; collection does not send notifications.
+Priorities follow the approved rubric: technical ChM/implementation work and verified important official changes high; other substantive BBNJ events/announcements normal; generic advocacy/incidental content low. No keyword gate excludes technical work. Priority/reason/fingerprint/version/state live in the record and evidence; no assessment table is added. The existing HSA/Zoom date combination and chronology checks remain, with date-only or conflicting evidence kept unknown.
 
-The command prints its coverage window, outcome, counts, and limitations. Exit code 2 means `partial`, `failed`, or `quota`; existing records are preserved. Only fully successful runs, including `no_change`, contribute to the derived `last_success_at`. A remaining feed cursor at the page bound, unavailable/unsupported pages, quoted content, or incomplete registration metadata keeps the result partial. Scheduling remains later work.
+Gemini uses the verified free model `gemini-3.5-flash-lite`, [structured JSON output](https://ai.google.dev/gemini-api/docs/generate-content/structured-output?hl=en), and minimal thinking. Caps are two attempts/minute, ten/run, twenty/Pacific day, 8,000 input tokens and 1,024 output tokens/request; UTF-8 request bytes conservatively bound input tokens. One transient 5xx retry counts toward every cap; transport/quota failures are not automatically retried. Reservations commit in `collection_runs.stats.model_attempts` before network I/O and survive crashes, record rollbacks and record resets. Actual returned usage is recorded separately. Local and hosted execution must use the same hosted ledger. Missing credentials/accounting fail closed.
+
+The command reports observed candidates, skipped repeats, assessed/pending sources, record effects, requests and warnings. Pending/unsupported/failed coverage remains partial or quota, not `no_change`. Only fully consumed successful runs advance successful collection health; accounting-only runs are excluded. Collection never sends Slack messages.
 
 ### Hosted manual collection
 
 The private `scout-collect-hsa` Edge Function runs HSA collection against hosted `chm.scout`. Send an empty `POST` to `https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-collect-hsa?since=2026-09-01`, with the project's named `default` secret key in the `apikey` header. Omit `since` for the previous 30 days. Read the JSON `outcome`; HTTP 200 alone does not mean source coverage succeeded. Keep this credential in the backend; a PAT, publishable key, or ordinary user JWT is not collector authorization. No browser invocation or generic SQL endpoint is exposed.
 
-`supabase/config.toml` disables the legacy platform JWT check only for this function. The documented [Supabase secret authentication](https://supabase.com/docs/guides/functions/auth) primitive verifies `secret:default` before database or source work. The platform's [injected `SUPABASE_DB_URL`](https://supabase.com/docs/guides/functions/secrets) supplies PostgreSQL access. One transaction and advisory lock prevent overlapping runs; per-record savepoints preserve the existing collector interface. A process/connection failure rolls back that transaction; an HTTP 500 therefore requires inspection before another manual run. Source failures that the collector handles remain stored outcomes. There is no scheduler or retry framework.
+`supabase/config.toml` disables the legacy platform JWT check only for this function. The documented [Supabase secret authentication](https://supabase.com/docs/guides/functions/auth) primitive verifies `secret:default` before database or source work. The platform's [injected `SUPABASE_DB_URL`](https://supabase.com/docs/guides/functions/secrets) supplies PostgreSQL access. The pending implementation reserves one PostgreSQL session and holds an advisory lock for the run. Individual record transactions roll back independently; evidence, the run and pre-call model reservations commit separately. An interrupted HTTP 500 requires inspection of the persisted run/pending work. The deployed v5 still uses its earlier outer transaction until coordinated deployment. There is no scheduler or retry framework.
 
 The hosted collection deadline is 100 seconds, each source request has at most 12 seconds and 512 KiB, and database statements have a five-second timeout. This leaves headroom within the [Free worker limits](https://supabase.com/docs/guides/functions/limits). Undici's socket connector retains the checked DNS addresses, TLS hostname verification, explicit User-Agent, and manual redirect validation. This replaces the Node HTTP request hook that the deployed Edge runtime does not implement; no plain fetch/DNS-check gap is introduced. The PostgreSQL adapter accepts both existing serialized JSON parameters and JSON objects without encoding them twice.
 
@@ -215,41 +216,22 @@ For local browser review, run `npm run dev` and open `/` on its printed localhos
 
 ## Manual Slack delivery
 
-The local notifier shares the collector database and process lock. It applies versioned local migrations, without collection or remote database writes. Run collection first, then explicitly baseline the historical records once. Repeating the baseline preserves later records' notification eligibility. Preparing a message stores its exact JSON payload and record/version evidence without sending:
+The manual backend command shares the collector's local process lock. It reads local records by default; `--hosted` reads/writes hosted Scout records using the existing Management API token after the pending migration is deployed. Credentials remain in ignored `.env.local`; the browser cannot invoke it. Both modes reserve Gemini usage in the same hosted ledger.
 
 ```sh
-npm run notify -- baseline
-npm run notify -- findings
-npm run notify -- digest 2026-10-01 2026-10-07
-npm run notify -- show DELIVERY_ID
-# After reviewing that stored payload:
-npm run notify -- send DELIVERY_ID
+# Review an ephemeral selection/payload; no Slack post:
+npm run notify -- --hosted findings
+npm run notify -- --hosted digest 2026-10-01 2026-10-07
+# Only when an actual send is authorized:
+npm run notify -- --hosted send-findings
+npm run notify -- --hosted send-digest 2026-10-01 2026-10-07
 ```
 
-`findings` prepares at most five new/material record versions per run, with source links and before/after details for changes. `verification RECORD_ID` prepares one fixed, clearly labelled historical example for milestone-1 verification. Digests are labelled manual verification, use inclusive UTC dates, and include upcoming/in-progress events plus a separate section for records without supported timestamps. Cancelled/past events are excluded; dates without a time and zone cannot qualify for the dated section. A window may span at most 32 days. Messages show at most five dated and three unknown events with explicit counts and collection coverage. Repeating a window or verification request returns its latest explicitly prepared payload. Changed/expired prepared evidence fails before sending; completed requests never repost.
+The agent considers at most ten eligible records and chooses at most five. High-priority findings and corrections to previously communicated events are ordered before limits. Digest candidates are high/normal upcoming/in-progress events in an inclusive UTC window of at most 32 days; unknown dates remain explicitly unknown and cancellations are excluded. An unchanged high-priority event within seven days can be considered for a reminder after 24 hours without communication; this is eligibility for agent judgment, not a schedule or automatic send. Ordinary repeats are excluded; the agent may choose nothing.
 
-If a delivery fails with `Prepared evidence changed or expired; no message sent.` and has **zero attempts**, explicitly prepare its replacement, inspect the returned new ID, then send it separately:
+Messages include supported facts, assessment reasons, source links and real `?record=ID` links. Missing applicable values are Unknown; event fields on other kinds are Not applicable. Source prose uses plain-text blocks and links disable mention parsing/unfurling. The webhook remains bound to the confirmed Scout installation in [#scout](https://oceanagentics.slack.com/archives/C0C5PE21KN1).
 
-```sh
-npm run notify -- reprepare STALE_DELIVERY_ID
-npm run notify -- show NEW_DELIVERY_ID
-# After reviewing the new current payload:
-npm run notify -- send NEW_DELIVERY_ID
-```
-
-This handles newly collected events in the same digest window and findings whose facts or event timing changed before sending. The original failed row, key, payload and snapshot remain unchanged; the new snapshot records `replaces`. Repeating recovery of an old ID returns its existing latest replacement. If that replacement also expires without an attempt, use its ID to explicitly prepare again. Normal window/verification requests follow these links, and findings suppress versions already represented by a replacement. Recovery rejects pending, baseline, sending, unknown, sent and any attempted delivery, including definite 4xx failures. It never sends automatically, replaces an uncertain outcome or resets an attempt count. Another existing delivery for the current record version must be reviewed instead of creating a duplicate.
-
-Only `send` loads `.env.local`; `SLACK_WEBHOOK_URL` must match the existing Ocean Agentics workspace/Scout installation bound to [#scout](https://oceanagentics.slack.com/archives/C0C5PE21KN1). No other token or scope is needed. Source prose uses plain-text blocks; links disable mention parsing and unfurling. The notifier still contains its earlier hosted-access-pending wording; updating that and adding appropriate hosted actions remain SCOUT-06 review work now that Workspace access is live. No synthetic hosted route is advertised.
-
-Delivery state is separate from collection. The notifier records `sending` and increments attempts before network I/O. HTTP 200 with `ok` records webhook acceptance (`sent`), not an independently inspected receipt. Only a definite HTTP 429 permits one retry, respecting `Retry-After` up to 30 seconds; attempts are capped at two. Other 4xx responses are terminal failures. Network errors, timeouts, 5xx/unexpected responses and interrupted `sending` attempts become `unknown`, requiring inspection instead of automatic resend. Requests have a 12-second timeout and a 4 KiB response bound; sends are spaced by at least one second. See Slack's [webhook response guidance](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/) and [rate limits](https://docs.slack.dev/apis/web-api/rate-limits/).
-
-Inspect #scout for the unique `Delivery UUID` footer. When a matching message is confirmed, persist its Slack timestamp and the inspection evidence:
-
-```sh
-npm run notify -- receipt DELIVERY_ID 1790856000.123456 "Read matching UUID and source content in #scout."
-```
-
-This can reconcile `unknown`/interrupted sends or attach receipt evidence to an accepted send. Absence from a limited history read is not proof of non-delivery. There is deliberately no automatic retry command for failed/uncertain deliveries; `reprepare` is limited to the zero-attempt stale rejection described above. Attempted failures retain the manual-review limitation. The historical baseline and exact payload snapshots are backend-only under the existing delivery RLS; the browser cannot read or invoke this local notifier. This is manual local delivery, not hosted execution or scheduling.
+Only HTTP 200/`ok` updates `last_communicated_at`, using database time and only the versions actually included. It does not change material `updated_at`. Record links preserve their selected UUID through Google sign-in without changing the approved OAuth callback. A stale preview is rejected before sending; failures and uncertain outcomes leave timestamps unchanged, with no automatic retries. Duplicate suppression is best-effort after an interrupted send: inspect Slack before manually attempting again. There are no stored payloads, baseline/replacement chains or receipt commands. No new live Slack sends or scheduling are authorized in the SCOUT-15 checkpoint.
 
 ## Hosting deployment
 
@@ -259,4 +241,4 @@ Scout uses Firebase Spark project `ryustatic`, site `bbnj-scout`, deployment tar
 firebase deploy --project ryustatic --only hosting:scout
 ```
 
-The predeploy step builds `dist`. Deployment uses the documented [Hosting REST API](https://firebase.google.com/docs/hosting/api-deploy) and the saved Firebase login, refreshed in memory. After user reauthentication, the five-table frontend was released on 2026-10-01 as `sites/bbnj-scout/releases/1790882919308000`, version `e863491667652e73` (three compressed files, 61,958 bytes). All three live assets exactly match `dist` and retain the configured security headers. Shared capacity was checked and billing remains disabled; Ryu release `sites/ryustatic/releases/1790266049490000` is unchanged. The user is verifying the signed-in dashboard.
+The predeploy step builds `dist`. Deployment uses the documented [Hosting REST API](https://firebase.google.com/docs/hosting/api-deploy) and the saved Firebase login, refreshed in memory. After user reauthentication, the five-table frontend was released on 2026-10-01 as `sites/bbnj-scout/releases/1790882919308000`, version `e863491667652e73` (three compressed files, 61,958 bytes). At that deployment, all three live assets matched its build and retained the configured security headers; the current local build has newer SCOUT-15 changes. Shared capacity was checked and billing remains disabled; Ryu release `sites/ryustatic/releases/1790266049490000` is unchanged. The user is verifying the signed-in dashboard.

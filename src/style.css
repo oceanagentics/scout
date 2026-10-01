@@ -13,7 +13,7 @@ p { line-height: 1.6; }
 #status { color: #567069; }
 form { max-width: 420px; }
 label { display: block; margin: 20px 0; font-size: .9rem; font-weight: 600; }
-input { display: block; width: 100%; margin-top: 8px; padding: 12px; font: inherit; border: 1px solid #a5b8b0; border-radius: 5px; }
+input, select { display: block; width: 100%; margin-top: 8px; padding: 12px; font: inherit; border: 1px solid #a5b8b0; border-radius: 5px; background: #fff; }
 button { background: #185c4a; color: white; border: 0; border-radius: 5px; padding: 12px 20px; font: inherit; cursor: pointer; }
 button:disabled { opacity: .55; cursor: wait; }
 a { color: #185c4a; }

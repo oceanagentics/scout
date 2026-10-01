@@ -9,9 +9,11 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
   }]));
   const previousWindow = globalThis.window;
   const storage = new Map([['scout-auth', 'test session'], ['scout-auth-code-verifier', 'test verifier']]);
+  const record = '11111111-1111-4111-8111-111111111111';
   let authChanged, role = null, renders = 0, closeCount = 0, oauth, redirected, finishSignOut;
-  globalThis.window = { location: { origin: 'https://bbnj-scout.web.app', replace(path) { redirected = path; } },
-    sessionStorage: { removeItem(key) { storage.delete(key); } } };
+  globalThis.window = { location: { origin: 'https://bbnj-scout.web.app', href: 'https://bbnj-scout.web.app/', search: '?record=https://example.com', replace(path) { redirected = path; } },
+    history: { replaceState(_state, _title, url) { window.location.href = String(url); window.location.search = url.search; } },
+    sessionStorage: { removeItem(key) { storage.delete(key); }, getItem(key) { return storage.get(key) ?? null; }, setItem(key, value) { storage.set(key, value); } } };
   const client = { rpc: async name => { assert.equal(name, 'access_role'); return { data: role }; }, auth: {
     onAuthStateChange(callback) { authChanged = callback; },
     signInWithOAuth: async options => { oauth = options; return { error: null }; },
@@ -29,12 +31,20 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
     assert.equal(oauth.provider, 'google');
     assert.equal(oauth.options.redirectTo, 'https://bbnj-scout.web.app/');
     assert.equal(oauth.options.queryParams.hd, 'oceanagentics.com');
+    assert.equal(storage.has('scout-record'), false); // A selection is a UUID, never a redirect destination.
+    window.location.search = `?record=${record}`;
+    await nodes['sign-in'].events.submit({ preventDefault() {} });
+    assert.equal(storage.get('scout-record'), record);
+    assert.equal(oauth.options.redirectTo, 'https://bbnj-scout.web.app/'); // Keep the exact approved callback.
+    window.location.search = '?code=test'; window.location.href = 'https://bbnj-scout.web.app/?code=test';
     authChanged('SIGNED_IN', session); await tick();
     assert.equal(renders, 0); // Forged browser metadata is ignored.
     assert.equal(nodes.workspace.hidden, true);
     role = 'reader'; authChanged('SIGNED_IN', session); await tick();
     assert.equal(renders, 1);
     assert.equal(nodes.workspace.textContent, 'private findings');
+    assert.equal(new URL(window.location.href).searchParams.get('record'), record);
+    assert.equal(storage.has('scout-record'), false);
     let resolveAccess;
     client.rpc = () => new Promise(resolve => { resolveAccess = resolve; });
     authChanged('TOKEN_REFRESHED', session);

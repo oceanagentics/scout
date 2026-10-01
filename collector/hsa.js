@@ -4,13 +4,13 @@ import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
 import { isIP } from 'node:net';
 import { isDeepStrictEqual } from 'node:util';
+import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTENT_FIELDS, normalize, visibleText, ASSESSMENT_VERSION } from './assessment.js';
 
 export const HSA = 'highseasalliance.bsky.social';
 export const USER_AGENT = 'BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)';
 export const LIMITS = { feedPages: 2, postsPerPage: 25, pages: 6, redirects: 3, requests: 24, bytes: 524288, seconds: 120 };
 const hash = value => createHash('sha256').update(value).digest('hex');
 const normalized = value => value.normalize('NFKC').replace(/\s+/g, ' ').trim();
-const relevant = text => /bbnj|high\s*seas(?:\s*treaty)?|haute mer/i.test(text.normalize('NFKC'));
 const eventPost = text => /webinar|register|registration|rescheduled|cancelled|canceled/i.test(text) && !/expression.?s? of interest|call for (?:proposals|EOI)/i.test(text);
 
 function publicAddress(address) {
@@ -27,6 +27,7 @@ export function sourceURL(value) {
   if (isIP(url.hostname.replaceAll(/[\[\]]/g, '')) || !url.hostname.includes('.')) throw new Error('Source must use a public hostname');
   url.hash = '';
   for (const key of [...url.searchParams.keys()]) if (/^utm_|^(fbclid|gclid)$/i.test(key)) url.searchParams.delete(key);
+  url.searchParams.sort();
   return url.href;
 }
 
@@ -97,12 +98,11 @@ function postDates(text) {
 function links(post) {
   const values = (post.record.facets ?? []).flatMap(facet => facet.features ?? []).filter(feature => feature.$type === 'app.bsky.richtext.facet#link').map(feature => feature.uri);
   if (post.embed?.external?.uri) values.push(post.embed.external.uri);
-  return [...new Set(values.map(value => { try { return sourceURL(value); } catch { return null; } }).filter(Boolean))];
+  return [...new Set(values.map(value => { try { return sourceURL(value); } catch { return null; } }).filter(Boolean))].sort();
 }
 
 function postRecord(post, urls) {
   const text = post.record.text;
-  if (!relevant(text)) return null;
   const kind = eventPost(text) ? 'event' : 'announcement';
   const eventURL = urls.find(url => /webinar\/register|\/events?\/|\/webinars?\/|registration/i.test(new URL(url).pathname));
   const registration = urls.find(url => /register|registration/i.test(new URL(url).pathname));
@@ -176,27 +176,28 @@ function structuredEvents(html, pageURL) {
   };
 }
 
-const fields = ['kind', 'title', 'organization', 'description', 'location', 'event_url', 'registration_url', 'starts_at', 'ends_at', 'status', 'date_evidence'];
+const fields = [...CONTENT_FIELDS, 'date_evidence', 'priority'];
 function material(record) {
-  const names = record.kind === 'event' ? ['kind', 'organization', 'location', 'event_url', 'registration_url', 'start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone', 'status'] : ['kind', 'description'];
+  const names = [...CONTENT_FIELDS, 'priority', 'start_on', 'end_on', 'time_zone'];
   const values = names.map(name => typeof record[name] === 'string' ? normalized(record[name]).toLowerCase() : record[name] ?? null);
   if (record.local_schedule) values.push(record.local_schedule);
   return hash(JSON.stringify(values));
 }
 
-async function version(db, tracker, url, content, publishedAt, parse, fingerprint = content) {
-  const digest = `hsa-v3:${hash(fingerprint)}`;
-  const old = (await db.query('select * from scout.evidence where tracker_id=$1 and url=$2 and content_hash=$3 order by collected_at,id limit 1', [tracker, url, digest])).rows[0];
-  if (old) return old;
-  const parsed = parse();
-  return (await db.query('insert into scout.evidence (tracker_id,url,content_hash,content,published_at,parsed) values ($1,$2,$3,$4,$5,$6) returning *', [tracker, url, digest, content, publishedAt, JSON.stringify(parsed)])).rows[0];
-}
-
 async function save(db, identity, source, rank, observedAt, stats) {
-  const record = source.parsed;
+  let record = source.parsed;
   let existing = (await db.query('select * from scout.records where identity_key=$1', [identity])).rows[0];
   if (existing) {
     for (const field of ['starts_at', 'ends_at']) if (existing[field] instanceof Date) existing[field] = existing[field].toISOString();
+    const prior=source.parsed.source?.previous_id && (await db.query('select parsed from scout.evidence where id=$1',[source.parsed.source.previous_id])).rows[0]?.parsed;
+    if (prior) {
+      // A description edit cannot repeat an unchanged old schedule over a correction.
+      record={...record};
+      for (const field of [...CONTENT_FIELDS.filter(f=>f!=='kind'),'start_on','end_on','time_zone']) {
+        if (['start_on','starts_at','ends_at','time_zone'].includes(field) && !isDeepStrictEqual(prior.local_schedule,record.local_schedule)) continue;
+        if (isDeepStrictEqual(normalize(prior[field]),normalize(record[field]))) record[field]=null;
+      }
+    }
   }
   if (!record && !existing) return;
   // A shared capture belongs to each record independently. Reload ownership
@@ -223,7 +224,7 @@ async function save(db, identity, source, rank, observedAt, stats) {
   // First page snapshots have unknown chronology. Only a change in their facts
   // starts a new evidence time, including a return to an older source version.
   const priorFacts = previous?.parsed ?? (established?.url === source.url ? established.parsed : null);
-  const evidenceAt = source.published_at ?? (record && priorFacts && /^hsa-v[23]:/.test(previous?.content_hash) && material(priorFacts) !== material(record)
+  const evidenceAt = source.parsed.source?.previous_id ? observedAt : source.published_at ?? (record && priorFacts && /^hsa-v[234]:/.test(previous?.content_hash) && material(priorFacts) !== material(record)
     ? observedAt : previous?.evidence_at ?? null);
   const baseline = !source.published_at && !evidenceAt;
   const accepted = record && (!existing || rank > existing.evidence_rank || (rank === existing.evidence_rank && (baseline || !existing.evidence_at || Date.parse(evidenceAt) >= Date.parse(existing.evidence_at))));
@@ -231,6 +232,7 @@ async function save(db, identity, source, rank, observedAt, stats) {
   merged.date_evidence ??= {};
   if (merged.description && Array.from(merged.description).length > 280) merged.description = Array.from(merged.description).slice(0, 279).join('').trimEnd() + '…';
   if (accepted) {
+    for (const field of record.assessment?.clear_fields ?? []) merged[field] = null;
     if (baseline && existing?.evidence_rank === 2) merged.status = existing.status ?? record.status;
     // A newly evidenced date replaces the prior representation, including date-only/timed changes.
     const offset = schedule?.time_zone?.match(/^([+-])(\d{2}):(\d{2})$/);
@@ -283,10 +285,12 @@ async function save(db, identity, source, rank, observedAt, stats) {
     const recordRank = accepted ? rank : existing.evidence_rank;
     if (!existing || digest !== material(existing)) {
       if (existing) {
-        existing = (await db.query(`update scout.records set ${fields.map((field, index) => `${field}=$${index + 1}`).join(',')}, evidence_rank=$12,evidence_at=$13 where id=$14 returning *`, [...fields.map(field => merged[field]), recordRank, recordEvidenceAt, existing.id])).rows[0];
+        const changed = fields.filter(field => !isDeepStrictEqual(merged[field], existing[field]));
+        const updates = [...changed, 'evidence_rank', 'evidence_at'];
+        existing = (await db.query(`update scout.records set ${updates.map((field, index) => `${field}=$${index + 1}`).join(',')} where id=$${updates.length+1} returning *`, [...changed.map(field => merged[field]), recordRank, recordEvidenceAt, existing.id])).rows[0];
         stats.changed++;
       } else {
-        existing = (await db.query(`insert into scout.records (${fields.join(',')},identity_key,evidence_rank,evidence_at) values (${Array.from({ length: 14 }, (_, i) => `$${i + 1}`).join(',')}) returning *`, [...fields.map(field => merged[field]), identity, recordRank, recordEvidenceAt])).rows[0];
+        existing = (await db.query(`insert into scout.records (${fields.join(',')},identity_key,evidence_rank,evidence_at) values (${Array.from({ length: fields.length+3 }, (_, i) => `$${i + 1}`).join(',')}) returning *`, [...fields.map(field => merged[field]), identity, recordRank, recordEvidenceAt])).rows[0];
         stats.created++;
       }
     } else {
@@ -295,18 +299,19 @@ async function save(db, identity, source, rank, observedAt, stats) {
   }
   await db.query('update scout.evidence set record_id=$2,last_seen_at=clock_timestamp(),authoritative=$3,evidence_at=$4 where id=$1',
     [source.id, existing.id, rank === 2, evidenceAt]);
-  return dateWarning;
+  return {warning:dateWarning,recordId:existing.id,sourceId:source.id};
 }
 
-export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000 } = {}) {
+export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000, model, makeModel } = {}) {
   if (!Number.isFinite(Date.parse(since))) throw new Error('A valid coverage start is required');
   const tracker = (await db.query("select * from scout.trackers where seed_key='bbnj-trackers-2026-10-01:17'")).rows[0];
   if (!tracker?.enabled) throw new Error('HSA tracker is missing or paused');
   if (tracker.url !== `https://bsky.app/profile/${HSA}` || tracker.collector !== 'bluesky_feed') throw new Error('HSA tracker configuration changed; review before collecting');
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at) values ($1,$2,$3) returning id', [tracker.id, since, started])).rows[0];
-  const stats = { created: 0, changed: 0, posts: 0, pages: 0, warnings: [] };
+  const stats = { created: 0, changed: 0, posts: 0, pages: 0, candidates: 0, skipped: 0, assessed: 0, warnings: [] };
   const budget = { requests: 0, deadline: Math.min(deadline, Date.now() + LIMITS.seconds * 1000) };
+  model ??= makeModel?.(run.id,budget.deadline);
   const pages = new Map();
   const dateWarnings = new Map();
   let cursor, covered = false, quota = false, feedFailed = false;
@@ -333,13 +338,13 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         if (!uri) { stats.warnings.push('Skipped invalid post identity'); continue; }
         const postURL = `https://bsky.app/profile/${uri[1]}/post/${uri[2]}`;
         const content = JSON.stringify({ text: post.record.text, author: { handle: post.author.handle, displayName: post.author.displayName ?? null }, createdAt: post.record.createdAt, urls });
-        const doc = await version(db, tracker.id, postURL, content, post.record.createdAt, () => postRecord(post, urls));
+        const scripted = postRecord(post, urls);
+        const doc = await observe(db, tracker.id, postURL, content, post.record.createdAt, scripted,
+          { text:post.record.text.replace(/https:\/\/[^\s]+/g,value=>{try{return sourceURL(value);}catch{return value;}}), author:post.author.handle, organizer:post.author.displayName??null, urls, createdAt:post.record.createdAt },
+          {rank:post.author.handle === HSA ? 2 : 0, identity:`post:${post.uri}`}, now());
+        stats[doc.changed ? 'candidates' : 'skipped']++;
         if (post.embed?.$type?.includes('record')) stats.warnings.push('Quoted post content is not expanded');
-        if (!doc.parsed) continue;
-        const identity = doc.parsed.kind === 'event' && doc.parsed.event_url ? `event:${doc.parsed.event_url}` : `post:${post.uri}`;
-        dateWarnings.set(identity, await db.transaction(tx => save(tx, identity, doc, post.author.handle === HSA ? 2 : 0, post.record.createdAt, stats)));
-        // Only event/registration references need follow-up pages in this HSA collector.
-        if (doc.parsed.kind !== 'event') continue;
+        // Supporting technical/official links are checked even on unchanged posts.
         if (urls.length > 2) stats.warnings.push('Post link limit reached');
         const follow = [...new Set([doc.parsed.registration_url, doc.parsed.event_url, ...urls].filter(Boolean))];
         for (const url of follow.slice(0, 2)) {
@@ -351,18 +356,22 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
               if (!/text\/html/i.test(fetched.headers['content-type'] ?? '')) throw new Error('Unsupported page format');
               const parsed = structuredEvents(fetched.body, fetched.url);
               const authoritative = new URL(fetched.url).hostname.replace(/^www\./, '') === 'highseasalliance.org' || (post.author.handle === HSA && url === doc.parsed.registration_url);
-              const source = await version(db, tracker.id, fetched.url, fetched.body, null, () => parsed, parsed ? JSON.stringify(parsed) : fetched.body);
+              const text = visibleText(fetched.body);
+              const pageLinks=[...new Set([...fetched.body.matchAll(/\bhref\s*=\s*["']([^"']+)["']/gi)].map(match=>{
+                try{return sourceURL(new URL(match[1].replaceAll('&amp;','&'),fetched.url).href);}catch{return null;}
+              }).filter(Boolean))].sort();
+              const meaningful = {text:normalized(text), structured:parsed, links:pageLinks};
+              const source = await observe(db, tracker.id, fetched.url, fetched.body, null, parsed, meaningful,
+                {rank:authoritative?2:0, identity:`page:${fetched.url}`,links:pageLinks.slice(0,10)}, now());
+              stats[source.changed?'candidates':'skipped']++;
               pages.set(url, { source, authoritative, observedAt: now() });
-              if (!parsed) stats.warnings.push(`No unambiguous structured event at ${new URL(fetched.url).hostname}`);
-              else if (parsed.limitation && !parsed.local_schedule) stats.warnings.push(parsed.limitation);
+              if (parsed?.limitation && !parsed.local_schedule) stats.warnings.push(parsed.limitation);
             } catch (error) {
               quota ||= Boolean(error.quota);
               pages.set(url, null);
               stats.warnings.push(error.message);
             }
           }
-          const found = pages.get(url);
-          if (found?.source) dateWarnings.set(identity, await db.transaction(tx => save(tx, identity, found.source, found.authoritative && found.source.parsed ? 2 : 0, found.observedAt, stats)));
         }
       }
       cursor = feed.cursor;
@@ -374,10 +383,74 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     stats.warnings.push(error.message);
   }
   if (!covered && !feedFailed) stats.warnings.push('Feed page limit reached before coverage boundary');
+  const pendingQuery=`select * from (select distinct on(url) * from scout.evidence where tracker_id=$1
+    order by url,coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
+    where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
+  const pending = (await db.query(`${pendingQuery} order by collected_at,id limit 20`,[tracker.id])).rows;
+  for (let index=0; index<pending.length;) {
+    // A post and its exact event page need the first accepted finding available
+    // before the second assessment. Independent sources can share one request.
+    const sameEvent=pending[index].parsed.event_url && pending[index].parsed.event_url===pending[index+1]?.parsed.event_url;
+    const batch=pending.slice(index,index+(sameEvent?1:2));
+    index+=batch.length;
+    try {
+      if (Date.now()>=budget.deadline) throw new Error('Assessment time limit reached');
+      if (!model) throw new Error('Assessment pending: configure model and shared hosted quota accounting');
+      const inputs=await Promise.all(batch.map(source=>assessmentInput(db,source,tracker)));
+      if (batch.length===2 && Buffer.byteLength(JSON.stringify([INSTRUCTION,inputs,SCHEMA]))>7400) {batch.pop();inputs.pop();index--;}
+      const decisions=await model(INSTRUCTION,inputs,SCHEMA);
+      if (!Array.isArray(decisions)||decisions.length!==batch.length||new Set(decisions.map(d=>d.source_id)).size!==batch.length) throw new Error('Incomplete assessment batch');
+      for (let i=0;i<batch.length;i++) {
+        const source=batch[i], input=inputs[i];
+        let decision=validateDecision(decisions.find(d=>d.source_id===source.id),input);
+        if (decision.action==='new' && decision.candidate && decision.priority!=='low') {
+          const fresh=await assessmentInput(db,source,tracker);
+          const matches=fresh.candidates.filter(candidate=>{
+            try { validateDecision({...decision,action:'update',record_id:candidate.id},fresh);return true; } catch {return false;}
+          });
+          if (matches.length) decision={...decision,action:'uncertain',reason:'Possible existing finding; reassess against the refreshed shortlist before creating a duplicate'};
+        }
+        const assessment={...decision,state:decision.action==='uncertain'?'uncertain':'complete',version:ASSESSMENT_VERSION,
+          fingerprint:source.content_hash,accepted_at:now()};
+        const parsed={...source.parsed,...(decision.candidate??{}),assessment};
+        await db.transaction(async tx=>{
+          const before={created:stats.created,changed:stats.changed};
+          let target;
+          await tx.query('update scout.evidence set parsed=$2 where id=$1',[source.id,JSON.stringify(parsed)]);
+          if (decision.action==='uncertain') { stats.warnings.push(decision.reason); return; }
+          if (['new','update'].includes(decision.action) && (decision.priority!=='low'||decision.record_id)) {
+            const existing=input.candidates.find(row=>row.id===decision.record_id);
+            let identity=existing?.identity_key ?? (parsed.kind==='event'&&parsed.event_url ? `event:${parsed.event_url}` : parsed.source.identity);
+            if (!existing && (await tx.query('select id from scout.records where identity_key=$1',[identity])).rows.length) {
+              // An event URL may be reused for a different edition or session.
+              // The validated "new" decision must not silently become an update.
+              identity=`${parsed.source.identity}:${hash(JSON.stringify([parsed.kind,parsed.title,parsed.starts_at,parsed.start_on]))}`;
+            }
+            target=await save(tx,identity,{...source,parsed:{...parsed,priority:decision.priority}},parsed.source.rank,parsed.source.observed_at,stats);
+            dateWarnings.set(identity,target.warning);
+          } else if (decision.record_id) {
+            await tx.query('update scout.evidence set record_id=$2,last_seen_at=clock_timestamp(),authoritative=$3 where id=$1',[source.id,decision.record_id,parsed.source.rank===2]);
+            target={recordId:decision.record_id,sourceId:source.id};
+          }
+          // Relevance uses combined evidence independently of which source wins
+          // fact precedence. A weak source still cannot replace an official date.
+          if (target && decision.candidate && decision.priority!==null) {
+            const changed=await tx.query(`update scout.records set priority=$2
+              where id=$1 and priority is distinct from $2 returning id`,[target.recordId,decision.priority]);
+            if (changed.rows.length && stats.created===before.created && stats.changed===before.changed) stats.changed++;
+            await tx.query("update scout.evidence set parsed=jsonb_set(parsed,'{assessment,priority_accepted}','true') where id=$1 and record_id is not null",[target.sourceId]);
+          }
+        });
+        stats.assessed++;
+      }
+    } catch (error) { stats.warnings.push(error.message); quota ||= /quota|limit|429/.test(error.message); break; }
+  }
+  stats.pending=(await db.query(`select count(*)::int n from (${pendingQuery}) pending`,[tracker.id])).rows[0].n;
+  if (stats.pending) stats.warnings.push(`${stats.pending} source assessments pending`);
   stats.warnings = [...new Set([...stats.warnings, ...dateWarnings.values()].filter(Boolean))];
   stats.requests = budget.requests;
   const outcome = quota ? 'quota' : feedFailed && stats.posts === 0 ? 'failed' : !covered || stats.warnings.length ? 'partial' : stats.created || stats.changed ? 'success' : 'no_change';
   const finished = now();
-  await db.query('update scout.collection_runs set finished_at=$1,outcome=$2,stats=$3 where id=$4', [finished, outcome, JSON.stringify(stats), run.id]);
+  await db.query('update scout.collection_runs set finished_at=$1,outcome=$2,stats=stats || $3::jsonb where id=$4', [finished, outcome, JSON.stringify(stats), run.id]);
   return { run_id: run.id, outcome, coverage_since: since, ...stats };
 }

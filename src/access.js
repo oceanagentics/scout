@@ -29,6 +29,13 @@ export function mountAccess(client, root, mount = mountDashboard) {
       return;
     }
     status.hidden = true;
+    const record = window.sessionStorage.getItem('scout-record');
+    if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(record ?? '')) {
+      const url = new URL(window.location.href);
+      if (!url.searchParams.has('record')) url.searchParams.set('record', record);
+      window.history.replaceState(null, '', url);
+    }
+    window.sessionStorage.removeItem('scout-record');
     closeDashboard = mount(workspace, () => loadScout(client));
   }
 
@@ -38,6 +45,9 @@ export function mountAccess(client, root, mount = mountDashboard) {
     const button = form.querySelector('button');
     button.disabled = true;
     status.textContent = 'Opening Google sign-in…';
+    const record = new URLSearchParams(window.location.search).get('record');
+    window.sessionStorage.removeItem('scout-record');
+    if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(record ?? '')) window.sessionStorage.setItem('scout-record', record);
     const { error } = await client.auth.signInWithOAuth({ provider: 'google', options: {
       redirectTo: `${window.location.origin}/`, scopes: 'openid email profile',
       queryParams: { hd: 'oceanagentics.com', prompt: 'select_account' },
@@ -52,6 +62,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
     finally {
       window.sessionStorage.removeItem('scout-auth');
       window.sessionStorage.removeItem('scout-auth-code-verifier');
+      window.sessionStorage.removeItem('scout-record');
       window.location.replace('/');
     }
   });

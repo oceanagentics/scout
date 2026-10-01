@@ -1,4 +1,17 @@
 export const KINDS = { event: 'Event', announcement: 'Announcement', treaty_status: 'Treaty change' };
+export const PRIORITIES = { high:'High', normal:'Normal', low:'Low' };
+export function fieldLabel(record, field) {
+  if (field==='priority') return PRIORITIES[record.priority]??'Not yet assessed';
+  if (record.kind!=='event'&&['location','status','starts_at','ends_at','event_url','registration_url','date_evidence'].includes(field)) return 'Not applicable';
+  const value=record[field];
+  if (value===null||value===undefined||value==='') return 'Unknown';
+  return field.endsWith('_at')?stamp(value):field==='kind'?KINDS[value]??value:typeof value==='object'?JSON.stringify(value):String(value);
+}
+export function orderRecords(records, order='priority') {
+  const rank = value => ({high:0,normal:1,low:2})[value]??3;
+  return [...records].sort((a,b)=>(order==='priority'?rank(a.priority)-rank(b.priority):0)||
+    (a.starts_at??'9999').localeCompare(b.starts_at??'9999')||a.id.localeCompare(b.id));
+}
 const dayValid = value => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '') && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 const instantValid = value => typeof value === 'string' && dayValid(value.slice(0, 10)) && /T\d{2}:\d{2}.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
 
@@ -21,7 +34,8 @@ export function recordDates(record) {
 }
 
 export function eventLabel(record) {
-  if (!instantValid(record.starts_at)) return 'Event date / time not yet known';
+  if (record.kind!=='event') return 'Not applicable';
+  if (!instantValid(record.starts_at)) return 'Unknown';
   const start = new Date(record.starts_at).toISOString(), end = instantValid(record.ends_at) && new Date(record.ends_at).toISOString();
   return `${start.slice(0, 10)} · ${start.slice(11, 16)}${end ? ` – ${end.slice(0, 10) === start.slice(0, 10) ? '' : `${end.slice(0, 10)} `}${end.slice(11, 16)}` : ''} UTC`;
 }
@@ -39,6 +53,8 @@ export function filterRecords(records, filters = {}, now = new Date()) {
   const query = (filters.search ?? '').normalize('NFKC').toLowerCase().trim();
   return records.filter(record => {
     if (filters.kind && record.kind !== filters.kind) return false;
+    if (filters.priority && (record.priority??'unassessed')!==filters.priority) return false;
+    if (filters.record && record.id!==filters.record) return false;
     if (filters.organization && (record.organization || 'Unknown organization') !== filters.organization) return false;
     if (query && ![record.title, record.organization, record.description].filter(Boolean).join(' ').normalize('NFKC').toLowerCase().includes(query)) return false;
     const [start, end] = recordDates(record);

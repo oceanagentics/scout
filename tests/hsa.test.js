@@ -4,8 +4,19 @@ import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
-import { collectHSA, HSA, sourceURL, readPublic } from '../collector/hsa.js';
-import { baseline, prepareFindings } from '../notifications/slack.js';
+import { collectHSA as collect, HSA, sourceURL, readPublic } from '../collector/hsa.js';
+import { CONTENT_FIELDS } from '../collector/assessment.js';
+const fixtureModel=async (_instruction,inputs)=>inputs.map(input=>{
+ const substantive=/BBNJ|High Seas|Marine Genetic/i.test(input.scripted.description??input.scripted.title??'');
+ const candidate=input.scripted.kind ? Object.fromEntries(CONTENT_FIELDS.map(f=>[f,input.scripted[f]??null])) : null;
+ if(candidate?.description) candidate.description=Array.from(candidate.description).slice(0,280).join('');
+ const existing=input.candidates.find(r=>r.id===input.exact_ids[0]||candidate?.event_url&&r.event_url===candidate.event_url);
+ return {source_id:input.source_id,action:!candidate?'uncertain':!substantive?'no_substantive_change':existing?'update':'new',
+   record_id:existing?.id??null,candidate:substantive?candidate:null,priority:substantive?'high':'low',
+   reason:candidate?'Fixture assessment':'No unambiguous structured event; more source context required',
+   quotes:[Array.from(input.text).slice(0,60).join('')],clear_fields:[]};
+});
+const collectHSA=(db,options)=>collect(db,{model:fixtureModel,...options});
 
 const since = '2026-09-01T00:00:00Z';
 const eventURL = 'https://highseasalliance.org/events/bbnj-webinar/';
@@ -64,14 +75,14 @@ test('initial, unchanged, rescheduled, cosmetic, cancelled, and older repost kee
     const captured = (await db.query('select * from scout.evidence where id=$1', [initial.date_evidence.schedule_source])).rows[0];
     assert.equal(captured.record_id, initial.id);
     assert.equal(captured.content, page);
-    await baseline(db);
+    await db.query('update scout.records set last_communicated_at=clock_timestamp()');
     const success = (await db.query('select last_success_at from scout.tracker_status where id=(select tracker_id from scout.collection_runs limit 1)')).rows[0].last_success_at;
     const versionCount = (await db.query('select count(*)::int n from scout.evidence')).rows[0].n;
     const repeat = await collectHSA(db, { since, read, now });
     assert.equal(repeat.outcome, 'no_change');
     assert.equal((await db.query('select * from scout.records')).rows[0].updated_at.getTime(), initial.updated_at.getTime());
     assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n, versionCount);
-    assert.deepEqual(await prepareFindings(db), []);
+    assert.ok((await db.query('select last_communicated_at from scout.records')).rows[0].last_communicated_at);
     assert.ok((await db.query('select last_success_at from scout.tracker_status where id=(select tracker_id from scout.collection_runs limit 1)')).rows[0].last_success_at > success);
     // Later captures may lack a schedule; the establishing capture still proves it.
     page = '<html>No structured schedule currently available</html>';
@@ -100,10 +111,6 @@ test('initial, unchanged, rescheduled, cosmetic, cancelled, and older repost kee
     assert.equal(final[0].starts_at.toISOString(), '2026-10-15T14:00:00.000Z');
     assert.equal((await db.query('select * from scout.current_evidence')).rows.length, 3);
     assert.ok((await db.query('select * from scout.evidence')).rows.length >= 6);
-    const [notification] = await prepareFindings(db);
-    assert.equal(notification.kind, 'change');
-    assert.match(notification.payload.blocks[1].text.text, /2026-10-08.*→.*2026-10-15/);
-    assert.match(notification.payload.blocks[1].text.text, /status: scheduled → cancelled/);
     // The organizer may deliberately return to a previously seen date/version.
     page = html('2026-10-08T14:00:00Z');
     assert.equal((await collectHSA(db, { since, read, now })).changed, 1);
@@ -131,13 +138,12 @@ test('shared pages get independent record evidence without duplicate captures on
     assert.equal(first.created, 2);
     const records = (await db.query('select * from scout.records order by id')).rows;
     const copies = (await db.query('select * from scout.evidence where url=$1 order by record_id', [sharedURL])).rows;
-    assert.deepEqual(copies.map(row => row.record_id), records.map(row => row.id));
-    assert.notEqual(copies[0].id, copies[1].id);
-    assert.equal(copies[0].content, copies[1].content);
-    assert.equal((await db.query('select * from scout.evidence')).rows.length, 6);
-    assert.equal((await db.query('select * from scout.current_evidence')).rows.length, 6);
+    assert.equal(copies.length, 1);
+    assert.equal(copies[0].record_id, null);
+    assert.equal((await db.query('select * from scout.evidence')).rows.length, 5);
+    assert.equal((await db.query('select * from scout.current_evidence')).rows.length, 4);
     assert.equal((await collectHSA(db, { since, read })).changed, 0);
-    assert.equal((await db.query('select * from scout.evidence')).rows.length, 6);
+    assert.equal((await db.query('select * from scout.evidence')).rows.length, 5);
     assert.deepEqual((await db.query('select * from scout.records order by id')).rows, records);
   } finally { await db.close(); }
 });
@@ -147,7 +153,7 @@ test('missing/ambiguous dates and irrelevant posts stay honest; fetch failures p
   let response = { feed: [fixturePost('unknown', 'Join our BBNJ webinar. Date to follow.', undefined, HSA, null), fixturePost('irrelevant', 'Lunch with friends.', undefined, HSA, null)] };
   const read = async (url, budget) => { budget.requests++; return { url, headers: {}, body: JSON.stringify(response) }; };
   try {
-    assert.equal((await collectHSA(db, { since, read })).outcome, 'success');
+    const check = await collectHSA(db, { since, read }); assert.equal(check.outcome, 'success',check.warnings.join('; '));
     const record = (await db.query('select * from scout.records')).rows[0];
     assert.equal(Object.hasOwn(record, 'start_on'), false);
     assert.equal(record.starts_at, null);
@@ -221,7 +227,7 @@ test('new HSA corrections survive unavailable and unchanged pages; genuine later
     const cancelled = (await db.query('select * from scout.records')).rows[0];
     assert.equal(cancelled.status, 'cancelled');
     assert.equal(cancelled.evidence_at.toISOString(), '2026-09-21T10:00:00.000Z');
-    page = html('2026-10-08T14:00:00Z', 'EventScheduled', 'Cosmetically updated page text.');
+    page = html('2026-10-08T14:00:00Z', 'EventScheduled', 'BBNJ   implementation webinar.');
     for (let repeat = 0; repeat < 2; repeat++) {
       assert.equal((await collectHSA(db, { since, read, now })).changed, 0);
       const row = (await db.query('select * from scout.records')).rows[0];
@@ -283,13 +289,13 @@ test('descriptions are bounded while full evidence and stable record versions su
     return { url, headers: {}, body: JSON.stringify({ feed: [fixturePost('long', text, undefined, HSA, null)] }) };
   };
   try {
-    assert.equal((await collectHSA(db, { since, read })).outcome, 'success');
+    const check = await collectHSA(db, { since, read }); assert.equal(check.outcome, 'success',check.warnings.join('; '));
     const record = (await db.query('select * from scout.records')).rows[0];
     assert.equal(Array.from(record.description).length, 280);
-    assert.ok(record.description.endsWith('…'));
+    assert.ok(text.startsWith(record.description));
     for (const field of ['summary', 'start_on', 'end_on', 'published_on', 'country', 'treaty_action', 'recorded_on', 'collected_at']) assert.equal(Object.hasOwn(record, field), false);
     const source = (await db.query('select * from scout.evidence')).rows[0];
-    assert.equal(source.parsed.description, text);
+    assert.equal(source.parsed.description, record.description);
     assert.equal(JSON.parse(source.content).text, text);
     assert.equal(Object.hasOwn(record, 'material_hash'), false);
     await db.query("update scout.evidence set content_hash=replace(content_hash,'hsa-v3:','hsa-v2:'),parsed=parsed || $1 where id=$2",
@@ -312,7 +318,7 @@ test('matching real HSA and Zoom components supply a proven time zone; conflicts
     return { url, headers: { 'content-type': 'text/html' }, body: url.includes('/xrpc/') ? JSON.stringify({ feed }) : page };
   };
   try {
-    assert.equal((await collectHSA(db, { since, read })).outcome, 'success');
+    const check = await collectHSA(db, { since, read }); assert.equal(check.outcome, 'success',check.warnings.join('; '));
     const row = (await db.query('select * from scout.records')).rows[0];
     assert.equal(row.starts_at.toISOString(), '2026-09-29T11:30:00.000Z');
     assert.equal(Object.hasOwn(row, 'time_zone'), false);

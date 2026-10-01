@@ -38,12 +38,12 @@ test('invalid authenticated requests do no database work', async () => {
   assert.equal(connects, 0);
 });
 
-test('overlap skips collection; authorized work uses parameters/savepoints and always closes', async () => {
+test('overlap skips collection; authorized work uses parameters/transactions and always closes', async () => {
   for (const acquired of [false, true]) {
     const queries = [];
-    let collected = 0, closed = 0, savepoints = 0;
-    const tx = { unsafe: async (query, params) => { queries.push({ query, params }); return [{ acquired }]; },
-      savepoint: async work => { savepoints++; return work(tx); } };
+    let collected = 0, closed = 0, transactions = 0;
+    const tx = { unsafe: async (query, params) => { queries.push({ query, params }); if(query==='begin') transactions++; return [{ acquired }]; },
+      release() {} };
     const req = new Request('https://example.test/collect?since=2026-09-01', {
       method: 'POST', headers: { apikey: secret }, body: new ReadableStream({ start(controller) { controller.close(); } }), duplex: 'half' });
     const response = await hostedHSA(req, { env, databaseURL: 'unused',
@@ -51,7 +51,7 @@ test('overlap skips collection; authorized work uses parameters/savepoints and a
         assert.equal(options.max, 1);
         assert.equal(options.types.json.serialize({ proof: true }), '{"proof":true}');
         assert.equal(options.types.json.serialize('{"proof":true}'), '{"proof":true}');
-        return { begin: work => work(tx), end: async () => { closed++; } };
+        return { reserve: async () => tx, end: async () => { closed++; } };
       }, collect: async (db, options) => {
         collected++;
         assert.equal(options.since, '2026-09-01T00:00:00Z');
@@ -61,19 +61,19 @@ test('overlap skips collection; authorized work uses parameters/savepoints and a
       } });
     assert.equal(response.status, acquired ? 200 : 409);
     assert.equal(collected, acquired ? 1 : 0);
-    assert.equal(savepoints, acquired ? 1 : 0);
+    assert.equal(transactions, acquired ? 1 : 0);
     assert.equal(closed, 1);
-    if (acquired) assert.deepEqual(queries[1], { query: 'select $1::jsonb, $2::text', params: [{ proof: true }, "quote'; --"] });
+    if (acquired) assert.deepEqual(queries[2], { query: 'select $1::jsonb, $2::text', params: [{ proof: true }, "quote'; --"] });
   }
 });
 
 test('database failure rolls back through the driver without returning connection details', async () => {
   let closed = 0, rolledBack = 0;
-  const tx = { unsafe: async () => [{ acquired: true }] };
+  const tx = { unsafe: async query => { if(query==='rollback') rolledBack++; return [{ acquired:true }]; }, release() {} };
   const response = await hostedHSA(request(), { env, databaseURL: 'unused',
-    connect: () => ({ begin: async work => { try { return await work(tx); } catch (error) { rolledBack++; throw error; } },
+    connect: () => ({ reserve: async () => tx,
       end: async () => { closed++; } }),
-    collect: async () => { throw new Error('private connection details'); } });
+    collect: async db => db.transaction(async () => { throw new Error('private connection details'); }) });
   assert.equal(response.status, 500);
   assert.equal(rolledBack, 1);
   assert.equal(closed, 1);

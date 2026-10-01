@@ -1,0 +1,200 @@
+{
+  "run": "cc7e9928-2f13-41b4-a071-ce25691405b6",
+  "results": [
+    {
+      "source_id": "technical",
+      "expected": {
+        "priority": "high",
+        "action": "new",
+        "kind": "announcement"
+      },
+      "actual": {
+        "source_id": "technical",
+        "action": "new",
+        "record_id": null,
+        "candidate": {
+          "kind": "announcement",
+          "title": "$source_text",
+          "organization": null,
+          "description": "$source_text",
+          "location": null,
+          "event_url": "https://www.un.org/bbnjagreement/en/third-session-23-march-2-april-2026",
+          "registration_url": null,
+          "starts_at": null,
+          "ends_at": null,
+          "status": null
+        },
+        "priority": "high",
+        "reason": "Technical clearing-house architecture topic warrants high priority.",
+        "quotes": [
+          "$source_text"
+        ],
+        "clear_fields": []
+      },
+      "validation_error": "Assessment rejected: unsupported event_url"
+    },
+    {
+      "source_id": "noise",
+      "expected": {
+        "priority": "low",
+        "action": "no_substantive_change",
+        "kind": null
+      },
+      "actual": {
+        "source_id": "noise",
+        "action": "no_substantive_change",
+        "record_id": null,
+        "candidate": null,
+        "priority": "low",
+        "reason": "Generic advocacy with no substantive update.",
+        "quotes": [],
+        "clear_fields": []
+      },
+      "validation_error": null
+    },
+    {
+      "source_id": "technical",
+      "expected": {
+        "priority": "high",
+        "action": "new",
+        "kind": "announcement"
+      },
+      "actual": {
+        "source_id": "technical",
+        "action": "new",
+        "record_id": null,
+        "candidate": {
+          "kind": "announcement",
+          "title": "$source_text",
+          "organization": null,
+          "description": "$source_text",
+          "location": null,
+          "event_url": null,
+          "registration_url": null,
+          "starts_at": null,
+          "ends_at": null,
+          "status": null
+        },
+        "priority": "high",
+        "reason": "Technical clearing-house architecture and operationalization study.",
+        "quotes": [
+          "$source_text"
+        ],
+        "clear_fields": []
+      },
+      "validation_error": null
+    },
+    {
+      "source_id": "series",
+      "expected": {
+        "priority": "normal",
+        "action": "new",
+        "kind": "announcement"
+      },
+      "actual": {
+        "source_id": "series",
+        "action": "new",
+        "record_id": null,
+        "candidate": {
+          "kind": "announcement",
+          "title": "$source_text",
+          "organization": "High Seas Alliance",
+          "description": "$source_text",
+          "location": null,
+          "event_url": null,
+          "registration_url": null,
+          "starts_at": null,
+          "ends_at": null,
+          "status": null
+        },
+        "priority": "normal",
+        "reason": "Webinar series launch announcement.",
+        "quotes": [
+          "$source_text"
+        ],
+        "clear_fields": []
+      },
+      "validation_error": null
+    },
+    {
+      "source_id": "official",
+      "expected": {
+        "priority": "high",
+        "action": "new",
+        "kind": "treaty_status"
+      },
+      "actual": {
+        "source_id": "official",
+        "action": "new",
+        "record_id": null,
+        "candidate": {
+          "kind": "treaty_status",
+          "title": "$source_text",
+          "organization": null,
+          "description": "$source_text",
+          "location": null,
+          "event_url": null,
+          "registration_url": null,
+          "starts_at": null,
+          "ends_at": null,
+          "status": null
+        },
+        "priority": "high",
+        "reason": "Official treaty status and entry into force.",
+        "quotes": [
+          "$source_text"
+        ],
+        "clear_fields": []
+      },
+      "validation_error": null
+    }
+  ],
+  "accounting": {
+    "purpose": "model_validation",
+    "warnings": [
+      "Recorded public-content model validation; no live source collection"
+    ],
+    "model_usage": [
+      {
+        "serviceTier": "standard",
+        "totalTokenCount": 856,
+        "promptTokenCount": 521,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 521
+          }
+        ],
+        "candidatesTokenCount": 335
+      },
+      {
+        "serviceTier": "standard",
+        "totalTokenCount": 1372,
+        "promptTokenCount": 713,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 713
+          }
+        ],
+        "candidatesTokenCount": 659
+      }
+    ],
+    "model_attempts": [
+      {
+        "at": "2026-10-01T20:59:19.666022+00:00",
+        "model": "gemini-3.5-flash-lite",
+        "input_bound": 4219,
+        "output_bound": 1024
+      },
+      {
+        "at": "2026-10-01T21:01:18.950257+00:00",
+        "model": "gemini-3.5-flash-lite",
+        "input_bound": 4889,
+        "output_bound": 1024
+      }
+    ]
+  },
+  "remaining": 17,
+  "note": "Bounded public excerpts, not a representative accuracy benchmark. The first technical result was rejected; the revised field contract passed on the second request. These are the only two live attempts in SCOUT-15. $source_text references the exact text stored once in assessment-cases.json; raw API decisions are retained in the ignored local validation capture."
+}

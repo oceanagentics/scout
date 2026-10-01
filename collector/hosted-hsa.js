@@ -1,23 +1,30 @@
 import { verifyAuth } from '@supabase/server/core';
 import postgres from 'postgres';
 import { collectHSA } from './hsa.js';
+import { gemini } from './model.js';
 
-// One outer transaction keeps the lock, records, and run outcome on one connection.
-// The collector's per-record transactions become savepoints inside it.
-function database(sql) {
+// A reserved session holds the collector lock. Individual record transactions
+// can roll back without undoing earlier quota reservations or fetched evidence.
+export function database(sql, inTransaction = false) {
   return {
     async query(query, params = []) {
       try {
         return { rows: await sql.unsafe(query, params) };
       } catch (error) {
+        if (/Model quota reached/.test(error.message)) throw new Error('Model quota reached');
         throw new Error(`Collector database operation failed${/^[A-Z0-9_]{1,40}$/.test(error.code ?? '') ? ` (${error.code})` : ''}`);
       }
     },
-    transaction: work => sql.savepoint(tx => work(database(tx))),
+    async transaction(work) {
+      if (inTransaction) throw new Error('Nested collection transaction is unsupported');
+      await sql.unsafe('begin');
+      try { const result=await work(database(sql,true)); await sql.unsafe('commit'); return result; }
+      catch (error) { await sql.unsafe('rollback'); throw error; }
+    },
   };
 }
 
-export async function hostedHSA(request, { databaseURL, env, connect = postgres, collect = collectHSA } = {}) {
+export async function hostedHSA(request, { databaseURL, apiKey, env, connect = postgres, collect = collectHSA } = {}) {
   const { error } = await verifyAuth(request, { auth: 'secret:default', env });
   if (error) return Response.json({ error: 'Backend secret required' }, { status: 401 });
   if (request.method !== 'POST') return Response.json({ error: 'POST required' }, { status: 405, headers: { Allow: 'POST' } });
@@ -32,21 +39,25 @@ export async function hostedHSA(request, { databaseURL, env, connect = postgres,
   }
   if (!databaseURL) return Response.json({ error: 'Collector database unavailable' }, { status: 503 });
   const deadline = Date.now() + 100000;
-  let sql;
+  let sql, session, acquired=false;
   try {
     sql = connect(databaseURL, { max: 1, prepare: false, connect_timeout: 5, fetch_types: false,
       types: { json: { to: 114, from: [114, 3802], parse: JSON.parse,
         serialize: value => typeof value === 'string' ? value : JSON.stringify(value) } },
       connection: { application_name: 'scout-collect-hsa', statement_timeout: 5000 } });
-    return await sql.begin(async tx => {
-      const [lock] = await tx.unsafe("select pg_try_advisory_xact_lock(hashtextextended('scout:collect-hsa',0)) as acquired");
-      if (!lock.acquired) return Response.json({ error: 'HSA collection already running' }, { status: 409 });
-      const result = await collect(database(tx), { since: `${since}T00:00:00Z`, deadline });
-      return Response.json(result);
-    });
+    session=await sql.reserve();
+    const [lock] = await session.unsafe("select pg_try_advisory_lock(hashtextextended('scout:collect-hsa',0)) as acquired");
+    acquired=lock.acquired;
+    if (!acquired) return Response.json({ error: 'HSA collection already running' }, { status: 409 });
+    const db=database(session);
+    const result=await collect(db,{since:`${since}T00:00:00Z`,deadline,
+      makeModel: runId => gemini({apiKey,ledger:db,runId,deadline})});
+    return Response.json(result);
   } catch {
-    return Response.json({ error: 'Hosted collection failed; database transaction rolled back' }, { status: 500 });
+    return Response.json({ error: 'Hosted collection interrupted; inspect persisted run, pending evidence and quota reservations' }, { status: 500 });
   } finally {
+    if (acquired) await session.unsafe("select pg_advisory_unlock(hashtextextended('scout:collect-hsa',0))").catch(()=>{});
+    session?.release();
     await sql?.end({ timeout: 1 }).catch(() => {});
   }
 }

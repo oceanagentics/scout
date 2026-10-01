@@ -1,0 +1,70 @@
+[
+  {
+    "source_id": "technical",
+    "url": "https://www.un.org/bbnjagreement/en/third-session-23-march-2-april-2026",
+    "text": "Consolidated draft study on the technical aspects of the operationalization of the Clearing-House Mechanism",
+    "expected": {
+      "priority": "high",
+      "action": "new",
+      "kind": "announcement"
+    },
+    "coverage": "BBNJ clearing-house mechanism implementation, data standards, substantive events, and verified official treaty changes",
+    "scripted": {},
+    "candidates": [],
+    "exact_ids": [],
+    "changes": [
+      "text"
+    ]
+  },
+  {
+    "source_id": "noise",
+    "url": "https://highseasalliance.org/about-us/",
+    "text": "This is a once-in-a-generation opportunity to shift the status quo of High Seas governance and help protect marine life",
+    "expected": {
+      "priority": "low",
+      "action": "no_substantive_change",
+      "kind": null
+    },
+    "coverage": "BBNJ clearing-house mechanism implementation, data standards, substantive events, and verified official treaty changes",
+    "scripted": {},
+    "candidates": [],
+    "exact_ids": [],
+    "changes": [
+      "text"
+    ]
+  },
+  {
+    "source_id": "series",
+    "url": "https://highseasalliance.org/2026/01/19/high-seas-alliance-launches-lets-talk-bbnj-a-new-webinar-series/",
+    "text": "High Seas Alliance launches “Let’s Talk BBNJ”, a new webinar series",
+    "expected": {
+      "priority": "normal",
+      "action": "new",
+      "kind": "announcement"
+    },
+    "coverage": "BBNJ clearing-house mechanism implementation, data standards, substantive events, and verified official treaty changes",
+    "scripted": {},
+    "candidates": [],
+    "exact_ids": [],
+    "changes": [
+      "text"
+    ]
+  },
+  {
+    "source_id": "official",
+    "url": "https://treaties.un.org/Pages/ViewDetails.aspx?chapter=21&clang=_en&mtdsg_no=XXI-10&src=TREATY",
+    "text": "BBNJ Agreement. Entry into force: 17 January 2026.",
+    "expected": {
+      "priority": "high",
+      "action": "new",
+      "kind": "treaty_status"
+    },
+    "coverage": "BBNJ clearing-house mechanism implementation, data standards, substantive events, and verified official treaty changes",
+    "scripted": {},
+    "candidates": [],
+    "exact_ids": [],
+    "changes": [
+      "text"
+    ]
+  }
+]

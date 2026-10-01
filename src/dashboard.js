@@ -1,8 +1,8 @@
-import { KINDS, sourceLink, stamp, eventLabel, eventTiming, filterRecords, trackerState } from './records.js';
+import { KINDS, sourceLink, stamp, eventLabel, eventTiming, filterRecords, trackerState,fieldLabel,orderRecords } from './records.js';
 
 const RECORD_FIELDS = [
   ['title', 'Title'], ['kind', 'Type'], ['organization', 'Organization'], ['description', 'Description'],
-  ['location', 'Location'], ['status', 'Status'],
+  ['priority','Priority'], ['priority_reason','Priority reason'], ['location', 'Location'], ['status', 'Status'],
   ['starts_at', 'Starts at (UTC)'], ['ends_at', 'Ends at (UTC)'],
   ['event_url', 'Event URL'], ['registration_url', 'Registration URL'],
   ['updated_at', 'Updated at (UTC)'], ['id', 'ID'], ['date_evidence', 'Date evidence'],
@@ -25,16 +25,19 @@ export async function loadScout(client) {
     }
   }
   const [records, trackers, sources] = await Promise.all([
-    all('records', RECORD_FIELDS.map(([field]) => field).join(','), 'updated_at'),
+    all('records', RECORD_FIELDS.map(([field]) => field).filter(field=>field!=='priority_reason').join(','), 'updated_at'),
     all('tracker_status', TRACKER_FIELDS.map(([field]) => field).join(','), 'name'),
-    all('source_details', 'record_id,url,tracker_id,published_at,published_on,collected_at,last_seen_at,authoritative', 'record_id', 'url'),
+    all('source_details', 'record_id,url,tracker_id,published_at,published_on,collected_at,last_seen_at,authoritative,priority_reason,assessed_at', 'record_id', 'url'),
   ]);
   const byRecord = new Map();
   for (const source of sources) {
     if (!byRecord.has(source.record_id)) byRecord.set(source.record_id, []);
     byRecord.get(source.record_id).push(source);
   }
-  for (const record of records) record.sources = byRecord.get(record.id) ?? [];
+  for (const record of records) {
+    record.sources=byRecord.get(record.id)??[];
+    record.priority_reason=record.sources.filter(source=>source.priority_reason).sort((a,b)=>Date.parse(b.assessed_at)-Date.parse(a.assessed_at))[0]?.priority_reason??null;
+  }
   return { records, trackers };
 }
 
@@ -63,6 +66,8 @@ export function mountDashboard(root, load) {
         <label><input class="visually-hidden" type="radio" name="kind" value="announcement"><span>Announcements</span></label>
         <label><input class="visually-hidden" type="radio" name="kind" value="event"><span>Events</span></label>
       </div>
+      <label>Priority<select name="priority"><option value="">All priorities</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option><option value="unassessed">Not yet assessed</option></select></label>
+      <label>Order<select name="order"><option value="priority">Priority, then date</option><option value="date">Date</option></select></label>
       </form><div class="view-switch" role="group" aria-label="Records layout">
         <button type="button" data-layout="table" aria-label="Table view" title="Table view" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M10 9v11"/></svg></button>
         <button type="button" data-layout="cards" aria-label="Card view" title="Card view" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
@@ -80,8 +85,13 @@ export function mountDashboard(root, load) {
     if (!data) return;
     timings = new Map(data.records.filter(record => record.kind === 'event').map(record => [record.id, eventTiming(record)]));
     const values = Object.fromEntries(new FormData(filters));
-    const records = filterRecords(data.records, values);
-    root.querySelector('#record-count').textContent = `${records.length} of ${data.records.length} records`;
+    const selected = new URLSearchParams(location.search).get('record');
+    const records = orderRecords(filterRecords(data.records,{...values,record:selected}),values.order);
+    const count = root.querySelector('#record-count');
+    count.textContent = `${records.length} of ${data.records.length} records`;
+    if (selected) {
+      const all = node('a', 'Show all records'); all.href = '/'; count.append(' · ', all);
+    }
     if (!records.length) { recordList.append(node('p', data.records.length ? 'No records match your search.' : 'No records yet. Collected records will appear here with their sources.', 'empty')); return; }
     let body = recordList;
     if (tableView) {
@@ -101,8 +111,7 @@ export function mountDashboard(root, load) {
         for (const [field] of RECORD_FIELDS) {
           const value = record[field], cell = node('td', null, `field-${field}`);
           if (field.endsWith('_url') && value) cell.append(link(value, value));
-          else cell.textContent = value == null || value === '' ? '—' : field === 'kind' ? KINDS[value] || value
-            : typeof value === 'object' ? JSON.stringify(value, null, 2) : field.endsWith('_at') ? stamp(value) : value;
+          else cell.textContent = fieldLabel(record,field);
           if (cell.textContent.length > 240 && ['description', 'date_evidence'].includes(field)) {
             const text = node('div', cell.textContent, 'field-value'); text.tabIndex = 0; cell.replaceChildren(text);
           }
@@ -116,8 +125,10 @@ export function mountDashboard(root, load) {
           badges.append(node('span', eventTiming(record), `badge ${record.status === 'cancelled' ? 'warning' : ''}`));
           article.append(badges, node('p', eventLabel(record), 'event-date'));
         }
-        if (record.description) article.append(node('p', record.description, 'description'));
-        if (record.location) article.append(node('p', `Location · ${record.location}`));
+        article.append(node('p',`${fieldLabel(record,'priority')} · ${fieldLabel(record,'priority_reason')}`));
+        article.append(node('p',fieldLabel(record,'description'),'description'),node('p',`Location · ${fieldLabel(record,'location')}`));
+        if (record.kind!=='event') article.append(node('p','Event date · Not applicable'));
+        for (const field of ['event_url','registration_url']) if (!sourceLink(record[field])) article.append(node('p',`${field==='event_url'?'Event page':'Registration'} · ${fieldLabel(record,field)}`));
       }
       const details = node('details'); details.append(node('summary', tableView ? 'View sources' : 'Sources & record details'));
       const actions = node('div', null, 'actions');

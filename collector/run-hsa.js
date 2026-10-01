@@ -1,8 +1,10 @@
 import { PGlite } from '@electric-sql/pglite';
 import { mkdir, open, readFile, readdir, unlink } from 'node:fs/promises';
 import { collectHSA } from './hsa.js';
+import { gemini } from './model.js';
+import { managementDatabase } from './remote.js';
 
-// Deliberately local: this command cannot connect to or mutate a hosted database.
+// Records stay local. --assess uses hosted accounting so it shares production caps.
 const root = new URL('../', import.meta.url);
 const cache = new URL('.cache/', root);
 await mkdir(cache, { recursive: true });
@@ -11,7 +13,7 @@ const lock = await open(lockPath, 'wx').catch(() => { throw new Error('A collect
 let db;
 try {
   const args = process.argv.slice(2);
-  if (args.some(arg => !arg.startsWith('--since=')) || args.length > 1) throw new Error('Usage: npm run collect:hsa -- [--since=YYYY-MM-DD]');
+  if (args.some(arg => !arg.startsWith('--since=') && arg!=='--assess') || args.length>2) throw new Error('Usage: npm run collect:hsa -- [--since=YYYY-MM-DD] [--assess]');
   db = new PGlite(new URL('hsa-database/', cache).pathname);
   if (!(await db.query("select to_regnamespace('auth') as schema")).rows[0].schema) {
     await db.exec(`create role anon; create role authenticated; create role service_role bypassrls;
@@ -29,7 +31,21 @@ try {
     await db.exec(sql);
   }
   await db.exec(await readFile(new URL('supabase/seeds/trackers.sql', root), 'utf8'));
-  const result = await collectHSA(db, { since: args[0]?.slice('--since='.length) });
+  let makeModel, ledger, ledgerRun;
+  if (args.includes('--assess')) {
+    process.loadEnvFile(new URL('.env.local',root));
+    ledger=managementDatabase(process.env.SUPABASE_ACCESS_TOKEN);
+    makeModel=(runId,deadline)=>async (...input)=>{
+      if (!ledgerRun) {
+        await ledger.query(`insert into scout.collection_runs(id,tracker_id,stats)
+          select $1,id,'{"purpose":"local_assessment"}'::jsonb from scout.trackers where seed_key='bbnj-trackers-2026-10-01:17'`,[runId]);
+        ledgerRun=runId;
+      }
+      return gemini({apiKey:process.env.GEMINI_API_KEY,ledger,runId,deadline})(...input);
+    };
+  }
+  const result = await collectHSA(db, { since: args.find(arg=>arg.startsWith('--since='))?.slice('--since='.length), makeModel });
+  if (ledgerRun) await ledger.query("update scout.collection_runs set finished_at=clock_timestamp(),outcome='partial',stats=stats||$2::jsonb where id=$1",[ledgerRun,{warnings:['Local record assessment only; no hosted source collection'],local_outcome:result.outcome}]);
   console.log(JSON.stringify({ storage: '.cache/hsa-database (local PostgreSQL)', ...result }, null, 2));
   if (!['success', 'no_change'].includes(result.outcome)) process.exitCode = 2;
 } finally {
