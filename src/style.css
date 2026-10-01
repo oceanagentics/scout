@@ -1,0 +1,29 @@
+:root { font-family: ui-sans-serif, system-ui, sans-serif; color: #183839; background: #f6f5ef; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header, main, footer { max-width: 1060px; margin: auto; padding: 28px; }
+header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #d5ddd6; }
+header span, footer { color: #5c7069; font-size: .85rem; }
+.brand { color: inherit; font-size: 1.3rem; text-decoration: none; letter-spacing: -.04em; }
+main { min-height: 75vh; padding-top: 76px; }
+.eyebrow { color: #487366; font-size: .78rem; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+h1 { font-size: clamp(2.4rem, 6vw, 4.3rem); line-height: 1.08; letter-spacing: -.05em; max-width: 760px; margin: 22px 0; }
+.intro { max-width: 590px; font-size: 1.2rem; line-height: 1.6; color: #567069; }
+.panel { background: #fff; border: 1px solid #d5ddd6; border-radius: 12px; padding: 28px; margin-top: 42px; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+h2 { font-size: 1.15rem; margin: 0; }
+p { line-height: 1.6; }
+#status { color: #567069; }
+form { max-width: 420px; }
+label { display: block; margin: 20px 0; font-size: .9rem; font-weight: 600; }
+input { display: block; width: 100%; margin-top: 8px; padding: 12px; font: inherit; border: 1px solid #a5b8b0; border-radius: 5px; }
+button { background: #185c4a; color: white; border: 0; border-radius: 5px; padding: 12px 20px; font: inherit; cursor: pointer; }
+button:disabled { opacity: .55; cursor: wait; }
+a { color: #185c4a; }
+:focus-visible { outline: 3px solid #d29237; outline-offset: 3px; }
+article { border-top: 1px solid #d5ddd6; padding: 24px 0; }
+article small { text-transform: uppercase; color: #567069; letter-spacing: .08em; }
+article h3 { margin: 10px 0; }
+article a { display: block; margin-top: 8px; }
+[hidden] { display: none !important; }
+@media (max-width: 600px) { header, main, footer { padding: 22px; } main { padding-top: 40px; } .panel { padding: 20px; } }

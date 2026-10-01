@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Source-backed BBNJ events, announcements, and treaty updates." />
+    <title>BBNJ Scout</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <header><a class="brand" href="/">BBNJ <strong>Scout</strong></a><span>Ocean Agentics</span></header>
+    <main>
+      <p class="eyebrow">Following the high seas</p>
+      <h1>A clearer view of BBNJ.</h1>
+      <p class="intro">Events, announcements, and treaty updates, with the sources behind them.</p>
+      <section class="panel" aria-labelledby="access-title">
+        <div class="panel-heading"><h2 id="access-title">Scout access</h2><button id="sign-out" hidden>Sign out</button></div>
+        <p id="status" role="status">Connecting…</p>
+        <form id="sign-in" hidden>
+          <label>Email<input name="email" type="email" autocomplete="username" required /></label>
+          <label>Password<input name="password" type="password" autocomplete="current-password" required /></label>
+          <button type="submit">Sign in</button>
+        </form>
+        <div id="records" hidden></div>
+      </section>
+    </main>
+    <footer>BBNJ Scout · A project by Ocean Agentics</footer>
+  </body>
+</html>

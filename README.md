@@ -2,7 +2,7 @@
 
 Scout is Ocean Agentics' planned app for keeping up with BBNJ: treaty ratifications, NGO webinars, official DOALOS announcements, conferences, and side events. It will maintain a central database, surface useful changes in Slack, and make events easy to find and add to a calendar.
 
-The project is currently in planning. The proof-of-concept target is **$0/month in recurring service fees**.
+The static app and database foundation are implemented; remote database integration is pending. The proof-of-concept target is **$0/month in recurring service fees**.
 
 ## Original documentation
 
@@ -73,4 +73,50 @@ Use [tasks.md](tasks.md) for task status, dependencies, acceptance criteria, ver
 2. Add scheduling and failure handling, then expand to other feeds, official treaty records, websites, and discovery searches.
 3. Add Slack questions and tracker management, then verify the complete proof of concept against the agreed coverage and budget.
 
-There is no application implementation or runnable development setup yet. Add run, migration, and deployment instructions as those capabilities are built.
+## Development
+
+Use Node.js 22.12+ and npm. The frontend uses Vite and the Supabase JavaScript client; it has no server or Firebase Functions dependency.
+
+```sh
+npm --cache .cache/npm ci
+npm test
+npm run dev
+npm run build
+npm run preview
+```
+
+`npm run dev` serves the app at `http://127.0.0.1:5173`. Add the two public settings in `.env.example` to the existing `.env.local`, preserving its other credentials. Use a Supabase `sb_publishable_…` key; secret/service-role keys never belong in a `VITE_` variable. Without those settings, the app displays its setup state and makes no database requests. Sessions stay in memory, with no signup flow or automatic Scout membership.
+
+`npm test` applies the real migration to separate in-memory PostgreSQL databases through [PGlite](https://pglite.dev/docs/). Minimal Auth fixtures exercise anonymous, unrelated-user, reader, admin, and backend access; the shared fixture also checks another service's data, policies, grants, and ownership. This does not verify hosted Auth or PostgREST. Native PostgreSQL could not initialize under this host's shared-memory restrictions, so PGlite is the repeatable local test path.
+
+## Database deployment
+
+The shared Supabase project is `chm` (`vhlfumeyhkeospnemukq`), using database `postgres`. The migration creates only `scout`: memberships, trackers, collection runs, records, sources, and deliveries. One typed records table holds events, announcements, and treaty changes; sources provide multiple references per record. Unknown dates stay null, date-only events stay distinct from timestamps, and collection/update times have separate columns.
+
+Before remote deployment, inspect the project's Free plan, remaining capacity, schemas, default grants, exposed schemas, and full migration history. Never reset the remote project or repair another service's migration history merely to allow Scout's deployment. The migration refuses an existing `scout` schema or global client table defaults that would undermine private future tables.
+
+Use existing CLI authentication, or explicitly provide `SUPABASE_ACCESS_TOKEN` to the process through an approved secret loader. Merely adding that variable to `.env.local` does not ensure CLI authentication. Keep telemetry disabled on this host:
+
+```sh
+export SUPABASE_TELEMETRY_DISABLED=1
+supabase functions list --project-ref vhlfumeyhkeospnemukq --output json
+supabase link --project-ref vhlfumeyhkeospnemukq
+supabase migration list --linked
+supabase db push --linked --dry-run
+# Only after reviewing shared state and the exact pending migration:
+supabase db push --linked
+```
+
+Current remote limitation: the CLI's linked-query path fails its IPv6 connection preflight even after relinking, and unattended token access is currently unavailable. Remote inspection and migration have not run. If this CLI preflight remains a problem after authentication is restored, use Supabase's documented [Management API](https://supabase.com/docs/reference/api/introduction) with the same authorized project access; inspect before applying a migration.
+
+After migration, append `scout` to the project's existing Data API exposed-schema list, preserving every existing service setting. Do not push a replacement project configuration. RLS and explicit grants are included in the migration; no client receives future-table defaults. Provision reader/admin membership only for explicitly approved Auth user IDs through trusted backend access. An admin can manage trackers but cannot provision membership, modify collected evidence, or read delivery state through the browser. Project-wide service-role access bypasses RLS and belongs only in trusted backend processes.
+
+## Hosting deployment
+
+Scout uses Firebase Spark project `ryustatic`, site `bbnj-scout`, deployment target `scout`, and [https://bbnj-scout.web.app](https://bbnj-scout.web.app). `.firebaserc` maps only this target. Recheck shared Hosting capacity and keep billing disabled, then deploy with the saved Firebase login:
+
+```sh
+firebase deploy --project ryustatic --only hosting:scout
+```
+
+The predeploy step builds `dist`. The initial deployment uses the documented [Hosting REST API](https://firebase.google.com/docs/hosting/api-deploy) and the same saved login refreshed in memory, because CLI credential-cache writes are restricted here. No new credential or paid service is required. The live shell intentionally shows setup status until the database and authorized membership are ready; a hosted database sample read remains an open SCOUT-02 criterion.

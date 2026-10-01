@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.cache/
+.firebase/
+.supabase/
+.env*
+!.env.example
+supabase/.temp/
+supabase/.branches/
+*-debug.log

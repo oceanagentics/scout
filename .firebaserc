@@ -1,0 +1,4 @@
+{
+  "projects": { "default": "ryustatic" },
+  "targets": { "ryustatic": { "hosting": { "scout": ["bbnj-scout"] } } }
+}
