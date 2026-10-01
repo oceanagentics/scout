@@ -1,5 +1,14 @@
 import { KINDS, sourceLink, stamp, recordDates, eventLabel, eventTiming, filterRecords, trackerState, calendarFile } from './records.js';
 
+const RECORD_FIELDS = [
+  ['title', 'Title'], ['kind', 'Type'], ['organization', 'Organization'], ['summary', 'Summary'], ['description', 'Description'],
+  ['location', 'Location'], ['status', 'Status'], ['start_on', 'Start date'], ['end_on', 'End date'],
+  ['starts_at', 'Starts at (UTC)'], ['ends_at', 'Ends at (UTC)'], ['time_zone', 'Time zone'], ['published_on', 'Published on'],
+  ['country', 'Country'], ['treaty_action', 'Treaty action'], ['recorded_on', 'Recorded on'],
+  ['event_url', 'Event URL'], ['registration_url', 'Registration URL'], ['collected_at', 'Collected at (UTC)'],
+  ['updated_at', 'Updated at (UTC)'], ['id', 'ID'], ['date_evidence', 'Date evidence'],
+];
+
 export async function loadScout(client) {
   async function all(table, columns, order) {
     const rows = [];
@@ -11,7 +20,7 @@ export async function loadScout(client) {
     }
   }
   const [records, trackers] = await Promise.all([
-    all('records', 'id,kind,title,organization,description,summary,location,event_url,registration_url,start_on,end_on,starts_at,ends_at,time_zone,status,published_on,country,treaty_action,recorded_on,collected_at,updated_at,date_evidence,sources(url,tracker_id,published_at,published_on,collected_at,authoritative)', 'updated_at'),
+    all('records', `${RECORD_FIELDS.map(([field]) => field).join(',')},sources(url,tracker_id,published_at,published_on,collected_at,authoritative)`, 'updated_at'),
     all('trackers', 'id,name,url,coverage,channel,method,cadence,cadence_note,configuration_note,enabled,last_attempt_at,last_success_at,last_outcome,last_error,next_run_at', 'name'),
   ]);
   return { records, trackers };
@@ -61,30 +70,44 @@ export function mountDashboard(root, load) {
     let body = recordList;
     if (tableView) {
       const table = node('table', null, 'findings-table');
-      table.innerHTML = '<caption class="visually-hidden">Findings with organizations, dates and sources</caption><thead><tr><th scope="col">Finding</th><th scope="col">Organization</th><th scope="col">Date & status</th><th scope="col">Links & details</th></tr></thead>';
+      table.append(node('caption', 'Finding record fields, calendars and sources', 'visually-hidden'));
+      const head = node('thead'), row = node('tr');
+      for (const label of [...RECORD_FIELDS.map(([, label]) => label), 'Calendar', 'Sources']) {
+        const heading = node('th', label); heading.scope = 'col'; row.append(heading);
+      }
+      head.append(row); table.append(head);
       body = node('tbody'); table.append(body); recordList.append(table);
     }
     const trackers = new Map(data.trackers.map(tracker => [tracker.id, tracker]));
     for (const record of records) {
       const article = node(tableView ? 'tr' : 'article', null, 'record');
-      const finding = tableView ? node('td') : article, organization = tableView ? node('td') : article;
-      const schedule = tableView ? node('td') : article, resources = tableView ? node('td') : article;
-      finding.append(node('p', KINDS[record.kind] || record.kind, 'eyebrow'), node('h3', record.title));
-      organization.append(node('p', record.organization || 'Unknown organization', 'organization'));
-      if (record.kind === 'event') {
-        const badges = node('div', null, 'badges');
-        if (record.status === 'rescheduled') badges.append(node('span', 'Rescheduled', 'badge warning'));
-        badges.append(node('span', eventTiming(record), `badge ${record.status === 'cancelled' ? 'warning' : ''}`));
-        schedule.append(badges, node('p', eventLabel(record), 'event-date'));
-      } else schedule.append(node('p', `${record.kind === 'treaty_status' ? 'Treaty action' : 'Published'} · ${recordDates(record)[0] || 'Date unknown'}`, 'event-date'));
-      if (record.country || record.treaty_action) finding.append(node('p', [record.country, record.treaty_action].filter(Boolean).join(' · ')));
-      const details = node('details'); details.append(node('summary', tableView ? 'Summary & sources' : 'Sources & record details'));
-      const description = tableView ? details : article;
-      if (record.summary || record.description) description.append(node('p', record.summary || record.description, 'summary'));
-      if (record.location) description.append(node('p', `Location · ${record.location}`));
+      if (tableView) {
+        for (const [field] of RECORD_FIELDS) {
+          const value = record[field], cell = node('td', null, `field-${field}`);
+          if (field.endsWith('_url') && value) cell.append(link(value, value));
+          else cell.textContent = value == null || value === '' ? '—' : field === 'kind' ? KINDS[value] || value
+            : typeof value === 'object' ? JSON.stringify(value, null, 2) : field.endsWith('_at') ? stamp(value) : value;
+          if (cell.textContent.length > 240 && ['summary', 'description', 'date_evidence'].includes(field)) {
+            const text = node('div', cell.textContent, 'field-value'); text.tabIndex = 0; cell.replaceChildren(text);
+          }
+          article.append(cell);
+        }
+      } else {
+        article.append(node('p', KINDS[record.kind] || record.kind, 'eyebrow'), node('h3', record.title), node('p', record.organization || 'Unknown organization', 'organization'));
+        if (record.kind === 'event') {
+          const badges = node('div', null, 'badges');
+          if (record.status === 'rescheduled') badges.append(node('span', 'Rescheduled', 'badge warning'));
+          badges.append(node('span', eventTiming(record), `badge ${record.status === 'cancelled' ? 'warning' : ''}`));
+          article.append(badges, node('p', eventLabel(record), 'event-date'));
+        } else article.append(node('p', `${record.kind === 'treaty_status' ? 'Treaty action' : 'Published'} · ${recordDates(record)[0] || 'Date unknown'}`, 'event-date'));
+        if (record.country || record.treaty_action) article.append(node('p', [record.country, record.treaty_action].filter(Boolean).join(' · ')));
+        if (record.summary || record.description) article.append(node('p', record.summary || record.description, 'summary'));
+        if (record.location) article.append(node('p', `Location · ${record.location}`));
+      }
+      const details = node('details'); details.append(node('summary', tableView ? 'View sources' : 'Sources & record details'));
       const actions = node('div', null, 'actions');
-      if (sourceLink(record.registration_url)) actions.append(link(record.status === 'cancelled' ? 'Original registration' : 'Registration', record.registration_url));
-      if (sourceLink(record.event_url) && record.event_url !== record.registration_url) actions.append(link('Event page', record.event_url));
+      if (!tableView && sourceLink(record.registration_url)) actions.append(link(record.status === 'cancelled' ? 'Original registration' : 'Registration', record.registration_url));
+      if (!tableView && sourceLink(record.event_url) && record.event_url !== record.registration_url) actions.append(link('Event page', record.event_url));
       if (record.kind === 'event') {
         const calendar = calendarFile(record);
         if (calendar) {
@@ -94,8 +117,7 @@ export function mountDashboard(root, load) {
           calendarUrls.push(download.href); actions.append(download);
         } else actions.append(node('span', 'Calendar unavailable · date / time not yet known', 'hint'));
       }
-      resources.append(actions);
-      for (const [label, value] of [['Published', record.published_on], ['First collected', stamp(record.collected_at)], ['Record updated', stamp(record.updated_at)]]) if (value) details.append(node('p', `${label} · ${value}`, 'meta'));
+      if (!tableView) for (const [label, value] of [['Published', record.published_on], ['First collected', stamp(record.collected_at)], ['Record updated', stamp(record.updated_at)]]) if (value) details.append(node('p', `${label} · ${value}`, 'meta'));
       if (!(record.sources ?? []).length) details.append(node('p', 'No supporting source links available.', 'hint'));
       const seen = new Set();
       for (const source of record.sources ?? []) {
@@ -109,8 +131,10 @@ export function mountDashboard(root, load) {
           details.append(node('p', `${tracker.name} · Last successful collection: ${state.success} · Last outcome: ${state.outcome}${tracker.last_error ? ` · ${tracker.last_error}` : ''}`, 'meta'));
         }
       }
-      resources.append(details);
-      if (tableView) article.append(finding, organization, schedule, resources);
+      if (tableView) {
+        const calendar = node('td'), sources = node('td');
+        calendar.append(actions.childElementCount ? actions : node('span', '—')); sources.append(details); article.append(calendar, sources);
+      } else article.append(actions, details);
       body.append(article);
     }
   }
