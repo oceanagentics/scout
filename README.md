@@ -185,25 +185,9 @@ Every tracker remains visible, including paused, unconfigured and unimplemented 
 
 Calendar files follow [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545): timed events use their exact UTC instants, with the source offset/zone retained in the description; date-only events use DATE values with an exclusive next-day end. `end_on` is treated as the last included calendar day. Events with insufficient date evidence have no calendar link, and a missing timed end is omitted. Stable record UIDs and update timestamps support revised files; cancellations carry `STATUS:CANCELLED`. Import/merge behavior depends on the calendar client. Sources and source text are retained, text is escaped, and lines are folded by UTF-8 byte length.
 
-For local browser verification, export the existing local collector database while no collector process is running:
+For local browser review, run `npm run dev` and open `/` on its printed localhost URL. Workspace sign-in requires the browser settings from `.env.example` and an allowed local OAuth redirect.
 
-```sh
-node --input-type=module -e '
-import { PGlite } from "@electric-sql/pglite";
-import { writeFile } from "node:fs/promises";
-const db = new PGlite(".cache/hsa-database");
-const records = (await db.query("select * from scout.records order by updated_at desc")).rows;
-const sources = (await db.query("select record_id,tracker_id,url,published_at,published_on,collected_at,authoritative from scout.sources")).rows;
-for (const row of records) {
-  row.sources = sources.filter(source => source.record_id === row.id);
-  for (const key of ["start_on", "end_on", "published_on", "recorded_on"]) if (row[key] instanceof Date) row[key] = row[key].toISOString().slice(0, 10);
-}
-const trackers = (await db.query("select * from scout.trackers order by name,id")).rows;
-await writeFile(".cache/scout-ui.json", JSON.stringify({ records, trackers }));
-await db.close();'
-```
-
-With the Vite development server running, open `/tests/browser.html` on its printed localhost port. The marked verification page adds synthetic date/status/error examples without changing the database. “Due shortly” demonstrates an overdue transition after 30 seconds without a new fetch. The ignored snapshot and test page are excluded from production. This verifies the UI with local evidence, not hosted membership or authenticated database reads. The in-app browser did not report native calendar-download completion during verification; file bytes and rendered download links were checked, but saving/importing through a native calendar client remains unverified.
+The in-app browser did not report native calendar-download completion during earlier verification; file bytes and rendered download links were checked, but saving/importing through a native calendar client remains unverified.
 
 ## Manual Slack delivery
 
