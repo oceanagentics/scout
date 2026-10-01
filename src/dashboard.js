@@ -57,7 +57,7 @@ export function mountDashboard(root, load) {
         <button type="button" data-layout="table" aria-label="Table view" title="Table view" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M10 9v11"/></svg></button>
         <button type="button" data-layout="cards" aria-label="Card view" title="Card view" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
       </div></div><p id="record-count" role="status"></p><div id="record-list" tabindex="0" role="region" aria-label="Findings results"></div></section>
-    <section id="trackers" aria-label="Trackers" hidden><h2>Every source, including gaps</h2><p class="hint">Cadence is the requested collection frequency. An empty next run means no automatic run is configured. Manual collection is currently available only for the HSA Bluesky feed.</p>
+    <section id="trackers" aria-label="Trackers" hidden>
       <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>`;
   const status = root.querySelector('#load-status'), refresh = root.querySelector('#refresh');
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
@@ -173,6 +173,7 @@ export function mountDashboard(root, load) {
 
   async function reload() {
     refresh.disabled = true;
+    status.classList.remove('loaded');
     status.textContent = data ? 'Refreshing data…' : 'Loading findings and trackers…';
     root.setAttribute('aria-busy', 'true');
     try {
@@ -181,6 +182,7 @@ export function mountDashboard(root, load) {
       data = next; loadedAt = new Date().toISOString();
       renderRecords(); renderTrackers();
       status.textContent = `Data loaded · ${stamp(loadedAt)}. Collection freshness is shown for each source.`;
+      status.classList.add('loaded');
     } catch {
       if (active) status.textContent = `Could not load Scout data. ${data ? `Showing data loaded ${stamp(loadedAt)}. ` : ''}Use “Refresh data” to try again.`;
     } finally { if (active) { refresh.disabled = false; root.removeAttribute('aria-busy'); } }
