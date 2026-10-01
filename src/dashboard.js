@@ -3,32 +3,38 @@ import { KINDS, sourceLink, stamp, eventLabel, eventTiming, filterRecords, track
 const RECORD_FIELDS = [
   ['title', 'Title'], ['kind', 'Type'], ['organization', 'Organization'], ['description', 'Description'],
   ['location', 'Location'], ['status', 'Status'],
-  ['starts_at', 'Starts at (UTC)'], ['ends_at', 'Ends at (UTC)'], ['time_zone', 'Time zone'],
+  ['starts_at', 'Starts at (UTC)'], ['ends_at', 'Ends at (UTC)'],
   ['event_url', 'Event URL'], ['registration_url', 'Registration URL'],
   ['updated_at', 'Updated at (UTC)'], ['id', 'ID'], ['date_evidence', 'Date evidence'],
 ];
 const TRACKER_FIELDS = [
-  ['name', 'Name'], ['url', 'URL'], ['coverage', 'Coverage'], ['channel', 'Channel'], ['method', 'Method'],
-  ['cadence', 'Cadence'], ['cadence_note', 'Cadence note'], ['configuration_note', 'Configuration note'], ['enabled', 'Enabled'],
+  ['name', 'Name'], ['url', 'URL'], ['coverage', 'Coverage'], ['collector', 'Collector'],
+  ['cadence', 'Cadence'], ['enabled', 'Enabled'],
   ['last_attempt_at', 'Last attempt (UTC)'], ['last_success_at', 'Last success (UTC)'], ['last_outcome', 'Last outcome'],
-  ['last_error', 'Last error'], ['next_run_at', 'Next run (UTC)'], ['created_at', 'Created at (UTC)'],
-  ['updated_at', 'Updated at (UTC)'], ['seed_key', 'Seed key'], ['id', 'ID'],
+  ['last_error', 'Last error'], ['seed_key', 'Seed key'], ['id', 'ID'],
 ];
 
 export async function loadScout(client) {
-  async function all(table, columns, order) {
+  async function all(table, columns, order, tie = 'id') {
     const rows = [];
     for (let from = 0; ; from += 500) {
-      const result = await client.from(table).select(columns).order(order, { ascending: table === 'trackers' }).order('id').range(from, from + 499);
+      const result = await client.from(table).select(columns).order(order, { ascending: table !== 'records' }).order(tie).range(from, from + 499);
       if (result.error) throw result.error;
       rows.push(...result.data);
       if (result.data.length < 500) return rows;
     }
   }
-  const [records, trackers] = await Promise.all([
-    all('records', `${RECORD_FIELDS.map(([field]) => field).join(',')},sources(url,tracker_id,published_at,published_on,collected_at,authoritative)`, 'updated_at'),
-    all('trackers', TRACKER_FIELDS.map(([field]) => field).join(','), 'name'),
+  const [records, trackers, sources] = await Promise.all([
+    all('records', RECORD_FIELDS.map(([field]) => field).join(','), 'updated_at'),
+    all('tracker_status', TRACKER_FIELDS.map(([field]) => field).join(','), 'name'),
+    all('source_details', 'record_id,url,tracker_id,published_at,published_on,collected_at,last_seen_at,authoritative', 'record_id', 'url'),
   ]);
+  const byRecord = new Map();
+  for (const source of sources) {
+    if (!byRecord.has(source.record_id)) byRecord.set(source.record_id, []);
+    byRecord.get(source.record_id).push(source);
+  }
+  for (const record of records) record.sources = byRecord.get(record.id) ?? [];
   return { records, trackers };
 }
 
@@ -123,7 +129,7 @@ export function mountDashboard(root, load) {
       for (const source of record.sources ?? []) {
         const href = sourceLink(source.url);
         if (href) details.append(link(`Source · ${new URL(href).hostname}${source.authoritative ? ' · Authoritative' : ''}`, href));
-        details.append(node('p', `Source published · ${source.published_at ? stamp(source.published_at) : source.published_on || 'Unknown'} · Evidence collected · ${stamp(source.collected_at)}`, 'meta'));
+        details.append(node('p', `Source published · ${source.published_at ? stamp(source.published_at) : source.published_on || 'Unknown'} · Captured · ${stamp(source.collected_at)} · Last seen · ${stamp(source.last_seen_at)}`, 'meta'));
         const tracker = trackers.get(source.tracker_id);
         if (tracker && !seen.has(tracker.id)) {
           seen.add(tracker.id);
@@ -154,7 +160,7 @@ export function mountDashboard(root, load) {
         if (field === 'url' && value) cell.append(link(value, value));
         else cell.textContent = value == null || value === '' ? '—' : typeof value === 'boolean' ? value ? 'Yes' : 'No'
           : field.endsWith('_at') ? stamp(value) : value;
-        if (cell.textContent.length > 240 && ['coverage', 'cadence_note', 'configuration_note', 'last_error'].includes(field)) {
+        if (cell.textContent.length > 240 && ['coverage', 'last_error'].includes(field)) {
           const text = node('div', cell.textContent, 'field-value'); text.tabIndex = 0; cell.replaceChildren(text);
         }
         row.append(cell);

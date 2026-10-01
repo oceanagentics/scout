@@ -20,6 +20,7 @@ try {
       create table public.scout_local_migrations (name text primary key);`);
   }
   await db.exec('create table if not exists auth.identities (user_id uuid, provider text, identity_data jsonb)');
+  await db.exec("alter table auth.users add column if not exists raw_app_meta_data jsonb default '{}'");
   const applied = new Set((await db.query('select name from public.scout_local_migrations')).rows.map(row => row.name));
   for (const name of (await readdir(new URL('supabase/migrations/', root))).filter(name => name.endsWith('.sql')).sort()) {
     if (applied.has(name)) continue;

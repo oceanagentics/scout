@@ -11,14 +11,14 @@ const canReprepare = row => row.status === 'failed' && row.attempts === 0 && !ro
 const clip = (value, limit) => Array.from(String(value ?? '')).slice(0, limit).join('');
 const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const section = text => ({ type: 'section', text: { type: 'plain_text', text: clip(text, 2900), emoji: false } });
-const versionKey = record => `${CHANNEL}:${record.id}:${record.version}:${record.material_hash ?? ''}`;
+const versionKey = record => `${CHANNEL}:${record.id}:${record.version}`;
 
 export async function readRecords(db) {
   return (await db.query(`select to_jsonb(r) || jsonb_build_object(
     'version', to_char(r.updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-    'sources', coalesce((select jsonb_agg(jsonb_build_object('url',s.url,'published_at',s.published_at,
-      'published_on',s.published_on,'collected_at',s.collected_at,'authoritative',s.authoritative) order by s.authoritative desc,s.url)
-      from scout.sources s where s.record_id=r.id), '[]'::jsonb)) as record
+    'sources', coalesce((select jsonb_agg(jsonb_build_object('url',s.url,'published_at',v.published_at,
+      'published_on',v.published_on,'collected_at',v.collected_at) order by s.authoritative desc,s.url)
+      from scout.sources s join scout.source_versions v on v.id=s.source_version_id where s.record_id=r.id), '[]'::jsonb)) as record
     from scout.records r order by r.updated_at,r.id`)).rows.map(row => row.record);
 }
 
@@ -30,9 +30,11 @@ export async function getDelivery(db, id) {
 
 async function storeDelivery(db, key, kind, records, payload, snapshot = {}, status = 'pending', id = randomUUID()) {
   const record = ['finding', 'change'].includes(kind) ? records[0] : null;
-  await db.query(`insert into scout.deliveries(id,record_id,record_updated_at,kind,channel_id,idempotency_key,status,payload,snapshot)
-    values($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict(idempotency_key) do nothing`,
-  [id, record?.id ?? null, record?.version ?? null, kind, CHANNEL, key, status, payload, { format: 2, ...snapshot, records }]);
+  const snapshots = records.map(record => Object.fromEntries(
+    ['id', 'version', 'kind', 'title', 'description', 'location', 'status', 'registration_url', 'starts_at', 'ends_at'].map(field => [field, record[field]])));
+  await db.query(`insert into scout.deliveries(id,record_id,kind,channel_id,idempotency_key,status,payload,snapshot)
+    values($1,$2,$3,$4,$5,$6,$7,$8) on conflict(idempotency_key) do nothing`,
+  [id, record?.id ?? null, kind, CHANNEL, key, status, payload, { format: 3, ...snapshot, records: snapshots }]);
   return latestReplacement(db, (await db.query('select * from scout.deliveries where idempotency_key=$1', [key])).rows[0]);
 }
 
@@ -50,7 +52,7 @@ export async function baseline(db) {
     if (existing) return existing;
     const records = await readRecords(tx);
     for (const record of records) await storeDelivery(tx, versionKey(record), 'finding', [record], null, {}, 'baseline');
-    return storeDelivery(tx, baselineKey, 'baseline', records, null, { count: records.length }, 'baseline');
+    return storeDelivery(tx, baselineKey, 'baseline', [], null, { count: records.length }, 'baseline');
   });
 }
 
@@ -133,8 +135,8 @@ async function prepareDigestPayload(db, from, through, now, replaces = null) {
   const valid = day => /^\d{4}-\d{2}-\d{2}$/.test(day ?? '') && !Number.isNaN(Date.parse(day)) && new Date(day).toISOString().slice(0, 10) === day;
   if (!valid(from) || !valid(through) || through < from || Date.parse(through) - Date.parse(from) > 31 * 86400000) throw new Error('Provide an inclusive digest window of at most 32 calendar days.');
   const { dated, unknown } = digestRecords(await readRecords(db), from, through, now);
-  const coverage = (await db.query('select count(*)::int total,count(last_success_at)::int collected,max(last_success_at) last_success from scout.trackers')).rows[0];
-  const blocks = [section(`Window: ${from} through ${through} (inclusive source calendar dates).\nAs of: ${stamp(now.toISOString())}. Events must have a supported time and still be upcoming or in progress.\nCoverage: ${coverage.collected} of ${coverage.total} trackers has a successful collection. Latest success: ${stamp(coverage.last_success?.toISOString())}.`),
+  const coverage = (await db.query('select count(*)::int total,count(last_success_at)::int collected,max(last_success_at) last_success from scout.tracker_status')).rows[0];
+  const blocks = [section(`Window: ${from} through ${through} (inclusive UTC dates).\nAs of: ${stamp(now.toISOString())}. Events must have a supported time and still be upcoming or in progress.\nCoverage: ${coverage.collected} of ${coverage.total} trackers has a successful collection. Latest success: ${stamp(coverage.last_success?.toISOString())}.`),
     section(dated.length ? `${dated.length} qualifying events; showing ${Math.min(5, dated.length)}.` : 'No qualifying upcoming events in the collected records for this window. Other trackers may contain uncollected events.')];
   for (const record of dated.slice(0, 5)) blocks.push(...recordBlocks(record, now));
   blocks.push(section(`Date unknown: ${unknown.length}. These cannot be assigned to this reporting window${unknown.length > 3 ? '; showing 3' : ''}.`));
@@ -191,7 +193,7 @@ export async function sendDelivery(db, id, post, { now = () => new Date(), wait 
   if (row.status !== 'pending') return row;
   if (!row.payload || !row.snapshot?.records) throw new Error('Delivery has no reviewed payload evidence.');
   const records = await readRecords(db);
-  let stale = row.snapshot.format !== 2 || row.snapshot.records.some(record => !records.some(current => versionKey(current) === versionKey(record)));
+  let stale = row.snapshot.format !== 3 || row.snapshot.records.some(record => !records.some(current => versionKey(current) === versionKey(record)));
   stale ||= row.snapshot.records.some(record => record.kind === 'event' && eventTiming(record, new Date(row.snapshot.as_of)) !== eventTiming(record, now()));
   if (row.kind === 'digest') {
     const { dated, unknown } = digestRecords(records, row.snapshot.from, row.snapshot.through, now());

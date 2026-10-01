@@ -32,7 +32,7 @@ test('HTTP transport rejects private and mixed DNS answers before opening a sour
 async function database() {
   const db = new PGlite();
   await db.exec(`create role anon; create role authenticated; create role service_role bypassrls;
-    create schema auth; create table auth.users (id uuid primary key);
+    create schema auth; create table auth.users (id uuid primary key, raw_app_meta_data jsonb default '{}');
     create table auth.identities (user_id uuid, provider text, identity_data jsonb);
     create function auth.uid() returns uuid language sql as $$select null::uuid$$;`);
   for (const name of (await readdir(new URL('../supabase/migrations/', import.meta.url))).sort()) {
@@ -57,7 +57,7 @@ test('initial, unchanged, rescheduled, cosmetic, cancelled, and older repost kee
     assert.equal(first.outcome, 'success');
     const initial = (await db.query('select * from scout.records')).rows[0];
     assert.equal(initial.starts_at.toISOString(), '2026-10-08T14:00:00.000Z');
-    assert.equal(initial.time_zone, 'UTC');
+    assert.equal(Object.hasOwn(initial, 'time_zone'), false);
     assert.equal(initial.status, 'scheduled');
     assert.equal(initial.evidence_rank, 2);
     assert.equal((await db.query('select * from scout.sources')).rows.length, 2);
@@ -68,14 +68,16 @@ test('initial, unchanged, rescheduled, cosmetic, cancelled, and older repost kee
     assert.equal(history[0].current.location, null);
     assert.deepEqual(history[1].previous, {
       title: feed[0].post.record.text, description: feed[0].post.record.text,
-      starts_at: null, time_zone: null, status: null,
+      starts_at: null, status: null,
+      date_evidence: {},
     });
     assert.deepEqual(history[1].current, {
       title: 'BBNJ implementation webinar', description: 'BBNJ implementation webinar.',
-      starts_at: '2026-10-08T14:00:00.000Z', time_zone: 'UTC', status: 'scheduled',
+      starts_at: '2026-10-08T14:00:00.000Z', status: 'scheduled',
+      date_evidence: { schedule_source: history[1].source_version_id },
     });
     await baseline(db);
-    const success = (await db.query('select last_success_at from scout.trackers where id=(select tracker_id from scout.collection_runs limit 1)')).rows[0].last_success_at;
+    const success = (await db.query('select last_success_at from scout.tracker_status where id=(select tracker_id from scout.collection_runs limit 1)')).rows[0].last_success_at;
     const versionCount = (await db.query('select count(*)::int n from scout.source_versions')).rows[0].n;
     const repeat = await collectHSA(db, { since, read, now });
     assert.equal(repeat.outcome, 'no_change');
@@ -83,15 +85,22 @@ test('initial, unchanged, rescheduled, cosmetic, cancelled, and older repost kee
     assert.equal((await db.query('select count(*)::int n from scout.source_versions')).rows[0].n, versionCount);
     assert.deepEqual((await db.query('select * from scout.record_changes order by changed_at')).rows, history);
     assert.deepEqual(await prepareFindings(db), []);
-    assert.ok((await db.query('select last_success_at from scout.trackers where id=(select tracker_id from scout.collection_runs limit 1)')).rows[0].last_success_at > success);
+    assert.ok((await db.query('select last_success_at from scout.tracker_status where id=(select tracker_id from scout.collection_runs limit 1)')).rows[0].last_success_at > success);
+    // Later captures may lack a schedule; the establishing capture still proves it.
+    page = '<html>No structured schedule currently available</html>';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      assert.equal((await collectHSA(db, { since, read, now })).outcome, 'partial');
+      assert.deepEqual((await db.query('select starts_at from scout.records')).rows[0].starts_at, initial.starts_at);
+      assert.deepEqual((await db.query('select * from scout.record_changes order by changed_at')).rows, history);
+    }
     page = html('2026-10-15T14:00:00Z', 'EventRescheduled');
     assert.equal((await collectHSA(db, { since, read, now })).changed, 1);
     const rescheduled = (await db.query('select * from scout.records')).rows[0];
     assert.equal(rescheduled.starts_at.toISOString(), '2026-10-15T14:00:00.000Z');
     assert.equal(rescheduled.status, 'rescheduled');
     const change = (await db.query('select * from scout.record_changes order by changed_at desc limit 1')).rows[0];
-    assert.deepEqual(change.previous, { starts_at: '2026-10-08T14:00:00.000Z', status: 'scheduled' });
-    assert.deepEqual(change.current, { starts_at: '2026-10-15T14:00:00.000Z', status: 'rescheduled' });
+    assert.deepEqual(change.previous, { starts_at: '2026-10-08T14:00:00.000Z', status: 'scheduled', date_evidence: initial.date_evidence });
+    assert.deepEqual(change.current, { starts_at: '2026-10-15T14:00:00.000Z', status: 'rescheduled', date_evidence: { schedule_source: change.source_version_id } });
     assert.equal((await db.query('select content from scout.source_versions where id=$1', [change.source_version_id])).rows[0].content, page);
     page = html('2026-10-15T14:00:00Z', 'EventRescheduled', 'BBNJ   implementation webinar.');
     assert.equal((await collectHSA(db, { since, read, now })).outcome, 'no_change');
@@ -129,9 +138,9 @@ test('missing/ambiguous dates and irrelevant posts stay honest; fetch failures p
     const record = (await db.query('select * from scout.records')).rows[0];
     assert.equal(Object.hasOwn(record, 'start_on'), false);
     assert.equal(record.starts_at, null);
-    assert.equal(record.time_zone, null);
+    assert.equal(Object.hasOwn(record, 'time_zone'), false);
     assert.equal((await db.query('select * from scout.records')).rows.length, 1);
-    const previousSuccess = (await db.query("select last_success_at from scout.trackers where seed_key like '%:17'")).rows[0].last_success_at;
+    const previousSuccess = (await db.query("select last_success_at from scout.tracker_status where seed_key like '%:17'")).rows[0].last_success_at;
     const failed = await collectHSA(db, { since, read: async () => { throw new Error('Fixture unavailable'); } });
     assert.equal(failed.outcome, 'failed');
     assert.equal((await db.query('select * from scout.records')).rows.length, 1);
@@ -142,7 +151,7 @@ test('missing/ambiguous dates and irrelevant posts stay honest; fetch failures p
     assert.equal((await collectHSA(db, { since, read })).outcome, 'partial');
     const quota = await collectHSA(db, { since, read: async () => { throw Object.assign(new Error('HTTP 429'), { quota: true }); } });
     assert.equal(quota.outcome, 'quota');
-    assert.equal((await db.query("select last_success_at from scout.trackers where seed_key like '%:17'")).rows[0].last_success_at.getTime(), previousSuccess.getTime());
+    assert.equal((await db.query("select last_success_at from scout.tracker_status where seed_key like '%:17'")).rows[0].last_success_at.getTime(), previousSuccess.getTime());
     assert.equal((await db.query('select * from scout.records')).rows[0].updated_at.getTime(), record.updated_at.getTime());
   } finally { await db.close(); }
 });
@@ -162,7 +171,7 @@ test('structured date-only events and page failures preserve facts and partial s
     assert.equal(Object.hasOwn(row, 'start_on'), false);
     assert.equal((await db.query('select parsed from scout.source_versions where url=$1', [eventURL])).rows[0].parsed.start_on, '2026-10-20');
     assert.equal(row.starts_at, null);
-    assert.equal(row.time_zone, null);
+    assert.equal(Object.hasOwn(row, 'time_zone'), false);
     page = null;
     assert.equal((await collectHSA(db, { since, read })).outcome, 'partial');
     assert.equal((await db.query('select * from scout.records')).rows[0].starts_at, null);
@@ -235,12 +244,12 @@ test('recorded HSA/Zoom evidence stores the date but does not invent a time zone
     const row = (await db.query('select * from scout.records')).rows[0];
     assert.equal(Object.hasOwn(row, 'start_on'), false);
     assert.equal(row.starts_at, null);
-    assert.equal(row.time_zone, null);
+    assert.equal(Object.hasOwn(row, 'time_zone'), false);
     assert.match(row.title, /Marine Genetic Resources/);
     const source = (await db.query("select parsed from scout.source_versions where published_at is null")).rows[0].parsed;
     assert.equal(source.start_on, '2026-09-29');
     assert.match(source.title, /Marine Genetic Resources and Digital Sequence Information/);
-    assert.match(source.description, /07:30 AM/);
+    assert.deepEqual(source.local_schedule, { date: '2026-09-29', month: 9, day: 29, hour: 7, minute: 30 });
     assert.equal(Array.from(row.description).length, 280);
     const count = (await db.query('select count(*)::int n from scout.source_versions')).rows[0].n;
     page += '<script nonce="different-every-request">/* irrelevant page script */</script>';
@@ -269,8 +278,9 @@ test('descriptions are bounded in records while full source text and stable hist
     assert.equal(JSON.parse(source.content).text, text);
     const history = (await db.query('select * from scout.record_changes')).rows;
     assert.equal(history[0].current.description, record.description);
-    // Material hashes created by an earlier schema must not cause a false change.
-    await db.query("update scout.records set material_hash='legacy-hash' where id=$1", [record.id]);
+    assert.equal(Object.hasOwn(record, 'material_hash'), false);
+    await db.query("update scout.source_versions set content_hash=replace(content_hash,'hsa-v3:','hsa-v2:'),parsed=parsed || $1 where id=$2",
+      [{ summary: text, published_on: '2026-09-30' }, source.id]);
     const migrated = (await db.query('select * from scout.records')).rows[0];
     assert.equal((await collectHSA(db, { since, read })).outcome, 'no_change');
     assert.equal((await db.query('select updated_at from scout.records')).rows[0].updated_at.getTime(), migrated.updated_at.getTime());
@@ -292,16 +302,13 @@ test('matching real HSA and Zoom components supply a proven time zone; conflicts
     assert.equal((await collectHSA(db, { since, read })).outcome, 'success');
     const row = (await db.query('select * from scout.records')).rows[0];
     assert.equal(row.starts_at.toISOString(), '2026-09-29T11:30:00.000Z');
-    assert.equal(row.time_zone, '-04:00');
+    assert.equal(Object.hasOwn(row, 'time_zone'), false);
     assert.equal(Object.hasOwn(row, 'start_on'), false);
-    assert.equal(row.date_evidence.calendar_date.value, '2026-09-29');
-    assert.equal(row.date_evidence.local_time.value, '07:30');
-    assert.equal(row.date_evidence.time_zone.value, 'EDT');
     const versions = (await db.query('select id,parsed,url from scout.source_versions')).rows;
-    const zone = versions.find(item => item.id === row.date_evidence.time_zone.source_versions[0]);
+    const zone = versions.find(item => item.id === row.date_evidence.zone_source);
     assert.equal(zone.parsed.date_parts.zone, 'EDT');
     assert.match(zone.url, /3mvkyjyep6m24$/);
-    assert.ok(row.date_evidence.calendar_date.source_versions.some(id => versions.find(item => item.id === id)?.parsed.local_schedule?.date === '2026-09-29'));
+    assert.equal(versions.find(item => item.id === row.date_evidence.schedule_source).parsed.local_schedule.date, '2026-09-29');
     assert.deepEqual((await db.query('select current from scout.record_changes order by changed_at desc limit 1')).rows[0].current.date_evidence, row.date_evidence);
     for (let repeat = 0; repeat < 2; repeat++) {
       assert.equal((await collectHSA(db, { since, read })).outcome, 'no_change');
@@ -320,7 +327,7 @@ test('matching real HSA and Zoom components supply a proven time zone; conflicts
     const unresolved = (await db.query('select * from scout.records')).rows[0];
     assert.equal(Object.hasOwn(unresolved, 'start_on'), false);
     assert.equal(unresolved.starts_at, null);
-    assert.equal(unresolved.time_zone, null);
+    assert.equal(Object.hasOwn(unresolved, 'time_zone'), false);
     assert.equal((await collectHSA(db, { since, read })).changed, 0);
   } finally { await db.close(); }
 });

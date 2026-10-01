@@ -11,6 +11,9 @@ const evidenceMigration = await readFile(new URL('../supabase/migrations/2026100
 const workspaceMigration = await readFile(new URL('../supabase/migrations/20261001140000_scout_workspace_access.sql', import.meta.url), 'utf8');
 const historyMigration = await readFile(new URL('../supabase/migrations/20261001150000_scout_record_change_fields.sql', import.meta.url), 'utf8');
 const leanMigration = await readFile(new URL('../supabase/migrations/20261001160000_scout_lean_records.sql', import.meta.url), 'utf8');
+const deliveryMigration = await readFile(new URL('../supabase/migrations/20261001090000_scout_delivery_evidence.sql', import.meta.url), 'utf8');
+const schemaMigration = await readFile(new URL('../supabase/migrations/20261001170000_scout_lean_schema.sql', import.meta.url), 'utf8');
+const beforeSchema = migration + trackerMigration + collectionMigration + evidenceMigration + deliveryMigration + workspaceMigration + historyMigration + leanMigration;
 const reader = '00000000-0000-0000-0000-000000000001';
 const admin = '00000000-0000-0000-0000-000000000002';
 const outsider = '00000000-0000-0000-0000-000000000003';
@@ -21,7 +24,7 @@ const auth = `
   create role authenticated;
   create role service_role bypassrls;
   create schema auth;
-  create table auth.users (id uuid primary key, raw_user_meta_data jsonb default '{}');
+  create table auth.users (id uuid primary key, raw_app_meta_data jsonb default '{}', raw_user_meta_data jsonb default '{}');
   create table auth.identities (user_id uuid, provider text, identity_data jsonb);
   create function auth.uid() returns uuid language sql stable as
     $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
@@ -227,10 +230,10 @@ test('Workspace provider proof grants readers automatically; editable metadata a
   const db = new PGlite();
   const proof = { iss: 'https://accounts.google.com', email: 'reader@oceanagentics.com', email_verified: true, custom_claims: { hd: 'oceanagentics.com' } };
   try {
-    await db.exec(auth + fixture + migration + trackerMigration + collectionMigration + evidenceMigration + workspaceMigration + trackerSeed);
+    await db.exec(auth + fixture + beforeSchema + schemaMigration + trackerSeed);
     const shared = (await db.query(sharedState)).rows;
     await db.exec("insert into scout.records (kind,title) values ('announcement','Private fixture')");
-    await db.query('update auth.users set raw_user_meta_data=$1 where id=$2', [JSON.stringify(proof), outsider]);
+    await db.query('update auth.users set raw_user_meta_data=$1 where id=$2', [JSON.stringify({ ...proof, scout: { admin: true } }), outsider]);
     const denied = [null, ['email', proof], ['other', proof], ['google', { ...proof, iss: 'https://attacker.example' }],
       ['google', { ...proof, email: 'person@gmail.com', custom_claims: {} }],
       ['google', { ...proof, custom_claims: { hd: 'other.example' } }],
@@ -251,24 +254,100 @@ test('Workspace provider proof grants readers automatically; editable metadata a
     await db.query('insert into auth.identities values ($1,$2,$3)', [outsider, 'google', JSON.stringify(proof)]);
     await db.exec('set role authenticated');
     assert.equal((await db.query('select scout.access_role() as role')).rows[0].role, 'reader');
-    assert.equal((await db.query('select * from scout.memberships')).rows.length, 0);
     assert.equal((await db.query('select * from scout.records')).rows.length, 1);
     assert.equal((await db.query('select * from scout.trackers')).rows.length, 22);
     assert.equal((await db.query('update scout.trackers set enabled=false returning id')).rows.length, 0);
-    await assert.rejects(db.query("insert into scout.memberships values ($1,'admin',now())", [outsider]), { code: '42501' });
+    await assert.rejects(db.query("update auth.users set raw_app_meta_data='{\"scout\":{\"admin\":true}}'"), { code: '42501' });
     for (const table of ['records','sources','record_changes','collection_runs','deliveries','source_versions']) {
       await assert.rejects(db.query(`delete from scout.${table}`), { code: '42501' });
     }
     await db.exec('reset role');
     assert.deepEqual((await db.query(sharedState)).rows, shared);
-    await db.query("insert into scout.memberships (user_id,role) values ($1,'admin')", [outsider]);
+    await db.query("update auth.users set raw_app_meta_data='{\"scout\":{\"admin\":true}}' where id=$1", [outsider]);
     await db.query('delete from auth.identities where user_id=$1', [outsider]);
     await db.exec('set role authenticated');
     assert.equal((await db.query('select scout.access_role() as role')).rows[0].role, null);
-    assert.equal((await db.query('select * from scout.memberships')).rows.length, 0);
     assert.equal((await db.query('update scout.trackers set enabled=false returning id')).rows.length, 0);
     await db.exec('reset role; set role anon');
     await assert.rejects(db.query('select scout.access_role()'), { code: '42501' });
+  } finally { await db.close(); }
+});
+
+test('schema cleanup preserves evidence, derives freshness, migrates admins and protects source projections', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(auth + fixture + beforeSchema);
+    await db.query("insert into scout.memberships(user_id,role) values ($1,'admin')", [admin]);
+    await db.query('update auth.users set raw_app_meta_data=$1 where id=$2', [{ other: 'unchanged', scout: { preference: 'keep' } }, admin]);
+    const tracker = (await db.query("insert into scout.trackers(name,url,channel,method,cadence) values ('HSA','https://example.org','Bluesky','Bluesky API: getAuthorFeed','1 day') returning id")).rows[0];
+    const record = (await db.query("insert into scout.records(kind,title,starts_at,time_zone,updated_at) values ('event','BBNJ webinar','2026-10-02T00:30Z','-04:00','2026-10-01') returning *")).rows[0];
+    const source = (await db.query(`insert into scout.source_versions(tracker_id,url,content_hash,content,parsed,collected_at)
+      values ($1,'https://example.org/event','hsa-v2:fixture','Complete original content','{"summary":"Original parsed evidence","starts_at":"2026-10-02T00:30:00.000Z"}','2026-09-30T00:00Z') returning *`, [tracker.id])).rows[0];
+    const direct = (await db.query("insert into scout.records(kind,title,starts_at,time_zone) values ('event','Direct timestamp','2026-10-02T00:30Z','-04:00') returning id")).rows[0];
+    const directHistory = (await db.query('insert into scout.record_changes(record_id,source_version_id,current) values ($1,$2,$3) returning *', [direct.id, source.id, { starts_at: '2026-10-02T00:30:00.000Z' }])).rows[0];
+    const dateEvidence = { calendar_date: { value: '2026-10-01', source_versions: [source.id] }, time_zone: { value: 'EDT', source_versions: [source.id] } };
+    await db.query('update scout.records set date_evidence=$1 where id=$2', [dateEvidence, record.id]);
+    const history = (await db.query('insert into scout.record_changes(record_id,source_version_id,current) values ($1,$2,$3) returning *', [record.id, source.id, { date_evidence: dateEvidence }])).rows[0];
+    const delivery = (await db.query(`insert into scout.deliveries(record_id,record_updated_at,kind,channel_id,idempotency_key,payload,snapshot)
+      values ($1,$2,'finding','fixture','fixture','{"text":"Original message"}',$3) returning *`, [record.id, record.updated_at, { format: 2, records: [record] }])).rows[0];
+    await db.query(`insert into scout.sources(record_id,tracker_id,url,content_hash,excerpt,published_on,collected_at,authoritative)
+      values ($1,$2,'https://example.org/event','hsa-v2:fixture','Complete original content','2026-09-29','2026-10-01T00:00Z',true)`, [record.id, tracker.id]);
+    await db.query(`insert into scout.collection_runs(tracker_id,started_at,finished_at,outcome,error,stats) values
+      ($1,'2026-09-29T00:00Z','2026-09-29T00:01Z','success',null,'{"models":0}'),
+      ($1,'2026-09-30T00:00Z','2026-09-30T00:01Z','partial','Page unavailable','{"warnings":["Page unavailable"],"models":0}'),
+      ($1,'2026-10-01T00:00Z',null,'running',null,'{}')`, [tracker.id]);
+    const shared = (await db.query(sharedState)).rows;
+    // Refuse to discard a source whose capture cannot be identified.
+    await db.query("insert into scout.sources(record_id,url,excerpt) values ($1,'https://example.org/unmatched','Uncaptured evidence')", [record.id]);
+    await assert.rejects(db.exec(schemaMigration), { code: '23502' });
+    await db.exec('rollback');
+    assert.equal((await db.query('select count(*)::int n from scout.memberships')).rows[0].n, 1);
+    assert.equal((await db.query('select count(*)::int n from scout.sources')).rows[0].n, 2);
+    await db.query("delete from scout.sources where url='https://example.org/unmatched'");
+    await db.exec(schemaMigration);
+    assert.equal((await db.query("select count(*)::int n from information_schema.tables where table_schema='scout' and table_type='BASE TABLE'")).rows[0].n, 7);
+    assert.equal((await db.query("select count(*)::int n from information_schema.columns c join information_schema.tables t using(table_schema,table_name) where c.table_schema='scout' and t.table_type='BASE TABLE'")).rows[0].n, 67);
+    const migrated = (await db.query('select * from scout.records where id=$1', [record.id])).rows[0];
+    assert.deepEqual(migrated.starts_at, record.starts_at);
+    assert.deepEqual(migrated.updated_at, record.updated_at);
+    assert.deepEqual(migrated.date_evidence, { schedule_source: source.id, zone_source: source.id });
+    assert.deepEqual((await db.query('select date_evidence from scout.records where id=$1', [direct.id])).rows[0].date_evidence, { schedule_source: source.id });
+    for (const key of ['created_at','material_hash','time_zone']) assert.equal(Object.hasOwn(migrated, key), false);
+    const capture = (await db.query('select * from scout.source_versions')).rows[0];
+    assert.equal(capture.published_on.toISOString().slice(0, 10), '2026-09-29');
+    delete capture.published_on;
+    assert.deepEqual(capture, source);
+    assert.deepEqual((await db.query('select * from scout.record_changes order by changed_at')).rows, [directHistory, history]);
+    delete delivery.record_updated_at;
+    assert.deepEqual((await db.query('select * from scout.deliveries')).rows, [delivery]);
+    const status = (await db.query('select * from scout.tracker_status')).rows[0];
+    assert.equal(status.collector, 'bluesky_feed');
+    assert.equal(status.last_attempt_at.toISOString(), '2026-10-01T00:00:00.000Z');
+    assert.equal(status.last_success_at.toISOString(), '2026-09-29T00:01:00.000Z');
+    assert.equal(status.last_outcome, 'partial');
+    assert.equal(status.last_error, 'Page unavailable');
+    assert.deepEqual((await db.query('select raw_app_meta_data from auth.users where id=$1', [admin])).rows[0].raw_app_meta_data,
+      { other: 'unchanged', scout: { preference: 'keep', admin: true } });
+    assert.deepEqual((await db.query(sharedState)).rows, shared);
+    await db.exec('set role authenticated');
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [outsider]);
+    for (const view of ['source_details','tracker_status']) assert.deepEqual((await db.query(`select * from scout.${view}`)).rows, []);
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [reader]);
+    assert.equal((await db.query('select scout.access_role() as role')).rows[0].role, 'reader');
+    const detail = (await db.query('select * from scout.source_details')).rows[0];
+    assert.equal(detail.published_on.toISOString().slice(0, 10), '2026-09-29');
+    assert.equal(detail.collected_at.toISOString(), '2026-09-30T00:00:00.000Z');
+    assert.equal(detail.last_seen_at.toISOString(), '2026-10-01T00:00:00.000Z');
+    assert.equal(Object.hasOwn(detail, 'content'), false);
+    await assert.rejects(db.query('select * from scout.source_versions'), { code: '42501' });
+    await assert.rejects(db.query("update scout.source_details set url='https://example.org/tampered'"), { code: '55000' });
+    assert.equal((await db.query('update scout.trackers set enabled=false returning id')).rows.length, 0);
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [admin]);
+    assert.equal((await db.query('select scout.access_role() as role')).rows[0].role, 'admin');
+    assert.equal((await db.query("update scout.trackers set collector='web' returning id")).rows.length, 1);
+    await assert.rejects(db.query('update auth.users set raw_app_meta_data=null'), { code: '42501' });
+    await db.exec('reset role; set role anon');
+    for (const view of ['source_details','tracker_status']) await assert.rejects(db.query(`select * from scout.${view}`), { code: '42501' });
   } finally { await db.close(); }
 });
 
@@ -277,44 +356,39 @@ test('all tracker seeds are uncollected and repeat safely after app edits', asyn
   try {
     await db.exec(auth + fixture);
     const beforeOtherService = (await db.query(sharedState)).rows;
-    await db.exec(migration);
-    await db.exec(trackerMigration);
+    await db.exec(beforeSchema + schemaMigration);
     await db.exec(trackerSeed);
     const initial = (await db.query('select * from scout.trackers order by seed_key')).rows;
     assert.equal(initial.length, 22);
     assert.deepEqual(new Set(initial.map(row => row.seed_key)), new Set(Array.from({ length: 22 }, (_, i) => `bbnj-trackers-2026-10-01:${i}`)));
-    for (const row of initial) {
-      for (const key of ['last_attempt_at', 'last_success_at', 'last_outcome', 'last_error', 'next_run_at']) assert.equal(row[key], null);
+    for (const row of (await db.query('select * from scout.tracker_status')).rows) {
+      for (const key of ['last_attempt_at', 'last_success_at', 'last_outcome', 'last_error']) assert.equal(row[key], null);
     }
     const website = initial.find(row => row.seed_key.endsWith(':0'));
     const feed = initial.find(row => row.seed_key.endsWith(':17'));
     const discovery = initial.find(row => row.seed_key.endsWith(':21'));
-    assert.equal(website.channel, 'Website');
-    assert.equal(website.method, 'Web retrieval + extraction');
+    assert.equal(website.collector, 'web');
     assert.equal(website.cadence, '7 days');
     assert.equal(feed.url, 'https://bsky.app/profile/highseasalliance.bsky.social');
-    assert.equal(feed.method, 'Bluesky API: getAuthorFeed');
+    assert.equal(feed.collector, 'bluesky_feed');
     assert.equal(feed.cadence, '1 day');
-    assert.equal(discovery.method, 'Bluesky API: searchPosts; separate keyword queries');
-    assert.equal(discovery.cadence_note, 'Weekly; daily during major BBNJ meetings');
+    assert.equal(discovery.collector, 'bluesky_search');
     assert.match(discovery.coverage, /traité sur la haute mer/);
-    assert.equal(initial.filter(row => row.channel === 'Website').length, 17);
-    assert.equal(initial.filter(row => row.method === feed.method).length, 4);
-    assert.equal(initial.filter(row => row.cadence_note.includes('; daily')).length, 5);
+    assert.equal(initial.filter(row => row.collector === 'web').length, 17);
+    assert.equal(initial.filter(row => row.collector === feed.collector).length, 4);
     const incomplete = initial.find(row => row.seed_key.endsWith(':8'));
     assert.equal(incomplete.url, null);
     assert.equal(incomplete.enabled, false);
-    assert.equal(incomplete.configuration_note, 'Set per conference');
-    await db.query("insert into scout.memberships (user_id,role) values ($1,'admin')", [admin]);
+    await db.query("update auth.users set raw_app_meta_data='{\"scout\":{\"admin\":true}}' where id=$1", [admin]);
     await db.exec('set role authenticated');
     await db.query("select set_config('request.jwt.claim.sub', $1, false)", [admin]);
     await db.query(`update scout.trackers set name = 'Edited source', url = 'https://example.org/edited',
-      method = 'Edited method', coverage = 'Edited coverage', cadence = '2 days', cadence_note = 'Every other day', enabled = false
+      collector = 'Edited collector', coverage = 'Edited coverage', cadence = '2 days', enabled = false
       where id = $1`, [feed.id]);
     await assert.rejects(db.query("update scout.trackers set seed_key = 'edited' where id = $1", [feed.id]), { code: '42501' });
     await assert.rejects(db.query('update scout.trackers set enabled = true where id = $1', [incomplete.id]), { code: '23514' });
     await db.exec('reset role');
-    await db.query("update scout.trackers set last_attempt_at = now(), last_success_at = now(), last_outcome = 'no_change', next_run_at = now() + interval '2 days' where id = $1", [feed.id]);
+    await db.query("insert into scout.collection_runs(tracker_id,finished_at,outcome) values ($1,now(),'no_change')", [feed.id]);
     const edited = (await db.query('select * from scout.trackers order by seed_key')).rows;
     await db.exec(trackerSeed);
     await db.exec(trackerSeed);
