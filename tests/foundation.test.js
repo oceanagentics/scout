@@ -8,6 +8,7 @@ const trackerMigration = await readFile(new URL('../supabase/migrations/20261001
 const trackerSeed = await readFile(new URL('../supabase/seeds/trackers.sql', import.meta.url), 'utf8');
 const collectionMigration = await readFile(new URL('../supabase/migrations/20261001070000_scout_collection.sql', import.meta.url), 'utf8');
 const evidenceMigration = await readFile(new URL('../supabase/migrations/20261001080000_scout_event_evidence.sql', import.meta.url), 'utf8');
+const workspaceMigration = await readFile(new URL('../supabase/migrations/20261001140000_scout_workspace_access.sql', import.meta.url), 'utf8');
 const reader = '00000000-0000-0000-0000-000000000001';
 const admin = '00000000-0000-0000-0000-000000000002';
 const outsider = '00000000-0000-0000-0000-000000000003';
@@ -18,12 +19,15 @@ const auth = `
   create role authenticated;
   create role service_role bypassrls;
   create schema auth;
-  create table auth.users (id uuid primary key);
+  create table auth.users (id uuid primary key, raw_user_meta_data jsonb default '{}');
+  create table auth.identities (user_id uuid, provider text, identity_data jsonb);
   create function auth.uid() returns uuid language sql stable as
     $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
   grant usage on schema auth to anon, authenticated, service_role;
   grant execute on function auth.uid() to anon, authenticated, service_role;
-  insert into auth.users values ('${reader}'), ('${admin}'), ('${outsider}');
+  insert into auth.users (id) values ('${reader}'), ('${admin}'), ('${outsider}');
+  insert into auth.identities select id, 'google', '{"iss":"https://accounts.google.com","email_verified":true,"custom_claims":{"hd":"oceanagentics.com"}}'::jsonb
+    from auth.users where id in ('${reader}','${admin}');
 `;
 const fixture = `
   create schema otherservice;
@@ -69,6 +73,7 @@ for (const shared of [false, true]) {
       await db.exec(trackerMigration);
       await db.exec(collectionMigration);
       await db.exec(evidenceMigration);
+      await db.exec(workspaceMigration);
       if (shared) assert.deepEqual((await db.query(sharedState)).rows, before);
       assert.equal((await db.query("select count(*)::int n from pg_class where relnamespace = 'scout'::regnamespace and relkind = 'r' and relrowsecurity")).rows[0].n, 8);
       await db.exec(`
@@ -121,6 +126,55 @@ for (const shared of [false, true]) {
     }
   });
 }
+
+test('Workspace provider proof grants readers automatically; editable metadata and other identities cannot grant access', async () => {
+  const db = new PGlite();
+  const proof = { iss: 'https://accounts.google.com', email: 'reader@oceanagentics.com', email_verified: true, custom_claims: { hd: 'oceanagentics.com' } };
+  try {
+    await db.exec(auth + fixture + migration + trackerMigration + collectionMigration + evidenceMigration + workspaceMigration + trackerSeed);
+    const shared = (await db.query(sharedState)).rows;
+    await db.exec("insert into scout.records (kind,title) values ('announcement','Private fixture')");
+    await db.query('update auth.users set raw_user_meta_data=$1 where id=$2', [JSON.stringify(proof), outsider]);
+    const denied = [null, ['email', proof], ['other', proof], ['google', { ...proof, iss: 'https://attacker.example' }],
+      ['google', { ...proof, email: 'person@gmail.com', custom_claims: {} }],
+      ['google', { ...proof, custom_claims: { hd: 'other.example' } }],
+      ['google', { ...proof, email_verified: false }], ['google', { ...proof, email_verified: 'true' }],
+      ['google', { ...proof, custom_claims: null }]];
+    for (const identity of denied) {
+      await db.query('delete from auth.identities where user_id=$1', [outsider]);
+      if (identity) await db.query('insert into auth.identities values ($1,$2,$3)', [outsider, identity[0], JSON.stringify(identity[1])]);
+      await db.exec('set role authenticated');
+      await db.query("select set_config('request.jwt.claim.sub',$1,false)", [outsider]);
+      assert.equal((await db.query('select scout.access_role() as role')).rows[0].role, null);
+      assert.equal((await db.query('select * from scout.records')).rows.length, 0);
+      assert.equal((await db.query('select * from scout.trackers')).rows.length, 0);
+      await assert.rejects(db.query('update auth.identities set identity_data=$1', [JSON.stringify(proof)]), { code: '42501' });
+      await db.exec('reset role');
+    }
+    await db.query('delete from auth.identities where user_id=$1', [outsider]);
+    await db.query('insert into auth.identities values ($1,$2,$3)', [outsider, 'google', JSON.stringify(proof)]);
+    await db.exec('set role authenticated');
+    assert.equal((await db.query('select scout.access_role() as role')).rows[0].role, 'reader');
+    assert.equal((await db.query('select * from scout.memberships')).rows.length, 0);
+    assert.equal((await db.query('select * from scout.records')).rows.length, 1);
+    assert.equal((await db.query('select * from scout.trackers')).rows.length, 22);
+    assert.equal((await db.query('update scout.trackers set enabled=false returning id')).rows.length, 0);
+    await assert.rejects(db.query("insert into scout.memberships values ($1,'admin',now())", [outsider]), { code: '42501' });
+    for (const table of ['records','sources','record_changes','collection_runs','deliveries','source_versions']) {
+      await assert.rejects(db.query(`delete from scout.${table}`), { code: '42501' });
+    }
+    await db.exec('reset role');
+    assert.deepEqual((await db.query(sharedState)).rows, shared);
+    await db.query("insert into scout.memberships (user_id,role) values ($1,'admin')", [outsider]);
+    await db.query('delete from auth.identities where user_id=$1', [outsider]);
+    await db.exec('set role authenticated');
+    assert.equal((await db.query('select scout.access_role() as role')).rows[0].role, null);
+    assert.equal((await db.query('select * from scout.memberships')).rows.length, 0);
+    assert.equal((await db.query('update scout.trackers set enabled=false returning id')).rows.length, 0);
+    await db.exec('reset role; set role anon');
+    await assert.rejects(db.query('select scout.access_role()'), { code: '42501' });
+  } finally { await db.close(); }
+});
 
 test('all tracker seeds are uncollected and repeat safely after app edits', async () => {
   const db = new PGlite();

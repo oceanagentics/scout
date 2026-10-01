@@ -10,6 +10,7 @@ async function database() {
   const db = new PGlite();
   await db.exec(`create role anon; create role authenticated; create role service_role bypassrls;
     create schema auth; create table auth.users(id uuid primary key);
+    create table auth.identities (user_id uuid, provider text, identity_data jsonb);
     create function auth.uid() returns uuid language sql as $$select null::uuid$$;`);
   for (const name of (await readdir(new URL('../supabase/migrations/', import.meta.url))).sort()) {
     await db.exec(await readFile(new URL(`../supabase/migrations/${name}`, import.meta.url), 'utf8'));
