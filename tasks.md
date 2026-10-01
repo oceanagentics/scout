@@ -48,7 +48,8 @@ Outcome: The agent has a confirmed scope, usable service access, and explicit fr
 Acceptance criteria:
 
 - [ ] Confirm the proposed POC scope and deferrals, intended app audience, administrators, Slack workspace/channel, and notification schedule/time zone.
-- [ ] Confirm Firebase Hosting access through OA's existing Google account, a Spark project with a separate Scout site, Supabase Free, Tavily Free, and installation access for a custom Slack app in the existing workspace. Cloudflare signup is no longer needed. Record missing access without storing secrets here.
+- [ ] Confirm Firebase Hosting access through OA's existing Google account, a Spark project with a separate Scout site, Supabase Free project `chm`, Tavily Free, and installation access for a custom Slack app in the existing workspace. Cloudflare signup is no longer needed. Record missing access without storing secrets here.
+- [ ] Confirm the shared `chm` project identity, available free capacity, and existing services before provisioning. Use the default `postgres` database with one schema per service (`scout`; `otherservice` is a future-service example). Record Data API on, automatic table exposure off, and RLS on; budget Scout against remaining project-wide quotas.
 - [ ] Use OA's Google Workspace account for AI Studio; obtain administrator enablement if needed and create a Scout Gemini API key in an OA-controlled project. Verify a supported free model and its actual quota with a bounded request; Workspace's included Gemini features do not supply API quota.
 - [ ] Verify current provider allowances and account eligibility. Planning baseline: Firebase Hosting 10 GB storage and 10 GB/month transfer; Supabase 500 MB database, 1 GB storage, 5 GB egress, and 500,000 function invocations/month; Tavily 1,000 credits/month without a card; model limits are account-specific. Do not count nonprofit Workspace benefits or trial credits as recurring backend/search capacity.
 - [ ] Record model/search caps and retry limits within the available free quotas. Verify that paid upgrades and automatic top-ups are off.
@@ -62,17 +63,18 @@ Blockers: None recorded; scope decisions and service access are unverified.
 Status: todo
 Depends on: SCOUT-01
 
-Outcome: A minimal app runs locally and on Firebase Hosting, with a Supabase backend and versioned database migrations.
+Outcome: A minimal app runs locally and on Firebase Hosting, with Supabase project `chm` and versioned migrations for its `scout` schema.
 
 Acceptance criteria:
 
 - [ ] Select a minimal stack with a static frontend deployable to Firebase Hosting on Spark and a Supabase backend; record local, migration, and deployment commands. Reuse the Ryu hosting approach for a separate Scout site without changing Ryu's deployment. Keep workers and schedules on Supabase; Firebase Cloud Functions/Blaze and a Sheets/Apps Script backend redesign are outside this POC plan.
 - [ ] A deployed app can read a harmless sample record from the database. Verify local startup and the hosted URL.
-- [ ] Migrations support trackers, collection history, events, announcements, treaty-status changes, source references, and notification delivery state. Use the smallest schema that supports these responsibilities.
+- [ ] Create the `scout` schema in `chm`'s default `postgres` database. Put Scout's trackers, collection history, events, announcements, treaty-status changes, source references, and notification delivery state there (for example, `scout.events`). Use the smallest schema that supports these responsibilities.
+- [ ] Configure clients and migrations to target `scout` explicitly. Add `scout` to the Data API's exposed schemas while preserving existing services; grant only required schema/table/function privileges and enable RLS with policies in the same migrations. Do not grant automatic access to all future tables.
 - [ ] Events support organization, title, description, location/URL, source-backed dates/time zones, registration link, status, and last update. Announcements support summary, publication date, sources, and last update. Treaty changes support country, action, and recorded date.
 - [ ] Keep source publication dates, event dates, collection times, and record update times distinct. Support multiple source references for one record.
-- [ ] Enforce the agreed access policy. Verify unauthorized writes fail and secret keys are absent from browser assets and logs.
-- [ ] Applying migrations to an empty development database succeeds.
+- [ ] Enforce Scout-specific access within the project's shared Auth setup. Verify unauthorized writes and access to private records across service boundaries fail; authentication in another service does not confer Scout administrator access. Keep project-wide service-role credentials backend-only and absent from browser assets and logs.
+- [ ] Review existing migration history before applying Scout migrations. Verify they succeed in an empty development database and preserve other services' schema objects, data, and permissions in a shared development database. Never reset the shared remote project as a setup step.
 
 Verification: Pending.
 Blockers: None recorded.
@@ -161,7 +163,7 @@ Outcome: Due trackers and notifications run automatically with visible outcomes 
 
 Acceptance criteria:
 
-- [ ] Supabase Cron invokes small collection jobs using each tracker's method and cadence; paused and not-yet-due trackers are skipped.
+- [ ] Supabase Cron invokes small collection jobs using each tracker's method and cadence; paused and not-yet-due trackers are skipped. Prefix Scout's deployed Edge Functions and scheduled jobs with `scout-` to avoid collisions with other `chm` services.
 - [ ] Overlapping runs cannot collect the same tracker concurrently. Interrupted runs can recover without leaving the tracker permanently stuck.
 - [ ] Persist last attempt, last success, latest error/outcome, and next run. Retry transient failures within configured caps; quota failures wait for quota availability.
 - [ ] Schedule daily Slack findings and weekly digests independently from collection, using the agreed time zone and reporting windows.
