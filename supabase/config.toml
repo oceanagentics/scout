@@ -1,0 +1,4 @@
+[functions.scout-collect-hsa]
+verify_jwt = false
+entrypoint = "./functions/scout-collect-hsa/index.ts"
+import_map = "./functions/scout-collect-hsa/deno.json"

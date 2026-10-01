@@ -1,8 +1,10 @@
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
+import dns from 'node:dns';
+import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
-import { collectHSA, HSA, sourceURL } from '../collector/hsa.js';
+import { collectHSA, HSA, sourceURL, readPublic } from '../collector/hsa.js';
 
 const since = '2026-09-01T00:00:00Z';
 const eventURL = 'https://highseasalliance.org/events/bbnj-webinar/';
@@ -14,6 +16,17 @@ const html = (startDate, eventStatus = 'EventScheduled', description = 'BBNJ imp
   '@context': 'https://schema.org', '@type': 'Event', name: 'BBNJ implementation webinar', startDate,
   eventStatus: `https://schema.org/${eventStatus}`, organizer: { name: 'High Seas Alliance' }, description, url: eventURL,
 })}</script>`;
+
+test('HTTP transport rejects private and mixed DNS answers before opening a source socket', async () => {
+  for (const addresses of [[{ address: '127.0.0.1', family: 4 }], [{ address: 'fd00::1', family: 6 }],
+    [{ address: '1.1.1.1', family: 4 }, { address: '10.0.0.1', family: 4 }]]) {
+    const resolver = mock.method(dns, 'lookup', (_host, _options, callback) => callback(null, addresses));
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(readPublic('https://example.test/source', { requests: 0, deadline: Date.now() + 1000 }), /Non-public source address/);
+    } finally { resolver.mock.restore(); syncBuiltinESMExports(); }
+  }
+});
 
 async function database() {
   const db = new PGlite();
@@ -96,6 +109,9 @@ test('missing/ambiguous dates and irrelevant posts stay honest; fetch failures p
     const failed = await collectHSA(db, { since, read: async () => { throw new Error('Fixture unavailable'); } });
     assert.equal(failed.outcome, 'failed');
     assert.equal((await db.query('select * from scout.records')).rows.length, 1);
+    const expired = await collectHSA(db, { since, read, deadline: 0 });
+    assert.equal(expired.outcome, 'failed');
+    assert.deepEqual(expired.warnings, ['Collection time limit reached']);
     response = { feed: [fixturePost('unknown', 'Join our BBNJ webinar. Date to follow.', undefined, HSA, null)], cursor: 'more' };
     assert.equal((await collectHSA(db, { since, read })).outcome, 'partial');
     const quota = await collectHSA(db, { since, read: async () => { throw Object.assign(new Error('HTTP 429'), { quota: true }); } });

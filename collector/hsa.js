@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { request } from 'node:https';
+import { Buffer } from 'node:buffer';
+import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
 import { isIP } from 'node:net';
 
@@ -32,9 +33,7 @@ export function sourceURL(value) {
 export async function readPublic(url, budget, redirects = 0) {
   url = sourceURL(url);
   if (++budget.requests > LIMITS.requests || Date.now() > budget.deadline) throw new Error('Request/time limit reached');
-  const result = await new Promise((resolve, reject) => {
-    const req = request(url, {
-      headers: { 'User-Agent': USER_AGENT, Accept: 'application/json, text/html;q=0.9', 'Accept-Encoding': 'identity' },
+  const agent = new Agent({ connect: {
       lookup(host, options, callback) {
         lookup(host, { all: true }, (error, addresses) => {
           if (error) return callback(error);
@@ -42,22 +41,23 @@ export async function readPublic(url, budget, redirects = 0) {
           callback(null, options.all ? addresses : addresses[0].address, options.all ? undefined : addresses[0].family);
         });
       },
-    }, response => {
-      let size = 0;
-      const chunks = [];
-      response.on('data', chunk => {
-        size += chunk.length;
-        if (size > LIMITS.bytes) response.destroy(new Error('Source exceeds byte limit'));
-        else chunks.push(chunk);
-      });
-      response.on('error', reject);
-      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks).toString('utf8'), url }));
+    }, maxResponseSize: LIMITS.bytes, connections: 1, pipelining: 0 });
+  let result;
+  try {
+    const response = await request(url, {
+      dispatcher: agent, method: 'GET', maxRedirections: 0,
+      signal: AbortSignal.timeout(Math.max(1, Math.min(12000, budget.deadline - Date.now()))),
+      headers: { 'User-Agent': USER_AGENT, Accept: 'application/json, text/html;q=0.9', 'Accept-Encoding': 'identity' },
     });
-    const timeout = setTimeout(() => req.destroy(new Error('Source request timed out')), 12000);
-    req.on('close', () => clearTimeout(timeout));
-    req.on('error', reject);
-    req.end();
-  });
+    let size = 0;
+    const chunks = [];
+    for await (const chunk of response.body) {
+      size += chunk.length;
+      if (size > LIMITS.bytes) throw new Error('Source exceeds byte limit');
+      chunks.push(chunk);
+    }
+    result = { status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks).toString('utf8'), url };
+  } finally { await agent.destroy(); }
   if (result.status >= 300 && result.status < 400 && result.headers.location) {
     if (redirects >= LIMITS.redirects) throw new Error('Redirect limit reached');
     return readPublic(new URL(result.headers.location, url).href, budget, redirects + 1);
@@ -287,7 +287,7 @@ async function save(db, tracker, identity, source, rank, observedAt, stats) {
   return dateWarning;
 }
 
-export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString() } = {}) {
+export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000 } = {}) {
   if (!Number.isFinite(Date.parse(since))) throw new Error('A valid coverage start is required');
   const tracker = (await db.query("select * from scout.trackers where seed_key='bbnj-trackers-2026-10-01:17'")).rows[0];
   if (!tracker?.enabled) throw new Error('HSA tracker is missing or paused');
@@ -296,7 +296,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at) values ($1,$2,$3) returning id', [tracker.id, since, started])).rows[0];
   await db.query('update scout.trackers set last_attempt_at=$1 where id=$2', [started, tracker.id]);
   const stats = { created: 0, changed: 0, posts: 0, pages: 0, warnings: [], models: 0 };
-  const budget = { requests: 0, deadline: Date.now() + LIMITS.seconds * 1000 };
+  const budget = { requests: 0, deadline: Math.min(deadline, Date.now() + LIMITS.seconds * 1000) };
   const pages = new Map();
   const dateWarnings = new Map();
   let cursor, covered = false, quota = false, feedFailed = false;
@@ -309,6 +309,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
       if (!Array.isArray(feed.feed)) throw new Error('Invalid feed response');
       let reachedBoundary = feed.feed.length > 0;
       for (const item of feed.feed) {
+        if (Date.now() > budget.deadline) throw new Error('Collection time limit reached');
         const post = item.post;
         const indexed = item.reason?.indexedAt ?? post?.indexedAt;
         if (!post?.uri || typeof post.record?.text !== 'string' || !Number.isFinite(Date.parse(post.record.createdAt)) || !Number.isFinite(Date.parse(indexed))) {
