@@ -32,7 +32,7 @@ async function storeDelivery(db, key, kind, records, payload, snapshot = {}, sta
   const record = ['finding', 'change'].includes(kind) ? records[0] : null;
   await db.query(`insert into scout.deliveries(id,record_id,record_updated_at,kind,channel_id,idempotency_key,status,payload,snapshot)
     values($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict(idempotency_key) do nothing`,
-  [id, record?.id ?? null, record?.version ?? null, kind, CHANNEL, key, status, payload, { format: 1, ...snapshot, records }]);
+  [id, record?.id ?? null, record?.version ?? null, kind, CHANNEL, key, status, payload, { format: 2, ...snapshot, records }]);
   return latestReplacement(db, (await db.query('select * from scout.deliveries where idempotency_key=$1', [key])).rows[0]);
 }
 
@@ -59,16 +59,14 @@ async function requireBaseline(db) {
 }
 
 function recordBlocks(record, now) {
-  const dates = record.kind === 'event' ? `Event: ${eventLabel(record)} · ${eventTiming(record, now)}`
-    : record.kind === 'treaty_status' ? `Treaty action date: ${record.recorded_on ?? 'Unknown'}` : null;
+  const dates = record.kind === 'event' ? `Event: ${eventLabel(record)} · ${eventTiming(record, now)}` : null;
   const sources = [...new Set([record.event_url, record.registration_url, ...record.sources.map(source => source.url)].map(sourceLink).filter(Boolean))].filter(url => url.length <= 1000).slice(0, 3);
   if (!sources.length) throw new Error('Delivery requires a usable source link.');
   const blocks = [section([`${KINDS[record.kind]} · ${clip(record.title, 200)}`, record.organization && clip(record.organization, 150),
-    clip(record.summary || record.description || 'No source description available.', 450), dates,
-    `Published: ${record.published_on ?? 'Unknown'} · Collected: ${stamp(record.collected_at)}`,
+    record.description || 'No source description available.', dates,
+    ...record.sources.slice(0, 3).map(source => `Source published: ${source.published_at ? stamp(source.published_at) : source.published_on ?? 'Unknown'} · Collected: ${stamp(source.collected_at)}`),
     `Record updated: ${stamp(record.updated_at)}`].filter(Boolean).join('\n')),
   { type: 'section', text: { type: 'mrkdwn', text: sources.map((url, i) => `<${escape(url.replaceAll('|', '%7C'))}|Source ${i + 1}>`).join(' · '), verbatim: true } }];
-  if (record.kind === 'event') blocks.push(section('Calendar download is unavailable in Slack while hosted member access is pending. See the source for organizer details.'));
   return blocks;
 }
 
@@ -95,7 +93,7 @@ async function prepareFinding(db, record, previous, now, verification = false, r
   const id = randomUUID(), blocks = recordBlocks(record, now);
   if (kind === 'change') {
     const prior = previous.filter(row => row.record_id === record.id && ['baseline', 'sent'].includes(row.status)).sort((a, b) => b.created_at - a.created_at)[0].snapshot.records[0];
-    const changes = ['title', 'summary', 'location', 'status', 'registration_url', 'published_on', 'country', 'treaty_action', 'recorded_on']
+    const changes = ['title', 'description', 'location', 'status', 'registration_url']
       .filter(field => prior[field] !== record[field]).map(field => `${field.replaceAll('_', ' ')}: ${clip(prior[field] ?? 'Unknown', 150)} → ${clip(record[field] ?? 'Unknown', 150)}`);
     if (record.kind === 'event' && eventLabel(prior) !== eventLabel(record)) changes.unshift(`Event schedule: ${eventLabel(prior)} → ${eventLabel(record)}`);
     blocks.unshift(section(`Changes since the last notification/baseline:\n${changes.join('\n') || 'Source-backed record details updated.'}`));
@@ -117,7 +115,7 @@ function digestRecords(records, from, through, now) {
   for (const record of records.filter(row => row.kind === 'event')) {
     const timing = eventTiming(record, now);
     if (timing === 'Date unknown') unknown.push(record);
-    else if (['Upcoming', 'Today / ongoing', 'In progress'].includes(timing)) {
+    else if (['Upcoming', 'In progress'].includes(timing)) {
       const [start, end] = recordDates(record);
       if (start <= through && end >= from) dated.push(record);
     }
@@ -136,7 +134,7 @@ async function prepareDigestPayload(db, from, through, now, replaces = null) {
   if (!valid(from) || !valid(through) || through < from || Date.parse(through) - Date.parse(from) > 31 * 86400000) throw new Error('Provide an inclusive digest window of at most 32 calendar days.');
   const { dated, unknown } = digestRecords(await readRecords(db), from, through, now);
   const coverage = (await db.query('select count(*)::int total,count(last_success_at)::int collected,max(last_success_at) last_success from scout.trackers')).rows[0];
-  const blocks = [section(`Window: ${from} through ${through} (inclusive source calendar dates).\nAs of: ${stamp(now.toISOString())}. Timed events must still be upcoming or in progress; date-only events use the UTC day.\nCoverage: ${coverage.collected} of ${coverage.total} trackers has a successful collection. Latest success: ${stamp(coverage.last_success?.toISOString())}.`),
+  const blocks = [section(`Window: ${from} through ${through} (inclusive source calendar dates).\nAs of: ${stamp(now.toISOString())}. Events must have a supported time and still be upcoming or in progress.\nCoverage: ${coverage.collected} of ${coverage.total} trackers has a successful collection. Latest success: ${stamp(coverage.last_success?.toISOString())}.`),
     section(dated.length ? `${dated.length} qualifying events; showing ${Math.min(5, dated.length)}.` : 'No qualifying upcoming events in the collected records for this window. Other trackers may contain uncollected events.')];
   for (const record of dated.slice(0, 5)) blocks.push(...recordBlocks(record, now));
   blocks.push(section(`Date unknown: ${unknown.length}. These cannot be assigned to this reporting window${unknown.length > 3 ? '; showing 3' : ''}.`));
@@ -193,7 +191,7 @@ export async function sendDelivery(db, id, post, { now = () => new Date(), wait 
   if (row.status !== 'pending') return row;
   if (!row.payload || !row.snapshot?.records) throw new Error('Delivery has no reviewed payload evidence.');
   const records = await readRecords(db);
-  let stale = row.snapshot.records.some(record => !records.some(current => versionKey(current) === versionKey(record)));
+  let stale = row.snapshot.format !== 2 || row.snapshot.records.some(record => !records.some(current => versionKey(current) === versionKey(record)));
   stale ||= row.snapshot.records.some(record => record.kind === 'event' && eventTiming(record, new Date(row.snapshot.as_of)) !== eventTiming(record, now()));
   if (row.kind === 'digest') {
     const { dated, unknown } = digestRecords(records, row.snapshot.from, row.snapshot.through, now());

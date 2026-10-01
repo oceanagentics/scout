@@ -179,9 +179,9 @@ function structuredEvents(html, pageURL) {
   };
 }
 
-const fields = ['kind', 'title', 'organization', 'description', 'summary', 'location', 'event_url', 'registration_url', 'start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone', 'status', 'published_on', 'date_evidence'];
+const fields = ['kind', 'title', 'organization', 'description', 'location', 'event_url', 'registration_url', 'starts_at', 'ends_at', 'time_zone', 'status', 'date_evidence'];
 function material(record) {
-  const names = record.kind === 'event' ? ['kind', 'organization', 'location', 'event_url', 'registration_url', 'start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone', 'status'] : ['kind', 'summary'];
+  const names = record.kind === 'event' ? ['kind', 'organization', 'location', 'event_url', 'registration_url', 'start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone', 'status'] : ['kind', 'description'];
   const values = names.map(name => typeof record[name] === 'string' ? normalized(record[name]).toLowerCase() : record[name] ?? null);
   if (record.local_schedule) values.push(record.local_schedule);
   return hash(JSON.stringify(values));
@@ -199,7 +199,6 @@ async function save(db, tracker, identity, source, rank, observedAt, stats) {
   const record = source.parsed;
   let existing = (await db.query('select * from scout.records where identity_key=$1', [identity])).rows[0];
   if (existing) {
-    for (const field of ['start_on', 'end_on', 'published_on']) if (existing[field] instanceof Date) existing[field] = existing[field].toISOString().slice(0, 10);
     for (const field of ['starts_at', 'ends_at']) if (existing[field] instanceof Date) existing[field] = existing[field].toISOString();
   }
   if (!record && !existing) return;
@@ -208,6 +207,9 @@ async function save(db, tracker, identity, source, rank, observedAt, stats) {
     join scout.source_versions v on v.tracker_id=s.tracker_id and v.url=s.url and v.content_hash=s.content_hash
     where s.record_id=$1`, [existing.id])).rows : [];
   const previous = references.find(item => item.url === source.url);
+  // Date-only values stay in captured sources, used here only to combine evidence.
+  let calendarDay = existing?.date_evidence.calendar_date?.value ?? (!existing?.starts_at && existing?.status !== 'rescheduled'
+    ? references.find(item => item.authoritative && identity === `event:${item.url}`)?.parsed?.start_on : null);
   // First page snapshots have unknown chronology. Only a change in their facts
   // starts a new evidence time, including a return to an older source version.
   const evidenceAt = source.published_at ?? (record && previous?.parsed && previous.content_hash.startsWith('hsa-v2:') && material(previous.parsed) !== material(record)
@@ -216,6 +218,7 @@ async function save(db, tracker, identity, source, rank, observedAt, stats) {
   const accepted = record && (!existing || rank > existing.evidence_rank || (rank === existing.evidence_rank && (baseline || !existing.evidence_at || Date.parse(evidenceAt) >= Date.parse(existing.evidence_at))));
   const merged = Object.fromEntries(fields.map(field => [field, accepted ? record[field] ?? existing?.[field] ?? null : existing?.[field] ?? null]));
   merged.date_evidence ??= {};
+  if (merged.description && Array.from(merged.description).length > 280) merged.description = Array.from(merged.description).slice(0, 279).join('').trimEnd() + '…';
   if (accepted) {
     if (baseline && existing?.evidence_rank === 2) merged.status = existing.status ?? record.status;
     // A newly evidenced date replaces the prior representation, including date-only/timed changes.
@@ -226,19 +229,21 @@ async function save(db, tracker, identity, source, rank, observedAt, stats) {
       (!record.local_schedule || existing.date_evidence.local_time?.value === `${String(record.local_schedule.hour).padStart(2, '0')}:${String(record.local_schedule.minute).padStart(2, '0')}`);
     const protectsCorrection = baseline && existing?.evidence_rank === 2 && ['cancelled', 'rescheduled'].includes(existing.status);
     if ((record.start_on || record.starts_at) && !compatibleDay && !protectsCorrection) {
-      for (const field of ['start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone']) merged[field] = record[field];
+      calendarDay = record.start_on;
+      for (const field of ['starts_at', 'ends_at', 'time_zone']) merged[field] = record[field];
       merged.date_evidence = {};
     } else if (compatibleDay || protectsCorrection) {
-      for (const field of ['start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone']) merged[field] = existing[field];
+      for (const field of ['starts_at', 'ends_at', 'time_zone']) merged[field] = existing[field];
     }
     if (existing?.kind === 'event') {
-      const before = existing.start_on || (existing.starts_at && new Date(existing.starts_at).toISOString());
+      const before = existing.starts_at && new Date(existing.starts_at).toISOString();
       const after = record.start_on || record.starts_at;
-      const comparable = (existing.start_on && record.start_on) || (existing.starts_at && record.starts_at);
+      const comparable = existing.starts_at && record.starts_at;
       if (comparable && before !== after && merged.status !== 'cancelled') merged.status = 'rescheduled';
       if (existing.status === 'rescheduled' && merged.status === 'scheduled') merged.status = 'rescheduled';
       if (record.status === 'rescheduled' && !after) {
-        for (const field of ['start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone']) merged[field] = null;
+        calendarDay = null;
+        for (const field of ['starts_at', 'ends_at', 'time_zone']) merged[field] = null;
         merged.date_evidence = {};
       }
     }
@@ -253,8 +258,9 @@ async function save(db, tracker, identity, source, rank, observedAt, stats) {
     const schedule = page.parsed.local_schedule, parts = post.parsed.date_parts;
     const wall = value => `${String(value.hour).padStart(2, '0')}:${String(value.minute).padStart(2, '0')}`;
     if (['month', 'day', 'hour', 'minute'].every(key => schedule[key] === parts[key])) {
-      if (merged.start_on === schedule.date || merged.date_evidence.calendar_date?.value === schedule.date) {
-        Object.assign(merged, dates(`${schedule.date}T${wall(schedule)}:00${parts.offset}`));
+      if (calendarDay === schedule.date) {
+        const timed = dates(`${schedule.date}T${wall(schedule)}:00${parts.offset}`);
+        for (const field of ['starts_at', 'ends_at', 'time_zone']) merged[field] = timed[field];
         merged.date_evidence = {
           calendar_date: { value: schedule.date, source_versions: [page.id, post.id] },
           local_time: { value: wall(schedule), source_versions: [page.id, post.id] },
@@ -264,16 +270,16 @@ async function save(db, tracker, identity, source, rank, observedAt, stats) {
       }
     } else dateWarning = `Conflicting event schedule: registration ${schedule.date} ${wall(schedule)}; HSA post ${parts.month}/${parts.day} ${wall(parts)} ${parts.zone}`;
   }
-  if (accepted || (existing && material(merged) !== existing.material_hash)) {
+  if (accepted || (existing && material(merged) !== material(existing))) {
     const digest = material(merged);
     const recordEvidenceAt = accepted && !baseline ? evidenceAt : existing?.evidence_at ?? evidenceAt;
     const recordRank = accepted ? rank : existing.evidence_rank;
-    if (!existing || digest !== existing.material_hash) {
+    if (!existing || digest !== material(existing)) {
       if (existing) {
-        existing = (await db.query(`update scout.records set ${fields.map((field, index) => `${field}=$${index + 1}`).join(',')}, material_hash=$17,evidence_rank=$18,evidence_at=$19 where id=$20 returning *`, [...fields.map(field => merged[field]), digest, recordRank, recordEvidenceAt, existing.id])).rows[0];
+        existing = (await db.query(`update scout.records set ${fields.map((field, index) => `${field}=$${index + 1}`).join(',')}, material_hash=$13,evidence_rank=$14,evidence_at=$15 where id=$16 returning *`, [...fields.map(field => merged[field]), digest, recordRank, recordEvidenceAt, existing.id])).rows[0];
         stats.changed++;
       } else {
-        existing = (await db.query(`insert into scout.records (${fields.join(',')},identity_key,material_hash,evidence_rank,evidence_at) values (${Array.from({ length: 20 }, (_, i) => `$${i + 1}`).join(',')}) returning *`, [...fields.map(field => merged[field]), identity, digest, recordRank, recordEvidenceAt])).rows[0];
+        existing = (await db.query(`insert into scout.records (${fields.join(',')},identity_key,material_hash,evidence_rank,evidence_at) values (${Array.from({ length: 16 }, (_, i) => `$${i + 1}`).join(',')}) returning *`, [...fields.map(field => merged[field]), identity, digest, recordRank, recordEvidenceAt])).rows[0];
         stats.created++;
       }
       const changed = fields.filter(field => !old || !isDeepStrictEqual(old[field], merged[field]));

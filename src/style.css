@@ -48,10 +48,9 @@ article.record { padding: 24px; border: 1px solid #d5ddd6; background: #fff; bor
 .badge { display: inline-block; padding: 4px 9px; border-radius: 4px; background: #edf3ed; font-size: .8rem; font-weight: 600; }
 .warning { color: #7d4616; background: #fff0db; }
 .event-date { font-weight: 600; }
-.summary { white-space: pre-line; }
+.description { white-space: pre-line; }
 .actions { margin: 20px 0; font-size: .85rem; }
 .actions a { margin: 0; }
-.calendar-download { padding: 12px 16px; border-radius: 5px; text-decoration: none; }
 details { margin-top: 20px; border-top: 1px solid #d5ddd6; padding-top: 16px; }
 summary { cursor: pointer; font-size: .9rem; font-weight: 600; }
 .table-scroll { max-height: max(240px, calc(100dvh - 18rem)); overflow: auto; }
@@ -64,14 +63,13 @@ td p:first-child { margin-top: 0; }
 td a { font-weight: 600; }
 .data-table { margin-top: 0; }
 .data-table th { white-space: nowrap; }
-.data-table :is(.field-title, .field-name, .field-summary, .field-description, .field-date_evidence, .field-coverage, .field-cadence_note, .field-configuration_note, .field-last_error) { min-width: 320px; white-space: pre-line; }
+.data-table :is(.field-title, .field-name, .field-description, .field-date_evidence, .field-coverage, .field-cadence_note, .field-configuration_note, .field-last_error) { min-width: 320px; white-space: pre-line; }
 .data-table th:first-child, .data-table td:first-child { position: sticky; left: 0; background: #fff; box-shadow: 5px 0 8px -5px #18383933; }
 .data-table td:first-child { z-index: 1; }
 .data-table th:first-child { z-index: 3; background: #e8eee8; }
 .data-table :is(.field-title, .field-name) { font-weight: 600; }
 .data-table .field-value { max-height: 10rem; overflow: auto; white-space: pre-wrap; }
 .data-table .actions { margin: 0; flex-direction: column; align-items: flex-start; gap: 8px; }
-.data-table .calendar-download { padding: 0; border: 0; text-decoration: underline; }
 .data-table details { margin: 0; padding: 0; border: 0; }
 .record details > a { display: block; margin-top: 8px; }
 .error, .overdue { color: #98432f; }

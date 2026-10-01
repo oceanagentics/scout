@@ -10,6 +10,7 @@ const collectionMigration = await readFile(new URL('../supabase/migrations/20261
 const evidenceMigration = await readFile(new URL('../supabase/migrations/20261001080000_scout_event_evidence.sql', import.meta.url), 'utf8');
 const workspaceMigration = await readFile(new URL('../supabase/migrations/20261001140000_scout_workspace_access.sql', import.meta.url), 'utf8');
 const historyMigration = await readFile(new URL('../supabase/migrations/20261001150000_scout_record_change_fields.sql', import.meta.url), 'utf8');
+const leanMigration = await readFile(new URL('../supabase/migrations/20261001160000_scout_lean_records.sql', import.meta.url), 'utf8');
 const reader = '00000000-0000-0000-0000-000000000001';
 const admin = '00000000-0000-0000-0000-000000000002';
 const outsider = '00000000-0000-0000-0000-000000000003';
@@ -108,6 +109,51 @@ test('history migration preserves creations, null transitions, evidence, timesta
     assert.deepEqual((await db.query('select * from scout.record_changes order by changed_at')).rows, migrated);
     await assert.rejects(db.query('select * from scout.source_versions'), { code: '42501' });
     await assert.rejects(db.query("update scout.record_changes set current='{}'"), { code: '42501' });
+  } finally { await db.close(); }
+});
+
+test('lean record migration removes redundant columns without altering captured evidence or history', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(auth + fixture);
+    await db.exec(migration);
+    await db.exec(collectionMigration);
+    await db.exec(evidenceMigration);
+    await db.exec(historyMigration);
+    await db.exec(await readFile(new URL('../supabase/migrations/20261001090000_scout_delivery_evidence.sql', import.meta.url), 'utf8'));
+    const description = '🌊'.repeat(300);
+    const record = (await db.query(`insert into scout.records (kind,title,description,summary,start_on,end_on,published_on,collected_at,updated_at)
+      values ('event','Legacy webinar',$1,'Duplicate summary','2026-10-03','2026-10-04','2026-09-30','2026-10-01','2026-10-01') returning *`, [description])).rows[0];
+    const timed = (await db.query(`insert into scout.records (kind,title,description,starts_at,ends_at,time_zone,updated_at)
+      values ('event','Timed webinar','Short description','2026-10-03T12:00Z','2026-10-03T13:00Z','UTC','2026-10-01') returning *`)).rows[0];
+    const fallback = (await db.query("insert into scout.records (kind,title,summary) values ('announcement','Summary only','Preserve this description') returning id")).rows[0];
+    const tracker = (await db.query("insert into scout.trackers (name,url,channel,method,cadence) values ('Source','https://example.org','web','http','1 day') returning id")).rows[0];
+    const source = (await db.query(`insert into scout.source_versions (tracker_id,url,content_hash,content,parsed)
+      values ($1,'https://example.org/event','legacy',$2,$3) returning *`, [tracker.id, description, JSON.stringify({ description, start_on: '2026-10-03' })])).rows[0];
+    const history = (await db.query('insert into scout.record_changes (record_id,source_version_id,current) values ($1,$2,$3) returning *',
+      [record.id, source.id, JSON.stringify({ description, start_on: '2026-10-03' })])).rows[0];
+    const delivery = (await db.query(`insert into scout.deliveries (record_id,kind,channel_id,idempotency_key,snapshot,payload)
+      values ($1,'finding','fixture','legacy',$2,'{"text":"Previously prepared message"}') returning *`, [record.id, JSON.stringify({ records: [record] })])).rows[0];
+    const shared = (await db.query(sharedState)).rows;
+    await db.exec(leanMigration);
+    const current = (await db.query('select * from scout.records where id=$1', [record.id])).rows[0];
+    assert.equal(current.description, '🌊'.repeat(279) + '…');
+    assert.ok(current.updated_at > record.updated_at);
+    assert.equal(current.starts_at, null);
+    assert.equal(current.ends_at, null);
+    for (const field of ['summary', 'start_on', 'end_on', 'published_on', 'country', 'treaty_action', 'recorded_on', 'collected_at']) assert.equal(Object.hasOwn(current, field), false);
+    const unchanged = (await db.query('select * from scout.records where id=$1', [timed.id])).rows[0];
+    for (const field of ['starts_at', 'ends_at', 'updated_at', 'date_evidence']) assert.deepEqual(unchanged[field], timed[field]);
+    assert.equal((await db.query('select description from scout.records where id=$1', [fallback.id])).rows[0].description, 'Preserve this description');
+    assert.deepEqual((await db.query('select * from scout.source_versions')).rows, [source]);
+    assert.deepEqual((await db.query('select * from scout.record_changes')).rows, [history]);
+    assert.deepEqual((await db.query('select * from scout.deliveries')).rows, [delivery]);
+    assert.deepEqual((await db.query(sharedState)).rows, shared);
+    await assert.rejects(db.query('update scout.records set description=$1 where id=$2', ['x'.repeat(281), record.id]), { code: '23514' });
+    await assert.rejects(db.query("insert into scout.records (kind,title,starts_at,time_zone) values ('announcement','Invalid','2026-10-03T12:00Z','UTC')"), { code: '23514' });
+    await assert.rejects(db.query("insert into scout.records (kind,title,starts_at,ends_at,time_zone) values ('event','Invalid','2026-10-03T12:00Z','2026-10-02T12:00Z','UTC')"), { code: '23514' });
+    await db.query("update scout.records set description='Corrected' where id=$1", [timed.id]);
+    assert.ok((await db.query('select updated_at from scout.records where id=$1', [timed.id])).rows[0].updated_at > timed.updated_at);
   } finally { await db.close(); }
 });
 

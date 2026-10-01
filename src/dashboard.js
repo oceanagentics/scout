@@ -1,11 +1,10 @@
-import { KINDS, sourceLink, stamp, recordDates, eventLabel, eventTiming, filterRecords, trackerState, calendarFile } from './records.js';
+import { KINDS, sourceLink, stamp, eventLabel, eventTiming, filterRecords, trackerState } from './records.js';
 
 const RECORD_FIELDS = [
-  ['title', 'Title'], ['kind', 'Type'], ['organization', 'Organization'], ['summary', 'Summary'], ['description', 'Description'],
-  ['location', 'Location'], ['status', 'Status'], ['start_on', 'Start date'], ['end_on', 'End date'],
-  ['starts_at', 'Starts at (UTC)'], ['ends_at', 'Ends at (UTC)'], ['time_zone', 'Time zone'], ['published_on', 'Published on'],
-  ['country', 'Country'], ['treaty_action', 'Treaty action'], ['recorded_on', 'Recorded on'],
-  ['event_url', 'Event URL'], ['registration_url', 'Registration URL'], ['collected_at', 'Collected at (UTC)'],
+  ['title', 'Title'], ['kind', 'Type'], ['organization', 'Organization'], ['description', 'Description'],
+  ['location', 'Location'], ['status', 'Status'],
+  ['starts_at', 'Starts at (UTC)'], ['ends_at', 'Ends at (UTC)'], ['time_zone', 'Time zone'],
+  ['event_url', 'Event URL'], ['registration_url', 'Registration URL'],
   ['updated_at', 'Updated at (UTC)'], ['id', 'ID'], ['date_evidence', 'Date evidence'],
 ];
 const TRACKER_FIELDS = [
@@ -66,10 +65,9 @@ export function mountDashboard(root, load) {
       <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>`;
   const status = root.querySelector('#load-status'), refresh = root.querySelector('#refresh');
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
-  let data = null, active = true, loadedAt = null, calendarUrls = [], timings = new Map(), layout = 'table';
+  let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table';
 
   function renderRecords() {
-    calendarUrls.forEach(url => URL.revokeObjectURL(url)); calendarUrls = [];
     recordList.replaceChildren();
     const tableView = layout === 'table';
     recordList.className = tableView ? 'table-scroll' : 'record-grid';
@@ -82,9 +80,9 @@ export function mountDashboard(root, load) {
     let body = recordList;
     if (tableView) {
       const table = node('table', null, 'data-table');
-      table.append(node('caption', 'Finding record fields, calendars and sources', 'visually-hidden'));
+      table.append(node('caption', 'Record fields and sources', 'visually-hidden'));
       const head = node('thead'), row = node('tr');
-      for (const label of [...RECORD_FIELDS.map(([, label]) => label), 'Calendar', 'Sources']) {
+      for (const label of [...RECORD_FIELDS.map(([, label]) => label), 'Sources']) {
         const heading = node('th', label); heading.scope = 'col'; row.append(heading);
       }
       head.append(row); table.append(head);
@@ -99,7 +97,7 @@ export function mountDashboard(root, load) {
           if (field.endsWith('_url') && value) cell.append(link(value, value));
           else cell.textContent = value == null || value === '' ? '—' : field === 'kind' ? KINDS[value] || value
             : typeof value === 'object' ? JSON.stringify(value, null, 2) : field.endsWith('_at') ? stamp(value) : value;
-          if (cell.textContent.length > 240 && ['summary', 'description', 'date_evidence'].includes(field)) {
+          if (cell.textContent.length > 240 && ['description', 'date_evidence'].includes(field)) {
             const text = node('div', cell.textContent, 'field-value'); text.tabIndex = 0; cell.replaceChildren(text);
           }
           article.append(cell);
@@ -111,25 +109,15 @@ export function mountDashboard(root, load) {
           if (record.status === 'rescheduled') badges.append(node('span', 'Rescheduled', 'badge warning'));
           badges.append(node('span', eventTiming(record), `badge ${record.status === 'cancelled' ? 'warning' : ''}`));
           article.append(badges, node('p', eventLabel(record), 'event-date'));
-        } else article.append(node('p', `${record.kind === 'treaty_status' ? 'Treaty action' : 'Published'} · ${recordDates(record)[0] || 'Date unknown'}`, 'event-date'));
-        if (record.country || record.treaty_action) article.append(node('p', [record.country, record.treaty_action].filter(Boolean).join(' · ')));
-        if (record.summary || record.description) article.append(node('p', record.summary || record.description, 'summary'));
+        }
+        if (record.description) article.append(node('p', record.description, 'description'));
         if (record.location) article.append(node('p', `Location · ${record.location}`));
       }
       const details = node('details'); details.append(node('summary', tableView ? 'View sources' : 'Sources & record details'));
       const actions = node('div', null, 'actions');
       if (!tableView && sourceLink(record.registration_url)) actions.append(link(record.status === 'cancelled' ? 'Original registration' : 'Registration', record.registration_url));
       if (!tableView && sourceLink(record.event_url) && record.event_url !== record.registration_url) actions.append(link('Event page', record.event_url));
-      if (record.kind === 'event') {
-        const calendar = calendarFile(record);
-        if (calendar) {
-          const download = node('a', record.status === 'cancelled' ? 'Download cancellation (.ics)' : 'Add to calendar (.ics)', 'calendar-download secondary');
-          download.href = URL.createObjectURL(new Blob([calendar], { type: 'text/calendar;charset=utf-8' }));
-          download.download = `scout-${record.id.replace(/[^a-zA-Z0-9-]/g, '')}.ics`;
-          calendarUrls.push(download.href); actions.append(download);
-        } else actions.append(node('span', 'Calendar unavailable · date / time not yet known', 'hint'));
-      }
-      if (!tableView) for (const [label, value] of [['Published', record.published_on], ['First collected', stamp(record.collected_at)], ['Record updated', stamp(record.updated_at)]]) if (value) details.append(node('p', `${label} · ${value}`, 'meta'));
+      if (!tableView) details.append(node('p', `Record updated · ${stamp(record.updated_at)}`, 'meta'));
       if (!(record.sources ?? []).length) details.append(node('p', 'No supporting source links available.', 'hint'));
       const seen = new Set();
       for (const source of record.sources ?? []) {
@@ -144,8 +132,7 @@ export function mountDashboard(root, load) {
         }
       }
       if (tableView) {
-        const calendar = node('td'), sources = node('td');
-        calendar.append(actions.childElementCount ? actions : node('span', '—')); sources.append(details); article.append(calendar, sources);
+        const sources = node('td'); sources.append(details); article.append(sources);
       } else article.append(actions, details);
       body.append(article);
     }
@@ -209,5 +196,5 @@ export function mountDashboard(root, load) {
   const timer = setInterval(tick, 30000);
   document.addEventListener('visibilitychange', tick);
   root.hidden = false; void reload();
-  return () => { active = false; clearInterval(timer); calendarUrls.forEach(url => URL.revokeObjectURL(url)); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
+  return () => { active = false; clearInterval(timer); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
 }

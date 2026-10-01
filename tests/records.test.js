@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { calendarFile, eventLabel, eventTiming, filterRecords, recordDates, sourceLink, trackerState } from '../src/records.js';
+import { eventLabel, eventTiming, filterRecords, recordDates, sourceLink, trackerState } from '../src/records.js';
 import { loadScout } from '../src/dashboard.js';
 
 const now = new Date('2026-10-01T12:00:00Z');
@@ -14,40 +14,19 @@ test('source dates, timezone boundaries, filters and past/cancelled/unknown stat
   const boundary = { ...hsa, id: 'boundary', starts_at: '2026-10-02T00:30:00Z', time_zone: '-04:00', date_evidence: null };
   assert.deepEqual(recordDates(boundary), ['2026-10-01', '2026-10-01']);
   assert.match(eventLabel(boundary), /2026-10-01 · 20:30 UTC-04:00/);
-  const allDay = { id: 'day', kind: 'event', title: 'BBNJ workshop', start_on: '2026-10-03', end_on: '2026-10-05' };
-  assert.equal(filterRecords([allDay], { from: '2026-10-04', to: '2026-10-04' }, now).length, 1);
+  const workshop = { id: 'workshop', kind: 'event', title: 'BBNJ workshop', starts_at: '2026-10-03T12:00:00Z', ends_at: '2026-10-05T12:00:00Z', time_zone: 'UTC' };
+  assert.equal(filterRecords([workshop], { from: '2026-10-04', to: '2026-10-04' }, now).length, 1);
   const unknown = { id: 'unknown', kind: 'event', title: 'BBNJ date to follow' };
   assert.equal(eventTiming(unknown, now), 'Date unknown');
   assert.equal(eventTiming({ ...boundary, status: 'cancelled' }, now), 'Cancelled');
   assert.equal(filterRecords([hsa, boundary, unknown], { timing: 'Upcoming' }, now).length, 1);
-  const treaty = { id: 'treaty', kind: 'treaty_status', title: 'Treaty update', country: 'Example country', recorded_on: '2026-09-28', published_on: '2026-10-01' };
-  assert.equal(filterRecords([hsa, treaty], { from: '2026-09-28', to: '2026-09-28', search: 'EXAMPLE', kind: 'treaty_status' }, now)[0].id, 'treaty');
+  const treaty = { id: 'treaty', kind: 'treaty_status', title: 'Treaty update', description: 'Example country reported a treaty update' };
+  assert.equal(filterRecords([hsa, treaty], { search: 'EXAMPLE', kind: 'treaty_status' }, now)[0].id, 'treaty');
   assert.equal(filterRecords([hsa, unknown], { organization: 'High Seas Alliance', search: 'genetic' }, now)[0].id, hsa.id);
   assert.equal(filterRecords([unknown], { from: '2026-01-01' }, now).length, 0);
 });
 
-test('calendar files retain the real instant, date-only boundaries, status, source links and safe text', () => {
-  const real = calendarFile(hsa, now).replace(/\r\n /g, '');
-  assert.match(real, /DTSTART:20260929T113000Z/);
-  assert.doesNotMatch(real, /DTEND:/); // No invented end time.
-  assert.match(real, /07:30 EDT/);
-  assert.match(real, /WN_cueG31LFSVOVPdkUxm5SHQ/);
-  const day = { id: 'all-day', kind: 'event', title: 'Date-only workshop', start_on: '2026-12-31', end_on: '2027-01-02' };
-  const allDay = calendarFile(day, now);
-  assert.match(allDay, /DTSTART;VALUE=DATE:20261231\r\nDTEND;VALUE=DATE:20270103/);
-  assert.doesNotMatch(allDay, /DTSTART:|TZID/);
-  assert.equal(calendarFile({ ...hsa, starts_at: null, start_on: '2026-02-30' }, now), null);
-  assert.equal(calendarFile({ ...hsa, time_zone: null }, now), null);
-  const cancelled = calendarFile({ ...hsa, status: 'cancelled' }, now);
-  assert.match(cancelled, /UID:hsa-webinar@bbnj-scout.web.app/);
-  assert.match(cancelled, /STATUS:CANCELLED/);
-  const shifted = calendarFile({ ...hsa, starts_at: '2026-10-02T00:30:00Z', status: 'rescheduled' }, now);
-  assert.match(shifted, /DTSTART:20261002T003000Z/);
-  assert.match(shifted, /UID:hsa-webinar@bbnj-scout.web.app/);
-  const safe = calendarFile({ ...hsa, title: '🌊'.repeat(60) + '\r\nATTENDEE:bad;value,\\end', event_url: 'javascript:alert(1)' }, now);
-  assert.ok(safe.split('\r\n').every(line => Buffer.byteLength(line) <= 75));
-  assert.doesNotMatch(safe, /\r\nATTENDEE:|javascript:/);
-  assert.match(safe.replace(/\r\n /g, ''), /\\nATTENDEE:bad\\;value\\,\\\\end/);
+test('source links reject unsafe and credential-bearing URLs', () => {
   assert.equal(sourceLink('javascript:alert(1)'), null);
   assert.equal(sourceLink('https://user:secret@example.org'), null);
 });
@@ -73,6 +52,11 @@ test('member data reads load every page and surface errors instead of silently t
   let fail = false;
   const client = { from(table) { return { select(columns) {
     assert.ok(!columns.includes('excerpt') && !columns.includes('content_hash'));
+    if (table === 'records') {
+      const fields = columns.split(',sources(')[0].split(',');
+      for (const removed of ['summary', 'start_on', 'end_on', 'published_on', 'country', 'treaty_action', 'recorded_on', 'collected_at']) assert.ok(!fields.includes(removed));
+      assert.ok(fields.includes('starts_at') && fields.includes('ends_at'));
+    }
     return { order() { return this; }, async range(from, through) { return fail ? { error: new Error('Unavailable') } : { data: inventory[table].slice(from, through + 1) }; } };
   } }; } };
   const data = await loadScout(client);

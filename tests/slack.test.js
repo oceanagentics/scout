@@ -18,9 +18,9 @@ async function database() {
   return db;
 }
 async function insert(db, title = 'Public BBNJ announcement', extra = {}) {
-  const row = { kind: 'announcement', title, summary: 'Source-backed description.', ...extra };
+  const row = { kind: 'announcement', title, description: 'Source-backed description.', ...extra };
   const record = (await db.query(`insert into scout.records(${Object.keys(row).join(',')}) values(${Object.keys(row).map((_, i) => `$${i + 1}`).join(',')}) returning *`, Object.values(row))).rows[0];
-  await db.query("insert into scout.sources(record_id,url) values($1,'https://example.org/bbnj')", [record.id]);
+  await db.query("insert into scout.sources(record_id,url,published_on) values($1,'https://example.org/bbnj','2026-09-30')", [record.id]);
   return record;
 }
 
@@ -33,16 +33,17 @@ test('explicit baseline does not flood history or swallow later new/material rec
     const first = await baseline(db);
     assert.equal(first.snapshot.count, 12);
     assert.deepEqual(await prepareFindings(db, now), []);
-    const added = await insert(db, '<!channel> Newly collected', { published_on: '2026-09-30' });
+    const added = await insert(db, '<!channel> Newly collected');
     assert.equal((await baseline(db)).id, first.id);
-    await db.query('update scout.records set collected_at=now(),evidence_rank=2 where id=$1', [historical[0].id]);
+    await db.query('update scout.sources set collected_at=now() where record_id=$1', [historical[0].id]);
+    await db.query('update scout.records set evidence_rank=2 where id=$1', [historical[0].id]);
     let prepared = await prepareFindings(db, now);
     assert.equal(prepared.length, 1);
     assert.equal(prepared[0].record_id, added.id);
     assert.equal(prepared[0].kind, 'finding');
     const containing = prepared[0].payload.blocks.find(block => block.text.text.includes('<!channel>'));
     assert.equal(containing.text.type, 'plain_text');
-    assert.match(containing.text.text, /Published: 2026-09-30 · Collected:/);
+    assert.match(containing.text.text, /Source published: 2026-09-30 · Collected:/);
     const payload = prepared[0].payload;
     let calls = 0;
     const post = async body => { calls++; assert.deepEqual(body, payload); return { status: 200, body: 'ok' }; };
@@ -61,27 +62,48 @@ test('explicit baseline does not flood history or swallow later new/material rec
   } finally { await db.close(); }
 });
 
+test('legacy prepared snapshots require explicit replacement and retain their original evidence', async () => {
+  const db = await database();
+  try {
+    await baseline(db);
+    await insert(db);
+    const [prepared] = await prepareFindings(db, now);
+    const snapshot = { ...prepared.snapshot, format: 1, records: prepared.snapshot.records.map(record => ({ ...record, summary: record.description, start_on: null })) };
+    await db.query('update scout.deliveries set snapshot=$1 where id=$2', [snapshot, prepared.id]);
+    const rejected = await sendDelivery(db, prepared.id, async () => assert.fail('Legacy payload must not send'), options);
+    assert.equal(rejected.status, 'failed');
+    assert.equal(rejected.attempts, 0);
+    assert.deepEqual(rejected.snapshot, snapshot);
+    assert.deepEqual(rejected.payload, prepared.payload);
+    const replacement = await reprepareStale(db, prepared.id, now);
+    assert.equal(replacement.snapshot.format, 2);
+    assert.equal(Object.hasOwn(replacement.snapshot.records[0], 'summary'), false);
+    assert.equal((await sendDelivery(db, replacement.id, async () => ({ status: 200, body: 'ok' }), options)).status, 'sent');
+    assert.deepEqual((await getDelivery(db, prepared.id)).snapshot, snapshot);
+  } finally { await db.close(); }
+});
+
 test('digest respects source-local windows, cancellation, past/ongoing and unknown dates', async () => {
   const db = await database();
   try {
     const events = [
       ['Past HSA event', { starts_at: '2026-09-29T11:30:00Z', time_zone: '-04:00' }],
-      ['Cancelled', { start_on: '2026-10-03', status: 'cancelled' }],
+      ['Cancelled', { status: 'cancelled' }],
       ['Local boundary', { starts_at: '2026-10-02T00:30:00Z', time_zone: '-04:00' }],
-      ['Date only', { start_on: '2026-10-01' }],
+      ['Date only in source', {}],
       ['Ongoing', { starts_at: '2026-10-01T10:00:00Z', ends_at: '2026-10-01T14:00:00Z', time_zone: 'UTC' }],
-      ['Unknown date', {}], ['Later', { start_on: '2026-10-09' }],
+      ['Unknown date', {}], ['Later', { starts_at: '2026-10-09T12:00:00Z', time_zone: 'UTC' }],
     ];
     for (const [title, fields] of events) await insert(db, title, { kind: 'event', ...fields });
     await baseline(db);
     const digest = await prepareDigest(db, '2026-10-01', '2026-10-01', now);
     assert.equal(digest.snapshot.records.length, 4);
     const text = JSON.stringify(digest.payload);
-    assert.match(text, /3 qualifying events/);
-    assert.match(text, /Date unknown: 1/);
+    assert.match(text, /2 qualifying events/);
+    assert.match(text, /Date unknown: 2/);
     assert.match(text, /2026-10-01 · 20:30 UTC-04:00/);
     assert.doesNotMatch(text, /Past HSA event|Cancelled|Later/);
-    assert.match(text, /Calendar download is unavailable/);
+    assert.doesNotMatch(text, /Calendar download/);
     assert.equal((await prepareDigest(db, '2026-10-01', '2026-10-01', new Date('2026-10-01T13:00:00Z'))).id, digest.id);
     await assert.rejects(prepareDigest(db, '2026-02-30', '2026-03-01', now), /window/);
     let calls = 0;
@@ -165,7 +187,7 @@ test('explicit recovery preserves a stale empty digest and delivers the updated 
   try {
     await baseline(db);
     const original = await prepareDigest(db, '2026-10-01', '2026-10-07', now);
-    const event = await insert(db, 'Newly collected October event', { kind: 'event', start_on: '2026-10-03' });
+    const event = await insert(db, 'Newly collected October event', { kind: 'event', starts_at: '2026-10-03T12:00:00Z', time_zone: 'UTC' });
     let calls = 0;
     const post = async () => { calls++; return { status: 200, body: 'ok' }; };
     const stale = await sendDelivery(db, original.id, post, options);
@@ -241,7 +263,7 @@ test('recovery cannot replace baseline, pending, sending, unknown, sent or attem
     await assert.rejects(reprepareStale(db, history.id, now), /Only stale/);
     const original = await prepareDigest(db, '2026-10-01', '2026-10-07', now);
     await assert.rejects(reprepareStale(db, original.id, now), /Only stale/);
-    await insert(db, 'New date', { kind: 'event', start_on: '2026-10-03' });
+    await insert(db, 'New date', { kind: 'event', starts_at: '2026-10-03T12:00:00Z', time_zone: 'UTC' });
     await sendDelivery(db, original.id, async () => assert.fail('Stale sends never call transport'), options);
     const replacement = await reprepareStale(db, original.id, now);
     await sendDelivery(db, replacement.id, async () => { throw new Error('Timeout'); }, options);
