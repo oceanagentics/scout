@@ -169,6 +169,33 @@ await db.close();'
 
 With the Vite development server running, open `/tests/browser.html` on its printed localhost port. The marked verification page adds synthetic date/status/error examples without changing the database. “Due shortly” demonstrates an overdue transition after 30 seconds without a new fetch. The ignored snapshot and test page are excluded from production. This verifies the UI with local evidence, not hosted membership or authenticated database reads. The in-app browser did not report native calendar-download completion during verification; file bytes and rendered download links were checked, but saving/importing through a native calendar client remains unverified.
 
+## Manual Slack delivery
+
+The local notifier shares the collector database and process lock. It applies versioned local migrations, without collection or remote database writes. Run collection first, then explicitly baseline the historical records once. Repeating the baseline preserves later records' notification eligibility. Preparing a message stores its exact JSON payload and record/version evidence without sending:
+
+```sh
+npm run notify -- baseline
+npm run notify -- findings
+npm run notify -- digest 2026-10-01 2026-10-07
+npm run notify -- show DELIVERY_ID
+# After reviewing that stored payload:
+npm run notify -- send DELIVERY_ID
+```
+
+`findings` prepares at most five new/material record versions per run, with source links and before/after details for changes. `verification RECORD_ID` prepares one fixed, clearly labelled historical example for milestone-1 verification; repeating it returns the same delivery. Digests are labelled manual verification, use inclusive source calendar dates, and include upcoming/in-progress events plus a separate unknown-date section. Cancelled/past events are excluded; date-only timing uses the UTC day. A window may span at most 32 days. Messages show at most five dated and three unknown events with explicit counts and collection coverage. The same window always returns the same frozen digest. Changed/expired prepared evidence fails before sending; completed requests never repost.
+
+Only `send` loads `.env.local`; `SLACK_WEBHOOK_URL` must match the existing Ocean Agentics workspace/Scout installation bound to [#scout](https://oceanagentics.slack.com/archives/C0C5PE21KN1). No other token or scope is needed. Source prose uses plain-text blocks; links disable mention parsing and unfurling. Hosted record/calendar actions remain unavailable until member access is ready, and the messages say so. A webhook cannot attach the local calendar file; no synthetic hosted route is advertised.
+
+Delivery state is separate from collection. The notifier records `sending` and increments attempts before network I/O. HTTP 200 with `ok` records webhook acceptance (`sent`), not an independently inspected receipt. Only a definite HTTP 429 permits one retry, respecting `Retry-After` up to 30 seconds; attempts are capped at two. Other 4xx responses are terminal failures. Network errors, timeouts, 5xx/unexpected responses and interrupted `sending` attempts become `unknown`, requiring inspection instead of automatic resend. Requests have a 12-second timeout and a 4 KiB response bound; sends are spaced by at least one second. See Slack's [webhook response guidance](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/) and [rate limits](https://docs.slack.dev/apis/web-api/rate-limits/).
+
+Inspect #scout for the unique `Delivery UUID` footer. When a matching message is confirmed, persist its Slack timestamp and the inspection evidence:
+
+```sh
+npm run notify -- receipt DELIVERY_ID 1790856000.123456 "Read matching UUID and source content in #scout."
+```
+
+This can reconcile `unknown`/interrupted sends or attach receipt evidence to an accepted send. Absence from a limited history read is not proof of non-delivery. There is deliberately no automatic retry command for failed/uncertain deliveries. Review them before any replacement request. The historical baseline and exact payload snapshots are backend-only under the existing delivery RLS; the browser cannot read or invoke this local notifier. This is manual local delivery, not hosted execution or scheduling.
+
 ## Hosting deployment
 
 Scout uses Firebase Spark project `ryustatic`, site `bbnj-scout`, deployment target `scout`, and [https://bbnj-scout.web.app](https://bbnj-scout.web.app). `.firebaserc` maps only this target. Recheck shared Hosting capacity and keep billing disabled, then deploy with the saved Firebase login:

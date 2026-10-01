@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "node --test",
-    "collect:hsa": "node collector/run-hsa.js"
+    "collect:hsa": "node collector/run-hsa.js",
+    "notify": "node notifications/run.js"
   },
   "engines": {
     "node": ">=22.12.0"
