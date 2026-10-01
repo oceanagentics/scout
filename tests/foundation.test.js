@@ -13,6 +13,7 @@ const historyMigration = await readFile(new URL('../supabase/migrations/20261001
 const leanMigration = await readFile(new URL('../supabase/migrations/20261001160000_scout_lean_records.sql', import.meta.url), 'utf8');
 const deliveryMigration = await readFile(new URL('../supabase/migrations/20261001090000_scout_delivery_evidence.sql', import.meta.url), 'utf8');
 const schemaMigration = await readFile(new URL('../supabase/migrations/20261001170000_scout_lean_schema.sql', import.meta.url), 'utf8');
+const fiveTablesMigration = await readFile(new URL('../supabase/migrations/20261001180000_scout_five_tables.sql', import.meta.url), 'utf8');
 const beforeSchema = migration + trackerMigration + collectionMigration + evidenceMigration + deliveryMigration + workspaceMigration + historyMigration + leanMigration;
 const reader = '00000000-0000-0000-0000-000000000001';
 const admin = '00000000-0000-0000-0000-000000000002';
@@ -348,6 +349,73 @@ test('schema cleanup preserves evidence, derives freshness, migrates admins and 
     await assert.rejects(db.query('update auth.users set raw_app_meta_data=null'), { code: '42501' });
     await db.exec('reset role; set role anon');
     for (const view of ['source_details','tracker_status']) await assert.rejects(db.query(`select * from scout.${view}`), { code: '42501' });
+  } finally { await db.close(); }
+});
+
+test('five-table migration preserves captures, shared associations, current evidence, record versions and deliveries', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(auth + fixture + beforeSchema + schemaMigration);
+    const tracker = (await db.query("insert into scout.trackers(name,url,collector,cadence) values ('Fixture','https://example.org','web','1 day') returning id")).rows[0];
+    const records = (await db.query("insert into scout.records(kind,title,starts_at) values ('event','First','2026-11-03T12:00Z'),('event','Second','2026-11-04T12:00Z') returning *")).rows;
+    const captures = (await db.query(`insert into scout.source_versions(tracker_id,url,content_hash,content,parsed,collected_at,published_on) values
+      ($1,'https://example.org/event','A','Original capture','{"starts_at":"2026-11-03T12:00:00.000Z"}','2026-10-01T00:00Z','2026-09-30'),
+      ($1,'https://example.org/event','B','Revised capture','{"starts_at":"2026-11-04T12:00:00.000Z"}','2026-10-02T00:00Z',null),
+      ($1,'https://example.org/unrelated','U','Unrelated capture',null,'2026-10-01T00:00Z',null),
+      ($1,'https://example.org/earlier','H','Earlier supporting capture','{}','2026-09-01T00:00Z',null) returning *`, [tracker.id])).rows;
+    for (const [i, record] of records.entries()) {
+      await db.query('update scout.records set date_evidence=$1 where id=$2', [{ schedule_source: captures[i].id, zone_source: captures[0].id }, record.id]);
+      await db.query(`insert into scout.sources(record_id,url,source_version_id,last_seen_at,authoritative,evidence_at)
+        values ($1,'https://example.org/event',$2,'2026-10-03T00:00Z',$3,$4)`,
+      [record.id, captures[i].id, i === 0, i === 0 ? '2026-10-03T00:00Z' : null]);
+    }
+    await db.query('insert into scout.record_changes(record_id,source_version_id,current) values ($1,$2,$3)',
+      [records[1].id, captures[3].id, { title: 'Earlier title' }]);
+    await db.query(`insert into scout.deliveries(record_id,kind,channel_id,idempotency_key,payload,snapshot)
+      values ($1,'finding','fixture','preserved','{"text":"Reviewed message"}',$2)`, [records[1].id, { format: 3, records }]);
+    const beforeRecords = (await db.query('select * from scout.records order by id')).rows;
+    const deliveries = (await db.query('select * from scout.deliveries')).rows;
+    const shared = (await db.query(sharedState)).rows;
+    const current = (await db.query(`select s.record_id,s.url,s.last_seen_at,s.authoritative,s.evidence_at,v.content_hash
+      from scout.sources s join scout.source_versions v on v.id=s.source_version_id order by s.record_id`)).rows;
+    await db.exec(fiveTablesMigration);
+    assert.deepEqual((await db.query("select table_name from information_schema.tables where table_schema='scout' and table_type='BASE TABLE' order by table_name")).rows.map(row => row.table_name),
+      ['collection_runs','deliveries','evidence','records','trackers']);
+    assert.equal((await db.query("select count(*)::int n from information_schema.columns c join information_schema.tables t using(table_schema,table_name) where c.table_schema='scout' and t.table_type='BASE TABLE'")).rows[0].n, 59);
+    const evidence = (await db.query('select * from scout.evidence')).rows;
+    assert.equal(evidence.length, 6);
+    for (const capture of captures) {
+      assert.ok(evidence.some(row => row.id === capture.id));
+      for (const row of evidence.filter(row => row.content_hash === capture.content_hash)) {
+        for (const key of Object.keys(capture).filter(key => key !== 'id')) assert.deepEqual(row[key], capture[key]);
+      }
+    }
+    assert.equal(evidence.find(row => row.content_hash === 'U').record_id, null);
+    assert.equal(evidence.find(row => row.content_hash === 'H').record_id, records[1].id);
+    assert.deepEqual((await db.query('select record_id,url,last_seen_at,authoritative,evidence_at,content_hash from scout.current_evidence order by record_id')).rows, current);
+    for (const record of (await db.query('select * from scout.records order by id')).rows) {
+      const before = beforeRecords.find(row => row.id === record.id);
+      for (const key of Object.keys(before).filter(key => key !== 'date_evidence')) assert.deepEqual(record[key], before[key]);
+      for (const key of ['schedule_source','zone_source']) {
+        const proof = evidence.find(row => row.id === record.date_evidence[key]);
+        assert.equal(proof.record_id, record.id);
+        assert.equal(proof.content, captures.find(row => row.id === before.date_evidence[key]).content);
+      }
+    }
+    assert.deepEqual((await db.query('select * from scout.deliveries')).rows, deliveries);
+    assert.deepEqual((await db.query(sharedState)).rows, shared);
+    await db.exec('set role authenticated');
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [reader]);
+    assert.equal((await db.query('select * from scout.source_details')).rows.length, 2);
+    for (const table of ['evidence','current_evidence']) await assert.rejects(db.query(`select * from scout.${table}`), { code: '42501' });
+    await assert.rejects(db.query('delete from scout.evidence'), { code: '42501' });
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [outsider]);
+    assert.deepEqual((await db.query('select * from scout.source_details')).rows, []);
+    await db.exec('reset role; set role anon');
+    await assert.rejects(db.query('select * from scout.source_details'), { code: '42501' });
+    await db.exec('reset role; set role service_role');
+    assert.equal((await db.query('select * from scout.evidence')).rows.length, 6);
+    assert.equal((await db.query('select * from scout.current_evidence')).rows.length, 2);
   } finally { await db.close(); }
 });
 

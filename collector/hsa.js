@@ -186,10 +186,10 @@ function material(record) {
 
 async function version(db, tracker, url, content, publishedAt, parse, fingerprint = content) {
   const digest = `hsa-v3:${hash(fingerprint)}`;
-  const old = (await db.query('select * from scout.source_versions where tracker_id=$1 and url=$2 and content_hash=$3', [tracker, url, digest])).rows[0];
+  const old = (await db.query('select * from scout.evidence where tracker_id=$1 and url=$2 and content_hash=$3 order by collected_at,id limit 1', [tracker, url, digest])).rows[0];
   if (old) return old;
   const parsed = parse();
-  return (await db.query('insert into scout.source_versions (tracker_id,url,content_hash,content,published_at,parsed) values ($1,$2,$3,$4,$5,$6) returning *', [tracker, url, digest, content, publishedAt, JSON.stringify(parsed)])).rows[0];
+  return (await db.query('insert into scout.evidence (tracker_id,url,content_hash,content,published_at,parsed) values ($1,$2,$3,$4,$5,$6) returning *', [tracker, url, digest, content, publishedAt, JSON.stringify(parsed)])).rows[0];
 }
 
 async function save(db, identity, source, rank, observedAt, stats) {
@@ -199,14 +199,23 @@ async function save(db, identity, source, rank, observedAt, stats) {
     for (const field of ['starts_at', 'ends_at']) if (existing[field] instanceof Date) existing[field] = existing[field].toISOString();
   }
   if (!record && !existing) return;
-  const old = existing ? Object.fromEntries(fields.map(field => [field, existing[field]])) : null;
-  const references = existing ? (await db.query(`select v.*, s.authoritative, s.evidence_at from scout.sources s
-    join scout.source_versions v on v.id=s.source_version_id
-    where s.record_id=$1`, [existing.id])).rows : [];
+  // A shared capture belongs to each record independently. Reload ownership
+  // because a cached page may already have been attached earlier in this run.
+  source = (await db.query(`select * from scout.evidence where id=$1 or
+    (record_id=$2 and tracker_id=$3 and url=$4 and content_hash=$5)
+    order by (record_id=$2) desc nulls last limit 1`,
+  [source.id, existing?.id ?? null, source.tracker_id, source.url, source.content_hash])).rows[0];
+  if (source.record_id && source.record_id !== existing?.id) {
+    source = (await db.query(`insert into scout.evidence (record_id,tracker_id,url,content_hash,content,published_at,collected_at,parsed,published_on)
+      select $2,tracker_id,url,content_hash,content,published_at,collected_at,parsed,published_on from scout.evidence where id=$1
+      on conflict (record_id,tracker_id,url,content_hash) do update set content_hash=excluded.content_hash returning *`,
+    [source.id, existing?.id ?? null])).rows[0];
+  }
+  const references = existing ? (await db.query('select * from scout.current_evidence where record_id=$1', [existing.id])).rows : [];
   const previous = references.find(item => item.url === source.url);
   // Date-only values stay in captured sources, used here only to combine evidence.
-  const established = existing?.date_evidence.schedule_source ? (await db.query('select url,parsed from scout.source_versions where id=$1',
-    [existing.date_evidence.schedule_source])).rows[0] : null;
+  const established = existing?.date_evidence.schedule_source ? (await db.query('select url,parsed from scout.evidence where id=$1 and record_id=$2',
+    [existing.date_evidence.schedule_source, existing.id])).rows[0] : null;
   const schedule = established?.parsed ??
     references.find(item => item.authoritative && identity === `event:${item.url}`)?.parsed ??
     references.find(item => item.parsed?.starts_at && item.parsed.starts_at === existing?.starts_at)?.parsed;
@@ -280,18 +289,12 @@ async function save(db, identity, source, rank, observedAt, stats) {
         existing = (await db.query(`insert into scout.records (${fields.join(',')},identity_key,evidence_rank,evidence_at) values (${Array.from({ length: 14 }, (_, i) => `$${i + 1}`).join(',')}) returning *`, [...fields.map(field => merged[field]), identity, recordRank, recordEvidenceAt])).rows[0];
         stats.created++;
       }
-      const changed = fields.filter(field => !old || !isDeepStrictEqual(old[field], merged[field]));
-      await db.query('insert into scout.record_changes (record_id,source_version_id,previous,current) values ($1,$2,$3,$4)',
-        [existing.id, source.id, old ? JSON.stringify(Object.fromEntries(changed.map(field => [field, old[field]]))) : null,
-          JSON.stringify(Object.fromEntries(changed.map(field => [field, merged[field]])))]);
     } else {
       await db.query('update scout.records set evidence_rank=$1,evidence_at=$2 where id=$3', [recordRank, recordEvidenceAt, existing.id]);
     }
   }
-  await db.query(`insert into scout.sources (record_id,url,source_version_id,authoritative,evidence_at)
-    values ($1,$2,$3,$4,$5) on conflict (record_id,url) do update set
-    source_version_id=excluded.source_version_id,last_seen_at=now(),authoritative=excluded.authoritative,evidence_at=excluded.evidence_at`,
-  [existing.id, source.url, source.id, rank === 2, evidenceAt]);
+  await db.query('update scout.evidence set record_id=$2,last_seen_at=clock_timestamp(),authoritative=$3,evidence_at=$4 where id=$1',
+    [source.id, existing.id, rank === 2, evidenceAt]);
   return dateWarning;
 }
 

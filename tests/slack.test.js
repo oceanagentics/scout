@@ -16,13 +16,12 @@ async function database() {
     await db.exec(await readFile(new URL(`../supabase/migrations/${name}`, import.meta.url), 'utf8'));
   }
   await db.exec("insert into scout.trackers(name,url,collector,cadence) values ('Fixture','https://example.org','web','1 day')");
-  await db.exec("insert into scout.source_versions(tracker_id,url,content_hash,content,published_on) select id,'https://example.org/bbnj','fixture','Full source evidence','2026-09-30' from scout.trackers");
   return db;
 }
 async function insert(db, title = 'Public BBNJ announcement', extra = {}) {
   const row = { kind: 'announcement', title, description: 'Source-backed description.', ...extra };
   const record = (await db.query(`insert into scout.records(${Object.keys(row).join(',')}) values(${Object.keys(row).map((_, i) => `$${i + 1}`).join(',')}) returning *`, Object.values(row))).rows[0];
-  await db.query("insert into scout.sources(record_id,url,source_version_id) select $1,url,id from scout.source_versions", [record.id]);
+  await db.query("insert into scout.evidence(record_id,tracker_id,url,content_hash,content,published_on,last_seen_at) select $1,id,'https://example.org/bbnj','fixture','Full source evidence','2026-09-30',now() from scout.trackers", [record.id]);
   return record;
 }
 
@@ -38,7 +37,7 @@ test('explicit baseline does not flood history or swallow later new/material rec
     assert.deepEqual(await prepareFindings(db, now), []);
     const added = await insert(db, '<!channel> Newly collected');
     assert.equal((await baseline(db)).id, first.id);
-    await db.query('update scout.sources set last_seen_at=now() where record_id=$1', [historical[0].id]);
+    await db.query('update scout.evidence set last_seen_at=now() where record_id=$1', [historical[0].id]);
     await db.query('update scout.records set evidence_rank=2 where id=$1', [historical[0].id]);
     let prepared = await prepareFindings(db, now);
     assert.equal(prepared.length, 1);

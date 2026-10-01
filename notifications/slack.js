@@ -16,9 +16,9 @@ const versionKey = record => `${CHANNEL}:${record.id}:${record.version}`;
 export async function readRecords(db) {
   return (await db.query(`select to_jsonb(r) || jsonb_build_object(
     'version', to_char(r.updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-    'sources', coalesce((select jsonb_agg(jsonb_build_object('url',s.url,'published_at',v.published_at,
-      'published_on',v.published_on,'collected_at',v.collected_at) order by s.authoritative desc,s.url)
-      from scout.sources s join scout.source_versions v on v.id=s.source_version_id where s.record_id=r.id), '[]'::jsonb)) as record
+    'sources', coalesce((select jsonb_agg(jsonb_build_object('url',e.url,'published_at',e.published_at,
+      'published_on',e.published_on,'collected_at',e.collected_at) order by e.authoritative desc,e.url)
+      from scout.current_evidence e where e.record_id=r.id), '[]'::jsonb)) as record
     from scout.records r order by r.updated_at,r.id`)).rows.map(row => row.record);
 }
 
