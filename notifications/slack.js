@@ -5,6 +5,9 @@ import { KINDS, eventLabel, eventTiming, recordDates, sourceLink, stamp } from '
 
 export const CHANNEL = 'C0C5PE21KN1';
 const baselineKey = `baseline:${CHANNEL}`;
+const staleError = 'Prepared evidence changed or expired; no message sent.';
+const canReprepare = row => row.status === 'failed' && row.attempts === 0 && !row.last_attempt_at && !row.sent_at && !row.slack_ts &&
+  row.error === staleError && ['finding', 'change', 'digest'].includes(row.kind);
 const clip = (value, limit) => Array.from(String(value ?? '')).slice(0, limit).join('');
 const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const section = text => ({ type: 'section', text: { type: 'plain_text', text: clip(text, 2900), emoji: false } });
@@ -30,7 +33,15 @@ async function storeDelivery(db, key, kind, records, payload, snapshot = {}, sta
   await db.query(`insert into scout.deliveries(id,record_id,record_updated_at,kind,channel_id,idempotency_key,status,payload,snapshot)
     values($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict(idempotency_key) do nothing`,
   [id, record?.id ?? null, record?.version ?? null, kind, CHANNEL, key, status, payload, { format: 1, ...snapshot, records }]);
-  return (await db.query('select * from scout.deliveries where idempotency_key=$1', [key])).rows[0];
+  return latestReplacement(db, (await db.query('select * from scout.deliveries where idempotency_key=$1', [key])).rows[0]);
+}
+
+async function latestReplacement(db, row) {
+  for (;;) {
+    const next = (await db.query('select * from scout.deliveries where idempotency_key=$1', [`replacement:${row.id}`])).rows[0];
+    if (!next) return row;
+    row = next;
+  }
 }
 
 export async function baseline(db) {
@@ -71,30 +82,34 @@ export async function prepareFindings(db, now = new Date()) {
   const previous = (await db.query('select * from scout.deliveries where channel_id=$1', [CHANNEL])).rows;
   const prepared = [];
   for (const record of await readRecords(db)) {
-    if (previous.some(row => row.idempotency_key === versionKey(record) || (row.record_id === record.id && ['sending', 'unknown'].includes(row.status)))) continue;
-    const kind = previous.some(row => row.record_id === record.id && ['baseline', 'sent'].includes(row.status)) ? 'change' : 'finding';
-    const id = randomUUID();
-    const blocks = recordBlocks(record, now);
-    if (kind === 'change') {
-      const prior = previous.filter(row => row.record_id === record.id && ['baseline', 'sent'].includes(row.status)).sort((a, b) => b.created_at - a.created_at)[0].snapshot.records[0];
-      const changes = ['title', 'summary', 'location', 'status', 'registration_url', 'published_on', 'country', 'treaty_action', 'recorded_on']
-        .filter(field => prior[field] !== record[field]).map(field => `${field.replaceAll('_', ' ')}: ${clip(prior[field] ?? 'Unknown', 150)} → ${clip(record[field] ?? 'Unknown', 150)}`);
-      if (record.kind === 'event' && eventLabel(prior) !== eventLabel(record)) changes.unshift(`Event schedule: ${eventLabel(prior)} → ${eventLabel(record)}`);
-      blocks.unshift(section(`Changes since the last notification/baseline:\n${changes.join('\n') || 'Source-backed record details updated.'}`));
-    }
-    prepared.push(await storeDelivery(db, versionKey(record), kind, [record], payload(`Scout · ${kind === 'change' ? 'Material change' : 'New finding'}`, blocks, id), { as_of: now.toISOString() }, 'pending', id));
+    if (previous.some(row => row.record_id === record.id && (['sending', 'unknown'].includes(row.status) ||
+        (row.snapshot?.records[0] && versionKey(row.snapshot.records[0]) === versionKey(record))))) continue;
+    prepared.push(await prepareFinding(db, record, previous, now));
     if (prepared.length === 5) break;
   }
   return prepared;
+}
+
+async function prepareFinding(db, record, previous, now, verification = false, replaces = null) {
+  const kind = !verification && previous.some(row => row.record_id === record.id && ['baseline', 'sent'].includes(row.status)) ? 'change' : 'finding';
+  const id = randomUUID(), blocks = recordBlocks(record, now);
+  if (kind === 'change') {
+    const prior = previous.filter(row => row.record_id === record.id && ['baseline', 'sent'].includes(row.status)).sort((a, b) => b.created_at - a.created_at)[0].snapshot.records[0];
+    const changes = ['title', 'summary', 'location', 'status', 'registration_url', 'published_on', 'country', 'treaty_action', 'recorded_on']
+      .filter(field => prior[field] !== record[field]).map(field => `${field.replaceAll('_', ' ')}: ${clip(prior[field] ?? 'Unknown', 150)} → ${clip(record[field] ?? 'Unknown', 150)}`);
+    if (record.kind === 'event' && eventLabel(prior) !== eventLabel(record)) changes.unshift(`Event schedule: ${eventLabel(prior)} → ${eventLabel(record)}`);
+    blocks.unshift(section(`Changes since the last notification/baseline:\n${changes.join('\n') || 'Source-backed record details updated.'}`));
+  }
+  const key = replaces ? `replacement:${replaces}` : verification ? `verification:${CHANNEL}:milestone-1` : versionKey(record);
+  return storeDelivery(db, key, kind, [record], payload(verification ? 'Scout verification · historical source example' : `Scout · ${kind === 'change' ? 'Material change' : 'New finding'}`, blocks, id),
+    { as_of: now.toISOString(), verification, replaces }, 'pending', id);
 }
 
 export async function prepareVerification(db, recordId, now = new Date()) {
   await requireBaseline(db);
   const record = (await readRecords(db)).find(row => row.id === recordId);
   if (!record) throw new Error('Verification requires an existing source-backed record.');
-  const id = randomUUID();
-  return storeDelivery(db, `verification:${CHANNEL}:milestone-1`, 'finding', [record],
-    payload('Scout verification · historical source example', recordBlocks(record, now), id), { verification: true, as_of: now.toISOString() }, 'pending', id);
+  return prepareFinding(db, record, [], now, true);
 }
 
 function digestRecords(records, from, through, now) {
@@ -112,6 +127,10 @@ function digestRecords(records, from, through, now) {
 }
 
 export async function prepareDigest(db, from, through, now = new Date()) {
+  return prepareDigestPayload(db, from, through, now);
+}
+
+async function prepareDigestPayload(db, from, through, now, replaces = null) {
   await requireBaseline(db);
   const valid = day => /^\d{4}-\d{2}-\d{2}$/.test(day ?? '') && !Number.isNaN(Date.parse(day)) && new Date(day).toISOString().slice(0, 10) === day;
   if (!valid(from) || !valid(through) || through < from || Date.parse(through) - Date.parse(from) > 31 * 86400000) throw new Error('Provide an inclusive digest window of at most 32 calendar days.');
@@ -123,8 +142,26 @@ export async function prepareDigest(db, from, through, now = new Date()) {
   blocks.push(section(`Date unknown: ${unknown.length}. These cannot be assigned to this reporting window${unknown.length > 3 ? '; showing 3' : ''}.`));
   for (const record of unknown.slice(0, 3)) blocks.push(...recordBlocks(record, now));
   const id = randomUUID();
-  return storeDelivery(db, `digest:${CHANNEL}:${from}:${through}`, 'digest', [...dated, ...unknown],
-    payload('Scout verification · manual upcoming-events digest', blocks, id), { as_of: now.toISOString(), from, through, coverage }, 'pending', id);
+  return storeDelivery(db, replaces ? `replacement:${replaces}` : `digest:${CHANNEL}:${from}:${through}`, 'digest', [...dated, ...unknown],
+    payload('Scout verification · manual upcoming-events digest', blocks, id), { as_of: now.toISOString(), from, through, coverage, replaces }, 'pending', id);
+}
+
+export async function reprepareStale(db, id, now = new Date()) {
+  return db.transaction(async tx => {
+    const row = await getDelivery(tx, id);
+    if (!canReprepare(row)) throw new Error('Only stale deliveries rejected before any send attempt can be reprepared.');
+    const latest = await latestReplacement(tx, row);
+    if (latest.id !== row.id) return latest;
+    if (row.kind === 'digest') return prepareDigestPayload(tx, row.snapshot.from, row.snapshot.through, now, id);
+    const record = (await readRecords(tx)).find(record => record.id === row.record_id);
+    if (!record) throw new Error('The source record no longer exists.');
+    const previous = (await tx.query('select * from scout.deliveries where channel_id=$1', [CHANNEL])).rows;
+    if (previous.some(other => other.id !== id && other.record_id === record.id && (['sending', 'unknown'].includes(other.status) ||
+        (!row.snapshot.verification && !canReprepare(other) && other.snapshot?.records[0] && versionKey(other.snapshot.records[0]) === versionKey(record))))) {
+      throw new Error('Another delivery exists for this record version or needs reconciliation; review it first.');
+    }
+    return prepareFinding(tx, record, previous, now, row.snapshot.verification, id);
+  });
 }
 
 export function webhookTransport(value) {
@@ -163,7 +200,7 @@ export async function sendDelivery(db, id, post, { now = () => new Date(), wait 
     stale ||= JSON.stringify([...dated, ...unknown].map(versionKey)) !== JSON.stringify(row.snapshot.records.map(versionKey));
   }
   if (stale) {
-    await db.query("update scout.deliveries set status='failed',error='Prepared evidence changed or expired; no message sent.' where id=$1", [id]);
+    await db.query("update scout.deliveries set status='failed',error=$2 where id=$1", [id, staleError]);
     return getDelivery(db, id);
   }
   if (row.record_id && (await db.query("select id from scout.deliveries where record_id=$1 and id<>$2 and status in ('sending','unknown')", [row.record_id, id])).rows.length) throw new Error('Reconcile the earlier uncertain delivery for this record first.');

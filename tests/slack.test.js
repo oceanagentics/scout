@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
-import { baseline, getDelivery, prepareDigest, prepareFindings, prepareVerification, recordReceipt, sendDelivery, webhookTransport } from '../notifications/slack.js';
+import { baseline, getDelivery, prepareDigest, prepareFindings, prepareVerification, recordReceipt, reprepareStale, sendDelivery, webhookTransport } from '../notifications/slack.js';
 
 const now = new Date('2026-10-01T12:00:00Z');
 const options = { now: () => now, wait: async () => {} };
@@ -156,5 +156,103 @@ test('verification freezes one historical payload; changed evidence blocks stale
     assert.match(JSON.stringify(result.payload), /Historical source/);
     for (const url of ['https://example.org', 'https://hooks.slack.com/services/OTHER/B0C5TEK4R38/secret', 'https://hooks.slack.com/services/TFZ8FRLBV/B0C5TEK4R38/secret?redirect=x']) assert.throws(() => webhookTransport(url));
     assert.equal(typeof webhookTransport('https://hooks.slack.com/services/TFZ8FRLBV/B0C5TEK4R38/placeholder'), 'function');
+  } finally { await db.close(); }
+});
+
+test('explicit recovery preserves a stale empty digest and delivers the updated window once', async () => {
+  const db = await database();
+  try {
+    await baseline(db);
+    const original = await prepareDigest(db, '2026-10-01', '2026-10-07', now);
+    const event = await insert(db, 'Newly collected October event', { kind: 'event', start_on: '2026-10-03' });
+    let calls = 0;
+    const post = async () => { calls++; return { status: 200, body: 'ok' }; };
+    const stale = await sendDelivery(db, original.id, post, options);
+    assert.equal(stale.status, 'failed');
+    assert.equal(stale.attempts, 0);
+    assert.equal(calls, 0);
+    assert.equal((await prepareDigest(db, '2026-10-01', '2026-10-07', now)).id, original.id);
+    const replacement = await reprepareStale(db, original.id, now);
+    assert.notEqual(replacement.id, original.id);
+    assert.equal(replacement.status, 'pending');
+    assert.equal(replacement.snapshot.replaces, original.id);
+    assert.equal(replacement.snapshot.records[0].id, event.id);
+    assert.match(JSON.stringify(replacement.payload), /Newly collected October event/);
+    assert.deepEqual(await getDelivery(db, original.id), stale);
+    assert.equal((await reprepareStale(db, original.id, now)).id, replacement.id);
+    assert.equal((await prepareDigest(db, '2026-10-01', '2026-10-07', now)).id, replacement.id);
+    assert.equal((await sendDelivery(db, replacement.id, post, options)).status, 'sent');
+    await assert.rejects(reprepareStale(db, replacement.id, now), /Only stale/);
+    const repeated = await prepareDigest(db, '2026-10-01', '2026-10-07', now);
+    await sendDelivery(db, repeated.id, post, options);
+    assert.equal((await reprepareStale(db, original.id, now)).id, repeated.id);
+    assert.equal(calls, 1);
+    assert.deepEqual(await getDelivery(db, original.id), stale);
+  } finally { await db.close(); }
+});
+
+test('timing-only and changed-version findings recover without losing evidence or creating duplicates', async () => {
+  const db = await database();
+  try {
+    await baseline(db);
+    const event = await insert(db, 'Source-backed timed event', { kind: 'event', starts_at: '2026-10-01T13:00:00Z', ends_at: '2026-10-01T15:00:00Z', time_zone: 'UTC' });
+    const [original] = await prepareFindings(db, now);
+    let later = new Date('2026-10-01T14:00:00Z');
+    const laterOptions = { ...options, now: () => later };
+    let calls = 0;
+    const post = async () => { calls++; return { status: 200, body: 'ok' }; };
+    const stale = await sendDelivery(db, original.id, post, laterOptions);
+    assert.equal(stale.attempts, 0);
+    const inProgress = await reprepareStale(db, original.id, later);
+    assert.match(JSON.stringify(inProgress.payload), /In progress/);
+    later = new Date('2026-10-01T16:00:00Z');
+    const staleAgain = await sendDelivery(db, inProgress.id, post, laterOptions);
+    assert.equal(staleAgain.attempts, 0);
+    const replacement = await reprepareStale(db, inProgress.id, later);
+    assert.equal((await reprepareStale(db, original.id, later)).id, replacement.id);
+    assert.deepEqual(await getDelivery(db, inProgress.id), staleAgain);
+    assert.equal(replacement.snapshot.records[0].version, original.snapshot.records[0].version);
+    assert.match(JSON.stringify(replacement.payload), /Past \/ started/);
+    assert.match(JSON.stringify(original.payload), /Upcoming/);
+    assert.deepEqual(await getDelivery(db, original.id), stale);
+    await sendDelivery(db, replacement.id, post, laterOptions);
+    await sendDelivery(db, replacement.id, post, laterOptions);
+    assert.deepEqual(await prepareFindings(db, later), []);
+    assert.equal(calls, 1);
+    await db.query("update scout.records set title='Organizer correction' where id=$1", [event.id]);
+    const [change] = await prepareFindings(db, later);
+    await db.query("update scout.records set title='Later organizer correction' where id=$1", [event.id]);
+    assert.equal((await sendDelivery(db, change.id, post, laterOptions)).status, 'failed');
+    const corrected = await reprepareStale(db, change.id, later);
+    assert.equal(corrected.kind, 'change');
+    assert.match(JSON.stringify(corrected.payload), /Later organizer correction/);
+    assert.deepEqual(await prepareFindings(db, later), []);
+    await sendDelivery(db, corrected.id, post, laterOptions);
+    assert.deepEqual(await prepareFindings(db, later), []);
+    assert.equal(calls, 2);
+  } finally { await db.close(); }
+});
+
+test('recovery cannot replace baseline, pending, sending, unknown, sent or attempted failures', async () => {
+  const db = await database();
+  try {
+    const history = await baseline(db);
+    await assert.rejects(reprepareStale(db, history.id, now), /Only stale/);
+    const original = await prepareDigest(db, '2026-10-01', '2026-10-07', now);
+    await assert.rejects(reprepareStale(db, original.id, now), /Only stale/);
+    await insert(db, 'New date', { kind: 'event', start_on: '2026-10-03' });
+    await sendDelivery(db, original.id, async () => assert.fail('Stale sends never call transport'), options);
+    const replacement = await reprepareStale(db, original.id, now);
+    await sendDelivery(db, replacement.id, async () => { throw new Error('Timeout'); }, options);
+    await assert.rejects(reprepareStale(db, replacement.id, now), /Only stale/);
+    assert.equal((await reprepareStale(db, original.id, now)).status, 'unknown');
+    assert.equal((await prepareDigest(db, '2026-10-01', '2026-10-07', now)).id, replacement.id);
+    const attempted = await prepareDigest(db, '2026-10-08', '2026-10-14', now);
+    await sendDelivery(db, attempted.id, async () => ({ status: 400 }), options);
+    await assert.rejects(reprepareStale(db, attempted.id, now), /Only stale/);
+    const interrupted = await prepareDigest(db, '2026-10-15', '2026-10-21', now);
+    await db.query("update scout.deliveries set status='sending',attempts=1 where id=$1", [interrupted.id]);
+    await assert.rejects(reprepareStale(db, interrupted.id, now), /Only stale/);
+    assert.equal((await db.query('select count(*)::int n from scout.deliveries')).rows[0].n, 5);
   } finally { await db.close(); }
 });

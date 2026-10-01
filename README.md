@@ -182,7 +182,18 @@ npm run notify -- show DELIVERY_ID
 npm run notify -- send DELIVERY_ID
 ```
 
-`findings` prepares at most five new/material record versions per run, with source links and before/after details for changes. `verification RECORD_ID` prepares one fixed, clearly labelled historical example for milestone-1 verification; repeating it returns the same delivery. Digests are labelled manual verification, use inclusive source calendar dates, and include upcoming/in-progress events plus a separate unknown-date section. Cancelled/past events are excluded; date-only timing uses the UTC day. A window may span at most 32 days. Messages show at most five dated and three unknown events with explicit counts and collection coverage. The same window always returns the same frozen digest. Changed/expired prepared evidence fails before sending; completed requests never repost.
+`findings` prepares at most five new/material record versions per run, with source links and before/after details for changes. `verification RECORD_ID` prepares one fixed, clearly labelled historical example for milestone-1 verification. Digests are labelled manual verification, use inclusive source calendar dates, and include upcoming/in-progress events plus a separate unknown-date section. Cancelled/past events are excluded; date-only timing uses the UTC day. A window may span at most 32 days. Messages show at most five dated and three unknown events with explicit counts and collection coverage. Repeating a window or verification request returns its latest explicitly prepared payload. Changed/expired prepared evidence fails before sending; completed requests never repost.
+
+If a delivery fails with `Prepared evidence changed or expired; no message sent.` and has **zero attempts**, explicitly prepare its replacement, inspect the returned new ID, then send it separately:
+
+```sh
+npm run notify -- reprepare STALE_DELIVERY_ID
+npm run notify -- show NEW_DELIVERY_ID
+# After reviewing the new current payload:
+npm run notify -- send NEW_DELIVERY_ID
+```
+
+This handles newly collected events in the same digest window and findings whose facts or event timing changed before sending. The original failed row, key, payload and snapshot remain unchanged; the new snapshot records `replaces`. Repeating recovery of an old ID returns its existing latest replacement. If that replacement also expires without an attempt, use its ID to explicitly prepare again. Normal window/verification requests follow these links, and findings suppress versions already represented by a replacement. Recovery rejects pending, baseline, sending, unknown, sent and any attempted delivery, including definite 4xx failures. It never sends automatically, replaces an uncertain outcome or resets an attempt count. Another existing delivery for the current record version must be reviewed instead of creating a duplicate.
 
 Only `send` loads `.env.local`; `SLACK_WEBHOOK_URL` must match the existing Ocean Agentics workspace/Scout installation bound to [#scout](https://oceanagentics.slack.com/archives/C0C5PE21KN1). No other token or scope is needed. Source prose uses plain-text blocks; links disable mention parsing and unfurling. Hosted record/calendar actions remain unavailable until member access is ready, and the messages say so. A webhook cannot attach the local calendar file; no synthetic hosted route is advertised.
 
@@ -194,7 +205,7 @@ Inspect #scout for the unique `Delivery UUID` footer. When a matching message is
 npm run notify -- receipt DELIVERY_ID 1790856000.123456 "Read matching UUID and source content in #scout."
 ```
 
-This can reconcile `unknown`/interrupted sends or attach receipt evidence to an accepted send. Absence from a limited history read is not proof of non-delivery. There is deliberately no automatic retry command for failed/uncertain deliveries. Review them before any replacement request. The historical baseline and exact payload snapshots are backend-only under the existing delivery RLS; the browser cannot read or invoke this local notifier. This is manual local delivery, not hosted execution or scheduling.
+This can reconcile `unknown`/interrupted sends or attach receipt evidence to an accepted send. Absence from a limited history read is not proof of non-delivery. There is deliberately no automatic retry command for failed/uncertain deliveries; `reprepare` is limited to the zero-attempt stale rejection described above. Attempted failures retain the manual-review limitation. The historical baseline and exact payload snapshots are backend-only under the existing delivery RLS; the browser cannot read or invoke this local notifier. This is manual local delivery, not hosted execution or scheduling.
 
 ## Hosting deployment
 

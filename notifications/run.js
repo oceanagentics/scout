@@ -1,6 +1,6 @@
 import { PGlite } from '@electric-sql/pglite';
 import { access, open, readFile, readdir, unlink } from 'node:fs/promises';
-import { baseline, getDelivery, prepareDigest, prepareFindings, prepareVerification, recordReceipt, sendDelivery, webhookTransport } from './slack.js';
+import { baseline, getDelivery, prepareDigest, prepareFindings, prepareVerification, recordReceipt, reprepareStale, sendDelivery, webhookTransport } from './slack.js';
 
 // Local only; share the collector's process lock to protect the persistent database.
 const root = new URL('../', import.meta.url);
@@ -24,11 +24,12 @@ try {
   else if (command === 'verification' && args.length === 1) result = await prepareVerification(db, args[0]);
   else if (command === 'digest' && args.length === 2) result = await prepareDigest(db, ...args);
   else if (command === 'show' && args.length === 1) result = await getDelivery(db, args[0]);
+  else if (command === 'reprepare' && args.length === 1) result = await reprepareStale(db, args[0]);
   else if (command === 'send' && args.length === 1) {
     process.loadEnvFile(new URL('.env.local', root));
     result = await sendDelivery(db, args[0], webhookTransport(process.env.SLACK_WEBHOOK_URL));
   } else if (command === 'receipt' && args.length === 3) result = await recordReceipt(db, ...args);
-  else throw new Error('Usage: npm run notify -- baseline | findings | verification RECORD_ID | digest FROM THROUGH | show ID | send ID | receipt ID SLACK_TS "inspection note"');
+  else throw new Error('Usage: npm run notify -- baseline | findings | verification RECORD_ID | digest FROM THROUGH | show ID | reprepare STALE_ID | send ID | receipt ID SLACK_TS "inspection note"');
   if (command !== 'show') {
     const compact = row => ({ id: row.id, kind: row.kind, status: row.status, attempts: row.attempts, records: row.snapshot?.records.length, slack_ts: row.slack_ts, error: row.error });
     result = Array.isArray(result) ? result.map(compact) : compact(result);
