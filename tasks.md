@@ -48,8 +48,9 @@ Outcome: The agent has a confirmed scope, usable service access, and explicit fr
 Acceptance criteria:
 
 - [ ] Confirm the proposed POC scope and deferrals, intended app audience, administrators, Slack workspace/channel, and notification schedule/time zone.
-- [ ] Confirm Cloudflare free static hosting, Supabase Free, Tavily Free, a free Gemini API model, and installation access for a custom Slack app. Record any unavailable account or credential without storing secrets here.
-- [ ] Verify current provider allowances and account eligibility. Planning baseline: Supabase 500 MB database, 1 GB storage, 5 GB egress, and 500,000 function invocations/month; Tavily 1,000 credits/month; model limits are account-specific.
+- [ ] Confirm Firebase Hosting access through OA's existing Google account, a Spark project with a separate Scout site, Supabase Free, Tavily Free, and installation access for a custom Slack app in the existing workspace. Cloudflare signup is no longer needed. Record missing access without storing secrets here.
+- [ ] Use OA's Google Workspace account for AI Studio; obtain administrator enablement if needed and create a Scout Gemini API key in an OA-controlled project. Verify a supported free model and its actual quota with a bounded request; Workspace's included Gemini features do not supply API quota.
+- [ ] Verify current provider allowances and account eligibility. Planning baseline: Firebase Hosting 10 GB storage and 10 GB/month transfer; Supabase 500 MB database, 1 GB storage, 5 GB egress, and 500,000 function invocations/month; Tavily 1,000 credits/month without a card; model limits are account-specific. Do not count nonprofit Workspace benefits or trial credits as recurring backend/search capacity.
 - [ ] Record model/search caps and retry limits within the available free quotas. Verify that paid upgrades and automatic top-ups are off.
 - [ ] Record decisions and provider references in this task. Identify any blockers for downstream tasks.
 
@@ -61,11 +62,11 @@ Blockers: None recorded; scope decisions and service access are unverified.
 Status: todo
 Depends on: SCOUT-01
 
-Outcome: A minimal app runs locally and on Cloudflare, with a Supabase backend and versioned database migrations.
+Outcome: A minimal app runs locally and on Firebase Hosting, with a Supabase backend and versioned database migrations.
 
 Acceptance criteria:
 
-- [ ] Select a minimal stack compatible with the agreed hosting and worker runtime; record the choice and commands needed to run, migrate, and deploy it.
+- [ ] Select a minimal stack with a static frontend deployable to Firebase Hosting on Spark and a Supabase backend; record local, migration, and deployment commands. Reuse the Ryu hosting approach for a separate Scout site without changing Ryu's deployment. Keep workers and schedules on Supabase; Firebase Cloud Functions/Blaze and a Sheets/Apps Script backend redesign are outside this POC plan.
 - [ ] A deployed app can read a harmless sample record from the database. Verify local startup and the hosted URL.
 - [ ] Migrations support trackers, collection history, events, announcements, treaty-status changes, source references, and notification delivery state. Use the smallest schema that supports these responsibilities.
 - [ ] Events support organization, title, description, location/URL, source-backed dates/time zones, registration link, status, and last update. Announcements support summary, publication date, sources, and last update. Treaty changes support country, action, and recorded date.
@@ -240,7 +241,7 @@ Outcome: A scheduled discovery tracker finds relevant items outside the known so
 
 Acceptance criteria:
 
-- [ ] Use Tavily queries for BBNJ/High Seas Treaty events, webinars, workshops, conferences, side events, and announcements. Start with 10 searches per weekly run.
+- [ ] Use Tavily Free queries for BBNJ/High Seas Treaty events, webinars, workshops, conferences, side events, and announcements. Start with 10 searches per weekly run. Do not substitute Gemini's Google Search grounding: its terms restrict collecting returned links for indexing or crawling (see provider references in README.md).
 - [ ] Apply the confirmed credit budget, including retries and optional extraction. Planning baseline: basic search costs 1 credit and advanced search costs 2.
 - [ ] Follow results to supporting source pages before creating records. Search snippets alone do not establish event facts or official treaty status.
 - [ ] Merge findings with existing records, retain evidence, and avoid processing unchanged content again.
