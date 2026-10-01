@@ -7,8 +7,9 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 - [BBNJ Scout Letter](https://docs.google.com/document/d/13HIEN45IEKQN-i29pQuoRD-eeFOl-t70a1_2TBpV7zI/edit): product brief, Features, and Services.
 - [BBNJ Scout Trackers](https://docs.google.com/spreadsheets/d/1VtpaC83ybg7zet7VvNXmvctN9s5WJK_NTlJ9wx5NIbM/edit): initial source inventory, collection methods, and cadences; currently 22 trackers. Read the live sheet before importing.
 - This file is the authoritative implementation checklist. The letter remains the product brief. Resolve material conflicts with the user before implementing the affected behavior.
-- Proposed POC scope: events, announcements, treaty-status changes, daily Slack findings, a weekly Slack digest, Slack questions, a filterable web list, tracker management, and add-to-calendar actions.
+- Proposed POC scope: events, announcements, treaty-status changes, daily Slack findings, a weekly Slack digest, Slack questions, a filterable web list, a tracker status list, tracker management, and add-to-calendar actions.
 - Proposed deferrals: email digests and a separate calendar view. Confirm these in SCOUT-01 because the Letter and Features tabs differ.
+- Deferred: embeddings and semantic search. Use structured queries for the POC.
 
 ## Working rules
 
@@ -106,28 +107,30 @@ Outcome: A manual collection run produces usable events and announcements from H
 
 Acceptance criteria:
 
-- [ ] Fetch HSA's configured public feed, identify relevant BBNJ items, and follow relevant organizer/registration links within bounded collection limits.
+- [ ] Fetch HSA's configured public feed using the sheet's Bluesky `getAuthorFeed` method, identify relevant BBNJ items, and follow relevant organizer/registration links within bounded collection limits.
 - [ ] Store structured records with supporting source links, organization, available dates/time zones, summary, and collection timestamps. Preserve unknown values.
 - [ ] Use direct structured extraction where sufficient and the agreed free model only where needed. Validate model output before storing it and apply the configured usage caps.
 - [ ] Unchanged content does not trigger repeat model work. Repeated collection does not create duplicate records.
-- [ ] A changed event date or cancellation updates the existing event and records a material change; cosmetic source edits do not become new announcements.
+- [ ] A changed event date or cancellation updates the existing event and records a material change; cosmetic source edits do not become new announcements. Prefer the organizer's authoritative correction over stale third-party reports, retain supporting evidence, and verify that collecting an older repost later cannot undo a reschedule or cancellation.
 - [ ] Persist success, no-change, partial, failure, and quota outcomes accurately. A failed fetch leaves previous records intact.
 - [ ] Verify a real source example and repeatable cases for initial collection, repeat collection, changed date, missing date, irrelevant content, and failed fetch.
 
 Verification: Pending.
 Blockers: None recorded.
 
-## SCOUT-05 — Build the filterable list and calendar actions
+## SCOUT-05 — Build record and tracker lists and calendar actions
 
 Status: todo
 Depends on: SCOUT-04
 
-Outcome: A user can find collected records and add a supported event to a calendar.
+Outcome: A user can find collected records, inspect every tracker's status, and add a supported event to a calendar.
 
 Acceptance criteria:
 
 - [ ] Show events, announcements, and treaty changes in a searchable list with type, organization, and applicable date filters.
 - [ ] Show source links, relevant dates, record updates, and collection freshness; provide clear loading, empty, and error states.
+- [ ] Show all trackers in a frontend list with source, collection method, cadence, current status, and last successful collection time, including paused and unsupported trackers. Show "Never" for uncollected trackers and indicate overdue collection from the next scheduled run even if the backend has stopped updating status.
+- [ ] Verify that a successful no-change run advances the displayed last-success time, a failed or partial run preserves it and shows its outcome, and an uncollected tracker shows "Never".
 - [ ] Show rescheduled and cancelled events accurately. Do not present past events as upcoming.
 - [ ] Provide calendar links or downloads for events with sufficient date information. Preserve time zones and date-only events; do not invent a start time.
 - [ ] Verify a timed event, an event across a time-zone boundary, a date-only event, and an event with insufficient date information.
@@ -239,16 +242,17 @@ Blockers: None recorded; source-specific methods remain to be validated.
 Status: todo
 Depends on: SCOUT-03, SCOUT-04, SCOUT-07
 
-Outcome: A scheduled discovery tracker finds relevant items outside the known source list without exceeding the search budget.
+Outcome: Scheduled Bluesky and web discovery trackers find relevant items outside the known source list within their collection and search budgets.
 
 Acceptance criteria:
 
-- [ ] Use Tavily Free queries for BBNJ/High Seas Treaty events, webinars, workshops, conferences, side events, and announcements. Start with 10 searches per weekly run. Do not substitute Gemini's Google Search grounding: its terms restrict collecting returned links for indexing or crawling (see provider references in README.md).
+- [ ] Implement the sheet's Bluesky discovery tracker using `searchPosts`, with separate queries for BBNJ, High Seas Treaty, traité sur la haute mer, and relevant conference tags. Preserve its weekly cadence and daily override during major BBNJ meetings; bound pagination and report partial coverage.
+- [ ] Add a separate Tavily web-discovery tracker for BBNJ/High Seas Treaty events, webinars, workshops, conferences, side events, and announcements. Start with 10 searches per weekly run. Do not substitute Gemini's Google Search grounding: its terms restrict collecting returned links for indexing or crawling (see provider references in README.md).
 - [ ] Apply the confirmed credit budget, including retries and optional extraction. Planning baseline: basic search costs 1 credit and advanced search costs 2.
 - [ ] Follow results to supporting source pages before creating records. Search snippets alone do not establish event facts or official treaty status.
 - [ ] Merge findings with existing records, retain evidence, and avoid processing unchanged content again.
 - [ ] Surface potential new publishers for review; do not automatically activate new trackers or increase recurring work.
-- [ ] Verify new findings, existing-record matches, irrelevant results, unavailable source pages, and quota exhaustion.
+- [ ] Verify both discovery methods, new findings, existing-record matches, irrelevant results, unavailable source pages, and quota exhaustion.
 
 Verification: Pending.
 Blockers: None recorded.
@@ -283,7 +287,7 @@ Acceptance criteria:
 
 - [ ] Add and edit trackers using supported methods, including source URL/account, channel, coverage, and cadence. Do not imply that adding an arbitrary URL creates a working scraper.
 - [ ] Pause/resume a tracker and request a manual run through the same collection path and usage caps as scheduled runs.
-- [ ] Show last attempt, last successful collection, latest outcome/error, next run, and recent collection history. Distinguish unsupported, partial, and quota-limited coverage.
+- [ ] Extend the SCOUT-05 tracker list with last attempt, latest error details, next run, and recent collection history. Retain last successful collection and distinguish unsupported, partial, and quota-limited coverage.
 - [ ] App edits survive any repeated seed import. Manual runs do not bypass concurrency protections or reactivate paused schedules.
 - [ ] Enforce administrator access and verify an unauthorized mutation is rejected.
 

@@ -30,6 +30,7 @@ The planned experience includes:
 - Daily Slack posts for new findings and material changes, plus a weekly roundup of upcoming events.
 - Slack answers grounded in collected records, with supporting source links and visible coverage limits.
 - A searchable, filterable web list and calendar links or downloads for events with sufficient date information.
+- A frontend list of all trackers showing collection status and last successful collection, including trackers that have never succeeded or are overdue.
 
 The Letter mentions an optional weekly email digest; Features currently specifies a weekly Slack digest. The task plan proposes deferring email and a separate calendar view. Confirm that scope in SCOUT-01 before implementation.
 
@@ -39,7 +40,7 @@ Events need titles, organizations, descriptions, locations or online links, date
 
 Import the tracker sheet once to seed the database, then let the app own subsequent tracker edits. Each tracker defines what to collect, its collection method, and its cadence. The current plan is daily Bluesky collection, mostly weekly website checks, and weekly discovery searches, with more frequent checks around relevant meetings.
 
-Use direct feeds, public APIs, and website collectors where possible. Discovery searches can find events and publishers outside the initial inventory. Follow results to supporting source pages, merge duplicate findings while retaining their sources, and update existing records when event details change. Verify treaty-status changes against the official record.
+Use direct feeds, public APIs, and website collectors where possible. The sheet specifies Bluesky `getAuthorFeed` for account feeds and `searchPosts` for discovery; Tavily web discovery is a separate tracker. Follow results to supporting source pages, merge duplicate findings while retaining their sources, and update existing records when event details change. Preserve authoritative organizer corrections when older third-party reports are collected later. Verify treaty-status changes against the official record.
 
 Persist each tracker's last attempt, last successful collection, latest outcome or error, and next scheduled run. Failed collection or exhausted quotas must preserve existing records. Collection and notification schedules are independent.
 
