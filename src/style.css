@@ -65,7 +65,7 @@ td a { font-weight: 600; }
 .data-table { margin-top: 0; }
 .data-table th { white-space: nowrap; }
 .data-table :is(.field-title, .field-name, .field-summary, .field-description, .field-date_evidence, .field-coverage, .field-cadence_note, .field-configuration_note, .field-last_error) { min-width: 320px; white-space: pre-line; }
-.data-table th:first-child, .data-table td:first-child { position: sticky; left: 0; background: #fff; }
+.data-table th:first-child, .data-table td:first-child { position: sticky; left: 0; background: #fff; box-shadow: 5px 0 8px -5px #18383933; }
 .data-table td:first-child { z-index: 1; }
 .data-table th:first-child { z-index: 3; background: #e8eee8; }
 .data-table :is(.field-title, .field-name) { font-weight: 600; }
