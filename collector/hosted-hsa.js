@@ -1,7 +1,7 @@
 import { verifyAuth } from '@supabase/server/core';
 import postgres from 'postgres';
 import { collectHSA } from './hsa.js';
-import { gemini } from './model.js';
+import { gemini, MODEL_LIMITS } from './model.js';
 
 // A reserved session holds the collector lock. Individual record transactions
 // can roll back without undoing earlier quota reservations or fetched evidence.
@@ -30,18 +30,20 @@ export async function hostedHSA(request, { databaseURL, apiKey, env, connect = p
   if (request.method !== 'POST') return Response.json({ error: 'POST required' }, { status: 405, headers: { Allow: 'POST' } });
   const params = new URL(request.url).searchParams;
   const since = params.get('since') ?? new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const attempts = params.get('max_attempts') ?? String(MODEL_LIMITS.run);
   const body = request.body?.getReader();
   const empty = !body || (await body.read()).done;
   await body?.cancel();
-  if (!empty || [...params.keys()].some(key => key !== 'since') || params.getAll('since').length > 1 ||
+  if (!empty || [...params.keys()].some(key => !['since','max_attempts'].includes(key)) || params.getAll('since').length > 1 ||
+      params.getAll('max_attempts').length > 1 || !/^(?:[0-9]|10)$/.test(attempts) ||
       !/^\d{4}-\d{2}-\d{2}$/.test(since) || !Number.isFinite(Date.parse(since)) || new Date(since).toISOString().slice(0, 10) !== since) {
-    return Response.json({ error: 'Use an empty POST with optional ?since=YYYY-MM-DD' }, { status: 400 });
+    return Response.json({ error: 'Use an empty POST with optional since=YYYY-MM-DD and max_attempts=0..10' }, { status: 400 });
   }
   if (!databaseURL) return Response.json({ error: 'Collector database unavailable' }, { status: 503 });
   const deadline = Date.now() + 100000;
   let sql, session, acquired=false;
   try {
-    sql = connect(databaseURL, { max: 1, prepare: false, connect_timeout: 5, fetch_types: false,
+    sql = connect(databaseURL, { max: 1, prepare: false, connect_timeout: 5,
       types: { json: { to: 114, from: [114, 3802], parse: JSON.parse,
         serialize: value => typeof value === 'string' ? value : JSON.stringify(value) } },
       connection: { application_name: 'scout-collect-hsa', statement_timeout: 5000 } });
@@ -51,7 +53,8 @@ export async function hostedHSA(request, { databaseURL, apiKey, env, connect = p
     if (!acquired) return Response.json({ error: 'HSA collection already running' }, { status: 409 });
     const db=database(session);
     const result=await collect(db,{since:`${since}T00:00:00Z`,deadline,
-      makeModel: runId => gemini({apiKey,ledger:db,runId,deadline})});
+      makeModel: Number(attempts) ? runId => gemini({apiKey,ledger:db,runId,deadline,runLimit:Number(attempts)})
+        : () => async () => { throw new Error('Observation-only run: assessments deferred (max_attempts=0)'); }});
     return Response.json(result);
   } catch {
     return Response.json({ error: 'Hosted collection interrupted; inspect persisted run, pending evidence and quota reservations' }, { status: 500 });

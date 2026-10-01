@@ -1,0 +1,134 @@
+{
+  "capture": {
+    "id": "9d743a90-47c9-439a-99b1-6bd9bdbc0ef7",
+    "tracker_id": "45a2adc6-9a5d-44b3-8a03-7bf0a9fbe42d",
+    "url": "https://bsky.app/profile/did:plc:mj2ygegzodk3fdjdgihjko23/post/3mw7xgyguen2r",
+    "content_hash": "hsa-v4:dceb4ca8f6a06de0385009d4b79bcf27e05270832f11c59fd5adf167446c1a8a",
+    "content": "{\"text\":\"Book your place for the next Let’s Talk BBNJ webinar: Marine Genetic Resources (MGRs).\\n\\nThe third Treaty Pillar provides a framework for monitoring the collection, use and sharing of MGRs.\\n\\n💻Build your understanding before #BBNJCOP1: https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ\",\"author\":{\"handle\":\"highseasalliance.bsky.social\",\"displayName\":\"High Seas Alliance\"},\"createdAt\":\"2026-09-24T00:05:01.743406829Z\",\"urls\":[\"https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ\"]}",
+    "published_at": "2026-09-24 00:05:01.743+00",
+    "collected_at": "2026-10-01 21:32:14.303386+00",
+    "parsed": {
+      "kind": "event",
+      "title": "Book your place for the next Let’s Talk BBNJ webinar: Marine Genetic Resources (MGRs).",
+      "end_on": null,
+      "source": {
+        "rank": 2,
+        "fields": {
+          "text": "02b6e64861a571fd0e54fc8c3eceef43f4a93369284b505332a3175d94d9cbd0",
+          "urls": "5d98adfd723998781180eaf9c20924ae94b50e6a5793d0156a5fd5b9bc09292c",
+          "author": "f47a8a3a84942217fb9c8f11714200c3c6183bf13b980fa04f19e6b2ecd0fca3",
+          "createdAt": "162853c2db4f16babbb02b2614b0dcad87efe0e1cc3dd311325254d39a14bff9",
+          "organizer": "b0de8a5159ac59b7813aed65351c1e70e7c075b3f533df480b15c8099bbfcebc"
+        },
+        "changed": [
+          "text",
+          "author",
+          "organizer",
+          "urls",
+          "createdAt"
+        ],
+        "identity": "post:at://did:plc:mj2ygegzodk3fdjdgihjko23/app.bsky.feed.post/3mw7xgyguen2r",
+        "observed_at": "2026-10-01T21:32:14.283Z",
+        "previous_id": null
+      },
+      "status": null,
+      "ends_at": null,
+      "location": null,
+      "start_on": null,
+      "event_url": "https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ",
+      "starts_at": null,
+      "time_zone": null,
+      "assessment": {
+        "state": "pending",
+        "version": "scout-1",
+        "fingerprint": "hsa-v4:dceb4ca8f6a06de0385009d4b79bcf27e05270832f11c59fd5adf167446c1a8a"
+      },
+      "date_parts": null,
+      "description": "Book your place for the next Let’s Talk BBNJ webinar: Marine Genetic Resources (MGRs).\n\nThe third Treaty Pillar provides a framework for monitoring the collection, use and sharing of MGRs.\n\n💻Build your understanding before #BBNJCOP1: https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ",
+      "organization": "High Seas Alliance",
+      "registration_url": "https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ"
+    },
+    "published_on": null,
+    "record_id": null,
+    "last_seen_at": "2026-10-01 21:35:28.419516+00",
+    "authoritative": false,
+    "evidence_at": null
+  },
+  "coverage": "BBNJ webinars, registration links, calls for participation, announcements and relevant reposts.",
+  "input": {
+    "source_id": "9d743a90-47c9-439a-99b1-6bd9bdbc0ef7",
+    "url": "https://bsky.app/profile/did:plc:mj2ygegzodk3fdjdgihjko23/post/3mw7xgyguen2r",
+    "coverage": "BBNJ webinars, registration links, calls for participation, announcements and relevant reposts.",
+    "text": "Book your place for the next Let’s Talk BBNJ webinar: Marine Genetic Resources (MGRs). The third Treaty Pillar provides a framework for monitoring the collection, use and sharing of MGRs. 💻Build your understanding before #BBNJCOP1: https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ event Book your place for the next Let’s Talk BBNJ webinar: Marine Genetic Resources (MGRs). https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ Book your place for the next Let’s Talk BBNJ webinar: Marine Genetic Resources (MGRs). The third Treaty Pillar provides a framework for monitoring the collection, use and sharing of MGRs. 💻Build your understanding before #BBNJCOP1: https://us06web.zoom.us/webinar/register/WN_cu High Seas Alliance https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ",
+    "context_truncated": false,
+    "links": [],
+    "scripted": {
+      "kind": "event",
+      "title": "Book your place for the next Let’s Talk BBNJ webinar: Marine Genetic Resources (MGRs).",
+      "end_on": null,
+      "status": null,
+      "ends_at": null,
+      "location": null,
+      "start_on": null,
+      "event_url": "https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ",
+      "starts_at": null,
+      "time_zone": null,
+      "date_parts": null,
+      "description": "Book your place for the next Let’s Talk BBNJ webinar: Marine Genetic Resources (MGRs).\n\nThe third Treaty Pillar provides a framework for monitoring the collection, use and sharing of MGRs.\n\n💻Build your understanding before #BBNJCOP1: https://us06web.zoom.us/webinar/register/WN_cu",
+      "organization": "High Seas Alliance",
+      "registration_url": "https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ"
+    },
+    "changes": [
+      "text",
+      "author",
+      "organizer",
+      "urls",
+      "createdAt"
+    ],
+    "candidates": [
+      {
+        "id": "92c62407-0d67-47ec-80f1-84f30164e4bd",
+        "identity_key": "post:at://did:plc:mj2ygegzodk3fdjdgihjko23/app.bsky.feed.post/3mwq6buc3mw2h",
+        "kind": "announcement",
+        "title": "As it stands, only 12% of the #Ocean will be protected by 2030.",
+        "organization": "High Seas Alliance",
+        "description": "As it stands, only 12% of the #Ocean will be protected by 2030. The latest Ocean Protection Gap Report identifies the major actions needed to put the world on t",
+        "event_url": null,
+        "starts_at": null,
+        "ends_at": null,
+        "status": null,
+        "priority": "normal",
+        "exact": false,
+        "calendar_date": null,
+        "evidence": [
+          {
+            "url": "https://bsky.app/profile/did:plc:mj2ygegzodk3fdjdgihjko23/post/3mwq6buc3mw2h",
+            "text": "{\"text\":\"As it stands, only 12% of the #Ocean will be protected by 2030.\\n\\nThe latest Ocean Protection Gap Report identifies the major actions needed to put the world on track for 30x30, noting the opportunity presented by the implementation of the #HighSeasTreaty.\\n\\nhttps://shorturl.at/dQXoE\",\"au"
+          }
+        ]
+      },
+      {
+        "id": "f489fc0e-ca58-4dc0-a72a-f3e96cd8df46",
+        "identity_key": "post:at://did:plc:mj2ygegzodk3fdjdgihjko23/app.bsky.feed.post/3mwt5fc7sh62g",
+        "kind": "announcement",
+        "title": "Ahead of #BBNJCOP1, we need interim arrangements to prevent delays in implementing the #HighSeasTreaty, including electing Subsidiary Body members and strengthening the Clearing-House Mechanism.",
+        "organization": "High Seas Alliance",
+        "description": "Ahead of #BBNJCOP1, we need interim arrangements to prevent delays in implementing the #HighSeasTreaty, including electing Subsidiary Body members and strengthe",
+        "event_url": null,
+        "starts_at": null,
+        "ends_at": null,
+        "status": null,
+        "priority": "high",
+        "exact": false,
+        "calendar_date": null,
+        "evidence": [
+          {
+            "url": "https://bsky.app/profile/did:plc:mj2ygegzodk3fdjdgihjko23/post/3mwt5fc7sh62g",
+            "text": "{\"text\":\"Ahead of #BBNJCOP1, we need interim arrangements to prevent delays in implementing the #HighSeasTreaty, including electing Subsidiary Body members and strengthening the Clearing-House Mechanism.\\n\\nFull policy brief: https://highseasalliance.org/resources/deep-dives-bbnj-cop1/ \",\"author\":{\""
+          }
+        ]
+      }
+    ],
+    "exact_ids": []
+  }
+}

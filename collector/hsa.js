@@ -4,7 +4,7 @@ import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
 import { isIP } from 'node:net';
 import { isDeepStrictEqual } from 'node:util';
-import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTENT_FIELDS, normalize, visibleText, ASSESSMENT_VERSION } from './assessment.js';
+import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTENT_FIELDS, normalize, fingerprint, visibleText, ASSESSMENT_VERSION } from './assessment.js';
 
 export const HSA = 'highseasalliance.bsky.social';
 export const USER_AGENT = 'BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)';
@@ -309,7 +309,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   if (tracker.url !== `https://bsky.app/profile/${HSA}` || tracker.collector !== 'bluesky_feed') throw new Error('HSA tracker configuration changed; review before collecting');
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at) values ($1,$2,$3) returning id', [tracker.id, since, started])).rows[0];
-  const stats = { created: 0, changed: 0, posts: 0, pages: 0, candidates: 0, skipped: 0, assessed: 0, warnings: [] };
+  const stats = { created: 0, changed: 0, posts: 0, pages: 0, candidates: 0, skipped: 0, assessed: 0, reused_uncertain: 0, warnings: [] };
   const budget = { requests: 0, deadline: Math.min(deadline, Date.now() + LIMITS.seconds * 1000) };
   model ??= makeModel?.(run.id,budget.deadline);
   const pages = new Map();
@@ -386,7 +386,16 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const pendingQuery=`select * from (select distinct on(url) * from scout.evidence where tracker_id=$1
     order by url,coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const pending = (await db.query(`${pendingQuery} order by collected_at,id limit 20`,[tracker.id])).rows;
+  const queued = (await db.query(`${pendingQuery} order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id])).rows;
+  const pending=[];
+  for (const source of queued) {
+    if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
+      const input=await assessmentInput(db,source,tracker);
+      const context=fingerprint({source:source.content_hash,coverage:input.coverage,candidates:JSON.stringify(input.candidates)});
+      if (source.parsed.assessment.input_fingerprint===context) { stats.reused_uncertain++; stats.warnings.push(source.parsed.assessment.reason); continue; }
+    }
+    pending.push(source);
+  }
   for (let index=0; index<pending.length;) {
     // A post and its exact event page need the first accepted finding available
     // before the second assessment. Independent sources can share one request.
@@ -403,15 +412,23 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
       for (let i=0;i<batch.length;i++) {
         const source=batch[i], input=inputs[i];
         let decision=validateDecision(decisions.find(d=>d.source_id===source.id),input);
+        const evaluatedUncertainty=decision.action==='uncertain';
         if (decision.action==='new' && decision.candidate && decision.priority!=='low') {
           const fresh=await assessmentInput(db,source,tracker);
           const matches=fresh.candidates.filter(candidate=>{
+            const seen=input.candidates.some(item=>item.id===candidate.id);
+            const exact=input.exact_ids.includes(candidate.id) || (decision.candidate.event_url &&
+              decision.candidate.event_url===candidate.event_url && normalize(decision.candidate.title)===normalize(candidate.title));
+            // Only unseen candidates invalidate a reviewed distinct-finding
+            // decision; retain stable-source/exact-event identity protection.
+            if (seen && !exact) return false;
             try { validateDecision({...decision,action:'update',record_id:candidate.id},fresh);return true; } catch {return false;}
           });
           if (matches.length) decision={...decision,action:'uncertain',reason:'Possible existing finding; reassess against the refreshed shortlist before creating a duplicate'};
         }
         const assessment={...decision,state:decision.action==='uncertain'?'uncertain':'complete',version:ASSESSMENT_VERSION,
           fingerprint:source.content_hash,accepted_at:now()};
+        if (evaluatedUncertainty) assessment.input_fingerprint=fingerprint({source:source.content_hash,coverage:input.coverage,candidates:JSON.stringify(input.candidates)});
         const parsed={...source.parsed,...(decision.candidate??{}),assessment};
         await db.transaction(async tx=>{
           const before={created:stats.created,changed:stats.changed};

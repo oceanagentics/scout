@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {collectHSA,HSA} from '../collector/hsa.js';
-import {CONTENT_FIELDS,validateDecision,observe,assessmentInput} from '../collector/assessment.js';
+import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
 import {fieldLabel,filterRecords,orderRecords} from '../src/records.js';
@@ -138,6 +138,83 @@ test('technical no-keyword source gates cosmetic repeats and resumes failed asse
     assert.deepEqual((await db.query('select * from scout.collection_runs order by id')).rows,runs);
     assert.equal((await collectHSA(db,options)).created,1);assert.equal(calls,3);
   }finally{await db.close();}
+});
+
+test('recorded ChM policy brief and expression of interest stay distinct after shortlist review',async()=>{
+ const db=await database();
+ const examples=JSON.parse(await readFile(new URL('./fixtures/hsa-chm-distinct.json',import.meta.url),'utf8'));
+ let current=examples[0],suffix='',calls=0,policyId;
+ const read=async(url,budget)=>{budget.requests++;return {url,headers:{},body:JSON.stringify({feed:[{post:{
+   uri:`at://did:plc:mj2ygegzodk3fdjdgihjko23/app.bsky.feed.post/${current.url.split('/').at(-1)}`,
+   author:{handle:HSA,displayName:'High Seas Alliance'},indexedAt:current.createdAt,
+   record:{createdAt:current.createdAt,text:[current.title,current.description,suffix].filter(Boolean).join('\n\n')}
+ }}]})};};
+ const model=async(_instruction,inputs)=>{calls++;if(policyId)assert.ok(inputs[0].candidates.some(c=>c.id===policyId));
+   return inputs.map(i=>({...result,source_id:i.source_id,candidate:full({title:current.title,description:current.description,organization:'High Seas Alliance'}),quotes:[current.title]}));};
+ try{
+  assert.equal((await collectHSA(db,{read,model,since:'2026-09-01'})).created,1);
+  policyId=(await db.query('select id from scout.records')).rows[0].id;
+  current=examples[1];const second=await collectHSA(db,{read,model,since:'2026-09-01'});
+  assert.equal(second.created,1);assert.equal(second.pending,0);
+  const records=(await db.query('select * from scout.records order by id')).rows;
+  assert.equal(records.length,2);assert.ok(records.every(r=>r.priority==='high'));
+  await collectHSA(db,{read,model,since:'2026-09-01'});assert.equal(calls,2);
+  suffix='Additional detail.';const mistakenNew=await collectHSA(db,{read,model,since:'2026-09-01'});
+  assert.equal(mistakenNew.created,0);assert.equal(mistakenNew.pending,1);
+  assert.deepEqual((await db.query('select * from scout.records order by id')).rows,records);
+ }finally{await db.close();}
+});
+
+test('recorded oversized HSA context fits the unchanged model cap without duplicate shortlist prose',async()=>{
+ const db=await database();
+ const recorded=JSON.parse(await readFile(new URL('./fixtures/hsa-assessment-context.json',import.meta.url),'utf8'));
+ let requests=0;
+ const model=gemini({apiKey:'fixture-only',runId:'00000000-0000-4000-8000-000000000001',ledger:{query:async()=>({rows:[]})},
+   fetch:async(_url,options)=>{requests++;assert.ok(Buffer.byteLength(options.body)<=8000);
+     return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}});
+ try{
+  await assert.rejects(model(INSTRUCTION,[recorded.input],SCHEMA),/input limit/);assert.equal(requests,0);
+  const tracker=(await db.query("select * from scout.trackers where seed_key='bbnj-trackers-2026-10-01:17'")).rows[0];
+  for(const c of recorded.input.candidates){
+   await db.query('insert into scout.records(id,identity_key,kind,title,organization,description,event_url,starts_at,ends_at,status,priority) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+    [c.id,c.identity_key,c.kind,c.title,c.organization,c.description,c.event_url,c.starts_at,c.ends_at,c.status,c.priority]);
+   for(const e of c.evidence)await db.query('insert into scout.evidence(tracker_id,record_id,url,content,content_hash,last_seen_at) values($1,$2,$3,$4,$5,clock_timestamp())',[tracker.id,c.id,e.url,e.text,e.url]);
+  }
+  const compact=await assessmentInput(db,recorded.capture,{...tracker,coverage:recorded.coverage});
+  assert.ok(compact.text.includes(normalize(JSON.parse(recorded.capture.content).text)));
+  assert.deepEqual(compact.exact_ids,recorded.input.exact_ids);
+  for(const c of compact.candidates){const original=recorded.input.candidates.find(r=>r.id===c.id);
+   for(const key of ['id','identity_key','title','organization','starts_at','ends_at','event_url'])assert.deepEqual(c[key],original[key]);
+   assert.equal(typeof c.evidence,'string');assert.ok(!Object.hasOwn(c,'description'));
+  }
+  await model(INSTRUCTION,[compact],SCHEMA);assert.equal(requests,1);
+ }finally{await db.close();}
+});
+
+test('unchanged evaluated uncertainty stays visible without repeat calls; new, failed and changed-context work resumes',async()=>{
+ const db=await database();let calls=0,newSource=false,failNew=true;
+ const posts=()=>[{key:'claim',text:'Treaty ratification reported; official verification unavailable.'},...(newSource?[{key:'technical',text:'Interoperability consultation'}]:[])];
+ const read=async(url,budget)=>{budget.requests++;return {url,headers:{},body:JSON.stringify({feed:posts().map(p=>({post:{uri:`at://did:plc:test/app.bsky.feed.post/${p.key}`,
+   author:{handle:HSA},indexedAt:'2026-10-01T00:00:00Z',record:{text:p.text,createdAt:'2026-10-01T00:00:00Z'}}}))})};};
+ const seen=[];
+ const model=async(_instruction,inputs)=>{calls++;seen.push(inputs.map(i=>i.url));return inputs.map(i=>{
+   if(i.url.endsWith('/technical')){if(failNew)throw new Error('Transient fixture failure');return {...result,source_id:i.source_id,candidate:full({organization:'High Seas Alliance'})};}
+   return {...result,source_id:i.source_id,action:'uncertain',candidate:null,priority:null,reason:'Official verification unavailable',quotes:['Treaty ratification reported']};
+ });};
+ try{
+  const options={read,model,since:'2026-09-01'};
+  assert.equal((await collectHSA(db,options)).pending,1);assert.equal(calls,1);
+  let run=await collectHSA(db,options);assert.equal(run.reused_uncertain,1);assert.equal(run.pending,1);assert.equal(run.outcome,'partial');assert.equal(calls,1);assert.ok(run.warnings.includes('Official verification unavailable'));
+  newSource=true;run=await collectHSA(db,options);assert.equal(calls,2);assert.equal(run.pending,2);assert.ok(seen.at(-1).every(url=>url.endsWith('/technical')));
+  failNew=false;run=await collectHSA(db,options);assert.equal(run.created,1);assert.equal(run.pending,1);assert.equal(calls,3);
+  await collectHSA(db,options);assert.equal(calls,4); // New finding changes the identity shortlist.
+  run=await collectHSA(db,options);assert.equal(calls,4);assert.equal(run.reused_uncertain,1);
+  await db.query("insert into scout.evidence(tracker_id,record_id,url,content,content_hash,last_seen_at) select tracker_id,record_id,url||'/supporting',content||' Supporting facts changed.',content_hash||':new',clock_timestamp() from scout.evidence where record_id is not null limit 1");
+  await collectHSA(db,options);assert.equal(calls,5); // Supporting evidence changed without a record version bump.
+  await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{assessment,state}','\"pending\"') where parsed#>>'{assessment,state}'='uncertain'");
+  await collectHSA(db,options);assert.equal(calls,6); // Explicit reprocessing remains available.
+  assert.equal((await db.query("select parsed#>>'{assessment,reason}' reason from scout.evidence where parsed#>>'{assessment,state}'='uncertain'")).rows[0].reason,'Official verification unavailable');
+ }finally{await db.close();}
 });
 
 test('combined evidence can raise relevance while weaker facts preserve cancellation/date; uncertainty preserves the accepted priority',async()=>{

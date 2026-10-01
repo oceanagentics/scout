@@ -31,6 +31,7 @@ test('invalid authenticated requests do no database work', async () => {
   let connects = 0;
   for (const req of [request(undefined, '', 'GET'), request(undefined, '?since=2026-02-30'),
     request(undefined, '?since=2026-09-01&since=2026-10-01'), request(undefined, '?sql=delete'),
+    ...['-1','11','1.2','','2&max_attempts=3'].map(value=>request(undefined, `?max_attempts=${value}`)),
     new Request('https://example.test', { method: 'POST', headers: { apikey: secret }, body: '{}' })]) {
     const response = await hostedHSA(req, { env, databaseURL: 'unused', connect: () => { connects++; } });
     assert.ok([400, 405].includes(response.status));
@@ -44,7 +45,7 @@ test('overlap skips collection; authorized work uses parameters/transactions and
     let collected = 0, closed = 0, transactions = 0;
     const tx = { unsafe: async (query, params) => { queries.push({ query, params }); if(query==='begin') transactions++; return [{ acquired }]; },
       release() {} };
-    const req = new Request('https://example.test/collect?since=2026-09-01', {
+    const req = new Request('https://example.test/collect?since=2026-09-01&max_attempts=0', {
       method: 'POST', headers: { apikey: secret }, body: new ReadableStream({ start(controller) { controller.close(); } }), duplex: 'half' });
     const response = await hostedHSA(req, { env, databaseURL: 'unused',
       connect: (_url, options) => {
@@ -55,6 +56,7 @@ test('overlap skips collection; authorized work uses parameters/transactions and
       }, collect: async (db, options) => {
         collected++;
         assert.equal(options.since, '2026-09-01T00:00:00Z');
+        await assert.rejects(options.makeModel('unused')(), /Observation-only run/);
         assert.ok(options.deadline <= Date.now() + 100000);
         await db.transaction(inner => inner.query('select $1::jsonb, $2::text', [{ proof: true }, "quote'; --"]));
         return { outcome: 'no_change', models: 0 };
