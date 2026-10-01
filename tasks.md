@@ -44,6 +44,7 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 - **Cleanup verification (SCOUT-02/03/04/05):** all 37 tests/build pass. Atomic migration preserved 25 trackers, 12 existing records and 14 original captures while shortening ten descriptions. The collector then found one new announcement; its repeat returned `no_change` without duplicates. Current totals: 13 records, 25 trackers, 29 captures. Existing Workspace identity SQL checks pass, anonymous access is denied, and other-schema/default-grant state is unchanged. The user elected to verify the signed-in dashboard. The notifier remains local-only.
 - **SCOUT-06 remains incomplete:** integrate hosted records and durable delivery state, update stale hosted-access-pending wording and provide real record links; preserve the verified local baseline/dedup/receipt behavior. Slack visual layout remains an approved deferral, distinct from verified receipt/content. There is no calendar obligation.
 - **Coverage boundary:** HSA quoted posts, multi-event listings, unsupported date formats and semantic cross-URL matching remain bounded limitations. Revisit before claiming complete HSA or broader source coverage.
+- **Next proposed implementation — SCOUT-15:** scripted source/field change detection before agentic finding reconciliation and relevance assessment. Apply it to HSA first, then reuse it when expanding collectors under SCOUT-08–11. The 2026-10-01 request authorizes this plan only; implementation remains pending.
 - **Later prerequisites:** model access is verified but not integrated; enforce approved caps before use. Notification scheduling is undecided (SCOUT-07), Tavily paid-use checks wait for SCOUT-11, Slack mention setup for SCOUT-12, and admin identity/management for SCOUT-13. SCOUT-07+ are future work, not milestone-one failures. Milestone one is not yet complete.
 
 Acceptance below follows the latest scope. Older dated implementation/checkpoint paragraphs are historical evidence for their named versions; superseded calendar, membership, record-edit history, stored-status and setup instructions in them are not current requirements.
@@ -330,7 +331,7 @@ Prerequisite: notification time, digest weekday/time and IANA time zone are unde
 ## SCOUT-08 — Add the remaining Bluesky feeds
 
 Status: todo
-Depends on: SCOUT-04, SCOUT-07
+Depends on: SCOUT-04, SCOUT-07, SCOUT-15
 
 Outcome: DOSI, Global Fishing Watch, and IDDRI collect through the established Bluesky pattern.
 
@@ -348,7 +349,7 @@ Blockers: None recorded.
 ## SCOUT-09 — Collect authoritative treaty-status changes
 
 Status: todo
-Depends on: SCOUT-03, SCOUT-04, SCOUT-07
+Depends on: SCOUT-03, SCOUT-04, SCOUT-07, SCOUT-15
 
 Outcome: Changes in the UN Treaty Collection become source-backed country/action/date records.
 
@@ -366,7 +367,7 @@ Blockers: None recorded.
 ## SCOUT-10 — Add website and document collectors
 
 Status: todo
-Depends on: SCOUT-03, SCOUT-04, SCOUT-07
+Depends on: SCOUT-03, SCOUT-04, SCOUT-07, SCOUT-15
 
 Outcome: The remaining website trackers have verified collection methods or explicitly documented coverage limitations.
 
@@ -391,7 +392,7 @@ Blockers: None recorded; source-specific methods remain to be validated.
 ## SCOUT-11 — Add discovery search
 
 Status: todo
-Depends on: SCOUT-03, SCOUT-04, SCOUT-07
+Depends on: SCOUT-03, SCOUT-04, SCOUT-07, SCOUT-15
 
 Outcome: Scheduled Bluesky and web discovery trackers find relevant items outside the known source list within their collection and search budgets.
 
@@ -448,7 +449,7 @@ Prerequisite: explicitly identify any administrator and provision only the backe
 ## SCOUT-14 — Verify the complete POC
 
 Status: todo
-Depends on: SCOUT-01, SCOUT-02, SCOUT-03, SCOUT-04, SCOUT-05, SCOUT-06, SCOUT-07, SCOUT-08, SCOUT-09, SCOUT-10, SCOUT-11, SCOUT-12, SCOUT-13
+Depends on: SCOUT-01, SCOUT-02, SCOUT-03, SCOUT-04, SCOUT-05, SCOUT-06, SCOUT-07, SCOUT-08, SCOUT-09, SCOUT-10, SCOUT-11, SCOUT-12, SCOUT-13, SCOUT-15
 
 Outcome: A deployed POC demonstrates the complete workflow and its actual coverage and cost limits.
 
@@ -466,3 +467,59 @@ Acceptance criteria:
 
 Verification: Pending.
 Blockers: None recorded.
+
+## SCOUT-15 — Detect source changes before assessing findings and relevance
+
+Status: todo
+Depends on: SCOUT-04's working HSA collector; SCOUT-01 model budgets before stage 3; SCOUT-05 and SCOUT-06 for stage 4 integration.
+
+Outcome: Unchanged sources produce no additional stored content and no agent calls. New or changed source content enters a bounded agentic flow that determines whether it creates a finding, updates an existing finding, or adds no substantive information, and assesses its relevance to the Letter.
+
+Direction recorded 2026-10-01: prioritize technical aspects of the BBNJ clearing-house mechanism while retaining ratifications, official announcements and relevant events. Deduplicate sources and unchanged fields in code before asking an agent anything. This section plans implementation; it does not authorize model calls, collection, deployment or Slack messages now. Existing task IDs and historical completion evidence remain intact.
+
+Flow: **Fetch → scripted comparison with last consumed state → no updates, or changed content → finding identity/update/relevance assessment → record changes → notification selection.**
+
+### Stage 1 — Define the comparison and relevance contract
+
+- [ ] Extend the existing HSA path in `collector/hsa.js`; retain stable post IDs, normalized URLs, content hashes, source chronology and organizer correction rules. Separate source-content equality from record-material-change detection: `material()` currently omits event title/description, so it cannot safely decide which source changes deserve assessment.
+- [ ] Define meaningful source fields before agent extraction: source text, title/description where supplied, organizer, links, dates, status and available structured facts. Normalize whitespace, tracking parameters and known volatile markup without erasing meaningful text or schedule changes. Missing keywords must not discard a technical ChM candidate; tracker `coverage` supplies context for assessment.
+- [ ] Define unchanged as **all meaningful fields unchanged**. One matching field never suppresses another field's change. Compute added, changed and removed fields; failed/incomplete extraction must not be interpreted as an authoritative removal.
+- [ ] Establish a small reviewed example set and one shared assessment rubric. Use the proposed priorities below; keep insufficient context separate from priority and keep source authority separate from relevance.
+
+| Priority | Proposed criteria | Intended use |
+| --- | --- | --- |
+| High | Technical ChM architecture, data standards, interoperability, implementation workshops and consultations; verified ratifications and important official changes | Prominent results and eligible Slack findings/changes |
+| Normal | Other substantive BBNJ webinars, conferences, side events and announcements | Searchable records and applicable upcoming-event digests |
+| Low | General advocacy, incidental high-seas mentions or commentary without a substantive update | Retain only needed changed-source evidence and assessment; no routine notification |
+
+### Stage 2 — Implement the scripted gate and minimal persistence
+
+- [ ] Compare each source against its latest successfully consumed state, including sources with no associated record. A match against any historical hash alone is insufficient: A → B → A is a new transition, although the previously stored A content should be reused.
+- [ ] On unchanged content, insert no evidence/capture/record rows, do not rewrite unchanged fields or advance record `updated_at`, and enqueue no new assessment or agent call for that observation. Record only collection health, existing last-seen metadata where required, and the no-updates result. A fully completed run with no changes uses `no_change`; failures and incomplete coverage retain their distinct outcomes.
+- [ ] For a real change, reuse unchanged fields/evidence and persist only the new content or field differences needed to support it. Start from existing `content_hash`, `parsed` and capture references; specify a versioned baseline/delta representation if needed to avoid copying unchanged fields. Preserve existing full captures, reconstructable source context and date evidence; update readers together if the representation changes. Use only the smallest necessary migration and preserve the five-table design.
+- [ ] Track source observation separately from successful assessment. Persist a changed candidate once; if assessment fails, times out or exhausts quota, resume that pending work separately from new observations, within budget and without inserting another capture. An unchanged fetch must not permanently suppress previously unprocessed work. Reuse completed assessments on ordinary repeat runs; changed assessment rules require an explicit reprocessing operation.
+- [ ] Continue bounded checks of previously linked sources independently of whether their parent post changed. Follow technical/official supporting links as well as event links; each fetched URL passes through this same gate. Preserve existing HTTP/page/time limits and report unsupported content or exhausted coverage.
+
+### Stage 3 — Reconcile new/updated findings and assess relevance
+
+- [ ] Before the first model call, configure and enforce persistent request/token/retry caps using SCOUT-01's verified free service. Reuse deterministic extraction and exact identity matches first. Supply the agent only new/changed content, necessary prior context, tracker coverage, and a bounded shortlist of possible existing findings selected with structured queries; embeddings remain deferred.
+- [ ] Validate a structured result containing action (`new`, `update`, `supporting_evidence`, `no_substantive_change`, or `uncertain`), an existing record ID when applicable, supported field changes, priority, a short relevance reason and evidence references. Existing IDs must belong to the supplied shortlist. Treat source text as data; model output cannot establish unsupported facts or bypass source-authority rules.
+- [ ] Reconcile different URLs describing the same event or announcement into one finding. Use organizer/title/date information together; dates may change on rescheduling. Keep recurring event editions, individual conference sessions and different treaty actions distinct. Uncertain identity remains pending with its reason; do not automatically merge or create a duplicate record to resolve uncertainty.
+- [ ] Apply supported updates transactionally and reassess the resulting finding using its combined evidence. Preserve authoritative corrections, unknown/date-only precision and official verification of treaty changes. Adding corroborating evidence alone must not advance the material record version or trigger a notification.
+- [ ] Store the assessment, rule version and source fingerprint with existing parsed evidence where practical. Expose only the compact finding priority/reason needed by readers. An insufficient-context result can request bounded supporting content, after which the same flow resumes; retain an explicit limitation if evidence remains insufficient.
+
+### Stage 4 — Use relevance in Records and Slack
+
+- [ ] In `src/records.js` and `src/dashboard.js`, add priority filtering/ordering and the short reason. Keep date ordering available and show existing unassessed records honestly; do not silently score or announce historical records during rollout.
+- [ ] In `notifications/slack.js`, select high-priority new findings and important material changes before applying batch limits. Use the same finding assessment for digests: eligible high/normal upcoming events, priority then date, with existing cancellation/unknown-date behavior. Preserve correction notifications for previously delivered events even if their current priority falls.
+- [ ] Compare with the last delivered/baseline finding state. Reposts, additional evidence and repeated successful assessments produce no duplicate notification. Preserve delivery idempotency, receipts and ambiguous-send handling; invalidate/reprepare an unsent payload if its eligibility or priority has changed.
+
+### Stage 5 — Verify HSA, then reuse the pattern
+
+- [ ] Extend existing collector/notifier tests with meaningful cases: exact repeat and cosmetic changes create zero captures/records/model calls; unchanged title with changed date proceeds; A → B → A reuses content but applies the transition; an unchanged post still allows a changed linked page; failed/pending assessment resumes once without duplicate storage; fetch failure preserves state.
+- [ ] Evaluate technical ChM content without BBNJ keywords, generic high-seas noise, conference/side-event recognition, cross-source duplicates, authoritative corrections, distinct recurring sessions and official treaty actions. Record expected/actual priority and identity decisions, missed important items, false promotions and incorrect merges before enabling assessment-driven notifications.
+- [ ] Once implementation is authorized, verify locally with recorded sources and injected model/Slack responses, then make a bounded live model/collection check under the configured caps. Inspect decisions before enabling real notifications. Record source counts, skipped duplicates, changed candidates, model usage, record effects and remaining limitations.
+- [ ] Carry the verified gate and assessment contract into SCOUT-08–11, adjusting source-specific extraction only. Update README behavior/limitations after implementation and include these acceptance cases in SCOUT-14. Keep the work in the supplied checkout and create a focused commit for each authorized implementation assignment.
+
+Verification: Pending. This is a documentation-only implementation plan; no runtime behavior has changed.
+Prerequisites: implementation authorization; reviewed relevance examples and rubric; explicit model operating caps before model use. Existing hosted notifier work remains SCOUT-06.
