@@ -5,6 +5,7 @@ dist/
 .supabase/
 .env*
 !.env.example
+/client_secret_*.apps.googleusercontent.com.json
 supabase/.temp/
 supabase/.branches/
 *-debug.log
