@@ -141,6 +141,34 @@ Source versions and material changes are stored in `scout` and survive separate 
 
 The command prints its coverage window, outcome, counts, and limitations. Exit code 2 means `partial`, `failed`, or `quota`; existing records are preserved. Only fully successful runs, including `no_change`, advance `last_success_at`. A remaining feed cursor at the page bound, unavailable/unsupported pages, quoted content, or incomplete registration metadata keeps the result partial. Scheduling and hosted deployment are separate pending work.
 
+## Findings, trackers and calendars
+
+After the membership check, the app loads every page of records and trackers from the explicit `scout` client. Findings support text, type, organization, applicable-date and event-timing filters. Date filters use the event's source calendar date, announcement publication date, or treaty action date; a range includes overlapping multi-day events. Unknown dates are excluded only when a date filter is present. Source details distinguish publication, collection, record updates and the tracker's last successful collection.
+
+Every tracker remains visible, including paused, unconfigured and unimplemented collectors. Cadence notes retain meeting-period overrides. Null success displays “Never”; partial/failure outcomes do not replace the stored last-success value. Null next-run displays “Not scheduled”. Overdue labels and event timing update from the browser clock every 30 seconds and on visibility changes; this does not run or schedule collection. HSA is labelled manual-only, and other collectors remain unimplemented.
+
+Calendar files follow [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545): timed events use their exact UTC instants, with the source offset/zone retained in the description; date-only events use DATE values with an exclusive next-day end. `end_on` is treated as the last included calendar day. Events with insufficient date evidence have no calendar link, and a missing timed end is omitted. Stable record UIDs and update timestamps support revised files; cancellations carry `STATUS:CANCELLED`. Import/merge behavior depends on the calendar client. Sources and source text are retained, text is escaped, and lines are folded by UTF-8 byte length.
+
+For local browser verification, export the existing local collector database while no collector process is running:
+
+```sh
+node --input-type=module -e '
+import { PGlite } from "@electric-sql/pglite";
+import { writeFile } from "node:fs/promises";
+const db = new PGlite(".cache/hsa-database");
+const records = (await db.query("select * from scout.records order by updated_at desc")).rows;
+const sources = (await db.query("select record_id,tracker_id,url,published_at,published_on,collected_at,authoritative from scout.sources")).rows;
+for (const row of records) {
+  row.sources = sources.filter(source => source.record_id === row.id);
+  for (const key of ["start_on", "end_on", "published_on", "recorded_on"]) if (row[key] instanceof Date) row[key] = row[key].toISOString().slice(0, 10);
+}
+const trackers = (await db.query("select * from scout.trackers order by name,id")).rows;
+await writeFile(".cache/scout-ui.json", JSON.stringify({ records, trackers }));
+await db.close();'
+```
+
+With the Vite development server running, open `/tests/browser.html` on its printed localhost port. The marked verification page adds synthetic date/status/error examples without changing the database. “Due shortly” demonstrates an overdue transition after 30 seconds without a new fetch. The ignored snapshot and test page are excluded from production. This verifies the UI with local evidence, not hosted membership or authenticated database reads. The in-app browser did not report native calendar-download completion during verification; file bytes and rendered download links were checked, but saving/importing through a native calendar client remains unverified.
+
 ## Hosting deployment
 
 Scout uses Firebase Spark project `ryustatic`, site `bbnj-scout`, deployment target `scout`, and [https://bbnj-scout.web.app](https://bbnj-scout.web.app). `.firebaserc` maps only this target. Recheck shared Hosting capacity and keep billing disabled, then deploy with the saved Firebase login:

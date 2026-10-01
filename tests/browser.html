@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Scout · Local verification</title></head>
+<body><main><p class="eyebrow">Local verification only · excluded from production</p><h1>Scout browser checks</h1>
+<p>Public HSA evidence and the 22 imported trackers, with clearly labelled synthetic cases. This does not verify hosted authentication.</p>
+<div class="actions" id="scenarios"><button data-case="real">Real collected data</button><button data-case="examples">Focused examples</button><button data-case="empty">Empty dataset</button><button data-case="error">Initial error</button><button data-case="slow">Slow loading</button><button data-case="refresh-error">Fail next refresh</button><button data-case="no_change">Successful no-change</button><button data-case="partial">Partial collection</button><button data-case="failed">Failed collection</button><button data-case="due">Due shortly</button></div>
+<p id="fixture-state" role="status"></p><div id="workspace"></div></main><script type="module">
+import { mountDashboard } from '/src/dashboard.js';
+import '/src/style.css';
+if (!import.meta.env.DEV) throw new Error('Development verification only');
+const real = await (await fetch('/.cache/scout-ui.json')).json();
+let current = structuredClone(real), fail = false, delay = 0, close;
+const root = document.querySelector('#workspace'), state = document.querySelector('#fixture-state');
+function mount() { close?.(); close = mountDashboard(root, async () => { await new Promise(resolve => setTimeout(resolve, delay)); if (fail) throw new Error('Fixture failure'); return structuredClone(current); }); }
+document.querySelector('#scenarios').addEventListener('click', event => {
+  const mode = event.target.dataset.case;
+  if (!mode) return;
+  state.textContent = `Verification scenario: ${mode}`;
+  if (mode === 'refresh-error') { fail = true; root.querySelector('#refresh').click(); return; }
+  fail = mode === 'error'; delay = mode === 'slow' ? 3000 : 0;
+  if (['no_change', 'partial', 'failed', 'due'].includes(mode)) {
+    const hsa = current.trackers.find(tracker => tracker.url === 'https://bsky.app/profile/highseasalliance.bsky.social');
+    hsa.last_attempt_at = new Date().toISOString();
+    if (mode === 'no_change') hsa.last_success_at = new Date().toISOString();
+    if (mode === 'due') hsa.next_run_at = new Date(Date.now() + 10000).toISOString();
+    else { hsa.last_outcome = mode; hsa.last_error = ['partial', 'failed'].includes(mode) ? `Fixture ${mode} — last success retained` : null; }
+    root.querySelector('#refresh').click(); return;
+  }
+  current = mode === 'empty' ? { records: [], trackers: [] } : structuredClone(real);
+  if (mode === 'examples') {
+    const base = { kind: 'event', organization: 'Fixture organization', collected_at: new Date().toISOString(), updated_at: new Date().toISOString(), sources: [] };
+    current.records = [
+      { ...base, id: 'fixture-boundary', title: '[Fixture] Timezone boundary', starts_at: '2026-10-02T00:30:00Z', time_zone: '-04:00', status: 'rescheduled' },
+      { ...base, id: 'fixture-day', title: '[Fixture] Date-only workshop', start_on: '2026-10-03', end_on: '2026-10-05' },
+      { ...base, id: 'fixture-unknown', title: '[Fixture] Date to follow' },
+      { ...base, id: 'fixture-cancelled', title: '[Fixture] Cancelled webinar', starts_at: '2026-10-10T14:00:00Z', time_zone: 'UTC', status: 'cancelled' },
+      { ...base, kind: 'treaty_status', id: 'fixture-treaty', title: '[Fixture] Treaty action', country: 'Example country', treaty_action: 'Example action', recorded_on: '2026-09-28' },
+      { ...base, kind: 'announcement', id: 'fixture-safe', title: '<img src=x onerror=alert(1)>', summary: '<script>alert("unsafe")<\/script>', published_on: '2026-09-30', sources: [{url:'javascript:alert(1)'}] },
+    ];
+    const failed = current.trackers[0], partial = current.trackers[1];
+    for (const [tracker, outcome] of [[failed, 'failed'], [partial, 'partial']]) { tracker.last_outcome = outcome; tracker.last_success_at = '2026-09-29T12:00:00Z'; tracker.last_error = `Fixture ${outcome}`; tracker.next_run_at = '2026-09-30T12:00:00Z'; }
+  }
+  mount();
+});
+state.textContent = 'Verification scenario: real'; mount();
+</script></body></html>

@@ -175,23 +175,31 @@ Manager-review corrections (2026-10-01), following `060b09c`:
 
 ## SCOUT-05 — Build record and tracker lists and calendar actions
 
-Status: todo
+Status: blocked
 Depends on: SCOUT-04
 
 Outcome: A user can find collected records, inspect every tracker's status, and add a supported event to a calendar.
 
 Acceptance criteria:
 
-- [ ] Show events, announcements, and treaty changes in a searchable list with type, organization, and applicable date filters.
-- [ ] Show source links, relevant dates, record updates, and collection freshness; provide clear loading, empty, and error states.
-- [ ] Show all trackers in a frontend list with source, collection method, cadence, current status, and last successful collection time, including paused and unsupported trackers. Show "Never" for uncollected trackers and indicate overdue collection from the next scheduled run even if the backend has stopped updating status.
-- [ ] Verify that a successful no-change run advances the displayed last-success time, a failed or partial run preserves it and shows its outcome, and an uncollected tracker shows "Never".
-- [ ] Show rescheduled and cancelled events accurately. Do not present past events as upcoming.
-- [ ] Provide calendar links or downloads for events with sufficient date information. Preserve time zones and date-only events; do not invent a start time.
-- [ ] Verify a timed event, an event across a time-zone boundary, a date-only event, and an event with insufficient date information.
+- [x] Show events, announcements, and treaty changes in a searchable list with type, organization, and applicable date filters.
+- [x] Show source links, relevant dates, record updates, and collection freshness; provide clear loading, empty, and error states.
+- [x] Show all trackers in a frontend list with source, collection method, cadence, current status, and last successful collection time, including paused and unsupported trackers. Show "Never" for uncollected trackers and indicate overdue collection from the next scheduled run even if the backend has stopped updating status.
+- [x] Verify that a successful no-change run advances the displayed last-success time, a failed or partial run preserves it and shows its outcome, and an uncollected tracker shows "Never".
+- [x] Show rescheduled and cancelled events accurately. Do not present past events as upcoming.
+- [x] Provide calendar links or downloads for events with sufficient date information. Preserve time zones and date-only events; do not invent a start time.
+- [x] Verify a timed event, an event across a time-zone boundary, a date-only event, and an event with insufficient date information.
 
-Verification: Pending.
-Blockers: None recorded.
+Assignment (2026-10-01): manager accepted SCOUT-04 correction commit `89c762e` after reviewing the 11 passing tests and live success/no-change evidence. Independent frontend work is approved using the existing vanilla Vite app and local evidence, while remote plan/paid-use verification and explicit member identities remain open. Keep the production membership gate and unconfigured setup state closed. Verify all-record and all-tracker views, date/status/filter behavior, source-safe rendering, and calendar downloads with a clearly marked local browser fixture; exclude verification data from production assets. A scoped Hosting shell update is authorized after verification. No alternate production backend, remote database writes, scheduling, or SCOUT-06 work. Stop for manager review after a focused commit.
+
+Verification and decisions (2026-10-01):
+
+- **Local frontend delivered:** Retained vanilla Vite and the explicit `scout` client. Only verified members can mount the dashboard; production without public configuration remains closed. Paginated read-only queries replace the old 50-record cap and load all trackers. Findings provide text/type/organization/date/timing filters, source references, separate publication/collection/update timestamps, and source collection outcomes. Date filters use source-zone event dates, publication dates or treaty action dates, including overlapping multi-day events. Source text uses textContent; links accept only HTTP(S) without credentials.
+- **Tracker and timing behavior:** The actual 22-source inventory renders, including the unconfigured paused conference row and unsupported collectors. HSA is explicitly manual-only. Complete cadence/meeting-period notes remain visible. Null success is Never and null next-run is Not scheduled. Browser checks verified no-change advancing last-success and partial/failure retaining it. A due fixture became Overdue after the browser clock passed next_run_at without another fetch; the 30-second timer and visibility handler also refresh event timing. No schedule or collection job was introduced.
+- **Calendar decisions and checks:** The real HSA event displays September 29, 07:30 EDT (UTC-04:00), labelled Past / started and excluded from Upcoming. Its calendar output has DTSTART 20260929T113000Z and no invented end. A boundary example at 2026-10-02T00:30Z correctly filters/displays on October 1 at UTC-04:00. Date-only ranges retain DATE values and an exclusive next-day calendar end; end_on means the last included day. Unknown dates have no link. Cancelled events have a clearly labelled cancellation file with STATUS:CANCELLED; reschedules retain the record UID. Source URLs and source schedule/zone are included. Escaping, Unicode byte folding, year-boundary all-day dates and stable UIDs pass focused tests. The production function also generated `.cache/hsa-event.ics` from the actual local record.
+- **Browser evidence and limitation:** `/tests/browser.html` uses an ignored local database export plus clearly labelled synthetic cases, with no Auth bypass in the production entry. Verified actual record filtering, all 22 trackers, source details, reschedule/cancellation/unknown dates, malicious-looking text rendered literally (zero injected image/script/javascript-link elements), initial loading, empty data, initial error and refresh failure retaining old data. Saved a local UI screenshot at `.cache/scout-events-ui.png`. Calendar links render with the expected .ics filename and browser Blob URL, but the in-app browser's download APIs timed out for both click/download-event and direct-link retrieval; native file-save/import completion is unverified. No additional workaround or native-app permission was requested. Revisit with a supported browser/calendar client before claiming that end-to-end integration.
+- **Checks and scoped Hosting update:** All 15 tests pass; both unconfigured production and placeholder-public-key configured builds pass. Exact environment-value scans and fixture-marker scans pass for both builds. Firebase token refresh and site-update permissions passed; billing remains disabled. Latest reported storage is 11,045,338 bytes and monthly transfer 55,456,267 bytes against 10,737,418,240-byte limits. Deployed only `bbnj-scout`: release `sites/bbnj-scout/releases/1790833176225000`, version `be75b7cdb97614ad`, three compressed files totalling 2,696 bytes. Live files return HTTP 200, match dist, and retain security headers. Browser confirms the closed setup state. Verification URLs serve only that shell, not local data. Ryu release `sites/ryustatic/releases/1790266049490000` is unchanged.
+- **Remaining boundary:** Acceptance checks above describe local UI/data and generated calendar behavior. Hosted authenticated reads remain unverified until Supabase plan/paid-use checks, remote foundation/import/collection and explicit memberships are resolved. The shell deployment does not make local data public. SCOUT-05 remains partial pending that integration and the native calendar-save check. No remote database writes, model/Tavily/Slack calls, scheduling or SCOUT-06 work. Stop for manager review.
 
 ## SCOUT-06 — Deliver Slack findings and digests
 

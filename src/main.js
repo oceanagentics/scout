@@ -1,10 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
+import { loadScout, mountDashboard } from './dashboard.js';
 import './style.css';
 
 const status = document.querySelector('#status');
 const form = document.querySelector('#sign-in');
 const signOut = document.querySelector('#sign-out');
-const records = document.querySelector('#records');
+const workspace = document.querySelector('#workspace');
 const url = import.meta.env.VITE_SUPABASE_URL;
 const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
@@ -18,11 +19,11 @@ if (!url || !key) {
     auth: { persistSession: false, detectSessionInUrl: false },
   });
   let generation = 0;
+  let closeDashboard;
 
   async function showSession(session) {
     const current = ++generation;
-    records.replaceChildren();
-    records.hidden = true;
+    closeDashboard?.(); closeDashboard = null;
     form.hidden = Boolean(session);
     signOut.hidden = !session;
     if (!session) {
@@ -40,36 +41,8 @@ if (!url || !key) {
       status.textContent = 'Your account does not have Scout access. Contact the project administrator to request membership.';
       return;
     }
-    const result = await client.from('records')
-      .select('id, kind, title, organization, summary, updated_at, sources(url)')
-      .order('updated_at', { ascending: false }).limit(50);
-    if (current !== generation) return;
-    if (result.error) {
-      status.textContent = 'Records could not be loaded. Please try again later.';
-      return;
-    }
-    status.textContent = result.data.length ? 'Latest records' : 'No records yet. Collected findings will appear here with their sources.';
-    for (const record of result.data) {
-      const article = document.createElement('article');
-      for (const [tag, text] of [['small', record.kind.replaceAll('_', ' ')], ['h3', record.title], ['p', record.organization], ['p', record.summary]]) {
-        if (!text) continue;
-        const element = document.createElement(tag);
-        element.textContent = text;
-        article.append(element);
-      }
-      for (const source of record.sources) {
-        const parsed = new URL(source.url);
-        if (!['https:', 'http:'].includes(parsed.protocol)) continue;
-        const link = document.createElement('a');
-        link.href = parsed.href;
-        link.textContent = `Source · ${parsed.hostname}`;
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        article.append(link);
-      }
-      records.append(article);
-    }
-    records.hidden = false;
+    status.textContent = 'Signed in · Scout member access';
+    closeDashboard = mountDashboard(workspace, () => loadScout(client));
   }
 
   client.auth.onAuthStateChange((_event, session) => { void showSession(session); });
