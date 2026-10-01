@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { collectHSA, HSA, sourceURL, readPublic } from '../collector/hsa.js';
+import { baseline, prepareFindings } from '../notifications/slack.js';
 
 const since = '2026-09-01T00:00:00Z';
 const eventURL = 'https://highseasalliance.org/events/bbnj-webinar/';
@@ -60,18 +61,38 @@ test('initial, unchanged, rescheduled, cosmetic, cancelled, and older repost kee
     assert.equal(initial.status, 'scheduled');
     assert.equal(initial.evidence_rank, 2);
     assert.equal((await db.query('select * from scout.sources')).rows.length, 2);
+    const history = (await db.query('select * from scout.record_changes order by changed_at')).rows;
+    assert.equal(history[0].previous, null);
+    assert.equal(history[0].current.start_on, '2026-10-08');
+    assert.equal(history[0].current.starts_at, null);
+    assert.equal(history[0].current.location, null);
+    assert.deepEqual(history[1].previous, {
+      title: feed[0].post.record.text, description: feed[0].post.record.text, summary: feed[0].post.record.text,
+      start_on: '2026-10-08', starts_at: null, time_zone: null, status: null,
+    });
+    assert.deepEqual(history[1].current, {
+      title: 'BBNJ implementation webinar', description: 'BBNJ implementation webinar.', summary: 'BBNJ implementation webinar.',
+      start_on: null, starts_at: '2026-10-08T14:00:00.000Z', time_zone: 'UTC', status: 'scheduled',
+    });
+    await baseline(db);
     const success = (await db.query('select last_success_at from scout.trackers where id=(select tracker_id from scout.collection_runs limit 1)')).rows[0].last_success_at;
     const versionCount = (await db.query('select count(*)::int n from scout.source_versions')).rows[0].n;
     const repeat = await collectHSA(db, { since, read, now });
     assert.equal(repeat.outcome, 'no_change');
     assert.equal((await db.query('select * from scout.records')).rows[0].updated_at.getTime(), initial.updated_at.getTime());
     assert.equal((await db.query('select count(*)::int n from scout.source_versions')).rows[0].n, versionCount);
+    assert.deepEqual((await db.query('select * from scout.record_changes order by changed_at')).rows, history);
+    assert.deepEqual(await prepareFindings(db), []);
     assert.ok((await db.query('select last_success_at from scout.trackers where id=(select tracker_id from scout.collection_runs limit 1)')).rows[0].last_success_at > success);
     page = html('2026-10-15T14:00:00Z', 'EventRescheduled');
     assert.equal((await collectHSA(db, { since, read, now })).changed, 1);
     const rescheduled = (await db.query('select * from scout.records')).rows[0];
     assert.equal(rescheduled.starts_at.toISOString(), '2026-10-15T14:00:00.000Z');
     assert.equal(rescheduled.status, 'rescheduled');
+    const change = (await db.query('select * from scout.record_changes order by changed_at desc limit 1')).rows[0];
+    assert.deepEqual(change.previous, { starts_at: '2026-10-08T14:00:00.000Z', status: 'scheduled' });
+    assert.deepEqual(change.current, { starts_at: '2026-10-15T14:00:00.000Z', status: 'rescheduled' });
+    assert.equal((await db.query('select content from scout.source_versions where id=$1', [change.source_version_id])).rows[0].content, page);
     page = html('2026-10-15T14:00:00Z', 'EventRescheduled', 'BBNJ   implementation webinar.');
     assert.equal((await collectHSA(db, { since, read, now })).outcome, 'no_change');
     page = html('2026-10-15T14:00:00Z', 'EventCancelled');
@@ -86,6 +107,10 @@ test('initial, unchanged, rescheduled, cosmetic, cancelled, and older repost kee
     assert.equal((await db.query('select * from scout.sources')).rows.length, 3);
     assert.equal((await db.query('select * from scout.record_changes')).rows.length, 4);
     assert.ok((await db.query('select * from scout.source_versions')).rows.length >= 6);
+    const [notification] = await prepareFindings(db);
+    assert.equal(notification.kind, 'change');
+    assert.match(notification.payload.blocks[1].text.text, /2026-10-08.*→.*2026-10-15/);
+    assert.match(notification.payload.blocks[1].text.text, /status: scheduled → cancelled/);
     // The organizer may deliberately return to a previously seen date/version.
     page = html('2026-10-08T14:00:00Z');
     assert.equal((await collectHSA(db, { since, read, now })).changed, 1);

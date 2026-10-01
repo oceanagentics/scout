@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer';
 import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
 import { isIP } from 'node:net';
+import { isDeepStrictEqual } from 'node:util';
 
 export const HSA = 'highseasalliance.bsky.social';
 export const USER_AGENT = 'BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)';
@@ -275,7 +276,10 @@ async function save(db, tracker, identity, source, rank, observedAt, stats) {
         existing = (await db.query(`insert into scout.records (${fields.join(',')},identity_key,material_hash,evidence_rank,evidence_at) values (${Array.from({ length: 20 }, (_, i) => `$${i + 1}`).join(',')}) returning *`, [...fields.map(field => merged[field]), identity, digest, recordRank, recordEvidenceAt])).rows[0];
         stats.created++;
       }
-      await db.query('insert into scout.record_changes (record_id,source_version_id,previous,current) values ($1,$2,$3,$4)', [existing.id, source.id, old ? JSON.stringify(old) : null, JSON.stringify(merged)]);
+      const changed = fields.filter(field => !old || !isDeepStrictEqual(old[field], merged[field]));
+      await db.query('insert into scout.record_changes (record_id,source_version_id,previous,current) values ($1,$2,$3,$4)',
+        [existing.id, source.id, old ? JSON.stringify(Object.fromEntries(changed.map(field => [field, old[field]]))) : null,
+          JSON.stringify(Object.fromEntries(changed.map(field => [field, merged[field]])))]);
     } else {
       await db.query('update scout.records set evidence_rank=$1,evidence_at=$2 where id=$3', [recordRank, recordEvidenceAt, existing.id]);
     }

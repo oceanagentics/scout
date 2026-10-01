@@ -9,6 +9,7 @@ const trackerSeed = await readFile(new URL('../supabase/seeds/trackers.sql', imp
 const collectionMigration = await readFile(new URL('../supabase/migrations/20261001070000_scout_collection.sql', import.meta.url), 'utf8');
 const evidenceMigration = await readFile(new URL('../supabase/migrations/20261001080000_scout_event_evidence.sql', import.meta.url), 'utf8');
 const workspaceMigration = await readFile(new URL('../supabase/migrations/20261001140000_scout_workspace_access.sql', import.meta.url), 'utf8');
+const historyMigration = await readFile(new URL('../supabase/migrations/20261001150000_scout_record_change_fields.sql', import.meta.url), 'utf8');
 const reader = '00000000-0000-0000-0000-000000000001';
 const admin = '00000000-0000-0000-0000-000000000002';
 const outsider = '00000000-0000-0000-0000-000000000003';
@@ -62,6 +63,54 @@ test('unsafe global defaults stop the migration without changing another service
   }
 });
 
+test('history migration preserves creations, null transitions, evidence, timestamps and access', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(auth + fixture);
+    await db.exec(migration);
+    await db.exec(collectionMigration);
+    await db.exec(evidenceMigration);
+    await db.exec(workspaceMigration);
+    const record = (await db.query("insert into scout.records (kind,title) values ('event','BBNJ webinar') returning *")).rows[0];
+    const tracker = (await db.query("insert into scout.trackers (name,url,channel,method,cadence) values ('Source','https://example.org','web','http','1 day') returning id")).rows[0];
+    const source = (await db.query(`insert into scout.source_versions (tracker_id,url,content_hash,content,parsed)
+      values ($1,'https://example.org/event','fixture','Captured evidence','{"title":"BBNJ webinar"}') returning *`, [tracker.id])).rows[0];
+    const initial = { kind: 'event', title: 'BBNJ webinar', location: null, start_on: '2026-10-08', starts_at: null, time_zone: null };
+    const timed = { ...initial, start_on: null, starts_at: '2026-10-08T14:00:00.000Z', time_zone: 'UTC',
+      date_evidence: { time_zone: { value: 'UTC', source_versions: [source.id] } } };
+    const dateBefore = { start_on: '2026-10-08', starts_at: null, time_zone: null };
+    const dateAfter = { start_on: null, starts_at: timed.starts_at, time_zone: 'UTC', date_evidence: timed.date_evidence };
+    const cases = [
+      [null, initial, null, initial],
+      [initial, timed, dateBefore, dateAfter],
+      [timed, initial, dateAfter, dateBefore],
+      [initial, { ...initial, date_evidence: null }, {}, { date_evidence: null }],
+      [{ ...initial, date_evidence: null }, initial, { date_evidence: null }, {}],
+      [timed, { ...timed, date_evidence: { time_zone: { source_versions: [source.id], value: 'UTC' } } }, {}, {}],
+    ];
+    const rows = [];
+    for (const [previous, current] of cases) {
+      rows.push((await db.query(`insert into scout.record_changes (record_id,source_version_id,changed_at,previous,current)
+        values ($1,$2,$3,$4,$5) returning *`, [record.id, source.id, `2026-10-01T0${rows.length}:00:00Z`,
+        previous === null ? null : JSON.stringify(previous), JSON.stringify(current)])).rows[0]);
+    }
+    const shared = (await db.query(sharedState)).rows;
+    const access = (await db.query("select relacl::text, relrowsecurity from pg_class where oid='scout.record_changes'::regclass")).rows;
+    await db.exec(historyMigration);
+    const migrated = (await db.query('select * from scout.record_changes order by changed_at')).rows;
+    assert.deepEqual(migrated, rows.map((row, i) => ({ ...row, previous: cases[i][2], current: cases[i][3] })));
+    assert.deepEqual((await db.query('select * from scout.source_versions')).rows, [source]);
+    assert.deepEqual((await db.query('select * from scout.records')).rows, [record]);
+    assert.deepEqual((await db.query(sharedState)).rows, shared);
+    assert.deepEqual((await db.query("select relacl::text, relrowsecurity from pg_class where oid='scout.record_changes'::regclass")).rows, access);
+    await db.exec('set role authenticated');
+    await db.query("select set_config('request.jwt.claim.sub', $1, false)", [reader]);
+    assert.deepEqual((await db.query('select * from scout.record_changes order by changed_at')).rows, migrated);
+    await assert.rejects(db.query('select * from scout.source_versions'), { code: '42501' });
+    await assert.rejects(db.query("update scout.record_changes set current='{}'"), { code: '42501' });
+  } finally { await db.close(); }
+});
+
 for (const shared of [false, true]) {
   test(`foundation migration and access policies in ${shared ? 'shared' : 'empty'} database`, async () => {
     const db = new PGlite();
@@ -74,6 +123,7 @@ for (const shared of [false, true]) {
       await db.exec(collectionMigration);
       await db.exec(evidenceMigration);
       await db.exec(workspaceMigration);
+      await db.exec(historyMigration);
       if (shared) assert.deepEqual((await db.query(sharedState)).rows, before);
       assert.equal((await db.query("select count(*)::int n from pg_class where relnamespace = 'scout'::regnamespace and relkind = 'r' and relrowsecurity")).rows[0].n, 8);
       await db.exec(`
