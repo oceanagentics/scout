@@ -5,16 +5,18 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 ## Sources and scope
 
 - [BBNJ Scout Letter](https://docs.google.com/document/d/13HIEN45IEKQN-i29pQuoRD-eeFOl-t70a1_2TBpV7zI/edit): product brief, Features, and Services.
-- [BBNJ Scout Trackers](https://docs.google.com/spreadsheets/d/1VtpaC83ybg7zet7VvNXmvctN9s5WJK_NTlJ9wx5NIbM/edit): initial source inventory, collection methods, and cadences; currently 22 trackers. Read the live sheet before importing.
+- [BBNJ Scout Trackers](https://docs.google.com/spreadsheets/d/1VtpaC83ybg7zet7VvNXmvctN9s5WJK_NTlJ9wx5NIbM/edit): source inventory, collection methods, and cadences; 22 is the last imported app inventory, not a claim about the sheet's current row count. Read the live sheet before any authorized import.
 - This file is the authoritative implementation checklist. The letter remains the product brief. Resolve material conflicts with the user before implementing the affected behavior.
-- Confirmed POC scope: events, announcements, treaty-status changes, daily Slack findings, a weekly Slack digest, Slack questions, a filterable web list, a tracker status list, tracker management, and add-to-calendar actions.
-- Confirmed deferrals: email digests and a separate calendar view, accepted with milestone 1 authorization.
+- Confirmed POC scope: events, announcements, treaty-status changes, daily Slack findings, a weekly Slack digest, Slack questions, a searchable Records table/card view, a tracker table with derived collection health, and tracker management.
+- Latest approved local changes: descriptions capped at 280 characters, source captures retain full/date-only/treaty evidence, changed-field history, UTC display/query/digest dates, and a seven-table schema without memberships or duplicated source/record/tracker state. Backend-controlled Auth metadata grants admin access only to an eligible Workspace identity. The later five-table/evidence-merger discussion is proposal only.
+- Calendar generation/actions and native calendar import are out of scope by explicit user choice, not pending verification. Outbound email digests and a separate calendar view remain deferred.
+- [Email subscriptions planning tab](https://docs.google.com/spreadsheets/d/1VtpaC83ybg7zet7VvNXmvctN9s5WJK_NTlJ9wx5NIbM/edit?gid=20261001#gid=20261001): four starter subscriptions were Planned with mailbox blank at the approved checkpoint. This is inbound-source planning only; subscription signup, mailbox ingestion and outbound email delivery are not implemented or authorized by this reconciliation. Further sheet edits do not change the last imported count of 22.
 - Deferred: embeddings and semantic search. Use structured queries for the POC.
 
 ## Working rules
 
 - Implement only when the user requests implementation. Creating this checklist does not start the build.
-- The user authorized milestone 1 (SCOUT-01–06) with a manager/worker workflow. The local manager chat `01a0f59f-1e17-7f70-beb9-6dc786ecd7cb` assigns and reviews each task; one worker is the sole repository writer. Wait for the next assignment after each report and stop for milestone review after SCOUT-06; do not begin SCOUT-07 or later.
+- The user authorized milestone 1 (SCOUT-01–06) with manager chat `01a0f59f-1e17-7f70-beb9-6dc786ecd7cb` assigning/reviewing one worker. The manager heartbeat is paused. Later user-directed chats have their own explicit scopes; this reconciliation neither restarts them nor expands milestone authorization. Stop for review after an assignment; SCOUT-07+ remain unstarted unless separately authorized. Coordinate writers in this shared checkout.
 - After two unsuccessful approaches or roughly 20 minutes without new evidence, reassess the specific failure and move to independent work; do not automatically hand off or repeat an unchanged failure. Check prior chats/documentation and try materially different supported paths. Respect actual authorization denials and sandbox boundaries. Request user action only for an essential missing capability/decision after authorized alternatives and useful independent work are exhausted. Keep unverified criteria open. Keep the collector sequence; add no upfront feasibility or backup work.
 - Record material changes and deviations under the affected task: date, change, reason, verification/gap, and deferred work's revisit condition. Manager-approved independent work may proceed before a dependency is fully complete; dependent deployment/integration, source evidence, correctness, and the $0 constraint remain required.
 - Use statuses `todo`, `in-progress`, `blocked`, and `done`. Keep task IDs stable. Start with the first task whose dependencies are complete.
@@ -27,39 +29,52 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 ## Shared constraints
 
 - Use recurring free tiers. Confirm current account eligibility and limits during setup; quoted allowances below are planning assumptions from the Services tab.
-- Keep paid upgrades and automatic top-ups off. Apply model and search budgets from their first use, including retries. Stop at the configured limit and persist quota exhaustion in tracker status.
+- Keep paid upgrades and automatic top-ups off. Apply model and search budgets from their first use, including retries. Stop at the configured limit and record quota exhaustion in collection runs; derive tracker status from those runs.
 - Preserve collected records when a source fails or a quota is exhausted. Distinguish successful collection with no changes from failed or partial collection.
 - Use source links and collection timestamps for every record. Keep missing dates, time zones, or other unsupported facts unknown. Model output is not evidence.
 - Extract and summarize only new or changed content; reuse stored results. Send only public source material and the specific Scout question to the proposed free model service.
-- Keep collection and notification schedules independent. Default to daily Bluesky collection, mostly weekly websites, and weekly discovery; use tracker-specific overrides around meetings.
+- Keep collection and notification schedules independent. Trackers retain one cadence interval: daily Bluesky feeds, mostly weekly websites, weekly discovery. Meeting-period notes were intentionally removed and are not operative schedule configuration. Notification time, weekday and time zone still need a decision; UTC event display does not decide them.
 - Import the sheet once to seed trackers. The app owns subsequent edits; do not introduce continuing sheet synchronization.
 - Keep credentials server-side. Latest accepted access direction (2026-10-01): retain Firebase Hosting Spark with a public static login shell/assets and private Scout data/actions. Any Google-verified `oceanagentics.com` Workspace user receives reader access on first sign-in, without individual invitations/passwords or manually provisioned memberships. Verify Google's signed hosted-domain assertion on a trusted server path; a client `hd` hint, email suffix or editable metadata is insufficient. Supabase independently enforces data/API access. Admin elevation and backend collector access remain denied by default. This supersedes the earlier whole-frontend IAM gateway hold. No Cloudflare, IAP, Cloud Run, hosting migration or billing upgrade.
-- Calendar actions are frontend links or calendar-file downloads. They do not require a calendar service or account integration.
+- Store only supported event instants; render and query them in UTC. Preserve date-only/unknown precision in source captures rather than inventing a time or restoring removed record columns. Keep source publication, capture, last-seen and record-version times distinct.
+
+## Current delivery and outstanding work
+
+- **Last reviewed hosted baseline:** Firebase release `1790868487090000` / version `95bc9afd5408b180`; real Google reader login, 12 HSA records, 22 trackers and secret-only manual HSA collection verified. Two Slack receipts/content checks came from the manual **local** notifier, not hosted delivery-state integration.
+- **Local changes awaiting coordinated deployment (SCOUT-02/03/04/05/06):** `e4d6e5a`, `9cc6229`, `5066042` and the UI layout work. Apply pending migrations `20261001150000` → `20261001160000` → `20261001170000` with matching collector, notifier and frontend; verify preserved evidence, access controls, repeat collection and reads. The newer source projections/derived tracker view are not in the hosted baseline. Do not deploy the incompatible pieces independently or claim local verification as hosted acceptance.
+- **SCOUT-06 remains incomplete:** integrate hosted records and durable delivery state, update stale hosted-access-pending wording and provide real record links; preserve the verified local baseline/dedup/receipt behavior. Slack visual layout remains an approved deferral, distinct from verified receipt/content. There is no calendar obligation.
+- **Coverage boundary:** HSA quoted posts, multi-event listings, unsupported date formats and semantic cross-URL matching remain bounded limitations. Revisit before claiming complete HSA or broader source coverage.
+- **Later prerequisites:** model access is verified but not integrated; enforce approved caps before use. Notification scheduling is undecided (SCOUT-07), Tavily paid-use checks wait for SCOUT-11, Slack mention setup for SCOUT-12, and admin identity/management for SCOUT-13. SCOUT-07+ are future work, not milestone-one failures. Milestone one is not yet complete.
+
+Acceptance below follows the latest scope. Older dated implementation/checkpoint paragraphs are historical evidence for their named versions; superseded calendar, membership, stored-status and setup instructions in them are not current requirements. This documentation pass performs no deployment or new verification.
 
 ## Milestones
 
-1. **First useful flow — SCOUT-01 through SCOUT-06:** one source produces stored records, a usable web list, calendar actions, and Slack delivery.
+1. **First useful flow — SCOUT-01 through SCOUT-06:** one source produces stored records, a usable private web list with source links, and integrated manual Slack delivery.
 2. **Scheduled coverage — SCOUT-07 through SCOUT-11:** due trackers run automatically, failures are visible, and official sources and discovery expand coverage.
 3. **Complete POC — SCOUT-12 through SCOUT-14:** Slack questions, tracker management, and verified end-to-end behavior.
 
 ## SCOUT-01 — Confirm POC scope and service access
 
-Status: blocked
+Status: in-progress
 Depends on: none
 
 Outcome: The agent has a confirmed scope, usable service access, and explicit free usage budgets.
 
 Acceptance criteria:
 
-- [ ] Confirm the proposed POC scope and deferrals, intended app audience, administrators, Slack workspace/channel, and notification schedule/time zone.
-- [ ] Confirm Firebase Hosting access through OA's existing Google account, a Spark project with a separate Scout site, Supabase Free project `chm`, Tavily Free, and installation access for a custom Slack app in the existing workspace. Cloudflare signup is no longer needed. Record missing access without storing secrets here.
-- [ ] Confirm the shared `chm` project identity, available free capacity, and existing services before provisioning. Use the default `postgres` database with one schema per service (`scout`; `otherservice` is a future-service example). Record Data API on, automatic table exposure off, and RLS on; budget Scout against remaining project-wide quotas.
-- [ ] Use OA's Google Workspace account for AI Studio; obtain administrator enablement if needed and create a Scout Gemini API key in an OA-controlled project. Verify a supported free model and its actual quota with a bounded request; Workspace's included Gemini features do not supply API quota.
-- [ ] Verify current provider allowances and account eligibility. Planning baseline: Firebase Hosting 10 GB storage and 10 GB/month transfer; Supabase 500 MB database, 1 GB storage, 5 GB egress, and 500,000 function invocations/month; Tavily 1,000 credits/month without a card; model limits are account-specific. Do not count nonprofit Workspace benefits or trial credits as recurring backend/search capacity.
-- [ ] Record model/search caps and retry limits within the available free quotas. Verify that paid upgrades and automatic top-ups are off.
+- [x] Confirm scope/deferrals, automatic verified Workspace readership and the Ocean Agentics #scout destination. Latest removals and inbound-email planning are recorded above.
+- [x] Verify Firebase Spark target/deployment permission, billing disabled, Supabase `chm` Free/no paid add-ons, and shared capacity at the recorded checkpoints. Recheck headroom before deployment; Cloudflare signup is unnecessary.
+- [x] Verify `postgres` / `scout`, explicit Data API exposure/grants/RLS, private future tables and preservation of other services. Remote foundation and Google reader login are resolved.
+- [x] Verify and approve reuse of OA's existing Gemini key/free-tier access and quota with one bounded request. Record operating caps; this does not mean model extraction is integrated.
+- [x] Verify Tavily authentication/1,000-credit allowance and record proposed search/retry caps; no discovery calls were made.
+- [x] Verify the existing one-channel Slack webhook with two real receipts/content readbacks, without broadening scopes. Store credentials only server-side.
+- [ ] Before SCOUT-07, choose notification time, digest weekday/time and IANA time zone independently of UTC event display.
+- [ ] Before SCOUT-11, confirm Tavily paid-use/top-up controls and remaining shared quota; enforce approved budgets when model/search integration is enabled.
+- [ ] In SCOUT-12, verify mention signing, subscriptions and minimal installation permissions. In SCOUT-13, explicitly choose/provision any administrator through backend-controlled Auth metadata; infer no admin identity.
 - [x] Record decisions and provider references in this task. Identify any blockers for downstream tasks.
 
-Verification (2026-10-01): Bounded read-only account checks and one model request; no provisioning, deployment, Slack posts, or shared-project changes. Incomplete combined criteria above remain unchecked.
+Historical setup verification (2026-10-01): the initial account checks below preceded deployment and Slack delivery. Resolved evidence is checked above; remaining prerequisites belong to their later tasks.
 
 - **Scope and sources:** Re-read the live Letter/Features/Services and tracker sheet through Google Drive. The sheet has 22 populated trackers: 17 websites, four daily Bluesky `getAuthorFeed` accounts, and one Bluesky `searchPosts` discovery tracker. Tavily discovery is separate, later work. User authorization confirms the POC scope and email/calendar-view/embedding deferrals, the SCOUT-05 all-tracker list, and preservation of authoritative organizer corrections against older reports. Milestone 1 ends with manual Slack findings/digest delivery; notification scheduling remains SCOUT-07. The accepted audience direction is a public Firebase Spark login shell with private data/actions for all Google-verified oceanagentics.com Workspace readers. This supersedes both the individual administrator-email question and the whole-frontend gateway proposal. Exact delivery times, digest weekday and time zone remain unspecified. The Slack channel was confirmed in the earlier setup chat, as recorded below.
 - **Firebase:** Direct API verification with the saved Firebase login confirms OA account `danny@oceanagentics.com`, project `ryustatic` / `622994656148`, and `billingEnabled: false` (Spark). IAM checks return Hosting `sites.create/get/list/update`, `firebase.projects.get`, `resourcemanager.projects.get`, and `serviceusage.services.use`; no permission change is needed. Selected Scout deployment: target `scout`, separate site `bbnj-scout` in `ryustatic`. A `validateOnly=true` create request returned HTTP 200 with that site name and `https://bbnj-scout.web.app`; this validates availability/permission but does not reserve or create the site. Only Ryu's site was provisioned at that checkpoint; SCOUT-02 subsequently created and deployed Scout's site below. Latest complete Monitoring results show 11,045,338 bytes stored (2026-09-30 23:09 UTC) and 55,432,079 monthly bytes transferred (2026-10-01 03:15 UTC), against 10,737,418,240-byte limits. These are sampled values; recheck before deployment. Use separate Scout configuration and `firebase deploy --project ryustatic --only hosting:scout` in SCOUT-02, preserving Ryu's site/configuration. Existing Firebase credentials can be refreshed in memory without Google Cloud CLI cache writes. The earlier browser permission notice did not reflect the successful direct API checks. [Multiple sites and deployment targets](https://firebase.google.com/docs/hosting/multisites); [Hosting allowances](https://firebase.google.com/docs/hosting/usage-quotas-pricing).
@@ -70,18 +85,13 @@ Verification (2026-10-01): Bounded read-only account checks and one model reques
 
 Manager-approved Gemini operating caps (2026-10-01; enforce when model integration is implemented): Gemini maximum two requests/minute, ten attempts/run, twenty attempts/day, 8,000 input tokens and 1,024 output tokens/request, only for new/changed public material. Permit at most one transient retry, included in every cap; no quota retries before allowance returns. Tavily stays at zero calls in milestone 1; the proposed SCOUT-11 budget is at most ten basic-search credits/run and fifty/month, including one possible transient retry per request, with no advanced search or paid fallback. Confirm shared quota headroom and paid-use controls before enabling either production path; the single Gemini verification request above used stricter bounds.
 
-Blockers / bundled missing inputs:
+Current prerequisite boundary: foundation/import, Hosting permission and Google reader login are resolved. Do not repeat denied billing/Auth-write reads or broaden token scopes. Remaining deployment/integration work is listed above; timing, Tavily paid-use controls, Slack mentions and admin management remain with SCOUT-07/11/12/13 respectively.
 
-1. **Remote foundation/import prerequisite resolved:** The user confirmed Free with no paid add-ons on 2026-10-01. Unattended access, remote migrations, RLS/grants, explicit Data API exposure and the 22-row import now pass; see SCOUT-02/03. No repeated billing read, token/login request or broader permission is needed.
-2. **Workspace access resolved:** The user completed Google OAuth/Supabase configuration. Read-only checks confirm the provider and Scout redirects; the configured frontend is deployed and real Google login loads all 12 findings and 22 trackers with automatic reader access and no membership. Sign-out/reload removes private data. The earlier Auth-write 403 was not retried and scopes were not broadened. See the hosted access checkpoint under SCOUT-02; no invitation or manual reader setup is required.
-3. **SCOUT-06 delivery:** Use the confirmed Scout webhook and allowlisted channel above, with a bounded live delivery check as part of that task. Verify signing and mention subscriptions in SCOUT-12 while preserving the one-channel restriction. Before SCOUT-07, choose daily delivery time, digest weekday/time, and IANA time zone; the computer's time zone is not a confirmed product setting.
-4. **Approved deferrals (2026-10-01):** Tavily billing verification moves to SCOUT-11 before its first discovery request; use zero Tavily calls in milestone 1. Notification timing/time zone moves to SCOUT-07 before scheduling. Neither blocks SCOUT-02. Existing Gemini key reuse and the conservative caps above are approved; no further user approval is needed. Supabase Free/no-paid-add-on status is user-confirmed and database headroom is verified below.
-
-Manager decision (2026-10-01): proceed with SCOUT-02, including remote steps once their prerequisites are verified. Keep unfinished SCOUT-01 criteria open. Firebase site creation and scoped deployment are authorized after the app is ready; leave Ryu untouched. SCOUT-03 waits for manager review.
+Historical manager decision (2026-10-01): proceed with SCOUT-02, including remote steps once their prerequisites are verified. Keep unfinished SCOUT-01 criteria open. Firebase site creation and scoped deployment are authorized after the app is ready; leave Ryu untouched. SCOUT-03 waits for manager review.
 
 ## SCOUT-02 — Create the app and database foundation
 
-Status: done
+Status: in-progress
 Depends on: SCOUT-01
 
 Outcome: A minimal app runs locally and on Firebase Hosting, with Supabase project `chm` and versioned migrations for its `scout` schema.
@@ -92,13 +102,17 @@ Acceptance criteria:
 - [x] A deployed app can read a harmless sample record from the database. Verify local startup and the hosted URL.
 - [x] Create the `scout` schema in `chm`'s default `postgres` database. Put Scout's trackers, collection history, events, announcements, treaty-status changes, source references, and notification delivery state there (for example, `scout.events`). Use the smallest schema that supports these responsibilities.
 - [x] Configure clients and migrations to target `scout` explicitly. Add `scout` to the Data API's exposed schemas while preserving existing services; grant only required schema/table/function privileges and enable RLS with policies in the same migrations. Do not grant automatic access to all future tables.
-- [x] Events support organization, title, description, location/URL, source-backed dates/time zones, registration link, status, and last update. Announcements support summary, publication date, sources, and last update. Treaty changes support country, action, and recorded date.
-- [x] Keep source publication dates, event dates, collection times, and record update times distinct. Support multiple source references for one record.
+- [x] Implement the approved lean record locally: title/type/organization, description ≤280 characters, event links/location/status, supported start/end instants and record version. Keep full text, publication/date-only/treaty facts in source captures; do not restore duplicate record columns.
+- [x] Keep source publication, capture, last-seen and record-version times distinct; reference captures without copying their evidence. Preserve multiple sources and changed-field history, including explicit nulls and initial creations.
 - [x] Enforce Scout-specific access within the project's shared Auth setup. Verify unauthorized writes and access to private records across service boundaries fail; authentication in another service does not confer Scout administrator access. Keep project-wide service-role credentials backend-only and absent from browser assets and logs.
 - [x] Google-verified `oceanagentics.com` Workspace users obtain hosted reader access automatically. Deny Gmail, other/no domains, unverified identities, forged metadata/tokens, anonymous requests and unauthorized writes. Preserve shared Auth/provider/redirect settings and default-denied administrator/collector access; remove rendered data on sign-out. Distinguish synthetic policy tests from real Google login.
 - [x] Review existing migration history before applying Scout migrations. Verify they succeed in an empty development database and preserve other services' schema objects, data, and permissions in a shared development database. Never reset the shared remote project as a setup step.
+- [ ] Coordinate the three pending migrations (`20261001150000` → `20261001160000` → `20261001170000`) with matching collector/notifier/frontend deployment. Verify the seven-table schema, preserved captures/history/deliveries, `tracker_status`/`source_details`, unchanged other-service controls and real hosted reader access. Unmatched/conflicting source evidence must stop migration for reconciliation.
+- [ ] Verify the deployed replacement of memberships with backend-controlled `raw_app_meta_data.scout.admin`; user-editable metadata cannot grant admin, and verified Workspace identity remains required. Preserve existing explicit admins without provisioning a new one.
 
-Verification and deviations (2026-10-01):
+Current status: the original hosted foundation/login is complete. Commits `e4d6e5a`, `9cc6229` and `5066042` implement the revised schema locally; the deployment/verification above remains open. Seven tables are approved; five tables or removal of `record_changes` are not.
+
+Historical verification and deviations (2026-10-01):
 
 - **Implemented:** Vite + vanilla JavaScript with the Supabase client explicitly targeting `scout`; in-memory sessions, no signup or automatic membership, and a closed setup state without public configuration. Added minimal ignores, public-only environment example, scoped Firebase target, and development/migration/deployment instructions in README. Secrets stay out of source and build assets. One typed `records` table covers the three record kinds to keep the schema small; six tables include memberships, trackers, collection runs, records, sources, and deliveries. No tracker import or collector work started.
 - **Authorization:** The migration enables RLS and revokes/regrants only its fixed table set in the same transaction. Anonymous access is denied; authenticated users need explicit Scout membership. Readers can read evidence; admins can edit tracker configuration but cannot forge collection-success fields, grant membership, or write evidence/delivery state. Backend service-role access remains project-wide and privileged. The migration rejects a pre-existing `scout` schema and unsafe global client table defaults rather than changing another service's privileges.
@@ -109,14 +123,14 @@ Verification and deviations (2026-10-01):
 - **Exact unattended prerequisite:** Make an existing authorized Supabase token available noninteractively through the documented CLI credential store or `SUPABASE_ACCESS_TOKEN`, explicitly loaded into the CLI/API process through an approved secret loader. An entry in `.env.local` alone is insufficient. Do not broaden token permissions or expose its value. First verify a bounded project read without stdin/prompts, then inspect the actual database/migration history and shared plan/capacity. If the IPv6 preflight persists, use the documented Management API with that same authorized access. No remote SQL, migration, Data API change, membership assignment, or public-key retrieval was completed.
 - **Remaining boundary:** SCOUT-02 is partial, not done. The local migration and policy tests are ready; remote schema creation, preserving/appending Data API exposure, remote permission checks, and the hosted sample read remain unchecked. The deployed shell makes no database requests until configured. Reader/admin identities remain denied by default pending an explicit decision. Revisit these checks when unattended authentication is available; SCOUT-03 still waits for manager review. Previously approved Tavily/scheduling deferrals remain unchanged.
 
-Follow-up and manager review (2026-10-01):
+Historical follow-up and manager review (2026-10-01):
 
 - Manager accepted commit `ad987f7` as a partial SCOUT-02 delivery, including the documented PGlite and Firebase REST deviations; no local corrective change required. Remote criteria remain open. Independent local SCOUT-03 implementation is approved despite the dependency; stop again for review before SCOUT-04.
 - **Authentication resolved:** The user added `SUPABASE_ACCESS_TOKEN` to ignored `.env.local`. Explicitly loading it into the authorized Python HTTPS process succeeded without prompts: functions/project/migration/PostgREST reads returned HTTP 200 and read-only SQL returned HTTP 201. No token value was displayed, staged, or sent to the browser. The manager's contemporaneous DNS failures occurred in its execution context; worker-side successful responses verify the token and this supported API path. No repeated login or Keychain prompt is needed.
 - **Remote inspection:** `chm` is `ACTIVE_HEALTHY`, PostgreSQL 17.11, database `postgres`, size 10,786,483 bytes. Migration history is empty; the catalog shows platform schemas only, no application tables, and no existing `scout` schema. Data API exposes `public,graphql_public`; preserve both when eventually appending `scout`. Default table grants are scoped to platform schemas, with no global client table defaults. The existing `ensure_rls` event trigger is present; Scout's migration still explicitly enables its own RLS.
 - **Earlier plan-read limitation (resolved by user confirmation below):** Organization-entitlements read returned HTTP 403 (documented `organization_admin_read`); the separate project add-ons read also returned HTTP 403 with missing `infra_add_ons_read`. These denials limit plan/paid-add-on verification, not database authentication. Do not broaden token permissions. At this earlier checkpoint, actual Free-plan/paid-use confirmation was still open and no SQL write, migration, exposure change, public-key retrieval or membership assignment had occurred. The remote checkpoint below supersedes this limitation.
 
-Remote foundation checkpoint after user confirmation (2026-10-01):
+Historical remote foundation checkpoint after user confirmation (2026-10-01):
 
 - **Resolved prerequisite:** The user explicitly confirmed in the manager chat that `chm` is Free with no paid add-ons. This supersedes the earlier plan-verification blocker above. Reused the existing noninteractive environment token; no denied billing reads, login prompts or scope changes.
 - **Fresh preflight and exact application:** The database was PostgreSQL 17.11 / `postgres`, 10,786,483 bytes, with no Scout schema, no application tables, no migration-history table and zero global defaults. Write-path execution identified `postgres` with schema-create permission. Reviewed all five existing migration files and tested the atomic deployment batch locally. Applied versions `20261001050000`, `20261001060000`, `20261001070000`, `20261001080000`, and `20261001090000` in one Management API SQL transaction (HTTP 201). The same transaction initialized Supabase's CLI-compatible version/name/statements history and stored each unchanged full file. All remote versions, names and SQL hashes match the reviewed files. No reset, history repair, new migration or other-service alteration was needed.
@@ -125,14 +139,14 @@ Remote foundation checkpoint after user confirmation (2026-10-01):
 - **Data API and shared state:** Appended only `scout` to the existing `public,graphql_public` exposure. Maximum rows (1000), extra search path (`public, extensions`), pool and acquisition timeout stayed unchanged. A real anonymous Data API request with `Accept-Profile: scout` returned HTTP 401 / `42501` (schema permission denied). Retrieved only the existing publishable key into memory for that check; no secret/service-role key retrieval, Vite setting or deployment. Other-schema table/view ownership, grants, RLS and policies matched their preflight fingerprint; existing default privileges also matched.
 - **Earlier access boundary (superseded below):** At the foundation checkpoint, the Workspace gateway architecture was still under review. The subsequent accepted public-shell/private-data plan resolves that decision. Foundation/import verification alone does not complete the hosted milestone.
 
-Workspace access checkpoint (2026-10-01):
+Historical workspace access checkpoint (2026-10-01):
 
 - **Accepted implementation:** The user asked to update the plan and run the public Firebase Spark shell/private Workspace data approach. Replaced password sign-in with Supabase Google OAuth, PKCE and tab-scoped session storage. The UI checks server-side `scout.access_role()` before loading data; sign-out immediately clears the dashboard and prevents late access checks or refresh events from restoring it. No alternate auth service, invitation flow or administrator provisioning was added.
 - **Provider proof and policies:** Applied migration `20261001140000_scout_workspace_access.sql` atomically with native migration history; its remote SQL hash matches the file (`834e440e6839a497bdf258f72cae7cd0`). `access_role()` requires the current user's provider-owned Google identity, Google issuer, boolean verified email and signed `custom_claims.hd = oceanagentics.com`. This matches the deployed GoTrue `v2.197.0` source linked in README. A browser hint, email suffix or editable user metadata cannot grant access. Eligible users automatically receive reader access without a membership row; only an explicit existing membership can elevate an eligible identity. The function has an empty search path, is owned by `postgres`, and is executable only by `authenticated`. Existing fixed grants, backend-only evidence writes/raw sources/deliveries and secret-only collector authorization remain in force.
 - **Verification:** All 30 tests and the production build pass. Policy tests cover automatic readers, rejected Gmail/other/missing domains, unverified/forged metadata/provider/issuer, denied identity/membership/evidence writes, and unchanged shared-service state. Browser verification of the configured local build shows the Google login shell without private data. Actual anonymous and forged-token Data API requests return 401; an actual authenticated SQL context without provider proof sees no Scout rows and cannot modify trackers. Other-schema fingerprint remains `6296f28cc00a23a8515916fc1685e3ea`. Remote state remains 12 records, 22 trackers, zero Auth users/identities/memberships and zero deliveries; no synthetic production account or Google login is claimed.
 - **Exact blocker and next step:** Supabase's Google provider is disabled with no client ID/secret. Existing saved Firebase access still works, but Google Cloud requests “Verify it's you”; the Supabase dashboard is signed out. The PAT can read Auth settings, but its scoped update is denied with HTTP 403 for `auth_config_write` and `project_admin_write`. No Auth setting or redirect was changed. README specifies the Google callback, two Scout origins and two Supabase redirect entries for an authorized admin dashboard session. Do not retry the denied PAT or broaden scopes. Once configured, deploy only `hosting:scout` and verify real Workspace login/read/sign-out. The live site remains in its previous closed setup state; no frontend deployment, Slack/model/Tavily call or schedule was added. Stop for manager review with hosted acceptance unchecked.
 
-Hosted access and credential cleanup checkpoint (2026-10-01, supersedes the setup blocker):
+Historical hosted access and credential cleanup checkpoint (2026-10-01, supersedes the setup blocker):
 
 - **User-completed configuration:** Read-only Auth settings now confirm Google enabled, client ID/secret configured, nonce checking enabled, email required, and both Scout redirect URLs present. Shared Site URL is unchanged. No denied Auth write was retried, permission scope expanded, new credential created or Google/Firebase Auth alternative introduced.
 - **Local credential cleanup:** Removed the user-requested root Google OAuth client JSON and added only `/client_secret_*.apps.googleusercontent.com.json` to `.gitignore`. No duplicate matching credential existed in `.env.local`; its bytes are unchanged. The credential was absent from the Git index and branch/remote commit history. It was present in three Codex local diff-snapshot tree refs, which were not rewritten or deleted. This removes the working copy, not every retained local snapshot. No values were displayed or committed. Supabase retains the required server-side provider credentials.
@@ -145,17 +159,19 @@ Hosted access and credential cleanup checkpoint (2026-10-01, supersedes the setu
 Status: done
 Depends on: SCOUT-02
 
-Outcome: The current sheet seeds the app's tracker inventory without creating an ongoing synchronization dependency.
+Outcome: The reviewed 22-row snapshot seeds the app without an ongoing synchronization dependency.
 
 Acceptance criteria:
 
-- [x] Read the live sheet and import every populated tracker row, preserving source identity, URL/account, coverage, channel, collection method, and cadence.
+- [x] Read and reconcile the original live sheet, importing all 22 populated trackers. The approved local seed now retains identity, URL/account, coverage, short `collector`, cadence and enabled state; removed channel/configuration/meeting notes are historical evidence, not current config.
 - [x] Reconcile the imported inventory against the sheet. Report invalid, incomplete, or unsupported entries instead of silently dropping them.
 - [x] Repeating the import creates no duplicates and does not overwrite app edits. Paused trackers remain paused.
-- [x] Each tracker can persist enabled state, last attempt, last successful collection, latest outcome/error, and next scheduled run. An imported tracker is initially uncollected, not successful.
+- [x] Retain enabled state and derive attempt/success/outcome/warnings from collection runs through `tracker_status` in the local schema. An imported tracker is uncollected, not successful; stored status and `next_run_at` are no longer required.
 - [x] Verify one website, one Bluesky feed, and the discovery tracker retain their distinct methods and cadences.
 
-Verification and deviations (2026-10-01):
+Current status: the original 22-row hosted import is complete. The revised seed requires the pending lean migration; deploy/reverify its field mapping under SCOUT-02 without re-importing new sheet content. Email-subscription planning is separate and has not changed this inventory.
+
+Historical verification and deviations (2026-10-01):
 
 - **Original local dependency deferral:** Implemented and verified the local import after the partial SCOUT-02 review. Remote import was then deferred; the completed remote checkpoint below supersedes that boundary.
 - **Live source and reconciliation:** Re-read the live tracker sheet (22 rows, source IDs 0–21, last modified 2026-09-30 23:20:03 UTC). Compared every local imported row against all six sheet fields: source name, coverage, URL/account, channel, method, and complete cadence text. All match. Inventory is 17 websites, four daily `getAuthorFeed` accounts, and one weekly `searchPosts` discovery source. No rows were dropped and no Tavily source was invented.
@@ -164,7 +180,7 @@ Verification and deviations (2026-10-01):
 - **Verification:** `npm test` passes all four suites. The new import suite checks the exact 22 identities, method/cadence distinctions, keyword/override retention, initial null attempt/success/outcome/error/next-run state, the incomplete row, and repeat imports after changing source name, URL, method, coverage, cadence, paused state, and collection history. Two repeated imports leave every row and timestamp unchanged. Admins cannot edit seed identity or enable a URL-less tracker. Existing shared-service data and permissions remain intact; the original isolation tests also pass after the additive migration.
 - **Original local checkpoint:** The seed and repeat-import behavior were ready in local PostgreSQL, while remote application/reconciliation still waited for foundation verification. Those checks are now complete below. Remote HSA collection still requires the next manager assignment.
 
-Remote import checkpoint (2026-10-01):
+Historical remote import checkpoint (2026-10-01):
 
 - Re-read the live tracker sheet before import; its 22 rows and modification timestamp (2026-09-30 23:20:03 UTC) still match the reviewed frozen seed. After remote foundation/RLS verification passed, applied `supabase/seeds/trackers.sql` to `chm.scout` through the Management API (HTTP 201).
 - Reconciled all 22 remote seed identities and every source name, coverage, URL/account, channel, method, full cadence note and interval against the live sheet. Preserved 17 websites, four daily Bluesky feeds, one weekly discovery source and the URL-less conference row paused with its original configuration note. No unsupported row was dropped or labelled collected.
@@ -173,7 +189,7 @@ Remote import checkpoint (2026-10-01):
 
 ## SCOUT-04 — Collect HSA's Bluesky feed end to end
 
-Status: done
+Status: in-progress
 Depends on: SCOUT-03
 
 Outcome: A manual collection run produces usable events and announcements from High Seas Alliance's public feed.
@@ -181,14 +197,18 @@ Outcome: A manual collection run produces usable events and announcements from H
 Acceptance criteria:
 
 - [x] Fetch HSA's configured public feed using the sheet's Bluesky `getAuthorFeed` method, identify relevant BBNJ items, and follow relevant organizer/registration links within bounded collection limits.
-- [x] Store structured records with supporting source links, organization, available dates/time zones, summary, and collection timestamps. Preserve unknown values.
-- [x] Use direct structured extraction where sufficient and the agreed free model only where needed. Validate model output before storing it and apply the configured usage caps.
+- [x] HSA's implemented HTTP path uses `BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)`; apply the all-collector requirement to future HTTP collectors as they are implemented.
+- [x] Implement lean records with source links, organization, ≤280-character description and supported UTC instants. Preserve full text, source timing and date-only/unknown precision in captures; compact date evidence references the establishing captures.
+- [x] Use direct extraction for the supported HSA path. Gemini access is verified but no model is integrated or required here; any future fallback must validate output and enforce the approved persistent budgets before use.
 - [x] Unchanged content does not trigger repeat model work. Repeated collection does not create duplicate records.
 - [x] A changed event date or cancellation updates the existing event and records a material change; cosmetic source edits do not become new announcements. Prefer the organizer's authoritative correction over stale third-party reports, retain supporting evidence, and verify that collecting an older repost later cannot undo a reschedule or cancellation.
 - [x] Persist success, no-change, partial, failure, and quota outcomes accurately. A failed fetch leaves previous records intact.
 - [x] Verify a real source example and repeatable cases for initial collection, repeat collection, changed date, missing date, irrelevant content, and failed fetch.
+- [ ] Deploy/reverify the updated collector with SCOUT-02's pending migrations: bounded success/stable repeat, correction precedence, changed-field history, derived freshness and secret-only authorization.
 
-Verification and deviations (2026-10-01):
+Current status: the older hosted collector and repeat run are accepted. The lean writer is local only; reverify after coordinated deployment. Quoted posts, multi-event listings, unsupported date formats and semantic cross-URL merging remain explicit limits, not complete source coverage.
+
+Historical verification and deviations (2026-10-01):
 
 - **Manager-approved local delivery:** After accepting SCOUT-03 commit `13af6ea`, the manager assigned independent manual HSA collection against the reviewed local schema/seed. Re-read the live brief. `npm run collect:hsa` uses persistent PGlite at `.cache/hsa-database`, applies versioned local migrations/seed, and prevents overlapping local processes with a lock. It cannot connect to hosted Supabase. Remote integration remains deferred; this is partial SCOUT-04 delivery.
 - **Bounded collection:** HSA `getAuthorFeed` only, at most two pages of 25 posts, two links per event post, six follow-up pages, three redirects per request, and 24 total requests. Each response is capped at 512 KiB and 12 seconds; a 120-second budget is checked before another request. Every request uses `BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)`. HTTPS/DNS checks reject private destinations. Zero model, Tavily, Slack, or paid-service calls; no retries, scheduling, other collectors, or SCOUT-05 work.
@@ -198,13 +218,13 @@ Verification and deviations (2026-10-01):
 - **Remaining coverage/revisit conditions:** Parsing covers explicit ISO dates, one JSON-LD event, observed Zoom fields, and the narrow observed September/EDT HSA format when matching components agree. Quoted posts, multiple-event listings, unsupported formats, other natural-language date formats, and semantic cross-URL deduplication remain bounded coverage limitations. Revisit these gaps before claiming complete source coverage; preserve unknown values until supported by validated extraction.
 - **Remote boundary and review:** Firebase target/permissions are resolved and the shell is already deployed. Supabase authentication and read-only SQL pass; actual Free-plan/paid-add-on verification remains unavailable because the relevant reads return 403. No remote schema, seed, collector, exposure, or membership mutation occurred. Complete the remote SCOUT-02/03 checks before hosted collection. Stop for manager review before SCOUT-05.
 
-Manager-review corrections (2026-10-01), following `060b09c`:
+Historical manager-review corrections (2026-10-01), following `060b09c`:
 
 - **New organizer corrections:** The manager reproduced a newer HSA cancellation being rejected because posts ranked below pages. The correction criterion was reopened until regressions passed. HSA posts now have authoritative rank, ordered by publication time. Each source persists its evidence time separately from collection time: a first page snapshot has unknown publication chronology and cannot reverse an explicit correction; only changed page facts receive a new observation time. Unchanged/cosmetic fetches retain the prior evidence time. The additive migration repairs v1's fetch-time ordering from preserved HSA publication evidence without changing record facts or material timestamps.
 - **Compatible component reconciliation:** Added the real September 15 HSA post `3mvkyjyep6m24` to recorded fixtures. Its `29 Sept, 7:30 AM EDT` agrees with the same Zoom URL's `Sep 29, 2026 07:30 AM`. This narrowly yields `2026-09-29T11:30:00Z`, offset `-04:00`, without inferring a zone from the page. Records and material-change evidence retain source-version IDs for calendar date, local time, and explicit EDT/offset. Conflicting wall times are reported with both values and leave the timestamp unknown. Compatible later date-only observations preserve the supported instant.
 - **Verification and current live result:** All 11 tests pass, including unavailable/unchanged/cosmetic page cases after an HSA cancellation, an older third-party repost, later organizer page/post changes, component provenance, repeat runs, retained time evidence when the earlier post leaves the fetched feed, and conflicting 08:30 page / 07:30 EDT post times. Empty/shared database isolation still passes with the new migration. Live run `13080d92-bb33-47a6-9db5-2838a86a4f2c` updated exactly one existing event and returned success; separate repeat `7585cd99-f5ec-468f-a93d-38c5419f8f07` returned no-change with zero new records/changes. Both examined 13 posts and one page using three requests, no warnings, and zero models. All 12 records remain; the stored event has the supported instant/offset and the tracker's last-success advances. Remote/audience deferrals remain unchanged. Stop for manager review before SCOUT-05.
 
-Hosted manual collection checkpoint (2026-10-01), following manager acceptance of remote foundation/import commit `4750413`:
+Historical hosted manual collection checkpoint (2026-10-01), following manager acceptance of remote foundation/import commit `4750413`:
 
 - **Implemented/deployed:** Private Edge Function `scout-collect-hsa`, active version 4, reuses the reviewed HSA parser/evidence logic through a small Postgres.js adapter and platform-provided `SUPABASE_DB_URL`. The existing function inventory was empty. Supabase's `secret:default` verification runs before database/source work; disabling the legacy platform JWT check does not make this endpoint public. Only the existing backend default secret was retrieved in memory for invocation. No custom secret, database password, generic SQL RPC, shared Auth change or broader PAT scope was needed.
 - **Bounds and concurrency:** A transaction-scoped advisory lock rejects overlap with HTTP 409; collector transactions use savepoints on the same connection. Source work has a 100-second hosted deadline, 12-second/512-KiB requests and all existing request/page/redirect bounds; statements have a five-second timeout. Interrupted/connection-failed outer transactions roll back rather than leaving partially committed records. Handled source failures preserve honest run outcomes. There is no retry/scheduling framework. All requests retain the identifiable User-Agent and validated public DNS destinations.
@@ -212,26 +232,28 @@ Hosted manual collection checkpoint (2026-10-01), following manager acceptance o
 - **Real hosted evidence:** Run `60db8779-79a3-439e-9be7-93da34e8777b` returned success in 1.41 seconds, creating 12 records (11 announcements and one event) with two in-run evidence refinements. Separate run `1d301fbe-087a-4cba-a9bf-db41575bc4c0` returned `no_change` in 1.34 seconds, zero created/changed, preserving every record ID/material hash/timestamp and all 14 sources, 14 versions and 14 change entries. Both read 13 posts and one page in three requests with no warnings/models. HSA `last_success_at` advanced to `2026-10-01T13:04:51.351Z`; no other tracker has an attempt. The webinar stores `2026-09-29T11:30:00Z`, `-04:00`, with HSA/Zoom component evidence. Memberships and deliveries remain empty; database usage is 11,892,403 bytes.
 - **Verification/boundary:** All 28 tests pass, including actual signature verification of a local user JWT followed by collector rejection, invalid/publishable/other-secret rejection before any work, overlap, parameter/JSON handling, rollback/error redaction, private/mixed DNS rejection, deadlines, existing correction/date regressions and prior app/notifier tests. Build and whitespace checks pass. Missing/invalid/publishable/bearer credentials returned 401 remotely and left Scout data unchanged. No frontend deploy, model, Tavily, Slack, scheduler or other collector work occurred. The bounded extraction limitations above still apply. The manager's newly authorized Workspace reader sign-in follows as a separate assignment/commit; milestone 1 remains incomplete until hosted reader access and remaining integration are verified.
 
-## SCOUT-05 — Build record and tracker lists and calendar actions
+## SCOUT-05 — Build Records and tracker views
 
 Status: in-progress
 Depends on: SCOUT-04
 
-Outcome: A user can find collected records, inspect every tracker's status, and add a supported event to a calendar.
+Outcome: A Workspace reader can find source-backed records and inspect every tracker's derived collection health.
 
 Acceptance criteria:
 
-- [x] Show events, announcements, and treaty changes in a searchable list with type, organization, and applicable date filters.
+- [x] Implement the requested Records table/card views, inline search/type filters, tracker table, sticky headers and pinned first columns locally. Do not restore removed filter controls or calendar actions.
 - [x] Show source links, relevant dates, record updates, and collection freshness; provide clear loading, empty, and error states.
-- [x] Show all trackers in a frontend list with source, collection method, cadence, current status, and last successful collection time, including paused and unsupported trackers. Show "Never" for uncollected trackers and indicate overdue collection from the next scheduled run even if the backend has stopped updating status.
+- [x] Show all 22 imported trackers, supported configuration and run-derived attempt/success/outcome/error, including paused/unconfigured/unimplemented collectors. Show "Never" for uncollected trackers; scheduling/due-state behavior belongs to SCOUT-07, not a restored `next_run_at` column.
 - [x] Verify that a successful no-change run advances the displayed last-success time, a failed or partial run preserves it and shows its outcome, and an uncollected tracker shows "Never".
 - [x] Show rescheduled and cancelled events accurately. Do not present past events as upcoming.
-- [x] Provide calendar links or downloads for events with sufficient date information. Preserve time zones and date-only events; do not invent a start time.
-- [x] Verify a timed event, an event across a time-zone boundary, a date-only event, and an event with insufficient date information.
+- [x] Remove calendar generation and render supported timestamps in UTC. Date-only/unsupported evidence remains in captures and must not become an invented record timestamp.
+- [ ] Deploy the matching frontend after the pending schema/views. Verify real Workspace reads, the current Records/tracker layouts, source metadata, UTC/unknown timing and sign-out against the revised hosted data.
 
-Assignment (2026-10-01): manager accepted SCOUT-04 correction commit `89c762e` after reviewing the 11 passing tests and live success/no-change evidence. Independent frontend work is approved using the existing vanilla Vite app and local evidence, while remote plan/paid-use verification and explicit member identities remain open. Keep the production membership gate and unconfigured setup state closed. Verify all-record and all-tracker views, date/status/filter behavior, source-safe rendering, and calendar downloads with a clearly marked local browser fixture; exclude verification data from production assets. A scoped Hosting shell update is authorized after verification. No alternate production backend, remote database writes, scheduling, or SCOUT-06 work. Stop for manager review after a focused commit.
+Current status: reader login and all 12 records/22 trackers were verified on the older release. Current layout/lean-field/UTC changes are local only. Calendar import is removed from scope, so it is no longer an outstanding check.
 
-Verification and decisions (2026-10-01):
+Historical assignment (2026-10-01): manager accepted SCOUT-04 correction commit `89c762e` after reviewing the 11 passing tests and live success/no-change evidence. Independent frontend work is approved using the existing vanilla Vite app and local evidence, while remote plan/paid-use verification and explicit member identities remain open. Keep the production membership gate and unconfigured setup state closed. Verify all-record and all-tracker views, date/status/filter behavior, source-safe rendering, and calendar downloads with a clearly marked local browser fixture; exclude verification data from production assets. A scoped Hosting shell update is authorized after verification. No alternate production backend, remote database writes, scheduling, or SCOUT-06 work. Stop for manager review after a focused commit.
+
+Historical verification and decisions (2026-10-01):
 
 - **Local frontend delivered:** Retained vanilla Vite and the explicit `scout` client. Only verified members can mount the dashboard; production without public configuration remains closed. Paginated read-only queries replace the old 50-record cap and load all trackers. Findings provide text/type/organization/date/timing filters, source references, separate publication/collection/update timestamps, and source collection outcomes. Date filters use source-zone event dates, publication dates or treaty action dates, including overlapping multi-day events. Source text uses textContent; links accept only HTTP(S) without credentials.
 - **Tracker and timing behavior:** The actual 22-source inventory renders, including the unconfigured paused conference row and unsupported collectors. HSA is explicitly manual-only. Complete cadence/meeting-period notes remain visible. Null success is Never and null next-run is Not scheduled. Browser checks verified no-change advancing last-success and partial/failure retaining it. A due fixture became Overdue after the browser clock passed next_run_at without another fetch; the 30-second timer and visibility handler also refresh event timing. No schedule or collection job was introduced.
@@ -240,27 +262,32 @@ Verification and decisions (2026-10-01):
 - **Checks and scoped Hosting update:** All 15 tests pass; both unconfigured production and placeholder-public-key configured builds pass. Exact environment-value scans and fixture-marker scans pass for both builds. Firebase token refresh and site-update permissions passed; billing remains disabled. Latest reported storage is 11,045,338 bytes and monthly transfer 55,456,267 bytes against 10,737,418,240-byte limits. Deployed only `bbnj-scout`: release `sites/bbnj-scout/releases/1790833176225000`, version `be75b7cdb97614ad`, three compressed files totalling 2,696 bytes. Live files return HTTP 200, match dist, and retain security headers. Browser confirms the closed setup state. Verification URLs serve only that shell, not local data. Ryu release `sites/ryustatic/releases/1790266049490000` is unchanged.
 - **Boundary at this earlier checkpoint:** Acceptance checks above describe local UI/data and generated calendar behavior. Hosted authenticated reads and the native calendar-save check were still unverified. The shell deployment did not make local data public.
 
-Workspace access follow-up (2026-10-01): Remote plan/foundation/import, hosted HSA success/stable repeat and real Google-authenticated frontend access are now verified. The deployed app loads all 12 findings and 22 trackers with automatic reader access and no manual membership. Hosted event search, source-backed time, calendar control/filename and sign-out/reload pass. SCOUT-05 remains partial only for the previously approved native calendar file-save/import verification deferral; the OAuth/deployment/read blocker is resolved. Stop for manager review without repeating the unsupported download workaround.
+Historical workspace access follow-up (2026-10-01): Remote plan/foundation/import, hosted HSA success/stable repeat and real Google-authenticated frontend access are now verified. The deployed app loads all 12 findings and 22 trackers with automatic reader access and no manual membership. Hosted event search, source-backed time, calendar control/filename and sign-out/reload pass. SCOUT-05 remains partial only for the previously approved native calendar file-save/import verification deferral; the OAuth/deployment/read blocker is resolved. Stop for manager review without repeating the unsupported download workaround.
 
 ## SCOUT-06 — Deliver Slack findings and digests
 
 Status: in-progress
 Depends on: SCOUT-04, SCOUT-05
 
-Outcome: Scout can deliver new findings, material changes, and a weekly upcoming-events digest to the agreed Slack channel.
+Outcome: Scout can manually deliver new findings, material changes and an explicit-window digest from hosted records to #scout, with durable delivery evidence. Scheduling belongs to SCOUT-07.
 
 Acceptance criteria:
 
-- [ ] Configure the custom Slack app with only the access needed for the agreed behavior. Keep tokens server-side.
-- [ ] A manual delivery run posts new findings and material changes with concise descriptions, source links, and applicable calendar actions.
+- [x] Use the confirmed one-channel webhook and server-side credentials without requesting broader scopes. Mention signing/subscriptions and installation-permission verification belong to SCOUT-12.
+- [x] Verify one manual local finding and one explicit-window digest through real Slack receipts/content readback; preserve source links and bounded descriptions. Material-change behavior is covered by recorded/local cases, not an additional claimed live send.
 - [x] A manually triggered digest lists upcoming events for an explicit reporting window, omitting cancelled events and distinguishing unknown dates.
 - [x] Track delivery state separately from collection state. Repeating a completed delivery does not post it again; failed deliveries are not marked successful.
 - [x] Bound retries and record ambiguous send outcomes for reconciliation rather than blindly reposting. Verify a transient failure and a repeated delivery request.
-- [ ] Initial historical imports have an explicit notification baseline so they do not flood the channel. Verify Slack rendering in the agreed channel.
+- [x] Establish the explicit 12-record local historical baseline; verify later new/material records remain eligible and repeated baseline/completed sends do not flood the channel.
+- [ ] Integrate the matching notifier with hosted records and backend-only durable delivery state after the lean migrations. Preserve baselines, sent/ambiguous receipts and deduplication; explicitly reprepare stale pending snapshot formats rather than resending history.
+- [ ] Replace stale hosted-access-pending wording and provide real hosted record links in findings/changes/digests. Use UTC event/window dates, retain unknown precision and source evidence, and add no calendar obligation.
+- [ ] Verify Slack visual layout when permitted or user-inspected. This optional visual check is an approved deferral; the two receipts and structured content are already verified.
 
-Assignment (2026-10-01): manager accepted SCOUT-05 commit `da81802` as local partial delivery. Native calendar save/import is an approved bounded verification deferral; hosted authenticated data remains unfinished. Implement the smallest manual delivery path against the existing persistent local records/schema and supplied webhook for #scout (`C0C5PE21KN1`, workspace `TFZ8FRLBV`). Establish an explicit baseline for the 12 historical records before sending. Persist exact payload/version evidence, deduplicate completed requests, bound retries, and require reconciliation after ambiguous sends. Review payloads and tests before the authorized live cap of one clearly labelled source-backed verification finding plus one explicit-window digest. No broader scopes, hosted data claims, remote database writes, model/Tavily work, scheduling or SCOUT-07 onward. Preserve user edits, commit once, and stop for milestone-1 manager review; hosted integration still prevents claiming milestone 1 complete.
+Current status: local manual baseline, dedup/recovery and two real receipts are complete. Hosted record/delivery-state integration and link wording remain unfinished; newer lean/UTC notifier changes are local only. Do not send additional verification messages under this documentation assignment. Calendar removal supersedes the old import/download deferral.
 
-Implementation and verification (2026-10-01):
+Historical assignment (2026-10-01): manager accepted SCOUT-05 commit `da81802` as local partial delivery. Native calendar save/import is an approved bounded verification deferral; hosted authenticated data remains unfinished. Implement the smallest manual delivery path against the existing persistent local records/schema and supplied webhook for #scout (`C0C5PE21KN1`, workspace `TFZ8FRLBV`). Establish an explicit baseline for the 12 historical records before sending. Persist exact payload/version evidence, deduplicate completed requests, bound retries, and require reconciliation after ambiguous sends. Review payloads and tests before the authorized live cap of one clearly labelled source-backed verification finding plus one explicit-window digest. No broader scopes, hosted data claims, remote database writes, model/Tavily work, scheduling or SCOUT-07 onward. Preserve user edits, commit once, and stop for milestone-1 manager review; hosted integration still prevents claiming milestone 1 complete.
+
+Historical implementation and verification (2026-10-01):
 
 - **Manual local path:** Added `npm run notify` for an explicit historical baseline, preparing at most five findings/material changes, one historical verification example, an explicit-window digest, payload review, individual sends and inspected receipts. It uses the existing persistent local PostgreSQL database and collector lock; collection and delivery state stay separate. A versioned migration adds exact payload/record snapshots, attempt times and receipt evidence to backend-only deliveries without changing browser grants. No new package, remote database write, collector run, model/Tavily call or scheduler was needed.
 - **Source and date behavior:** Reused the record/date module. Messages distinguish event, publication, collection and update dates, show source links, and include before/after material changes. Digests omit cancelled/past events, preserve source-local window boundaries and show unknown dates separately, with record/coverage counts. At most five dated and three unknown entries appear; all qualifying version evidence is retained. The same inclusive window returns the same payload. Prepared records that change or cross event timing states fail before send. Source prose uses plain-text blocks and links disable mention parsing/unfurling.
@@ -271,7 +298,7 @@ Implementation and verification (2026-10-01):
 - **Deferrals and user impact:** Calendar downloads and hosted record links are explicitly unavailable in Slack until hosted member access is configured; no placeholder route is advertised. Existing Slack installation scopes have not been independently audited; no new scopes were requested and only the existing webhook sends. Visual browser inspection was rejected by automatic approval review because it could not establish permission to view the private channel. The manager explicitly approved deferring this optional check; no retry or alternate route was attempted. Connector readback verifies receipt and structured content, not visual layout. The earlier optional browser-permission question is not a prerequisite for this delivery. Keep the combined rendering/baseline criterion open until permitted browser or user inspection. Supabase actual Free-plan/paid-add-on verification, member identities, remote integration and the approved native calendar-save check remain deferred. Stop for manager review; SCOUT-06 is local partial delivery and milestone 1 is not complete. Do not start SCOUT-07.
 - **Manager handoff:** The cross-chat report tool was rejected by automatic approval review because it could not establish trusted user authorization for messaging the manager chat. No alternate route or retry was attempted. The manager subsequently retrieved the full report through `read_thread` and reviewed commit `430a50c`, so this is no longer a handoff blocker. Final worker reports and this task's evidence suffice for review; do not retry cross-chat sending or ask for approval.
 
-Focused correction after manager review (2026-10-01):
+Historical focused correction after manager review (2026-10-01):
 
 - **Problem and change:** The manager reproduced an empty prepared digest becoming stale after a new event was collected: sending correctly failed before I/O, but the fixed window key kept returning that failed payload. Added explicit `npm run notify -- reprepare STALE_DELIVERY_ID`, limited to that exact stale failure with zero attempts and no send/receipt timestamps. It creates a new pending payload for the same window or current record, with a `replaces` link and a unique replacement key. The original row, key, payload, snapshot and failure evidence remain unchanged. Existing preparation requests follow the replacement chain, and record-version suppression includes replacement snapshots. No new migration, package, automatic retry or force reset was added.
 - **Review and deduplication:** Recovery only prepares; the operator must review the returned new ID before a separate send. Repeating recovery of an old ID returns the latest existing replacement. A replacement that itself expires requires an explicit request using that newer stale ID. Pending, baseline, sending, unknown, sent and attempted failures cannot be replaced. Another delivery for the current record version or an uncertain record outcome must be reviewed first. Attempted 4xx failures retain the existing manual-review limitation.
@@ -289,13 +316,13 @@ Acceptance criteria:
 
 - [ ] Supabase Cron invokes small collection jobs using each tracker's method and cadence; paused and not-yet-due trackers are skipped. Prefix Scout's deployed Edge Functions and scheduled jobs with `scout-` to avoid collisions with other `chm` services.
 - [ ] Overlapping runs cannot collect the same tracker concurrently. Interrupted runs can recover without leaving the tracker permanently stuck.
-- [ ] Persist last attempt, last success, latest error/outcome, and next run. Retry transient failures within configured caps; quota failures wait for quota availability.
+- [ ] Persist attempt/outcome/warnings in collection runs and derive freshness/due selection from runs, cadence and the approved schedule policy. Do not restore cached tracker status or unused next-run columns. Retry transient failures within caps; quota failures wait for allowance.
 - [ ] Schedule daily Slack findings and weekly digests independently from collection, using the agreed time zone and reporting windows.
 - [ ] Verify execution fits current free function limits. Planning baseline: 150 seconds elapsed time and 2 seconds of CPU time per request.
 - [ ] Verify due/not-due selection, overlap, interruption, a failed source, exhausted quota, and an actual scheduled invocation. Confirm existing records survive failures.
 
 Verification: Pending.
-Blockers: None recorded.
+Prerequisite: notification time, digest weekday/time and IANA time zone are undecided. UTC event display is not approval of a notification schedule. Meeting-period notes are no longer scheduling configuration. This task is unstarted and outside the current milestone-one assignment.
 
 ## SCOUT-08 — Add the remaining Bluesky feeds
 
@@ -307,7 +334,7 @@ Outcome: DOSI, Global Fishing Watch, and IDDRI collect through the established B
 Acceptance criteria:
 
 - [ ] Use the exact accounts in the tracker inventory and verify bounded live collection for all three feeds.
-- [ ] Each feed retains its own cadence, collection history, and status. One feed's failure does not stop the others.
+- [ ] Each feed retains its own cadence, collection history and run-derived status. One feed's failure does not stop the others. Use the required identifiable User-Agent on every HTTP collector.
 - [ ] Cross-posted events merge into one record while preserving all supporting sources. Different events with similar titles remain separate.
 - [ ] Verify pagination or collection-window limits and report partial coverage when a run cannot catch up within its budget.
 - [ ] Verify repeat collection and one cross-source duplicate using recorded examples.
@@ -326,7 +353,7 @@ Acceptance criteria:
 
 - [ ] Collect the official participant record identified in the tracker inventory and preserve the distinction between ratification, accession, acceptance, approval, and other reported actions.
 - [ ] Establish an initial baseline without announcing all historical entries as new. Later verified additions or corrections produce appropriate changes.
-- [ ] Store country, action, recorded date, official source, and collection time. Treat NGO/social reports as leads until verified against the official source.
+- [ ] Preserve country, action and date at their original precision in official source captures and the concise record representation; keep capture/publication times distinct. Query those facts without restoring removed country/action/date record columns unless separately approved. Treat NGO/social reports as leads until verified officially.
 - [ ] A failed or incomplete fetch cannot imply a reversal or deletion of a country's status.
 - [ ] Verify initial baseline, a new action, a correction, repeated collection, and an incomplete source response.
 
@@ -367,16 +394,16 @@ Outcome: Scheduled Bluesky and web discovery trackers find relevant items outsid
 
 Acceptance criteria:
 
-- [ ] Implement the sheet's Bluesky discovery tracker using `searchPosts`, with separate queries for BBNJ, High Seas Treaty, traité sur la haute mer, and relevant conference tags. Preserve its weekly cadence and daily override during major BBNJ meetings; bound pagination and report partial coverage.
+- [ ] Implement the imported Bluesky discovery tracker using `searchPosts`, with separate queries for BBNJ, High Seas Treaty, traité sur la haute mer, and relevant conference tags. Use its configured weekly interval; removed meeting-period notes do not establish an override. Bound pagination and report partial coverage.
 - [ ] Add a separate Tavily web-discovery tracker for BBNJ/High Seas Treaty events, webinars, workshops, conferences, side events, and announcements. Start with 10 searches per weekly run. Do not substitute Gemini's Google Search grounding: its terms restrict collecting returned links for indexing or crawling (see provider references in README.md).
-- [ ] Apply the confirmed credit budget, including retries and optional extraction. Planning baseline: basic search costs 1 credit and advanced search costs 2.
+- [ ] Before the first discovery request, verify Tavily paid-use/top-up controls and shared quota, then enforce the approved credit/retry budget. Planning baseline: basic search costs 1 credit and advanced search costs 2.
 - [ ] Follow results to supporting source pages before creating records. Search snippets alone do not establish event facts or official treaty status.
 - [ ] Merge findings with existing records, retain evidence, and avoid processing unchanged content again.
 - [ ] Surface potential new publishers for review; do not automatically activate new trackers or increase recurring work.
 - [ ] Verify both discovery methods, new findings, existing-record matches, irrelevant results, unavailable source pages, and quota exhaustion.
 
 Verification: Pending.
-Blockers: None recorded.
+Prerequisite: confirm Tavily paid-use/top-up controls and shared quota before its first discovery request; deferred from milestone one.
 
 ## SCOUT-12 — Answer questions in Slack
 
@@ -387,15 +414,15 @@ Outcome: Scout answers questions using collected records and makes coverage limi
 
 Acceptance criteria:
 
-- [ ] Receive authenticated Slack mentions, acknowledge promptly, and handle retries without repeated replies.
-- [ ] Answer “Does HSA have any webinars coming soon?” with matching upcoming events, source links, and applicable calendar actions. Define “coming soon” using an explicit date window in the response.
-- [ ] Support basic organization, record-type, and date questions through bounded database queries. Use the agreed model only where needed and within its budget.
+- [ ] Configure/verify mention subscriptions, signing, retries and minimal permissions for the confirmed workspace/#scout channel; reject other destinations. Acknowledge promptly and avoid repeated replies.
+- [ ] Answer “Does HSA have any webinars coming soon?” with supported upcoming UTC times, source/record links and an explicit UTC date window. Do not generate calendar actions or invent instants from date-only evidence.
+- [ ] Support basic organization, record-type and date questions through bounded queries over the approved lean schema/source projections. Use the agreed model only where needed, with validated grounded output and enforced budgets; verified model access is not an implemented answer path.
 - [ ] Distinguish no matching stored records from stale, failed, or incomplete source coverage. Do not claim comprehensive knowledge of all events.
 - [ ] Keep responses grounded in stored facts. Treat source text and Slack questions as data, not authority to change app settings or run arbitrary database operations.
 - [ ] Verify matching results, no matches, ambiguous questions, stale coverage, duplicate Slack events, and model quota exhaustion. On quota failure, provide a clear status and a link to the web list.
 
 Verification: Pending.
-Blockers: None recorded.
+Prerequisite: configure and verify signed mentions/subscriptions and minimal #scout permissions; the working webhook does not establish mention support.
 
 ## SCOUT-13 — Manage trackers in the app
 
@@ -406,14 +433,14 @@ Outcome: An authorized user can maintain tracker configuration and inspect colle
 
 Acceptance criteria:
 
-- [ ] Add and edit trackers using supported methods, including source URL/account, channel, coverage, and cadence. Do not imply that adding an arbitrary URL creates a working scraper.
+- [ ] Add/edit approved tracker configuration: source name, URL/account, supported `collector`, coverage, cadence and enabled state. Do not restore removed channel/notes/status fields or imply that an arbitrary URL creates a working scraper.
 - [ ] Pause/resume a tracker and request a manual run through the same collection path and usage caps as scheduled runs.
-- [ ] Extend the SCOUT-05 tracker list with last attempt, latest error details, next run, and recent collection history. Retain last successful collection and distinguish unsupported, partial, and quota-limited coverage.
+- [ ] Show recent collection history and run-derived last attempt/success/outcome/warnings. Once scheduling exists, derive due information from its approved policy; do not store duplicate tracker status/next-run fields. Distinguish unsupported, partial and quota-limited coverage.
 - [ ] App edits survive any repeated seed import. Manual runs do not bypass concurrency protections or reactivate paused schedules.
-- [ ] Enforce administrator access and verify an unauthorized mutation is rejected.
+- [ ] Explicitly choose/provision any admin through backend-controlled `auth.users.raw_app_meta_data.scout.admin`. Enforce verified Workspace identity plus that flag server-side; reject ordinary-reader/user-metadata elevation and unauthorized mutations. No membership table or inferred admin is required, and collector secrets must never enter the browser.
 
 Verification: Pending.
-Blockers: None recorded.
+Prerequisite: explicitly identify any administrator and provision only the backend-controlled flag; none is inferred from the verified reader login.
 
 ## SCOUT-14 — Verify the complete POC
 
@@ -424,9 +451,10 @@ Outcome: A deployed POC demonstrates the complete workflow and its actual covera
 
 Acceptance criteria:
 
-- [ ] Discover a webinar, store it once, display it in the web list, announce it in Slack, answer a question about it, and add it to a calendar.
+- [ ] Discover a webinar, store it once in the approved lean schema, display supported UTC facts/source links in Records, announce it in Slack and answer a grounded question about it. Calendar generation/import is outside scope.
 - [ ] Reschedule and cancel the example event; verify the existing record changes, material updates are delivered once, and upcoming-event results remain correct.
 - [ ] Verify an official announcement and an authoritative treaty-status change complete their applicable storage and delivery paths.
+- [ ] Verify the deployed app/collector/notifier all match the applied migrations, preserve source captures/changed-field history, enforce Workspace reader/backend-admin boundaries independently of the UI, and retain unknown/date-only precision without duplicate fields.
 - [ ] Verify an actual scheduled collection and digest, plus repeat/retry behavior without duplicate records or completed notifications.
 - [ ] Exercise collection failure, incomplete source data, quota exhaustion, and recovery. Existing records remain available and coverage limitations are visible.
 - [ ] Review the complete tracker inventory. Record live, partial, manual, and blocked coverage and obtain a decision on unresolved required coverage before marking the POC complete.
