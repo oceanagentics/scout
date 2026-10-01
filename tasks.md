@@ -8,7 +8,7 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 - [BBNJ Scout Trackers](https://docs.google.com/spreadsheets/d/1VtpaC83ybg7zet7VvNXmvctN9s5WJK_NTlJ9wx5NIbM/edit): source inventory, collection methods, and cadences; 22 is the last imported app inventory, not a claim about the sheet's current row count. Read the live sheet before any authorized import.
 - This file is the authoritative implementation checklist. The letter remains the product brief. Resolve material conflicts with the user before implementing the affected behavior.
 - Confirmed POC scope: events, announcements, treaty-status changes, daily Slack findings, a weekly Slack digest, Slack questions, a searchable Records table/card view, a tracker table with derived collection health, and tracker management.
-- Latest approved local changes: descriptions capped at 280 characters, source captures retain full/date-only/treaty evidence, changed-field history, UTC display/query/digest dates, and a seven-table schema without memberships or duplicated source/record/tracker state. Backend-controlled Auth metadata grants admin access only to an eligible Workspace identity. The later five-table/evidence-merger discussion is proposal only.
+- Latest approved implementation: descriptions capped at 280 characters, UTC display/query/digest dates, and five tables/59 columns: trackers, collection runs, records, evidence and deliveries. Evidence links captures directly to records; source and delivery history replace the record-edit log. Full/date-only/treaty evidence stays in captures. Backend-controlled Auth metadata grants admin access only to an eligible Workspace identity.
 - Calendar generation/actions and native calendar import are out of scope by explicit user choice, not pending verification. Outbound email digests and a separate calendar view remain deferred.
 - [Email subscriptions planning tab](https://docs.google.com/spreadsheets/d/1VtpaC83ybg7zet7VvNXmvctN9s5WJK_NTlJ9wx5NIbM/edit?gid=20261001#gid=20261001): four starter subscriptions were Planned with mailbox blank at the approved checkpoint. This is inbound-source planning only; subscription signup, mailbox ingestion and outbound email delivery are not implemented or authorized by this reconciliation. Further sheet edits do not change the last imported count of 22.
 - Deferred: embeddings and semantic search. Use structured queries for the POC.
@@ -41,12 +41,12 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 ## Current delivery and outstanding work
 
 - **Last reviewed hosted baseline:** Firebase release `1790868487090000` / version `95bc9afd5408b180`; real Google reader login, 12 HSA records, 22 trackers and secret-only manual HSA collection verified. Two Slack receipts/content checks came from the manual **local** notifier, not hosted delivery-state integration.
-- **Local changes awaiting coordinated deployment (SCOUT-02/03/04/05/06):** `e4d6e5a`, `9cc6229`, `5066042` and the UI layout work. Apply pending migrations `20261001150000` → `20261001160000` → `20261001170000` with matching collector, notifier and frontend; verify preserved evidence, access controls, repeat collection and reads. The newer source projections/derived tracker view are not in the hosted baseline. Do not deploy the incompatible pieces independently or claim local verification as hosted acceptance.
+- **Coordinated deployment authorized (SCOUT-02/03/04/05):** cleanup through `e55983e` and the UI layout work, including migrations `20261001150000` → `20261001160000` → `20261001170000` → `20261001180000`. All 37 tests/build pass. A rolled-back live rehearsal preserved 25 trackers, 12 records and 14 captures, with five tables/59 columns and ten shortened descriptions. Firebase requires Google reauthentication (`invalid_rapt`); hosted schema/function/frontend remain unchanged until the release can proceed together. The updated notifier remains local-only; hosted delivery integration is separate work.
 - **SCOUT-06 remains incomplete:** integrate hosted records and durable delivery state, update stale hosted-access-pending wording and provide real record links; preserve the verified local baseline/dedup/receipt behavior. Slack visual layout remains an approved deferral, distinct from verified receipt/content. There is no calendar obligation.
 - **Coverage boundary:** HSA quoted posts, multi-event listings, unsupported date formats and semantic cross-URL matching remain bounded limitations. Revisit before claiming complete HSA or broader source coverage.
 - **Later prerequisites:** model access is verified but not integrated; enforce approved caps before use. Notification scheduling is undecided (SCOUT-07), Tavily paid-use checks wait for SCOUT-11, Slack mention setup for SCOUT-12, and admin identity/management for SCOUT-13. SCOUT-07+ are future work, not milestone-one failures. Milestone one is not yet complete.
 
-Acceptance below follows the latest scope. Older dated implementation/checkpoint paragraphs are historical evidence for their named versions; superseded calendar, membership, stored-status and setup instructions in them are not current requirements. This documentation pass performs no deployment or new verification.
+Acceptance below follows the latest scope. Older dated implementation/checkpoint paragraphs are historical evidence for their named versions; superseded calendar, membership, record-edit history, stored-status and setup instructions in them are not current requirements.
 
 ## Milestones
 
@@ -103,14 +103,14 @@ Acceptance criteria:
 - [x] Create the `scout` schema in `chm`'s default `postgres` database. Put Scout's trackers, collection history, events, announcements, treaty-status changes, source references, and notification delivery state there (for example, `scout.events`). Use the smallest schema that supports these responsibilities.
 - [x] Configure clients and migrations to target `scout` explicitly. Add `scout` to the Data API's exposed schemas while preserving existing services; grant only required schema/table/function privileges and enable RLS with policies in the same migrations. Do not grant automatic access to all future tables.
 - [x] Implement the approved lean record locally: title/type/organization, description ≤280 characters, event links/location/status, supported start/end instants and record version. Keep full text, publication/date-only/treaty facts in source captures; do not restore duplicate record columns.
-- [x] Keep source publication, capture, last-seen and record-version times distinct; reference captures without copying their evidence. Preserve multiple sources and changed-field history, including explicit nulls and initial creations.
+- [x] Keep source publication, capture, last-seen and record-version times distinct. Link captures directly to records, copying shared captures per record. Preserve source and delivery history; omit the separate record-edit log by user direction.
 - [x] Enforce Scout-specific access within the project's shared Auth setup. Verify unauthorized writes and access to private records across service boundaries fail; authentication in another service does not confer Scout administrator access. Keep project-wide service-role credentials backend-only and absent from browser assets and logs.
 - [x] Google-verified `oceanagentics.com` Workspace users obtain hosted reader access automatically. Deny Gmail, other/no domains, unverified identities, forged metadata/tokens, anonymous requests and unauthorized writes. Preserve shared Auth/provider/redirect settings and default-denied administrator/collector access; remove rendered data on sign-out. Distinguish synthetic policy tests from real Google login.
 - [x] Review existing migration history before applying Scout migrations. Verify they succeed in an empty development database and preserve other services' schema objects, data, and permissions in a shared development database. Never reset the shared remote project as a setup step.
-- [ ] Coordinate the three pending migrations (`20261001150000` → `20261001160000` → `20261001170000`) with matching collector/notifier/frontend deployment. Verify the seven-table schema, preserved captures/history/deliveries, `tracker_status`/`source_details`, unchanged other-service controls and real hosted reader access. Unmatched/conflicting source evidence must stop migration for reconciliation.
+- [ ] Coordinate the four pending migrations (`20261001150000` through `20261001180000`) with matching collector/frontend deployment. Verify five tables, preserved captures/deliveries, `tracker_status`/`source_details`, unchanged other-service controls and real hosted reader access. Unmatched/conflicting source evidence must stop migration for reconciliation.
 - [ ] Verify the deployed replacement of memberships with backend-controlled `raw_app_meta_data.scout.admin`; user-editable metadata cannot grant admin, and verified Workspace identity remains required. Preserve existing explicit admins without provisioning a new one.
 
-Current status: the original hosted foundation/login is complete. Commits `e4d6e5a`, `9cc6229` and `5066042` implement the revised schema locally; the deployment/verification above remains open. Seven tables are approved; five tables or removal of `record_changes` are not.
+Current status: the original hosted foundation/login is complete. Cleanup through `e55983e` implements the approved five-table schema and removes `record_changes`. Local verification and the live migration rehearsal pass; coordinated deployment remains open pending Firebase reauthentication.
 
 Historical verification and deviations (2026-10-01):
 
@@ -197,6 +197,7 @@ Outcome: A manual collection run produces usable events and announcements from H
 Acceptance criteria:
 
 - [x] Fetch HSA's configured public feed using the sheet's Bluesky `getAuthorFeed` method, identify relevant BBNJ items, and follow relevant organizer/registration links within bounded collection limits.
+- [ ] Configure all outbound HTTP collectors to use an explicit, identifiable `User-Agent` header (e.g., `BBNJ-Scout-Bot/1.0 (+https://your-domain.com)`) to minimize firewall blocks from institutional portals.
 - [x] HSA's implemented HTTP path uses `BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)`; apply the all-collector requirement to future HTTP collectors as they are implemented.
 - [x] Implement lean records with source links, organization, ≤280-character description and supported UTC instants. Preserve full text, source timing and date-only/unknown precision in captures; compact date evidence references the establishing captures.
 - [x] Use direct extraction for the supported HSA path. Gemini access is verified but no model is integrated or required here; any future fallback must validate output and enforce the approved persistent budgets before use.
@@ -204,7 +205,7 @@ Acceptance criteria:
 - [x] A changed event date or cancellation updates the existing event and records a material change; cosmetic source edits do not become new announcements. Prefer the organizer's authoritative correction over stale third-party reports, retain supporting evidence, and verify that collecting an older repost later cannot undo a reschedule or cancellation.
 - [x] Persist success, no-change, partial, failure, and quota outcomes accurately. A failed fetch leaves previous records intact.
 - [x] Verify a real source example and repeatable cases for initial collection, repeat collection, changed date, missing date, irrelevant content, and failed fetch.
-- [ ] Deploy/reverify the updated collector with SCOUT-02's pending migrations: bounded success/stable repeat, correction precedence, changed-field history, derived freshness and secret-only authorization.
+- [ ] Deploy/reverify the updated collector with SCOUT-02's pending migrations: bounded success/stable repeat, correction precedence, captured evidence, derived freshness and secret-only authorization.
 
 Current status: the older hosted collector and repeat run are accepted. The lean writer is local only; reverify after coordinated deployment. Quoted posts, multi-event listings, unsupported date formats and semantic cross-URL merging remain explicit limits, not complete source coverage.
 
@@ -315,6 +316,7 @@ Outcome: Due trackers and notifications run automatically with visible outcomes 
 Acceptance criteria:
 
 - [ ] Supabase Cron invokes small collection jobs using each tracker's method and cadence; paused and not-yet-due trackers are skipped. Prefix Scout's deployed Edge Functions and scheduled jobs with `scout-` to avoid collisions with other `chm` services.
+- [ ] Schedule a lightweight daily keep-alive database query via `pg_cron` to prevent the Supabase free tier from auto-pausing after 7 days of inactivity.
 - [ ] Overlapping runs cannot collect the same tracker concurrently. Interrupted runs can recover without leaving the tracker permanently stuck.
 - [ ] Persist attempt/outcome/warnings in collection runs and derive freshness/due selection from runs, cadence and the approved schedule policy. Do not restore cached tracker status or unused next-run columns. Retry transient failures within caps; quota failures wait for allowance.
 - [ ] Schedule daily Slack findings and weekly digests independently from collection, using the agreed time zone and reporting windows.
@@ -371,7 +373,7 @@ Before implementation, split this task into child tasks here using stable IDs su
 
 Acceptance criteria for every child task:
 
-- [ ] Prefer an available feed/API, then direct webpage collection. Follow relevant event pages and linked programmes/PDFs within bounded depth and page limits.
+- [ ] Prefer an available feed/API, then direct webpage collection. Prioritize hidden RSS/Atom feeds or structured JSON API endpoints over custom HTML DOM scrapers to improve resilience against website layout changes. Follow relevant event pages and linked programmes/PDFs within bounded depth and page limits.
 - [ ] Extract relevant BBNJ events and announcements with source-backed details; preserve unknown values and deduplicate against existing records.
 - [ ] Reuse established change detection, model budgets, status reporting, and delivery behavior.
 - [ ] Verify initial collection, repeat collection, a material update, and a failed or changed source format.
@@ -454,7 +456,7 @@ Acceptance criteria:
 - [ ] Discover a webinar, store it once in the approved lean schema, display supported UTC facts/source links in Records, announce it in Slack and answer a grounded question about it. Calendar generation/import is outside scope.
 - [ ] Reschedule and cancel the example event; verify the existing record changes, material updates are delivered once, and upcoming-event results remain correct.
 - [ ] Verify an official announcement and an authoritative treaty-status change complete their applicable storage and delivery paths.
-- [ ] Verify the deployed app/collector/notifier all match the applied migrations, preserve source captures/changed-field history, enforce Workspace reader/backend-admin boundaries independently of the UI, and retain unknown/date-only precision without duplicate fields.
+- [ ] Verify the deployed app/collector/notifier all match the applied migrations, preserve source captures and delivery history, enforce Workspace reader/backend-admin boundaries independently of the UI, and retain unknown/date-only precision without duplicate fields.
 - [ ] Verify an actual scheduled collection and digest, plus repeat/retry behavior without duplicate records or completed notifications.
 - [ ] Exercise collection failure, incomplete source data, quota exhaustion, and recovery. Existing records remain available and coverage limitations are visible.
 - [ ] Review the complete tracker inventory. Record live, partial, manual, and blocked coverage and obtain a decision on unresolved required coverage before marking the POC complete.
