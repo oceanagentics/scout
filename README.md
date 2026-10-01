@@ -93,6 +93,8 @@ npm run preview
 
 `npm run dev` serves the app at `http://127.0.0.1:5173`. The two public settings in `.env.example` configure the browser. Use only a Supabase `sb_publishable_…` key; secret/service-role keys never belong in a `VITE_` variable. Without those settings, the app displays its setup state and makes no database requests.
 
+For local Google sign-in, set both browser settings in the ignored `.env.local` file and add exactly `http://127.0.0.1:5173/` to the existing project's Supabase Auth Redirect URLs. Keep the shared Site URL and existing production redirects. The dev server requires port 5173 and stops if it is occupied, so it cannot silently move to a port that login does not allow. Use the printed `127.0.0.1` address consistently; `localhost` is a different login origin. The local frontend uses the hosted database and the same Workspace access checks as production.
+
 The accepted access plan (2026-10-01) keeps Firebase Hosting Spark: the login shell/assets are public; Scout data/actions are private. Every Google-verified `oceanagentics.com` Workspace user receives reader access on first sign-in, without individual invitations, passwords or manual membership setup. This supersedes the earlier whole-frontend gateway hold. Supabase Auth remains the single authentication system; no Cloudflare, IAP, Cloud Run, hosting migration or billing upgrade is needed. Google sign-in and hosted reader access are now verified on the deployed site.
 
 ### Workspace sign-in
