@@ -1,0 +1,57 @@
+{
+  "post": {
+    "uri": "at://did:plc:mj2ygegzodk3fdjdgihjko23/app.bsky.feed.post/3mvkyjyep6m24",
+    "indexedAt": "2026-09-15T15:58:42.258Z",
+    "author": {
+      "handle": "highseasalliance.bsky.social"
+    },
+    "record": {
+      "text": "🌊Join us for the next “Let’s Talk BBNJ” session, exploring #HighSeas marine genetic resources and digital sequence information.\n\nLearn more about this core pillar of the Treaty ahead of #BBNJCOP1.\n\n📅29 Sept, 7:30 AM EDT\n💻Register: https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ",
+      "createdAt": "2026-09-15T15:58:41.557873446Z",
+      "facets": [
+        {
+          "features": [
+            {
+              "$type": "app.bsky.richtext.facet#tag",
+              "did": null,
+              "tag": "HighSeas",
+              "uri": null
+            }
+          ],
+          "index": {
+            "byteEnd": 77,
+            "byteStart": 68
+          }
+        },
+        {
+          "features": [
+            {
+              "$type": "app.bsky.richtext.facet#tag",
+              "did": null,
+              "tag": "BBNJCOP1",
+              "uri": null
+            }
+          ],
+          "index": {
+            "byteEnd": 204,
+            "byteStart": 195
+          }
+        },
+        {
+          "features": [
+            {
+              "$type": "app.bsky.richtext.facet#link",
+              "did": null,
+              "tag": null,
+              "uri": "https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ"
+            }
+          ],
+          "index": {
+            "byteEnd": 312,
+            "byteStart": 246
+          }
+        }
+      ]
+    }
+  }
+}

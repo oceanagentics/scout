@@ -7,6 +7,7 @@ const migration = await readFile(new URL('../supabase/migrations/20261001050000_
 const trackerMigration = await readFile(new URL('../supabase/migrations/20261001060000_scout_tracker_import.sql', import.meta.url), 'utf8');
 const trackerSeed = await readFile(new URL('../supabase/seeds/trackers.sql', import.meta.url), 'utf8');
 const collectionMigration = await readFile(new URL('../supabase/migrations/20261001070000_scout_collection.sql', import.meta.url), 'utf8');
+const evidenceMigration = await readFile(new URL('../supabase/migrations/20261001080000_scout_event_evidence.sql', import.meta.url), 'utf8');
 const reader = '00000000-0000-0000-0000-000000000001';
 const admin = '00000000-0000-0000-0000-000000000002';
 const outsider = '00000000-0000-0000-0000-000000000003';
@@ -67,6 +68,7 @@ for (const shared of [false, true]) {
       await db.exec(migration);
       await db.exec(trackerMigration);
       await db.exec(collectionMigration);
+      await db.exec(evidenceMigration);
       if (shared) assert.deepEqual((await db.query(sharedState)).rows, before);
       assert.equal((await db.query("select count(*)::int n from pg_class where relnamespace = 'scout'::regnamespace and relkind = 'r' and relrowsecurity")).rows[0].n, 8);
       await db.exec(`

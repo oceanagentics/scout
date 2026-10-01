@@ -105,6 +105,9 @@ function postRecord(post, urls) {
   const kind = eventPost(text) ? 'event' : 'announcement';
   const eventURL = urls.find(url => /webinar\/register|\/events?\/|\/webinars?\/|registration/i.test(new URL(url).pathname));
   const registration = urls.find(url => /register|registration/i.test(new URL(url).pathname));
+  // Narrow observed HSA format: the year must come from the same event's page.
+  const times = [...text.matchAll(/\b(\d{1,2}) Sept?, (\d{1,2}):([0-5]\d) (AM|PM) EDT\b/g)];
+  const time = post.author.handle === HSA && times.length === 1 ? times[0] : null;
   return {
     kind, title: text.split('\n').find(line => line.trim())?.trim() || text,
     organization: post.author.handle === HSA ? 'High Seas Alliance' : post.author.displayName || post.author.handle,
@@ -112,6 +115,8 @@ function postRecord(post, urls) {
     ...dates(), ...(kind === 'event' ? postDates(text) : {}),
     location: null, event_url: kind === 'event' ? eventURL ?? null : null,
     registration_url: kind === 'event' ? registration ?? null : null,
+    date_parts: time && +time[2] >= 1 && +time[2] <= 12 ? { month: 9, day: +time[1],
+      hour: +time[2] % 12 + (time[4] === 'PM' ? 12 : 0), minute: +time[3], zone: 'EDT', offset: '-04:00' } : null,
     status: kind === 'event' && /\bcancell?ed\b/i.test(text) ? 'cancelled' : kind === 'event' && /\brescheduled\b/i.test(text) ? 'rescheduled' : null,
   };
 }
@@ -138,7 +143,7 @@ function structuredEvents(html, pageURL) {
       let times;
       try { times = JSON.parse(schedule[1]); } catch { return null; }
       if (times.length !== 1) return null;
-      const date = times[0].match(/^([A-Z][a-z]{2}) (\d{1,2}), (\d{4}) \d{2}:\d{2} [AP]M$/);
+      const date = times[0].match(/^([A-Z][a-z]{2}) (\d{1,2}), (\d{4}) (0[1-9]|1[0-2]):([0-5]\d) (AM|PM)$/);
       const month = date && ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(date[1]) + 1;
       if (!month) return null;
       const parsedDate = dates(`${date[3]}-${String(month).padStart(2, '0')}-${date[2].padStart(2, '0')}`);
@@ -147,6 +152,8 @@ function structuredEvents(html, pageURL) {
       return { kind: 'event', title: decode(topic[1]), organization: null,
         description: `${detail}\n\nSource schedule: ${times[0]}. Time zone not supplied by this registration page.`,
         summary: detail || decode(topic[1]), ...parsedDate, location: null,
+        local_schedule: { date: parsedDate.start_on, month, day: +date[2],
+          hour: +date[4] % 12 + (date[6] === 'PM' ? 12 : 0), minute: +date[5] },
         event_url: pageURL, registration_url: pageURL, status: null, published_on: null,
         limitation: 'Registration page supplies a local time without a time zone; only its calendar date is stored',
       };
@@ -171,21 +178,23 @@ function structuredEvents(html, pageURL) {
   };
 }
 
-const fields = ['kind', 'title', 'organization', 'description', 'summary', 'location', 'event_url', 'registration_url', 'start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone', 'status', 'published_on'];
+const fields = ['kind', 'title', 'organization', 'description', 'summary', 'location', 'event_url', 'registration_url', 'start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone', 'status', 'published_on', 'date_evidence'];
 function material(record) {
   const names = record.kind === 'event' ? ['kind', 'organization', 'location', 'event_url', 'registration_url', 'start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone', 'status'] : ['kind', 'summary'];
-  return hash(JSON.stringify(names.map(name => typeof record[name] === 'string' ? normalized(record[name]).toLowerCase() : record[name] ?? null)));
+  const values = names.map(name => typeof record[name] === 'string' ? normalized(record[name]).toLowerCase() : record[name] ?? null);
+  if (record.local_schedule) values.push(record.local_schedule);
+  return hash(JSON.stringify(values));
 }
 
 async function version(db, tracker, url, content, publishedAt, parse, fingerprint = content) {
-  const digest = `hsa-v1:${hash(fingerprint)}`;
+  const digest = `hsa-v2:${hash(fingerprint)}`;
   const old = (await db.query('select * from scout.source_versions where tracker_id=$1 and url=$2 and content_hash=$3', [tracker, url, digest])).rows[0];
   if (old) return old;
   const parsed = parse();
   return (await db.query('insert into scout.source_versions (tracker_id,url,content_hash,content,published_at,parsed) values ($1,$2,$3,$4,$5,$6) returning *', [tracker, url, digest, content, publishedAt, JSON.stringify(parsed)])).rows[0];
 }
 
-async function save(db, tracker, identity, source, rank, evidenceAt, stats) {
+async function save(db, tracker, identity, source, rank, observedAt, stats) {
   const record = source.parsed;
   let existing = (await db.query('select * from scout.records where identity_key=$1', [identity])).rows[0];
   if (existing) {
@@ -194,38 +203,88 @@ async function save(db, tracker, identity, source, rank, evidenceAt, stats) {
   }
   if (!record && !existing) return;
   const old = existing ? Object.fromEntries(fields.map(field => [field, existing[field]])) : null;
-  // Lower-rank reports never override organizer evidence. Equal rank is chronological.
-  const accepted = record && (!existing || rank > existing.evidence_rank || (rank === existing.evidence_rank && Date.parse(evidenceAt) >= Date.parse(existing.evidence_at)));
+  const references = existing ? (await db.query(`select v.*, s.authoritative, s.evidence_at from scout.sources s
+    join scout.source_versions v on v.tracker_id=s.tracker_id and v.url=s.url and v.content_hash=s.content_hash
+    where s.record_id=$1`, [existing.id])).rows : [];
+  const previous = references.find(item => item.url === source.url);
+  // First page snapshots have unknown chronology. Only a change in their facts
+  // starts a new evidence time, including a return to an older source version.
+  const evidenceAt = source.published_at ?? (record && previous?.parsed && previous.content_hash.startsWith('hsa-v2:') && material(previous.parsed) !== material(record)
+    ? observedAt : previous?.evidence_at ?? null);
+  const baseline = !source.published_at && !evidenceAt;
+  const accepted = record && (!existing || rank > existing.evidence_rank || (rank === existing.evidence_rank && (baseline || !existing.evidence_at || Date.parse(evidenceAt) >= Date.parse(existing.evidence_at))));
+  const merged = Object.fromEntries(fields.map(field => [field, accepted ? record[field] ?? existing?.[field] ?? null : existing?.[field] ?? null]));
+  merged.date_evidence ??= {};
   if (accepted) {
-    const merged = Object.fromEntries(fields.map(field => [field, record[field] ?? existing?.[field] ?? null]));
+    if (baseline && existing?.evidence_rank === 2) merged.status = existing.status ?? record.status;
     // A newly evidenced date replaces the prior representation, including date-only/timed changes.
-    if (record.start_on || record.starts_at) for (const field of ['start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone']) merged[field] = record[field];
+    const offset = existing?.time_zone?.match(/^([+-])(\d{2}):(\d{2})$/);
+    const localDay = existing?.starts_at && (offset || existing.time_zone === 'UTC') && new Date(Date.parse(existing.starts_at) +
+      (offset ? (offset[1] === '+' ? 1 : -1) * (+offset[2] * 60 + +offset[3]) * 60000 : 0)).toISOString().slice(0, 10);
+    const compatibleDay = record.start_on && existing?.starts_at && (existing.date_evidence?.calendar_date?.value ?? localDay) === record.start_on &&
+      (!record.local_schedule || existing.date_evidence.local_time?.value === `${String(record.local_schedule.hour).padStart(2, '0')}:${String(record.local_schedule.minute).padStart(2, '0')}`);
+    const protectsCorrection = baseline && existing?.evidence_rank === 2 && ['cancelled', 'rescheduled'].includes(existing.status);
+    if ((record.start_on || record.starts_at) && !compatibleDay && !protectsCorrection) {
+      for (const field of ['start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone']) merged[field] = record[field];
+      merged.date_evidence = {};
+    } else if (compatibleDay || protectsCorrection) {
+      for (const field of ['start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone']) merged[field] = existing[field];
+    }
     if (existing?.kind === 'event') {
       const before = existing.start_on || (existing.starts_at && new Date(existing.starts_at).toISOString());
       const after = record.start_on || record.starts_at;
       const comparable = (existing.start_on && record.start_on) || (existing.starts_at && record.starts_at);
       if (comparable && before !== after && merged.status !== 'cancelled') merged.status = 'rescheduled';
       if (existing.status === 'rescheduled' && merged.status === 'scheduled') merged.status = 'rescheduled';
-      if (record.status === 'rescheduled' && !after) for (const field of ['start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone']) merged[field] = null;
+      if (record.status === 'rescheduled' && !after) {
+        for (const field of ['start_on', 'end_on', 'starts_at', 'ends_at', 'time_zone']) merged[field] = null;
+        merged.date_evidence = {};
+      }
     }
+  }
+  // Combine only the observed Zoom schedule and matching HSA-authored components.
+  const evidence = [...references.filter(item => item.url !== source.url), { ...source, authoritative: rank === 2 }];
+  const page = evidence.find(item => item.parsed?.local_schedule && identity === `event:${item.url}`);
+  const post = evidence.filter(item => item.authoritative && item.published_at && item.parsed?.date_parts && item.parsed.event_url === page?.url)
+    .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))[0];
+  let dateWarning = page ? page.parsed.limitation : null;
+  if (page && post) {
+    const schedule = page.parsed.local_schedule, parts = post.parsed.date_parts;
+    const wall = value => `${String(value.hour).padStart(2, '0')}:${String(value.minute).padStart(2, '0')}`;
+    if (['month', 'day', 'hour', 'minute'].every(key => schedule[key] === parts[key])) {
+      if (merged.start_on === schedule.date || merged.date_evidence.calendar_date?.value === schedule.date) {
+        Object.assign(merged, dates(`${schedule.date}T${wall(schedule)}:00${parts.offset}`));
+        merged.date_evidence = {
+          calendar_date: { value: schedule.date, source_versions: [page.id, post.id] },
+          local_time: { value: wall(schedule), source_versions: [page.id, post.id] },
+          time_zone: { value: parts.zone, offset: parts.offset, source_versions: [post.id] },
+        };
+        dateWarning = null;
+      }
+    } else dateWarning = `Conflicting event schedule: registration ${schedule.date} ${wall(schedule)}; HSA post ${parts.month}/${parts.day} ${wall(parts)} ${parts.zone}`;
+  }
+  if (accepted || (existing && material(merged) !== existing.material_hash)) {
     const digest = material(merged);
+    const recordEvidenceAt = accepted && !baseline ? evidenceAt : existing?.evidence_at ?? evidenceAt;
+    const recordRank = accepted ? rank : existing.evidence_rank;
     if (!existing || digest !== existing.material_hash) {
       if (existing) {
-        existing = (await db.query(`update scout.records set ${fields.map((field, index) => `${field}=$${index + 1}`).join(',')}, material_hash=$16,evidence_rank=$17,evidence_at=$18 where id=$19 returning *`, [...fields.map(field => merged[field]), digest, rank, evidenceAt, existing.id])).rows[0];
+        existing = (await db.query(`update scout.records set ${fields.map((field, index) => `${field}=$${index + 1}`).join(',')}, material_hash=$17,evidence_rank=$18,evidence_at=$19 where id=$20 returning *`, [...fields.map(field => merged[field]), digest, recordRank, recordEvidenceAt, existing.id])).rows[0];
         stats.changed++;
       } else {
-        existing = (await db.query(`insert into scout.records (${fields.join(',')},identity_key,material_hash,evidence_rank,evidence_at) values (${Array.from({ length: 19 }, (_, i) => `$${i + 1}`).join(',')}) returning *`, [...fields.map(field => merged[field]), identity, digest, rank, evidenceAt])).rows[0];
+        existing = (await db.query(`insert into scout.records (${fields.join(',')},identity_key,material_hash,evidence_rank,evidence_at) values (${Array.from({ length: 20 }, (_, i) => `$${i + 1}`).join(',')}) returning *`, [...fields.map(field => merged[field]), identity, digest, recordRank, recordEvidenceAt])).rows[0];
         stats.created++;
       }
       await db.query('insert into scout.record_changes (record_id,source_version_id,previous,current) values ($1,$2,$3,$4)', [existing.id, source.id, old ? JSON.stringify(old) : null, JSON.stringify(merged)]);
     } else {
-      await db.query('update scout.records set evidence_rank=$1,evidence_at=$2 where id=$3', [rank, evidenceAt, existing.id]);
+      await db.query('update scout.records set evidence_rank=$1,evidence_at=$2 where id=$3', [recordRank, recordEvidenceAt, existing.id]);
     }
   }
-  await db.query(`insert into scout.sources (record_id,tracker_id,url,published_at,excerpt,content_hash,authoritative)
-    values ($1,$2,$3,$4,$5,$6,$7) on conflict (record_id,url) do update set
-    content_hash=excluded.content_hash,excerpt=excluded.excerpt,collected_at=now(),authoritative=excluded.authoritative`,
-  [existing.id, tracker, source.url, source.published_at, source.content, source.content_hash, rank === 2]);
+  await db.query(`insert into scout.sources (record_id,tracker_id,url,published_at,excerpt,content_hash,authoritative,evidence_at)
+    values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (record_id,url) do update set
+    content_hash=excluded.content_hash,excerpt=excluded.excerpt,collected_at=now(),authoritative=excluded.authoritative,evidence_at=excluded.evidence_at`,
+  [existing.id, tracker, source.url, source.published_at, source.content, source.content_hash, rank === 2, evidenceAt]);
+  return dateWarning;
 }
 
 export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString() } = {}) {
@@ -234,11 +293,12 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   if (!tracker?.enabled) throw new Error('HSA tracker is missing or paused');
   if (tracker.url !== `https://bsky.app/profile/${HSA}` || tracker.method !== 'Bluesky API: getAuthorFeed') throw new Error('HSA tracker configuration changed; review before collecting');
   const started = now();
-  const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since) values ($1,$2) returning id', [tracker.id, since])).rows[0];
+  const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at) values ($1,$2,$3) returning id', [tracker.id, since, started])).rows[0];
   await db.query('update scout.trackers set last_attempt_at=$1 where id=$2', [started, tracker.id]);
   const stats = { created: 0, changed: 0, posts: 0, pages: 0, warnings: [], models: 0 };
   const budget = { requests: 0, deadline: Date.now() + LIMITS.seconds * 1000 };
   const pages = new Map();
+  const dateWarnings = new Map();
   let cursor, covered = false, quota = false, feedFailed = false;
   try {
     for (let page = 0; page < LIMITS.feedPages; page++) {
@@ -266,7 +326,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         if (post.embed?.$type?.includes('record')) stats.warnings.push('Quoted post content is not expanded');
         if (!doc.parsed) continue;
         const identity = doc.parsed.kind === 'event' && doc.parsed.event_url ? `event:${doc.parsed.event_url}` : `post:${post.uri}`;
-        await db.transaction(tx => save(tx, tracker.id, identity, doc, post.author.handle === HSA ? 1 : 0, post.record.createdAt, stats));
+        dateWarnings.set(identity, await db.transaction(tx => save(tx, tracker.id, identity, doc, post.author.handle === HSA ? 2 : 0, post.record.createdAt, stats)));
         // Only event/registration references need follow-up pages in this HSA collector.
         if (doc.parsed.kind !== 'event') continue;
         if (urls.length > 2) stats.warnings.push('Post link limit reached');
@@ -283,7 +343,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
               const source = await version(db, tracker.id, fetched.url, fetched.body, null, () => parsed, parsed ? JSON.stringify(parsed) : fetched.body);
               pages.set(url, { source, authoritative, observedAt: now() });
               if (!parsed) stats.warnings.push(`No unambiguous structured event at ${new URL(fetched.url).hostname}`);
-              else if (parsed.limitation) stats.warnings.push(parsed.limitation);
+              else if (parsed.limitation && !parsed.local_schedule) stats.warnings.push(parsed.limitation);
             } catch (error) {
               quota ||= Boolean(error.quota);
               pages.set(url, null);
@@ -291,7 +351,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
             }
           }
           const found = pages.get(url);
-          if (found?.source) await db.transaction(tx => save(tx, tracker.id, identity, found.source, found.authoritative && found.source.parsed ? 2 : 0, found.observedAt, stats));
+          if (found?.source) dateWarnings.set(identity, await db.transaction(tx => save(tx, tracker.id, identity, found.source, found.authoritative && found.source.parsed ? 2 : 0, found.observedAt, stats)));
         }
       }
       cursor = feed.cursor;
@@ -303,7 +363,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     stats.warnings.push(error.message);
   }
   if (!covered && !feedFailed) stats.warnings.push('Feed page limit reached before coverage boundary');
-  stats.warnings = [...new Set(stats.warnings)];
+  stats.warnings = [...new Set([...stats.warnings, ...dateWarnings.values()].filter(Boolean))];
   stats.requests = budget.requests;
   const outcome = quota ? 'quota' : feedFailed && stats.posts === 0 ? 'failed' : !covered || stats.warnings.length ? 'partial' : stats.created || stats.changed ? 'success' : 'no_change';
   const finished = now();
