@@ -9,8 +9,18 @@ export function fieldLabel(record, field) {
 }
 export function orderRecords(records, order='priority') {
   const rank = value => ({high:0,normal:1,low:2})[value]??3;
+  if (typeof order==='object') return [...records].sort((a,b)=>{
+    const [left,right]=[a,b].map(record=>{
+      const value=record[order.field];
+      return value==null||value===''?null:order.field==='priority'?rank(value):order.field.endsWith('_at')?Date.parse(value)
+        :order.field==='sources'?value.length:typeof value==='object'?JSON.stringify(value):value;
+    });
+    if (left===null||right===null) return left===right?0:left===null?1:-1;
+    const compared=typeof left==='string'?left.localeCompare(String(right),undefined,{numeric:true,sensitivity:'base'}):left-right;
+    return order.direction==='descending'?-compared:compared;
+  });
   return [...records].sort((a,b)=>(order==='priority'?rank(a.priority)-rank(b.priority):0)||
-    (a.starts_at??'9999').localeCompare(b.starts_at??'9999')||a.id.localeCompare(b.id));
+    (a.starts_at?Date.parse(a.starts_at):Infinity)-(b.starts_at?Date.parse(b.starts_at):Infinity)||a.id.localeCompare(b.id));
 }
 const dayValid = value => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '') && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 const instantValid = value => typeof value === 'string' && dayValid(value.slice(0, 10)) && /T\d{2}:\d{2}.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
