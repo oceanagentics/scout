@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,IDDRI,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI]])).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB]])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -423,6 +423,116 @@ test('recorded DOSI newsletter keeps separate items, real URLs, changes and boun
   const next=(await db.query("select * from scout.evidence where url=$1 and parsed->>'title'=$2",[issue,event.parsed.title])).rows[0];
   assert.notEqual(next.parsed.source.identity,event.parsed.source.identity);
  }finally{await db.close();}
+});
+
+test('DOSI website independently discovers nine distinct items, retains technical guide context and gates cosmetic repeats while disabled',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/dosi-website.json.gz',import.meta.url))));let calls=0;const requested=[];
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[DOSI_WEB])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-03-01',read:async(u,b)=>{b.requests++;requested.push(u);const r=Object.values(f).find(r=>r.url===u);assert.ok(r,'Only discovered recorded URLs');return r;},model:async()=>{throw new Error('Observation-only fixture');}};
+  await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);
+  const first=await collectHSA(db,options);assert.equal(first.candidates,9,first.warnings.join('; '));assert.equal(first.requests,5);assert.equal(first.outcome,'partial');assert.equal(first.issues_listed,10);assert.equal(first.issues_selected,10);
+  assert.deepEqual(requested,[f.home.url,f.guide.url,f.feed.url,f.roundup.url,f.newsletter.url]);
+  assert.match(first.warnings.join(' '),/year-only recaps/);assert.match(first.warnings.join(' '),/9 issues not followed/);assert.match(first.warnings.join(' '),/14 linked items not captured/);
+  const sources=(await db.query('select * from scout.evidence')).rows,guide=sources.find(s=>s.url===f.guide.url);
+  assert.equal(guide.published_at,null);assert.equal(guide.parsed.dosi_web.publication_on,'2026-04-02');assert.equal(guide.parsed.start_on,null);assert.equal(JSON.parse(guide.content).body,f.guide.body);
+  const input=await assessmentInput(db,guide,tracker);assert.match(input.text,/centralised platform or a network of regional nodes/);assert.match(input.text,/who will undertake such development/);assert.ok(!input.context_truncated);
+  assert.equal(input.scripted.description,'The Clearing-House Mechanism (CHM) will serve as a centralised open-access platform to enable Parties to access, provide, and disseminate information, knowledge, and data related to the BBNJ Agreement.');assert.ok(input.scripted.description.length<=280);
+  assert.throws(()=>validateDecision({...result,source_id:input.source_id,candidate:full({title:input.scripted.title,description:input.scripted.description.slice(0,-1)}),quotes:[input.scripted.title]},input),/complete source sentence/);
+  assert.throws(()=>validateDecision({...result,source_id:input.source_id,candidate:full({title:input.scripted.title,kind:'event'}),quotes:[input.scripted.title]},input),/announcement identity/);
+  const africa=sources.find(s=>s.parsed.title.startsWith('Science for BBNJ'));
+  assert.equal(africa.parsed.start_on,'2026-10-06');assert.equal(africa.parsed.starts_at,null);assert.equal(africa.parsed.event_url,null);assert.equal(africa.parsed.registration_url,null);assert.equal(africa.parsed.organization,null);
+  assert.equal(africa.parsed.dosi_web.issue_published_at,'2026-10-01T09:02:04.000Z');assert.equal(africa.published_at,null);
+  assert.equal(new Set(sources.map(s=>s.url+':'+s.parsed.source.item_key)).size,9);assert.ok(sources.every(s=>!s.url.includes('#')&&s.url!==DOSI_WEB));
+  const model=async(_p,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),quotes:[i.scripted.title]}));};
+  const assessed=await collectHSA(db,{...options,sourceId:guide.id,model});assert.equal(assessed.created,1);assert.equal(assessed.assessed,1);assert.equal(calls,1);
+  const record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.kind,'announcement');assert.equal(record.starts_at,null);
+  for(const key of ['home','guide','roundup'])f[key].body=f[key].body.replace('<body','<!-- unrelated cancellation and rotating news --> <body').replace('<p','<p data-cosmetic="1"');
+  f.newsletter.body=f.newsletter.body.replaceAll('padding: 0 9px 0 9px','padding: 1px');
+  const repeated=await collectHSA(db,{...options,sourceId:guide.id,model});assert.equal(repeated.skipped,9);assert.equal(repeated.candidates+repeated.created+repeated.changed,0);assert.equal(calls,1);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('DOSI website guide material content/publication and newsletter date/link changes preserve exact identities and separate issues',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/dosi-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[DOSI_WEB])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-03-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);
+  const old=(await db.query('select * from scout.evidence where url=$1',[f.guide.url])).rows[0];
+  f.guide.body=f.guide.body.replaceAll('who will undertake such development','who will coordinate such development');
+  assert.equal((await collectHSA(db,options)).candidates,1);
+  f.guide.body=f.guide.body.replace('April 2, 2026','April 3, 2026');
+  assert.equal((await collectHSA(db,options)).candidates,1);
+  const latest=(await db.query('select * from scout.evidence where url=$1 order by collected_at desc limit 1',[f.guide.url])).rows[0];assert.equal(latest.parsed.source.identity,old.parsed.source.identity);assert.equal(latest.parsed.dosi_web.publication_on,'2026-04-03');assert.equal(latest.parsed.starts_at,null);
+  f.newsletter.body=f.newsletter.body.replaceAll('6 October 2026','7 October 2026');assert.equal((await collectHSA(db,options)).candidates,2);
+  const africa=(await db.query("select * from scout.evidence where parsed->>'title' like 'Science for BBNJ%' order by collected_at desc limit 1")).rows[0];assert.equal(africa.parsed.start_on,'2026-10-07');assert.equal(africa.parsed.starts_at,null);
+  const key='https://www.sciencedirect.com/science/article/pii/S0308597X26002629';f.newsletter.body=f.newsletter.body.replaceAll(key,key+'?edition=2');assert.equal((await collectHSA(db,options)).candidates,1);
+  const paper=(await db.query("select * from scout.evidence where parsed->>'title' like 'Connecting international%' order by collected_at desc limit 1")).rows[0];assert.equal(paper.parsed.source.item_key,key+'?edition=2');
+  const next=f.newsletter.url.replace('01-10','08-10');f.roundup.body=f.roundup.body.replaceAll(f.newsletter.url,next);f.newsletter.url=next;
+  assert.equal((await collectHSA(db,options)).candidates,8);assert.equal((await db.query('select count(*)::int n from scout.evidence where url=$1',[next])).rows[0].n,8);
+ }finally{await db.close();}
+});
+
+test('DOSI website source failures preserve captures and exclude stale pending content from model work',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/dosi-website.json.gz',import.meta.url))));let calls=0,fail;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[DOSI_WEB])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-03-01',read:async(u,b)=>{b.requests++;if(u===fail)throw new Error('Recorded outage HTTP 503');return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const before=(await db.query('select id,content_hash,content,parsed from scout.evidence order by id')).rows;
+  const guide=before.find(s=>s.parsed.title==='A DOSI Guide to BBNJ PrepCom'),item=before.find(s=>s.parsed.source.item_key);
+  const model=async()=>{calls++;throw new Error('Unexpected stale assessment');};
+  fail=f.home.url;assert.equal((await collectHSA(db,{...options,sourceId:guide.id,model})).outcome,'failed');
+  for(const key of ['feed','roundup','newsletter']){fail=f[key].url;const run=await collectHSA(db,{...options,sourceId:item.id,model});assert.equal(run.candidates,0);assert.match(run.warnings.join(' '),/503/);}
+  fail=f.guide.url;await collectHSA(db,{...options,sourceId:guide.id,model});fail=null;
+  f.guide.body=f.guide.body.replace('April 2, 2026','April 31, 2026');assert.match((await collectHSA(db,{...options,sourceId:guide.id,model})).warnings.join(' '),/publication date/);
+  f.newsletter.body='Malformed';await collectHSA(db,{...options,sourceId:item.id,model});
+  f.feed.body=f.feed.body.replace('</rss>','');await collectHSA(db,{...options,sourceId:item.id,model});
+  assert.equal(calls,0);assert.deepEqual((await db.query('select id,content_hash,content,parsed from scout.evidence order by id')).rows,before);
+ }finally{await db.close();}
+});
+
+test('DOSI independent website newsletter corroborates retained Bluesky paper and Africa event without record changes or unrelated merges',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/dosi-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[DOSI_WEB])).rows[0],feed=(await db.query("select id from scout.trackers where seed_key='bbnj-trackers-2026-10-01:18'")).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-03-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);
+  const items=(await db.query("select * from scout.evidence where parsed->>'title' like 'Connecting international%' or parsed->>'title' like 'Science for BBNJ%'")).rows;
+  for(const s of items){const p=s.parsed;
+   const r=(await db.query('insert into scout.records(kind,title,description,priority,identity_key) values($1,$2,$3,\'normal\',$4) returning *',[p.kind,p.title,p.description.slice(0,280),p.source.identity])).rows[0];
+   await db.query('insert into scout.evidence(tracker_id,record_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,$6,clock_timestamp())',[feed.id,r.id,s.url,s.content_hash,JSON.parse(s.content).item,{...p,assessment:{state:'complete'}}]);
+  }
+  const records=(await db.query('select * from scout.records order by id')).rows;
+  for(const s of items){const run=await collectHSA(db,{...options,sourceId:s.id,model:async(_p,[i])=>{
+    assert.equal(i.exact_ids.length,1);const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null])));
+    const other=records.find(r=>r.id!==i.exact_ids[0]);if(i.candidates.some(c=>c.id===other.id))assert.throws(()=>validateDecision({...result,source_id:i.source_id,action:'supporting_evidence',record_id:other.id,candidate,quotes:[candidate.title]},i));
+    return[{...result,source_id:i.source_id,action:'supporting_evidence',record_id:i.exact_ids[0],candidate,priority:'normal',quotes:[candidate.title]}];}});assert.equal(run.assessed,1);assert.equal(run.created+run.changed,0);}
+  assert.deepEqual((await db.query('select * from scout.records order by id')).rows,records);assert.equal((await db.query('select count(*)::int n from scout.evidence where record_id is not null')).rows[0].n,4);
+ }finally{await db.close();}
+});
+
+test('DOSI guide context does not fabricate technical evidence for general material or turn publication into an event',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/dosi-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[DOSI_WEB])).rows[0];
+  f.guide.body=f.guide.body.replace(/<p\b[^>]*><strong>The Clearing-House Mechanism:[\s\S]*?<\/p>/,'');
+  const options={trackerId:tracker.id,validate:true,since:'2026-03-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const s=(await db.query('select * from scout.evidence where url=$1',[f.guide.url])).rows[0];
+  const run=await collectHSA(db,{...options,sourceId:s.id,model:async(_p,[i])=>{assert.doesNotMatch(i.text,/technical architecture|regional nodes|who will undertake/);assert.equal(i.scripted.starts_at,null);return[{...result,source_id:i.source_id,action:'no_substantive_change',candidate:null,priority:'low',quotes:[i.scripted.title],reason:'Recorded general-context exclusion fixture'}];}});
+  assert.equal(run.assessed,1);assert.equal(run.created,0);assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+ }finally{await db.close();}
+});
+
+test('actual DOSI guide assessment retains technical High relevance and a complete literal description with publication-only precision',async()=>{
+ const {live}=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/dosi-website.json.gz',import.meta.url))));
+ validateDecision(Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]])),live.input);
+ assert.equal(live.decision.state,'complete');assert.equal(live.decision.priority,'high');assert.equal(live.record.priority,'high');assert.equal(live.record.kind,'announcement');
+ assert.equal(live.record.title,live.input.scripted.title);assert.equal(live.record.description,live.input.scripted.description);assert.equal(live.record.description.length,201);assert.ok(live.record.description.endsWith('.'));
+ assert.match(live.input.text,/technical architecture.*centralised platform or a network of regional nodes/);assert.match(live.input.text,/who will undertake such development/);assert.equal(live.input.context_truncated,false);
+ assert.equal(live.input.scripted.dosi_web.publication_on,'2026-04-02');assert.equal(live.decision.model_decision,undefined);assert.equal(live.accounting.model_attempts.length,1);assert.equal(live.accounting.model_attempts[0].input_bound,6000);
+ for(const key of ['organization','starts_at','ends_at','event_url','registration_url','location','status','last_communicated_at'])assert.equal(live.record[key],null);
 });
 
 test('HSA website independently follows recorded RSS/API and registration, preserves explicit timezone precision and gates cosmetic repeats',async()=>{

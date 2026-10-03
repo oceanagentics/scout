@@ -10,7 +10,7 @@ export const visibleText = html => normalize(html.replace(/<(script|style|nav)\b
   .replace(/&(?:nbsp|amp|quot|apos|lt|gt);/g,value=>({'&nbsp;':' ','&amp;':'&','&quot;':'"','&apos;':"'",'&lt;':'<','&gt;':'>'})[value]));
 
 export function dosiArticle(html, url) {
-  if (!/^https:\/\/(?:www\.)?dosi-project\.org\/dosi-deep-sea-round-up(?:-\d+)?\/?$/.test(url)) return html;
+  if (!/^https:\/\/(?:www\.)?dosi-project\.org\/(?:dosi-deep-sea-round-up(?:-\d+)?|a-dosi-guide-to-bbnj-prepcom)\/?$/.test(url)) return html;
   const title=html.match(/<h1\b[^>]*class=["'][^"']*\bentry-title\b[^"']*["'][^>]*>[\s\S]*?<\/h1>/i);
   const body=html.match(/<div\b[^>]*class=["'][^"']*\bentry-content\b[^"']*["'][^>]*>([\s\S]*?)<div\b[^>]*id=["']trx_addons_emotions["']/i);
   if (!title || !body) throw new Error('DOSI article layout unavailable; coverage incomplete');
@@ -92,6 +92,7 @@ export function validateDecision(result, input) {
   if (result.clear_fields.some(f=>c[f]!==null)) fail('clear field must be null');
   if (c.kind==='treaty_status' && !/(^|\.)un\.org$/.test(new URL(input.url).hostname)) fail('official treaty evidence required');
   if (input.scripted.treaty && (c.kind!=='treaty_status'||c.title!==input.scripted.title)) fail('official country/action/date representation required');
+  if (input.scripted.dosi_web?.publication_on && (c.kind!=='announcement'||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description))) fail('DOSI guide requires its announcement identity and a complete source sentence');
   if (input.scripted.iddri && (c.kind!==input.scripted.kind||c.title!==input.scripted.title||
       ['starts_at','ends_at','location','status','event_url','registration_url',...(c.kind==='event'?['organization']:[])].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.includes('status'))) fail('IDDRI publication/session facts unconfirmed');
   if (input.scripted.side_event && (c.kind!=='event'||c.title!==input.scripted.title ||
@@ -141,7 +142,7 @@ export async function observe(db, tracker, url, content, publishedAt, scripted, 
 }
 
 export async function assessmentInput(db, source, tracker) {
-  const content=source.parsed.side_event?source.content:doalosArticle(dosiArticle(source.content,source.url),source.url);
+  const content=source.parsed.side_event||source.parsed.dosi_web?source.content:doalosArticle(dosiArticle(source.content,source.url),source.url);
   const scripted=Object.fromEntries(Object.entries(source.parsed).filter(([key])=>!['source','assessment'].includes(key)));
   const zoom=/^https:\/\/[^/]+\.zoom\.us\/webinar\/register\//.test(source.url) && scripted.local_schedule;
   const conference=scripted.side_event || scripted.hsa_web?.session || scripted.iddri && scripted.kind==='event' || source.url==='https://www.un.org/bbnjagreement/en' && scripted.kind==='event' && scripted.registration_deadline_on;

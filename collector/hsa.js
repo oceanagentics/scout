@@ -9,6 +9,7 @@ import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTEN
 export const HSA = 'highseasalliance.bsky.social';
 export const HSA_WEB = 'https://highseasalliance.org/';
 export const IDDRI = 'https://www.iddri.org/en/publications-and-events/high-seas?page=0';
+export const DOSI_WEB = 'https://www.dosi-project.org/biodiversity-beyond-national-jurisdiction-bbnj/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -402,7 +403,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const sideEvents=tracker.collector==='web' && tracker.url===UN_SIDE_EVENTS;
   const hsaWeb=tracker.collector==='web' && tracker.url===HSA_WEB;
   const iddri=tracker.collector==='web' && tracker.url===IDDRI;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const dosiWeb=tracker.collector==='web' && tracker.url===DOSI_WEB;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -625,6 +627,81 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         stats[source.changed?'candidates':'skipped']++;pages.set(url,{source});
       }
       covered=selected.length<=3;
+    } else if (dosiWeb) {
+      const home=await read(tracker.url,budget);stats.pages++;
+      const feedURL='https://www.dosi-project.org/feed/';
+      const section=home.body.match(/<a class="elementor-toggle-title"[^>]*>BBNJ IGC Participation<\/a>[\s\S]*?<div\b[^>]*class="elementor-tab-content[^>]*>([\s\S]*?)<\/div>/)?.[1];
+      if (home.url!==tracker.url || !/<\/html>\s*$/.test(home.body) || !section ||
+          !home.body.includes(`rel="canonical" href="${tracker.url}"`) ||
+          !home.body.match(/<link\b[^>]*type="application\/rss\+xml"[^>]*href="https:\/\/www\.dosi-project\.org\/feed\/"/)) throw new Error('DOSI BBNJ page/discovery layout unavailable');
+      const text=html=>visibleText(html.replace(/&#(\d{1,7});/g,(_m,n)=>String.fromCodePoint(+n)));
+      const seen=(await db.query('select distinct url from scout.evidence where tracker_id=$1',[tracker.id])).rows.map(r=>r.url);
+      stats.warnings.push('DOSI covers one linked PrepCom guide and eight items from one current RSS newsletter; static group text, year-only recaps, publications/PDFs, older issues and other articles are not fully collected');
+      const guide=section.match(/href="(https:\/\/www\.dosi-project\.org\/a-dosi-guide-to-bbnj-prepcom\/)"/);
+      if (!guide) stats.warnings.push('DOSI linked PrepCom guide unavailable');
+      if (guide) {
+        try {
+          const response=await read(guide[1],budget);stats.pages++;
+          if (response.url!==guide[1] || !/text\/html/i.test(response.headers['content-type']??'') || !/<\/html>\s*$/.test(response.body)) throw new Error('Unexpected DOSI guide destination/format');
+          const article=dosiArticle(response.body,response.url),title=text(article.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/)?.[1]??'');
+          const header=response.body.match(/<div class="post_header post_header_single entry-header">[\s\S]*?<h1\b[^>]*>[\s\S]*?<\/h1>/)?.[0]??'';
+          const publication=text(header.match(/<span\b[^>]*class="post_meta_item post_date\s*"[^>]*>([^<]+)<\/span>/)?.[1]??'');
+          const day=new Date(publication+' 00:00:00 GMT');
+          if (!title || !/^[A-Z][a-z]+ \d{1,2}, \d{4}$/.test(publication) || !Number.isFinite(+day) ||
+              day.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric',timeZone:'UTC'})!==publication) throw new Error('DOSI guide publication date/title unavailable');
+          const publishedOn=day.toISOString().slice(0,10);
+          if (publishedOn>=since.slice(0,10)||seen.includes(response.url)) {
+            const paragraphs=[...article.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>text(m[1]));
+            // Keep the complete observed CHM paragraph in bounded context, rather than losing it behind the treaty introduction.
+            const technical=paragraphs.find(p=>p.startsWith('The Clearing-House Mechanism:'));
+            const description=(technical?.replace(/^The Clearing-House Mechanism:\s*/,'')??paragraphs[0])?.match(/^[^.]+\./)?.[0];
+            const scripted={kind:'announcement',title,description:description&&Array.from(description).length<=280?description:null,organization:null,location:null,
+              ...dates(),event_url:null,registration_url:null,status:null,dosi_web:{publication_on:publishedOn}};
+            const context=[title,publication,technical??paragraphs[0]].filter(Boolean).join(' ');
+            const links=[...new Set([...article.matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(new URL(text(m[1]),response.url).href);}catch{return null;}}).filter(Boolean))].sort();
+            const source=await observe(db,tracker.id,response.url,JSON.stringify({text:context,body:response.body,discovered_from:tracker.url}),null,scripted,
+              {text:text(article),links,publication_on:publishedOn,structured:scripted},
+              {rank:2,identity:`page:${response.url}`,links:[response.url],parent_url:tracker.url},now());
+            stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+          }
+        } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
+      }
+      try {
+        const feed=await read(feedURL,budget);stats.pages++;
+        if (feed.url!==feedURL || !/xml/i.test(feed.headers['content-type']??'') || !/<\/rss>\s*$/.test(feed.body)) throw new Error('Invalid DOSI RSS feed');
+        const rows=[...feed.body.matchAll(/<item>([\s\S]*?)<\/item>/g)].map(m=>{
+          const url=sourceURL(text(m[1].match(/<link>([^<]+)<\/link>/)?.[1]??''));
+          const published=m[1].match(/<pubDate>([^<]+)<\/pubDate>/)?.[1];
+          const id=m[1].match(/<guid isPermaLink="false">https:\/\/www\.dosi-project\.org\/\?p=(\d+)<\/guid>/)?.[1];
+          if (!id || !url.startsWith('https://www.dosi-project.org/') || !Number.isFinite(Date.parse(published))) throw new Error('DOSI RSS identity/date unavailable');
+          return {url,published:new Date(published).toISOString(),id,raw:m[0]};
+        });
+        if (!rows.length || rows.length>50 || new Set(rows.map(r=>r.id)).size!==rows.length || new Set(rows.map(r=>r.url)).size!==rows.length) throw new Error('Invalid DOSI RSS items');
+        const selected=rows.filter(r=>/^https:\/\/www\.dosi-project\.org\/dosi-deep-sea-round-up(?:-\d+)?\/$/.test(r.url)&&Date.parse(r.published)>=Date.parse(since)).sort((a,b)=>b.published.localeCompare(a.published));
+        stats.issues_listed=rows.length;stats.issues_selected=selected.length;
+        if (selected.length>1) stats.warnings.push(`DOSI RSS issue limit reached: ${selected.length-1} issues not followed`);
+        for (const issue of selected.slice(0,1)) {
+          const roundup=await read(issue.url,budget);stats.pages++;
+          if (roundup.url!==issue.url || !/text\/html/i.test(roundup.headers['content-type']??'') || !/<\/html>\s*$/.test(roundup.body)) throw new Error('Unexpected DOSI roundup destination/format');
+          const article=dosiArticle(roundup.body,roundup.url);
+          const newsletters=[...new Set([...article.matchAll(/href="(https:\/\/mailchi\.mp\/soton\.ac\.uk\/dosi-deep-sea-roundup-\d{2}-\d{2}-\d{4})"/g)].map(m=>m[1]))];
+          if (newsletters.length!==1) throw new Error('DOSI newsletter link missing or ambiguous');
+          const newsletter=await read(newsletters[0],budget);stats.pages++;
+          if (newsletter.url!==newsletters[0] || !/text\/html/i.test(newsletter.headers['content-type']??'') || !/<\/html>\s*$/.test(newsletter.body)) throw new Error('Unexpected DOSI newsletter destination/format');
+          const {items,unsupported}=dosiNewsletter(newsletter.body,newsletter.url);
+          if (unsupported) stats.warnings.push(`DOSI newsletter has ${unsupported} unsupported item links`);
+          if (items.length>8) stats.warnings.push(`DOSI newsletter item limit reached: ${items.length-8} linked items not captured`);
+          for (const item of items.slice(0,8)) {
+            const scripted={...item.parsed,dosi_web:{issue_published_at:issue.published}};
+            const source=await observe(db,tracker.id,item.url,JSON.stringify({text:visibleText(item.content),item:item.content,
+              discovery:{page:tracker.url,feed:feedURL,rss:issue.raw,roundup:{url:roundup.url,body:article}}}),null,scripted,
+              {text:visibleText(item.content),link:item.link,structured:scripted},
+              {rank:2,identity:`newsletter:${item.url}:${item.link}`,item_key:item.link,parent_url:roundup.url,links:[item.link]},now());
+            stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+          }
+        }
+      } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
+      covered=true;
     } else if (hsaWeb) {
       const feedURL=tracker.url+'feed/',feed=await read(feedURL,budget);stats.pages++;
       if (feed.url!==feedURL || !/xml/i.test(feed.headers['content-type']??'') || !/<\/rss>\s*$/.test(feed.body)) throw new Error('Invalid HSA RSS feed');
@@ -929,11 +1006,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!dosiWeb||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
