@@ -17,6 +17,7 @@ export const OCEANCARE = 'https://www.oceancare.org/en/';
 export const HARVEST = 'https://harveststrategies.org/abnj/';
 export const RISE_UP = 'https://riseupfortheocean.org/latest/rise-up-navigator/';
 export const BLUE_MARINE = 'https://www.bluemarinefoundation.com/our-events/';
+export const SYMPOSIUM = 'https://bbnjsymposium.org/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -418,7 +419,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const harvest=tracker.collector==='web' && tracker.url===HARVEST;
   const riseup=tracker.collector==='web' && tracker.url===RISE_UP;
   const blueMarine=tracker.collector==='web' && tracker.url===BLUE_MARINE;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const symposium=tracker.collector==='web' && tracker.url===SYMPOSIUM;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -800,6 +802,66 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         {listing:text(block),detail,agenda,structured:scripted},
         {rank:2,identity:`harvest:meeting:${key}`,item_key:key,links:[listing,registration]},now());
       stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});covered=true;
+    } else if (symposium) {
+      const home=await read(tracker.url,budget);stats.pages++;
+      const valid=(page,url)=>page.url===url&&/<\/html>\s*$/.test(page.body)&&page.body.includes(`property="og:url" content="${url.replace(/\/$/,'')}"`);
+      const text=html=>visibleText(html.replace(/&#(\d{1,7});/g,(_m,n)=>String.fromCodePoint(+n)));
+      const sentence=value=>value.match(/[^.!?]+[.!?](?=\s|$)/g)?.map(s=>s.trim()).filter(s=>Array.from(s).length<=280)??[];
+      if (!valid(home,tracker.url)) throw new Error('Symposium home unavailable');
+      const editions=[...home.body.matchAll(/field="li_title__(\d+)">([\s\S]*?)<\/span>/g)].map(m=>({id:m[1],title:text(m[2]),year:m[2].match(/href="https:\/\/bbnjsymposium\.org\/(20\d\d)"/)?.[1]})).filter(r=>r.year).sort((a,b)=>b.year.localeCompare(a.year));
+      if (!editions.length || new Set(editions.map(e=>e.year)).size!==editions.length) throw new Error('Symposium annual timeline ambiguous');
+      const edition=editions[0],year=edition.year,editionURL=SYMPOSIUM+year;
+      const timeline=home.body.match(new RegExp(`field="li_descr__${edition.id}">([\\s\\S]*?)<\\/div>`))?.[1],summary=timeline&&text(timeline.split(/<br\s*\/?\s*>/)[0]);
+      const date=summary?.match(/was held on (\d{1,2})-(\d{1,2}) March (20\d\d) at the (.+?), and focused/);
+      const calendar=date&&date[3]===year?dates(`${year}-03-${date[1].padStart(2,'0')}`,`${year}-03-${date[2].padStart(2,'0')}`):dates();
+      if (!summary || !calendar.start_on || !calendar.end_on || !edition.title.includes(year)) throw new Error('Symposium parent edition date/content unconfirmed');
+      const base={organization:null,location:null,event_url:null,registration_url:null,status:null,...dates()};
+      const items=[{page:home,key:'edition',text:summary,html:timeline,links:[editionURL],scripted:{...base,kind:'event',title:edition.title,description:sentence(summary)[0]??null,...calendar,location:date[4],event_url:editionURL}}];
+      stats.warnings.push('Symposium covers the latest explicit timeline edition, named Friday workshop and four matching technical panel recordings. Oversized edition pages, full programmes, other satellite sessions/recordings, PDFs, reports and verified participation schedules remain outside this slice; no completed coverage is claimed');
+      for (const [kind,path] of [['workshop',`satellite-events-${year}`],['recording',`session_recordings_${year}`]]) try {
+        const url=SYMPOSIUM+path;
+        if (!home.body.includes(`href="/${path}"`)) throw new Error('Symposium observed source link unavailable');
+        const page=await read(url,budget);stats.pages++;
+        if (!valid(page,url)) throw new Error('Symposium detail destination/format unavailable');
+        if (kind==='workshop') {
+          const blocks=page.body.split(/(?=<div id="rec\d+" class="r t-rec\b)/).filter(b=>/field="text"><strong>Friday Workshop:/.test(b));
+          if (blocks.length!==1 || !page.body.includes(`<title>Satellite events ${year}</title>`)) throw new Error('Symposium named workshop boundary ambiguous');
+          const block=blocks[0],id=block.match(/^<div id="rec(\d+)"/)?.[1],body=block.match(/class="t166__text t-text t-text_md" field="text">([\s\S]*?)<\/div>/)?.[1];
+          const title=body&&text(body.match(/^<strong>([\s\S]*?)<\/strong>/)?.[1]??''),description=body&&text(body.match(/<em>([\s\S]*?)<\/em>/)?.[1]??'');
+          const organization=description?.match(/, the (.+?) \(funded by the European Union\) will host/)?.[1]??null;
+          const address=block.match(/class="t166__textsmall[^>]*field="title"><strong>Address<\/strong>([\s\S]*?)<\/div>/)?.[1];
+          if (!id || !title || !description || !organization || !address) throw new Error('Symposium workshop facts unavailable');
+          const heading=text(page.body.match(/class="t183__title\b[^>]*field="title">([\s\S]*?)<\/div>/)?.[1]??'');
+          const subtitle=text(page.body.match(/class="t183__uptitle\b[^>]*field="subtitle">([\s\S]*?)<\/div>/)?.[1]??'');
+          const local=description.match(/^On (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) (\d{1,2}) March,/),day=local&&dates(`${year}-03-${local[2].padStart(2,'0')}`).start_on;
+          const confirmed=day&&heading===`Satellite Events Third BBNJ Symposium ${year}`&&subtitle.match(/March (20\d\d)\b/)?.[1]===year&&new Date(day+'T00:00:00Z').toLocaleDateString('en-US',{weekday:'long',timeZone:'UTC'})===local[1];
+          // The same-page edition establishes the year; this workshop supplies
+          // its own weekday/month/day. No parent range or clock is inherited.
+          const schedule=dates(confirmed?day:null),date_parts={heading,subtitle,session:local?.[0]??null,confirmed:Boolean(confirmed)};
+          if (!confirmed) stats.warnings.push('Symposium workshop date components disagree; date remains unknown');
+          items.push({page,key:`workshop:${id}`,text:text(body)+' '+text(address)+' '+heading+' '+subtitle,html:block,links:[],scripted:{...base,...schedule,kind:'event',title,organization,description:sentence(description)[0]??null,location:text(address),event_url:url,date_parts}});
+        } else {
+          if (!page.body.includes(`<title>Session Recordings ${year}</title>`)) throw new Error('Symposium recording edition unconfirmed');
+          const cards=[...page.body.matchAll(/<li\b[^>]*class="[^"]*\bt-card__col\b[^"]*"[^>]*>([\s\S]*?)<\/li>/g)].map(m=>{
+            const heading=m[1].match(/class="t-card__title[^>]*field="li_title__(\d+)">\s*<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/),title=heading&&text(heading[3]);
+            const body=heading&&m[1].match(new RegExp(`field="li_descr__${heading[1]}">([\\s\\S]*?)<\\/div>`))?.[1];
+            return {html:m[0],title,body:body?.split(/<br\s*\/?\s*>/)[0],number:title?.match(/^Panel (\d+):/)?.[1],url:heading?.[2]};
+          }).filter(c=>c.number);
+          if (!cards.length || new Set(cards.map(c=>c.number)).size!==cards.length || cards.some(c=>!c.body||!c.url)) throw new Error('Symposium recording cards ambiguous');
+          const selected=cards.filter(c=>/interoperable|Scientific and Technical Body|marine technolog|Clearing.House/i.test(text(c.body))).slice(0,4);
+          for (const card of selected) {
+            const link=new URL(text(card.url));if (link.hostname!=='www.youtube.com'||!(link.pathname==='/watch'&&/^[\w-]{11}$/.test(link.searchParams.get('v')??'')||/^\/live\/[\w-]{11}$/.test(link.pathname))) throw new Error('Symposium recording link unconfirmed');
+            link.searchParams.delete('si');const recording=sourceURL(link.href),body=text(card.body),sentences=sentence(body);
+            items.push({page,key:`recording:panel:${card.number}`,text:card.title+' '+body,html:card.html,links:[recording],scripted:{...base,kind:'announcement',title:card.title,description:sentences.find(s=>/interoperable|Clearing.House|marine technolog/i.test(s))??sentences[0]??null}});
+          }
+        }
+      } catch(error) {stats.warnings.push(`${kind}: ${error.message}`);}
+      for (const item of items) {
+        const scripted={...item.scripted,symposium:{edition:year,key:item.key}},source=await observe(db,tracker.id,item.page.url,JSON.stringify({text:scripted.title+' '+item.text,body:item.page.body,item:item.html}),null,scripted,{text:item.text,structured:scripted,links:item.links},
+          {rank:2,identity:`symposium:${year}:${item.key}`,item_key:`${year}:${item.key}`,parent_url:editionURL,links:item.links},now());
+        stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+      }
+      covered=true;
     } else if (blueMarine) {
       const home=await read(tracker.url,budget);stats.pages++;
       const main=home.body.match(/<main\b[^>]*>([\s\S]*?)<\/main>/)?.[1];
@@ -1450,11 +1512,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {

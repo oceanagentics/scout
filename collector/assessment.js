@@ -53,6 +53,7 @@ export function validateDecision(result, input) {
   if (input.scripted.oceancare && existing && (!input.exact_ids.includes(existing.id)||existing.identity_key?.startsWith('oceancare:post:')&&existing.identity_key!==`oceancare:post:${input.scripted.oceancare.id}`)) fail('OceanCare identity needs the same publication, not a shared topic/year');
   if (input.scripted.gof && existing && !input.exact_ids.includes(existing.id)) fail('GOF identity needs the same project or exact conference edition/session');
   if (input.scripted.harvest && existing && !input.exact_ids.includes(existing.id)) fail('Harvest identity needs the same registration and year, not a shared topic or reused URL');
+  if (input.scripted.symposium && existing && (!input.exact_ids.includes(existing.id)||existing.identity_key?.startsWith('symposium:')&&existing.identity_key!=='symposium:'+input.scripted.symposium.edition+':'+input.scripted.symposium.key)) fail('Symposium annual edition, session and recording identities must stay separate');
   if (input.scripted.blue_marine && existing && existing.identity_key!==`bluemarine:${input.scripted.blue_marine.id}:${input.scripted.blue_marine.edition}:${input.scripted.blue_marine.recap?'workshop':'event'}`) fail('Blue Marine conference, workshop and annual identities must stay separate');
   if (input.scripted.riseup && existing && !input.exact_ids.includes(existing.id)) fail('RISE UP identity needs the same issue/item or confirmed summit edition');
   if (input.scripted.side_event?.id && existing?.event_url?.match(/^https:\/\/www\.cbd\.int\/side-events\/(\d+)$/)?.[1] &&
@@ -114,6 +115,7 @@ export function validateDecision(result, input) {
       ['starts_at','ends_at','location','event_url','registration_url','status',...(c.kind==='event'?['organization']:[])].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.length)) fail('GOF project/session facts or complete source sentence unconfirmed');
   if (input.scripted.harvest && (c.kind!=='event'||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description)||
       ['starts_at','ends_at','location','event_url','registration_url','status','organization'].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.length)) fail('Harvest session facts or complete source sentence unconfirmed');
+  if (input.scripted.symposium && (c.kind!==input.scripted.kind||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description)||['starts_at','ends_at','location','event_url','registration_url','status','organization'].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.length)) fail('Symposium item facts or complete source sentence unconfirmed');
   if (input.scripted.blue_marine && (c.kind!==input.scripted.kind||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description)||['starts_at','ends_at','location','event_url','registration_url','status','organization'].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.length)) fail('Blue Marine item facts or complete source sentence unconfirmed');
   if (input.scripted.riseup && (c.kind!==input.scripted.kind||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description)||
       ['starts_at','ends_at','location','event_url','registration_url','status','organization'].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.length)) fail('RISE UP item facts or complete source sentence unconfirmed');
@@ -168,6 +170,7 @@ export async function observe(db, tracker, url, content, publishedAt, scripted, 
 export async function assessmentInput(db, source, tracker) {
   const content=source.parsed.side_event||source.parsed.dosi_web?source.content:doalosArticle(dosiArticle(source.content,source.url),source.url);
   const scripted=Object.fromEntries(Object.entries(source.parsed).filter(([key])=>!['source','assessment'].includes(key)));
+  if (scripted.symposium) delete scripted.date_parts; // Components remain in captured evidence and the source excerpt.
   const zoom=/^https:\/\/[^/]+\.zoom\.us\/webinar\/register\//.test(source.url) && scripted.local_schedule;
   const conference=scripted.side_event || scripted.hsa_web?.session || scripted.harvest || scripted.iddri && scripted.kind==='event' || source.url==='https://www.un.org/bbnjagreement/en' && scripted.kind==='event' && scripted.registration_deadline_on;
   if (zoom && /co-organized by the High Seas Alliance\b/.test(scripted.description??'')) scripted.organization='High Seas Alliance';
@@ -182,13 +185,13 @@ export async function assessmentInput(db, source, tracker) {
     (select parsed->>'start_on' from scout.current_evidence where record_id=r.id and parsed->>'start_on' is not null
       order by authoritative desc,evidence_at desc nulls last,last_seen_at desc limit 1) as calendar_date,
     (select md5(string_agg(content_hash,',' order by url)) from scout.current_evidence where record_id=r.id) as evidence
-    from scout.records r where ${(scripted.iddri||scripted.gfw||scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine)&&scripted.kind==='announcement'?"r.kind='announcement' and ":''}(not $9::boolean or r.kind='event') and
+    from scout.records r where ${(scripted.iddri||scripted.gfw||scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium)&&scripted.kind==='announcement'?"r.kind='announcement' and ":''}(not $9::boolean or r.kind='event') and
       (r.id=$2 or r.id=$11::uuid or r.identity_key=$8 or r.event_url=$1 or r.event_url=$3 or r.organization=$4 or
       exists(select 1 from scout.current_evidence e where e.record_id=r.id and e.url=$10) or exists(select 1 from unnest($5::text[]) word where lower(r.title) like '%'||word||'%'))
     order by (r.id=$11::uuid) desc nulls last,${scripted.iddri?'exact desc,':''}(r.id=$2) desc nulls last,(r.identity_key=$8) desc nulls last,(r.event_url=$3) desc nulls last,
       (select count(*) from unnest($5::text[]) word where lower(r.title) like '%'||word||'%') desc,
       (r.organization=$4) desc nulls last,updated_at desc,id limit ${scripted.gfw?.corroborates||scripted.riseup?.corroborates?1:3}`,
-  [source.url,source.record_id,scripted.event_url??null,scripted.organization??null,words,source.parsed.source.item_key??null,Boolean(zoom||scripted.iddri),source.parsed.source.identity??null,Boolean(zoom||conference||(scripted.gof||scripted.riseup||scripted.blue_marine)&&scripted.kind==='event'),scripted.iddri?.translation_of??null,scripted.gfw?.corroborates??scripted.riseup?.corroborates??null])).rows;
+  [source.url,source.record_id,scripted.event_url??null,scripted.organization??null,words,source.parsed.source.item_key??null,Boolean(zoom||scripted.iddri),source.parsed.source.identity??null,Boolean(zoom||conference||(scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium)&&scripted.kind==='event'),scripted.iddri?.translation_of??null,scripted.gfw?.corroborates??scripted.riseup?.corroborates??null])).rows;
   // The fetched HTML remains evidence, but model context starts with useful text,
   // including parsed metadata whose source lives beyond a long HTML head.
   let text;
@@ -200,7 +203,7 @@ export async function assessmentInput(db, source, tracker) {
     if (value && !text.includes(value)) text=normalize(text+'\n'+value);
   }
   const whole=Array.from(text);
-  if (scripted.oceancare||scripted.riseup) for (const field of ['event_url','starts_at','ends_at','status','registration_url','location',...(scripted.riseup?['start_on','end_on','time_zone']:[])]) {
+  if (scripted.oceancare||scripted.riseup||scripted.symposium) for (const field of ['event_url','starts_at','ends_at','status','registration_url','location',...(scripted.riseup||scripted.symposium?['start_on','end_on','time_zone']:[])]) {
     if (scripted[field]===null) delete scripted[field];
   }
   let start=0;
@@ -215,11 +218,11 @@ export async function assessmentInput(db, source, tracker) {
   for (const candidate of candidates) {
     candidate.title=Array.from(candidate.title).slice(0,240).join('');
     // Keep identities and supported facts without redundant empty shortlist fields.
-    if (scripted.iucn||scripted.oceancare||scripted.harvest||scripted.riseup||scripted.blue_marine||scripted.gof&&scripted.kind==='announcement') for (const field of ['event_url','starts_at','ends_at','status','calendar_date','registration_link']) {
+    if (scripted.iucn||scripted.oceancare||scripted.harvest||scripted.riseup||scripted.blue_marine||scripted.symposium||scripted.gof&&scripted.kind==='announcement') for (const field of ['event_url','starts_at','ends_at','status','calendar_date','registration_link']) {
       if (!candidate[field]) delete candidate[field];
     }
   }
   return {source_id:source.id,url:source.url,coverage:tracker.coverage?.slice(0,240),text:whole.slice(start,start+1400).join(''),
     context_truncated:whole.length>1400,links:zoom?[source.url]:source.parsed.source.links??[],scripted,
-    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id||r.id===scripted.gfw?.corroborates||(scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine)&&r.identity_key===source.parsed.source.identity||scripted.riseup&&scripted.event_url&&r.event_url===scripted.event_url||scripted.iddri&&(r.identity_key===source.parsed.source.identity||scripted.iddri.translation_of&&r.registration_link)).map(r=>r.id)};
+    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id||r.id===scripted.gfw?.corroborates||(scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium)&&r.identity_key===source.parsed.source.identity||scripted.riseup&&scripted.event_url&&r.event_url===scripted.event_url||scripted.iddri&&(r.identity_key===source.parsed.source.identity||scripted.iddri.translation_of&&r.registration_link)).map(r=>r.id)};
 }

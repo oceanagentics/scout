@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST]])).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM]])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -2246,5 +2246,76 @@ test('actual Blue Marine response retains Normal priority and a complete recap, 
   const repeat=await collectHSA(db,scoped);assert.equal(repeat.requests,6);assert.equal(repeat.skipped,6);assert.equal(repeat.created+repeat.changed+repeat.assessed+repeat.candidates,0);assert.equal(calls,1);
   const after=(await db.query('select * from scout.records order by id')).rows;assert.equal(after.length,before.length+1);assert.deepEqual(after.filter(r=>r.id!==record.id),before);assert.deepEqual(after.find(r=>r.id===record.id),record);
   assert.equal(live.ledger.attempts,20);assert.equal(live.run.stats.model_attempts.length,1);assert.equal(live.run.stats.model_attempts[0].input_bound,7292);assert.equal(live.run.stats.model_usage[0].promptTokenCount,1243);assert.equal(live.run.stats.model_usage[0].candidatesTokenCount,329);assert.equal(live.repeat.stats.model_attempts,undefined);
+ }finally{await db.close();}
+});
+
+test('Symposium actual bounded alternatives preserve separate edition/workshop/recording facts and repeat with no model',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/symposium-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[SYMPOSIUM])).rows[0],requested=[],options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;requested.push(u);const r=Object.values(f).find(r=>r.url===u);assert.ok(r,u);return r;}};
+  const first=await collectHSA(db,options);assert.equal(first.candidates,6,first.warnings.join('; '));assert.equal(first.requests,3);assert.equal(first.pages,3);assert.equal(first.assessed+first.created+first.changed,0);assert.equal(first.pending,6);
+  const sources=(await db.query('select * from scout.evidence')).rows,parent=sources.find(s=>s.parsed.symposium.key==='edition'),workshop=sources.find(s=>s.parsed.symposium.key.startsWith('workshop')),recordings=sources.filter(s=>s.parsed.kind==='announcement');
+  assert.equal(parent.parsed.start_on,'2026-03-10');assert.equal(parent.parsed.end_on,'2026-03-12');assert.match(parent.parsed.location,/Museu do Amanhã/);assert.equal(parent.parsed.organization,null);
+  assert.equal(workshop.parsed.title,'Friday Workshop: The BBNJ Agreement Expert Group');assert.equal(workshop.parsed.organization,'BBNJ Agreement Expert Group');assert.equal(workshop.parsed.description.length,225);assert.equal(workshop.parsed.start_on,'2026-03-13');assert.equal(workshop.parsed.date_parts.confirmed,true);assert.match(workshop.parsed.location,/Windsor Florida Hotel/);
+  for(const k of ['end_on','starts_at','ends_at','time_zone','registration_url','status'])assert.equal(workshop.parsed[k],null,k);
+  assert.deepEqual(recordings.map(s=>s.parsed.symposium.key).sort(),['recording:panel:4','recording:panel:5','recording:panel:8','recording:panel:9']);
+  for(const r of recordings){for(const k of ['location','starts_at','ends_at','start_on','end_on','event_url','registration_url','organization'])assert.equal(r.parsed[k],null,k);assert.equal(r.parsed.source.links.length,1);assert.match(r.parsed.source.links[0],/^https:\/\/www.youtube.com\//);assert.doesNotMatch(r.parsed.source.links[0],/[?&]si=/);}
+  assert.ok(recordings.find(r=>r.parsed.symposium.key.endsWith(':4')).parsed.source.links[0].includes('t=1614'));
+  for(const s of sources){assert.equal(s.published_at,null);assert.equal(s.record_id,null);assert.equal(s.parsed.assessment.state,'pending');assert.ok(s.parsed.description.length<=280);assert.match(s.parsed.description,/[.!?]$/);assert.equal(JSON.parse(s.content).body,Object.values(f).find(r=>r.url===s.url).body);}
+  const input=await assessmentInput(db,workshop,tracker);assert.equal(input.context_truncated,false);assert.match(input.text,/active, needs-driven mechanism/);assert.doesNotMatch(input.text,/Museu|Invitation Only|Coffee Break|Submit/);
+  f.home.body=f.home.body.replace('STAY INFORMED','MAILING LIST');f['session_recordings_2026'].body=f['session_recordings_2026'].body.replaceAll('v-wXwf-FYfyOLUsj','cosmetic-token');f['satellite-events-2026'].body=f['satellite-events-2026'].body.replace('Coffee Break','Refreshments');
+  const repeat=await collectHSA(db,options);assert.equal(repeat.skipped,6);assert.equal(repeat.candidates+repeat.assessed+repeat.created+repeat.changed,0);assert.equal(repeat.pending,6);assert.equal(requested.length,6);assert.ok(!requested.includes(SYMPOSIUM+'2026'));assert.equal(f.observed_limits.byte_limit,524288);
+  const runs=(await db.query('select stats from scout.collection_runs')).rows;assert.ok(runs.every(r=>!r.stats.model_attempts&&!r.stats.model_usage));assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('Symposium title/material/date changes keep supported identity; annual editions and individual recordings cannot merge',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/symposium-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[SYMPOSIUM])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);}};
+  await collectHSA(db,options);const initial=(await db.query("select * from scout.evidence where parsed#>>'{symposium,key}' like 'workshop:%'")).rows[0],i=await assessmentInput(db,initial,tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),decision={...result,source_id:i.source_id,candidate,quotes:[candidate.description]};
+  validateDecision(decision,i);
+  for(const change of [{starts_at:'2026-03-13T09:00:00Z'},{location:'Museu do Amanhã'},{registration_url:SYMPOSIUM+'2026'},{organization:'European Union'},{kind:'treaty_status'},{description:'An incomplete fragment'}])assert.throws(()=>validateDecision({...decision,candidate:{...candidate,...change}},i));
+  for(const key of ['symposium:2025:workshop:1902920181','symposium:2026:edition','symposium:2026:recording:panel:4'])assert.throws(()=>validateDecision({...decision,action:'supporting_evidence',record_id:'other'},{...i,candidates:[{id:'other',identity_key:key,kind:'event',title:candidate.title}],exact_ids:['other']}),/identities must stay separate/);
+  const model=async(_p,inputs)=>inputs.map(x=>({...result,source_id:x.source_id,action:x.exact_ids.length?'update':'new',record_id:x.exact_ids[0]??null,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,x.scripted[k]??null]))),quotes:[x.scripted.title,x.scripted.description]}));
+  assert.equal((await collectHSA(db,{...options,sourceId:initial.id,model})).created,1);const record=(await db.query('select * from scout.records')).rows[0];
+  f['satellite-events-2026'].body=f['satellite-events-2026'].body.replace('Friday Workshop: The BBNJ Agreement Expert Group ','Friday Workshop: BBNJ Agreement Expert Group — CHM ');
+  assert.equal((await collectHSA(db,options)).candidates,1);let current=(await db.query("select * from scout.evidence where parsed#>>'{symposium,key}' like 'workshop:%' order by collected_at desc limit 1")).rows[0];assert.equal(current.parsed.source.identity,initial.parsed.source.identity);assert.equal(current.parsed.source.previous_id,initial.id);
+  const corrected=await collectHSA(db,{...options,sourceId:current.id,model});assert.equal(corrected.changed,1,corrected.warnings.join('; '));assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,1);assert.equal((await db.query('select id from scout.records')).rows[0].id,record.id);
+  f['satellite-events-2026'].body=f['satellite-events-2026'].body.replace('Friday 13 March','Friday 20 March');assert.equal((await collectHSA(db,options)).candidates,1);current=(await db.query("select * from scout.evidence where parsed#>>'{symposium,key}' like 'workshop:%' order by collected_at desc limit 1")).rows[0];assert.equal(current.parsed.start_on,'2026-03-20');assert.match(current.parsed.description,/20 March/);
+  f.home.body=f.home.body.replace('held on 10-12 March 2026','held on 11-12 March 2026');assert.equal((await collectHSA(db,options)).candidates,1);
+  f['session_recordings_2026'].body=f['session_recordings_2026'].body.replace('interoperable and reliable data systems','interoperable and accessible data systems');assert.equal((await collectHSA(db,options)).candidates,1);
+  for(const page of Object.values(f).filter(p=>p.body)){page.body=page.body.replaceAll('2026','2027');page.url=page.url.replaceAll('2026','2027');}
+  const next=await collectHSA(db,options);assert.equal(next.candidates,6,next.warnings.join('; '));const fresh=(await db.query("select * from scout.evidence where parsed#>>'{symposium,edition}'='2027'")).rows;assert.equal(fresh.length,6);assert.ok(fresh.every(s=>!s.parsed.source.previous_id&&s.parsed.source.identity.startsWith('symposium:2027:')));
+ }finally{await db.close();}
+});
+
+test('Symposium failed or malformed sources protect stale pending work and cannot turn recordings, deadlines or navigation into sessions',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/symposium-website.json.gz',import.meta.url))));let calls=0,failed=false;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[SYMPOSIUM])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;if(failed&&u.includes('satellite-events'))throw new Error('Injected HTTP 403');return Object.values(f).find(r=>r.url===u);}};
+  await collectHSA(db,options);const source=(await db.query("select * from scout.evidence where parsed#>>'{symposium,key}' like 'workshop:%'")).rows[0],scoped={...options,sourceId:source.id,model:async()=>{calls++;throw new Error('Stale input must not be assessed');}},base=f['satellite-events-2026'].body;
+  for(const [from,to] of [['</html>',''],['<title>Satellite events 2026</title>','<title>Satellite events 2025</title>'],['field="text"><strong>Friday Workshop:','field="other"><strong>Friday Workshop:'],['will host a one-day workshop','participation deadline for a workshop']]){
+   f['satellite-events-2026'].body=base.replace(from,to);const run=await collectHSA(db,scoped);assert.equal(run.assessed+run.created+run.changed+run.candidates,0);assert.equal(calls,0);
+  }
+  f['satellite-events-2026'].body=base;failed=true;const outage=await collectHSA(db,scoped);assert.match(outage.warnings.join(' '),/Injected HTTP 403/);assert.equal(calls,0);failed=false;
+  const recording=(await db.query("select * from scout.evidence where parsed#>>'{symposium,key}'='recording:panel:9'")).rows[0],i=await assessmentInput(db,recording,tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),decision={...result,source_id:i.source_id,candidate,quotes:[candidate.description]};validateDecision(decision,i);
+  for(const change of [{kind:'event'},{registration_url:i.links[0]},{starts_at:'2026-03-12T09:00:00Z'},{organization:'INPO'}])assert.throws(()=>validateDecision({...decision,candidate:{...candidate,...change}},i));
+  f['session_recordings_2026'].body=f['session_recordings_2026'].body.replaceAll('li_title__2622084878033','unsupported_title');await collectHSA(db,{...scoped,sourceId:recording.id});assert.equal(calls,0);
+  f.home.body=f.home.body.replace('</html>','');const bad=await collectHSA(db,scoped);assert.equal(bad.outcome,'failed');assert.equal(calls,0);assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+ }finally{await db.close();}
+});
+
+test('Symposium workshop date combines same-page edition and session components, keeping conflicts and clocks unknown',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/symposium-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[SYMPOSIUM])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);}},base=f['satellite-events-2026'].body;
+  await collectHSA(db,options);const first=(await db.query("select * from scout.evidence where parsed#>>'{symposium,key}' like 'workshop:%'")).rows[0];assert.equal(first.parsed.start_on,'2026-03-13');assert.deepEqual(first.parsed.date_parts,{heading:'Satellite Events Third BBNJ Symposium 2026',subtitle:'10-12 March 2026 Rio de Janeiro, Brazil',session:'On Friday 13 March,',confirmed:true});
+  for(const [from,to]of [['Third BBNJ Symposium 2026','Third BBNJ Symposium 2025'],['10-12 March 2026','10-12 March 2025'],['On Friday 13 March,','On Thursday 13 March,'],['On Friday 13 March,','On Friday 32 March,']]){
+   f['satellite-events-2026'].body=base.replace(from,to);const run=await collectHSA(db,options);assert.equal(run.candidates,1,run.warnings.join('; '));const source=(await db.query("select * from scout.evidence where parsed#>>'{symposium,key}' like 'workshop:%' order by (parsed#>>'{source,observed_at}') desc limit 1")).rows[0];
+   assert.equal(source.parsed.start_on,null);assert.equal(source.parsed.date_parts.confirmed,false);assert.equal(source.parsed.source.item_key,first.parsed.source.item_key);for(const k of ['starts_at','ends_at','end_on','time_zone'])assert.equal(source.parsed[k],null,k);
+  }
+  f['satellite-events-2026'].body=base.replace('10-12 March 2026','9-11 March 2026');await collectHSA(db,options);const restored=(await db.query("select * from scout.evidence where parsed#>>'{symposium,key}' like 'workshop:%' order by (parsed#>>'{source,observed_at}') desc limit 1")).rows[0];assert.equal(restored.parsed.start_on,'2026-03-13');assert.equal(restored.parsed.end_on,null);
+  assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
  }finally{await db.close();}
 });
