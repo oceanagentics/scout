@@ -10,6 +10,7 @@ export const HSA = 'highseasalliance.bsky.social';
 export const HSA_WEB = 'https://highseasalliance.org/';
 export const IDDRI = 'https://www.iddri.org/en/publications-and-events/high-seas?page=0';
 export const DOSI_WEB = 'https://www.dosi-project.org/biodiversity-beyond-national-jurisdiction-bbnj/';
+export const GFW_WEB = 'https://globalfishingwatch.org/mediacenter/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -404,7 +405,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const hsaWeb=tracker.collector==='web' && tracker.url===HSA_WEB;
   const iddri=tracker.collector==='web' && tracker.url===IDDRI;
   const dosiWeb=tracker.collector==='web' && tracker.url===DOSI_WEB;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const gfw=tracker.collector==='web' && tracker.url===GFW_WEB;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -627,6 +629,88 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         stats[source.changed?'candidates':'skipped']++;pages.set(url,{source});
       }
       covered=selected.length<=3;
+    } else if (gfw) {
+      const home=await read(tracker.url,budget);stats.pages++;
+      if (home.url!==tracker.url || !/<\/html>\s*$/.test(home.body.replace(/<!--[\s\S]*?-->/g,'')) || !home.body.includes(`rel="canonical" href="${tracker.url}"`) ||
+          !home.body.includes('rel="https://api.w.org/" href="https://globalfishingwatch.org/wp-json/"')) throw new Error('GFW media-centre discovery unavailable');
+      const text=html=>visibleText(html.replace(/&#(\d{1,7});/g,(_m,n)=>String.fromCodePoint(+n)).replace(/&#x([a-f0-9]{1,6});/gi,(_m,n)=>String.fromCodePoint(parseInt(n,16))));
+      const rows=[...home.body.matchAll(/<article id="post-(\d+)"[^>]*>([\s\S]*?)<\/article>/g)].map(m=>{
+        const title=m[2].match(/<h3 class="post-title">\s*<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h3>/);
+        const publication=text(m[2].match(/<span class="entry-date">([^<]+)<\/span>/)?.[1]??''),day=new Date(publication+' 00:00:00 GMT');
+        if (!title || !/^[A-Z][a-z]+ \d{1,2}, \d{4}$/.test(publication) || !Number.isFinite(+day) || day.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric',timeZone:'UTC'})!==publication) throw new Error('GFW listing identity/date unavailable');
+        const url=sourceURL(title[1]);
+        if (!/^https:\/\/globalfishingwatch\.org\/(?:press-release|statement|news-story)\/[^/]+\/$/.test(url)) throw new Error('Unsupported GFW media-centre article');
+        return {id:+m[1],url,title:text(title[2]),publication_on:day.toISOString().slice(0,10),raw:m[0]};
+      });
+      if (!rows.length || rows.length>50 || new Set(rows.map(r=>r.id)).size!==rows.length || new Set(rows.map(r=>r.url)).size!==rows.length) throw new Error('Invalid GFW media-centre listing');
+      const seen=(await db.query('select distinct url from scout.evidence where tracker_id=$1',[tracker.id])).rows.map(r=>r.url);
+      const selected=rows.filter(r=>r.publication_on>=since.slice(0,10)||seen.includes(r.url)).sort((a,b)=>b.publication_on.localeCompare(a.publication_on));
+      stats.articles_listed=rows.length;stats.articles_selected=selected.length;
+      stats.warnings.push('GFW covers the current media-centre listing and four news articles; archives, languages, media/PDFs, supporting datasets and separately scheduled events are not fully collected');
+      if (selected.length>4) stats.warnings.push('GFW article limit reached');
+      let supportRead=false;
+      for (const item of selected.slice(0,4)) {
+        try {
+          const apiURL='https://globalfishingwatch.org/wp-json/wp/v2/posts/'+item.id,response=await read(apiURL,budget);stats.pages++;
+          if (response.url!==apiURL || !/application\/json/i.test(response.headers['content-type']??'')) throw new Error('Unexpected GFW article API destination/format');
+          const article=JSON.parse(response.body),published=dates(article.date_gmt+'Z').starts_at;
+          if (article.id!==item.id || article.status!=='publish' || article.type!=='post' || article.link!==item.url || article.yoast_head_json?.canonical!==item.url ||
+              text(article.title?.rendered??'')!==item.title || !published || article.date?.slice(0,10)!==item.publication_on ||
+              article.content?.protected!==false || typeof article.content.rendered!=='string' || !article.content.rendered.includes(`data-elementor-id="${item.id}"`) || !/<\/div>\s*$/.test(article.content.rendered)) throw new Error('GFW article/list facts disagree');
+          // The publisher's rendered post appends a rotating Related Content grid.
+          if (/anwp-pg-/.test(article.content.rendered) && !/<h2\b[^>]*>Related Content<\/h2>/.test(article.content.rendered)) throw new Error('GFW article/related-content boundary unavailable');
+          const content=article.content.rendered.split(/<h2\b[^>]*>Related Content<\/h2>/)[0];
+          const paragraphs=[...content.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>text(m[1])).filter(Boolean);
+          if (!paragraphs.length) throw new Error('GFW article body unavailable');
+          const links=[...new Set([...content.matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(new URL(text(m[1]),item.url).href);}catch{return null;}}).filter(Boolean))].sort();
+          const excerpt=text(article.excerpt?.rendered??''),description=[excerpt,...paragraphs].find(p=>p.length<=280&&/[.!?]$/.test(p))??null;
+          const scripted={kind:'announcement',title:item.title,description,organization:'Global Fishing Watch',location:null,...dates(),event_url:null,registration_url:null,status:null,
+            gfw:{id:item.id,publication_on:item.publication_on}};
+          let support=null;
+          const partnership=item.url==='https://globalfishingwatch.org/press-release/ai2-and-global-fishing-watch-unite-to-bring-ai-agents-to-ocean-monitoring/';
+          if (partnership) {
+            // Verify the retained Ai2 post's actual link against the partner's matching announcement, not topic/title similarity alone.
+            const retained=(await db.query(`select e.record_id,e.content from scout.current_evidence e join scout.trackers t on t.id=e.tracker_id
+              where t.url='https://bsky.app/profile/globalfishingwatch.org' and e.parsed#>>'{source,identity}' like 'post:%'`)).rows.map(e=>({...e,post:JSON.parse(e.content)}))
+              .filter(e=>e.post.author?.handle==='ai2.bsky.social'&&e.post.createdAt?.slice(0,10)===published.slice(0,10)&&/announced a partnership/.test(e.post.text));
+            if (retained.length) {
+              scripted.gfw.identity_unconfirmed=true;
+              try {
+                if (retained.length!==1 || retained[0].post.urls?.length!==1 || supportRead) throw new Error('GFW retained partnership link is ambiguous');
+                supportRead=true;const link=sourceURL(retained[0].post.urls[0]);
+                // This redirect was observed during public-source discovery; the hosted shortener fails TLS. Read its observed publisher destination directly.
+                const resolved=link==='https://buff.ly/l7e7st4'?'https://skylight.global/news/ai2-gfw':link;
+                const fetched=await read(resolved,budget);stats.pages++;
+                support={...fetched,link,requested_url:resolved};
+                const supportTitle=text(fetched.body.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/)?.[1]??''),supportText=text(fetched.body);
+                const matches=paragraphs.filter(p=>p.length>=160&&supportText.includes(p));
+                if (fetched.url!=='https://skylight.global/news/ai2-gfw' || !/text\/html/i.test(fetched.headers['content-type']??'') || !/<\/html>\s*$/.test(fetched.body) ||
+                    supportTitle!==item.title || matches.length<2 || !matches.some(p=>p.includes('jointly develop machine learning models'))) throw new Error('GFW partner announcement identity unconfirmed');
+                delete scripted.gfw.identity_unconfirmed;scripted.gfw.corroborates=retained[0].record_id;
+              } catch(error) {
+                quota ||= Boolean(error.quota);stats.warnings.push(error.message);support??={error:error.message};
+                if (seen.includes(item.url)) continue;
+              }
+            }
+          }
+          // Preserve the complete concrete technical paragraph; the opening press-release boilerplate would crowd it out.
+          const technical=partnership?paragraphs.find(p=>p.startsWith('The technical collaboration also extends beyond Shippy.')):null;
+          const context=[item.title,excerpt,technical??paragraphs.slice(0,2).join(' ')].filter(Boolean).join(' ');
+          const meaningful={text:text(content),links,published_at:published,structured:scripted};
+          if (scripted.gfw.corroborates) {
+            const accepted=(await db.query(`select parsed#>'{source,fields}' as fields from scout.evidence where tracker_id=$1 and url=$2
+              and parsed#>>'{assessment,state}'='complete' and parsed#>>'{gfw,corroborates}'=$3 order by parsed#>>'{assessment,accepted_at}' desc limit 1`,[tracker.id,item.url,scripted.gfw.corroborates])).rows[0];
+            if (accepted && Object.entries(meaningful).some(([key,value])=>accepted.fields[key]!==fingerprint(value))) {
+              scripted.gfw.revision_unconfirmed=true;stats.warnings.push('GFW materially revised corroborating article requires review; retained facts preserved');
+            }
+          }
+          const source=await observe(db,tracker.id,item.url,JSON.stringify({text:context,listing:item.raw,api:response,support}),published,scripted,
+            meaningful,
+            {rank:2,identity:`page:${item.url}`,links:[item.url],parent_url:tracker.url},now());
+          stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+        } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
+      }
+      covered=true;
     } else if (dosiWeb) {
       const home=await read(tracker.url,budget);stats.pages++;
       const feedURL='https://www.dosi-project.org/feed/';
@@ -1006,11 +1090,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!dosiWeb||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
