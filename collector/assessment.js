@@ -52,6 +52,7 @@ export function validateDecision(result, input) {
   if (input.scripted.iucn && existing?.identity_key?.startsWith('iucn:node:') && existing.identity_key!==`iucn:node:${input.scripted.iucn.id}`) fail('distinct IUCN source node');
   if (input.scripted.oceancare && existing && (!input.exact_ids.includes(existing.id)||existing.identity_key?.startsWith('oceancare:post:')&&existing.identity_key!==`oceancare:post:${input.scripted.oceancare.id}`)) fail('OceanCare identity needs the same publication, not a shared topic/year');
   if (input.scripted.gof && existing && !input.exact_ids.includes(existing.id)) fail('GOF identity needs the same project or exact conference edition/session');
+  if (input.scripted.harvest && existing && !input.exact_ids.includes(existing.id)) fail('Harvest identity needs the same registration and year, not a shared topic or reused URL');
   if (input.scripted.side_event?.id && existing?.event_url?.match(/^https:\/\/www\.cbd\.int\/side-events\/(\d+)$/)?.[1] &&
       existing.event_url!==input.scripted.event_url) fail('distinct CBD session ID');
   if (result.record_id !== null && !existing) fail('identity outside shortlist');
@@ -106,6 +107,8 @@ export function validateDecision(result, input) {
   if (input.scripted.oceancare && (c.kind!=='announcement'||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description)||['starts_at','ends_at','location','event_url','registration_url','status'].some(f=>c[f]!==null)||result.clear_fields.length)) fail('OceanCare requires complete announcement facts, not inferred event or official treaty facts');
   if (input.scripted.gof && (c.kind!==input.scripted.kind||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description)||
       ['starts_at','ends_at','location','event_url','registration_url','status',...(c.kind==='event'?['organization']:[])].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.length)) fail('GOF project/session facts or complete source sentence unconfirmed');
+  if (input.scripted.harvest && (c.kind!=='event'||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description)||
+      ['starts_at','ends_at','location','event_url','registration_url','status','organization'].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.length)) fail('Harvest session facts or complete source sentence unconfirmed');
   if (input.scripted.iddri && (c.kind!==input.scripted.kind||c.title!==input.scripted.title||
       ['starts_at','ends_at','location','status','event_url','registration_url',...(c.kind==='event'?['organization']:[])].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.includes('status'))) fail('IDDRI publication/session facts unconfirmed');
   if (input.scripted.side_event && (c.kind!=='event'||c.title!==input.scripted.title ||
@@ -158,7 +161,7 @@ export async function assessmentInput(db, source, tracker) {
   const content=source.parsed.side_event||source.parsed.dosi_web?source.content:doalosArticle(dosiArticle(source.content,source.url),source.url);
   const scripted=Object.fromEntries(Object.entries(source.parsed).filter(([key])=>!['source','assessment'].includes(key)));
   const zoom=/^https:\/\/[^/]+\.zoom\.us\/webinar\/register\//.test(source.url) && scripted.local_schedule;
-  const conference=scripted.side_event || scripted.hsa_web?.session || scripted.iddri && scripted.kind==='event' || source.url==='https://www.un.org/bbnjagreement/en' && scripted.kind==='event' && scripted.registration_deadline_on;
+  const conference=scripted.side_event || scripted.hsa_web?.session || scripted.harvest || scripted.iddri && scripted.kind==='event' || source.url==='https://www.un.org/bbnjagreement/en' && scripted.kind==='event' && scripted.registration_deadline_on;
   if (zoom && /co-organized by the High Seas Alliance\b/.test(scripted.description??'')) scripted.organization='High Seas Alliance';
   if (scripted.description) scripted.description=Array.from(scripted.description).slice(0,280).join('');
   if (scripted.title) scripted.title=Array.from(scripted.title).slice(0,400).join('');
@@ -203,8 +206,8 @@ export async function assessmentInput(db, source, tracker) {
   }
   for (const candidate of candidates) {
     candidate.title=Array.from(candidate.title).slice(0,240).join('');
-    // These announcement shortlists retain all three identities and full source context without empty event fields.
-    if (scripted.iucn||scripted.oceancare||scripted.gof&&scripted.kind==='announcement') for (const field of ['event_url','starts_at','ends_at','status','calendar_date','registration_link']) {
+    // Keep identities and supported facts without redundant empty shortlist fields.
+    if (scripted.iucn||scripted.oceancare||scripted.harvest||scripted.gof&&scripted.kind==='announcement') for (const field of ['event_url','starts_at','ends_at','status','calendar_date','registration_link']) {
       if (!candidate[field]) delete candidate[field];
     }
   }

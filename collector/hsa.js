@@ -14,6 +14,7 @@ export const GFW_WEB = 'https://globalfishingwatch.org/mediacenter/';
 export const IUCN = 'https://iucn.org/our-work/topic/high-seas';
 export const GOF = 'https://globaloceanforum.com/';
 export const OCEANCARE = 'https://www.oceancare.org/en/';
+export const HARVEST = 'https://harveststrategies.org/abnj/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -412,7 +413,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const iucn=tracker.collector==='web' && tracker.url===IUCN;
   const gof=tracker.collector==='web' && tracker.url===GOF;
   const oceancare=tracker.collector==='web' && tracker.url===OCEANCARE;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const harvest=tracker.collector==='web' && tracker.url===HARVEST;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -635,6 +637,60 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         stats[source.changed?'candidates':'skipped']++;pages.set(url,{source});
       }
       covered=selected.length<=3;
+    } else if (harvest) {
+      const home=await read(tracker.url,budget);stats.pages++;
+      const listing='https://harveststrategies.org/what-are-harvest-strategies/resources-webinars/';
+      const block=home.body.match(/id="Coming-Soon">[\s\S]*?(<h4\b[^>]*>[\s\S]*?)<div class="wp-block-buttons\b/)?.[1];
+      const text=html=>visibleText(html.replace(/&#(\d{1,7});/g,(_m,n)=>String.fromCodePoint(+n)));
+      const heading=block&&text(block.match(/<h4\b[^>]*>([\s\S]*?)<\/h4>/)?.[1]??'');
+      const paragraphs=[...(block??'').matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>text(m[1]));
+      const title=paragraphs[0],when=paragraphs[1]?.match(/^Date: (January|February|March|April|May|June|July|August|September|October|November|December) (\d{1,2}), (20\d{2}), ([01]?\d|2[0-3]):([0-5]\d) GMT$/);
+      const links=[...(block??'').matchAll(/href="([^"]+)"/g)].map(m=>sourceURL(text(m[1])));
+      const registration=links[0],meeting=registration?.match(/^https:\/\/[a-z0-9]+\.zoom\.us\/meeting\/register\/([\w-]+)$/)?.[1];
+      if (home.url!==tracker.url || !/<\/html>\s*$/.test(home.body) || !home.body.includes(`rel="canonical" href="${tracker.url}"`) || !home.body.includes(`href="${listing}"`) ||
+          !['UPCOMING WEBINAR','CANCELLED WEBINAR','CANCELED WEBINAR'].includes(heading) || !title || !when || paragraphs.length!==3 || links.length!==1 || !meeting) throw new Error('Harvest current webinar identity/GMT schedule unavailable; archives are not upcoming events');
+      const month=['January','February','March','April','May','June','July','August','September','October','November','December'].indexOf(when[1])+1;
+      const day=dates(`${when[3]}-${String(month).padStart(2,'0')}-${when[2].padStart(2,'0')}`).start_on;
+      if (!day) throw new Error('Invalid Harvest webinar date');
+      const key=`${meeting}:${when[3]}`,cancelled=/CANCEL/.test(heading);
+      const previous=(await db.query(`select * from scout.evidence where tracker_id=$1 and parsed#>>'{source,item_key}'=$2 and parsed->>'starts_at' is not null and record_id is not null
+        order by coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc limit 1`,[tracker.id,key])).rows[0];
+      if (previous && previous.parsed.title!==title) throw new Error('Harvest reused registration title changed; session identity needs review');
+      const scripted={kind:'event',title,organization:null,location:null,description:null,...dates(day+'T'+when[4].padStart(2,'0')+':'+when[5]+':00Z'),
+        event_url:registration,registration_url:registration,status:cancelled?'cancelled':'scheduled',harvest:{meeting,year:when[3]}};
+      const raw=[home];let detail='',agenda='';
+      try {
+        const index=await read(listing,budget);stats.pages++;raw.push(index);
+        const section=index.body.match(/<h4 class="wp-block-heading">Our (?:upcoming|cancelled|canceled) webinar: ([\s\S]*?)<\/h4>([\s\S]*?)<\/ul> <\/li>[\s\S]*?<\/ul>/);
+        if (index.url!==listing || !/<\/html>\s*$/.test(index.body) || !index.body.includes(`rel="canonical" href="${listing}"`) || !section || text(section[1])!==title ||
+            new Set([...section[0].matchAll(/href="([^"]+)"/g)].map(m=>sourceURL(text(m[1])))).size!==1 || !section[0].includes(registration)) throw new Error('Harvest webinar detail/registration identity disagreement');
+        detail=text(section[0]);
+        const expected=new Date(scripted.starts_at).toLocaleDateString('en-US',{timeZone:'UTC',weekday:'long',month:'long',day:'numeric',year:'numeric'});
+        const date=detail.match(/Date: (.*?) Duration:/)?.[1],duration=detail.match(/Duration: (\d+(?:\.\d+)?) hours? Description:/)?.[1];
+        const description=detail.match(/Description: (.*?) Featured Speakers:/)?.[1];
+        if (date!==expected || !duration || +duration<=0 || +duration>24 || !description) throw new Error('Harvest webinar detail date/duration/description disagreement');
+        const response=await read(registration,budget);stats.pages++;raw.push(response);
+        const zoom=JSON.parse(response.body.match(/\nmeeting: (\{[^\n]+\}),\s*\n/)?.[1]??'null');
+        const zone=response.body.match(/\ntimezoneId: "([^"]+)"/)?.[1],local=response.body.match(/\nmeetingTime: '([A-Z][a-z]{2}) (\d{1,2}), (\d{4}) (\d{2}):([0-5]\d) (AM|PM)'/);
+        if (response.url!==registration || !/<\/html>\s*$/.test(response.body) || !zoom || normalize(zoom.topic)!==title || typeof zoom.agenda!=='string' || !zone || !local) throw new Error('Harvest Zoom identity/schedule unavailable');
+        const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:zone,month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true}).formatToParts(new Date(scripted.starts_at)).map(p=>[p.type,p.value]));
+        if (['month','day','year','hour','minute','dayPeriod'].some((k,i)=>parts[k]!==local[i+1])) throw new Error('Harvest publisher/Zoom clocks conflict');
+        agenda=normalize(zoom.agenda.split(/\n\s*\n/)[0]);
+        if (agenda.replace(/\s/g,'')!==description.replace(/\s/g,'')) throw new Error('Harvest publisher/Zoom descriptions conflict');
+        scripted.ends_at=new Date(Date.parse(scripted.starts_at)+Number(duration)*3600000).toISOString();
+        scripted.end_on=scripted.ends_at.slice(0,10);
+        scripted.description=agenda.match(/[^.!?]+[.!?](?=\s|$)/g)?.map(s=>s.trim()).filter(s=>Array.from(s).length<=280).at(-1)??null;
+      } catch(error) {
+        // A publisher can cancel an established session after its registration disappears.
+        if (!cancelled || previous?.parsed.title!==title || previous.parsed.starts_at!==scripted.starts_at || !previous.record_id || /disagreement|conflict/.test(error.message)) throw error;
+        stats.warnings.push(`Harvest cancellation retained from publisher; supporting detail unavailable: ${error.message}`);
+        Object.assign(scripted,dates(),{description:null});detail='';agenda='';
+      }
+      stats.warnings.push('Harvest covers the one named current webinar in at most three reads; archived recordings, ABNJ resource cards, factsheets, tools, PDFs, videos, translations and other sessions remain outside this slice');
+      const source=await observe(db,tracker.id,tracker.url,JSON.stringify({text:[title,heading,paragraphs[1],agenda].filter(Boolean).join(' '),responses:raw}),null,scripted,
+        {listing:text(block),detail,agenda,structured:scripted},
+        {rank:2,identity:`harvest:meeting:${key}`,item_key:key,links:[listing,registration]},now());
+      stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});covered=true;
     } else if (oceancare) {
       const home=await read(tracker.url,budget);stats.pages++;
       const listing=OCEANCARE+'stories-and-news/';
@@ -1232,11 +1288,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
