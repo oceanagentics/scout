@@ -1768,7 +1768,7 @@ test('Harvest material changes, corroborated reschedules and publisher cancellat
  try{
   const tracker=(await db.query('select * from scout.trackers where url=$1',[HARVEST])).rows[0];
   const options={trackerId:tracker.id,validate:true,since:'2026-10-01',read:async(u,b)=>{b.requests++;if(unavailable&&u===f.registration.url)throw new Error('Injected HTTP 404');return Object.values(f).find(r=>r.url===u);},
-   model:async(_p,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,action:i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),quotes:[i.scripted.title]}));}};
+   model:async(_p,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,action:i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,candidate:full({kind:'event',title:i.scripted.title,description:i.scripted.description}),quotes:[i.scripted.title]}));}};
   await collectHSA(db,options);const original=(await db.query('select * from scout.records')).rows[0];
   for(const name of ['webinars','registration'])f[name].body=f[name].body.replaceAll('and more.','and practical examples.');
   const material=await collectHSA(db,options);assert.equal(material.changed,1,material.warnings.join('; '));assert.equal(material.created,0);assert.match((await db.query('select description from scout.records')).rows[0].description,/practical examples/);
@@ -1850,8 +1850,9 @@ test('Harvest actual event context and existing identities fit the unchanged mod
 });
 
 
-test('actual Harvest response exposes omitted verified schedule and registration while retaining Normal description and distinct identity',async()=>{
- const {live}=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/harvest-website.json.gz',import.meta.url))));
+test('actual Harvest all-null response retains verified event facts, original model decision and Normal relevance without another model call',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/harvest-website.json.gz',import.meta.url)))),{live}=f;let calls=0;
+ try{
  validateDecision(Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]])),live.input);
  assert.equal(live.decision.state,'complete');assert.equal(live.decision.priority,'normal');assert.equal(live.record.priority,'normal');
  assert.equal(live.record.kind,'event');assert.equal(live.record.title,live.input.scripted.title);assert.equal(live.record.description,live.input.scripted.description);assert.equal(live.record.description.length,181);
@@ -1862,4 +1863,54 @@ test('actual Harvest response exposes omitted verified schedule and registration
  assert.equal(live.record.identity_key,'harvest:meeting:X7ub2wxiR2-eFKqk8Taqvg:2026');assert.deepEqual(live.decision.clear_fields,[]);assert.equal(live.decision.model_decision,undefined);
  assert.equal(live.record.organization,null);assert.equal(live.record.location,null);assert.equal(live.record.last_communicated_at,null);assert.equal(live.accounting.model_attempts.length,1);
  assert.doesNotMatch(live.input.text,/\bBBNJ\b|clearing.house|architecture/i);
+ const tracker=(await db.query('select * from scout.trackers where url=$1',[HARVEST])).rows[0];
+ const options={trackerId:tracker.id,validate:true,since:'2026-10-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async(_p,inputs)=>{calls++;return inputs.map(i=>({...Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]])),source_id:i.source_id}));}};
+ const run=await collectHSA(db,options);assert.equal(run.created,1,run.warnings.join('; '));assert.equal(run.assessed,1);
+ const record=(await db.query('select * from scout.records')).rows[0],source=(await db.query('select * from scout.evidence')).rows[0];
+ assert.equal(record.starts_at.toISOString(),'2026-11-04T11:00:00.000Z');assert.equal(record.ends_at.toISOString(),'2026-11-04T12:30:00.000Z');assert.equal(record.status,'scheduled');
+ for(const k of ['event_url','registration_url'])assert.equal(record[k],'https://us06web.zoom.us/meeting/register/X7ub2wxiR2-eFKqk8Taqvg');
+ for(const k of ['title','description','priority','organization','location','last_communicated_at'])assert.equal(record[k],live.record[k]);
+ assert.equal(source.content_hash,live.receipt_hash);assert.equal(source.published_at,null);assert.deepEqual(record.date_evidence,{schedule_source:source.id});
+ assert.deepEqual(source.parsed.assessment.model_decision,{...Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]])),source_id:source.id});
+ assert.equal(source.parsed.assessment.reason,live.decision.reason);assert.equal(source.parsed.assessment.priority,'normal');
+ const repeat=await collectHSA(db,options);assert.equal(repeat.assessed+repeat.created+repeat.changed,0);assert.equal(calls,1);assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+ const repaired=live.correction;validateDecision(Object.fromEntries(SCHEMA.items.required.map(k=>[k,repaired.assessment[k]])),live.input);
+ for(const k of ['starts_at','ends_at','event_url','registration_url','status'])assert.equal(k.endsWith('_at')?new Date(repaired.record[k]).toISOString():repaired.record[k],live.input.scripted[k]);
+ for(const k of ['id','identity_key','title','description','priority','organization','location','last_communicated_at'])assert.deepEqual(repaired.record[k],live.record[k]);
+ assert.equal(repaired.content_hash,live.receipt_hash);assert.deepEqual(repaired.assessment.model_decision,Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]])));
+ assert.equal(repaired.provenance.source_fingerprint,live.receipt_hash);assert.equal(repaired.ledger.attempts,17);assert.equal(repaired.repeat.stats.requests,3);assert.equal(repaired.repeat.stats.model_attempts,undefined);assert.equal(repaired.repeat.stats.changed+repaired.repeat.stats.created+repaired.repeat.stats.assessed,0);
+ }finally{await db.close();}
+});
+
+test('Harvest completion rejects conflicting facts and clearing verified facts before changing accepted records',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/harvest-website.json.gz',import.meta.url))));let change=null;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[HARVEST])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-10-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async(_p,inputs)=>inputs.map(i=>{
+   const decision={...result,source_id:i.source_id,action:i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,candidate:full({kind:'event',title:i.scripted.title,description:i.scripted.description}),quotes:[i.scripted.title]};
+   if(change==='clear'){decision.clear_fields=['starts_at','ends_at','event_url','registration_url','status'];decision.quotes=[i.scripted.description];}else if(change)Object.assign(decision.candidate,change);
+   return decision;
+  })};
+  await collectHSA(db,options);const before=(await db.query('select * from scout.records')).rows;
+  for(const name of ['webinars','registration'])f[name].body=f[name].body.replaceAll('and more.','and cancelled management procedures.');
+  for(change of [{starts_at:'2026-11-04T11:01:00.000Z'},{status:'cancelled'},{event_url:f.webinars.url},'clear']){
+   const run=await collectHSA(db,options);assert.equal(run.assessed+run.created+run.changed,0);assert.equal(run.pending,1);assert.match(run.warnings.join(' '),/Assessment rejected/);assert.deepEqual((await db.query('select * from scout.records')).rows,before);
+  }
+  const pending=(await db.query("select * from scout.evidence where parsed#>>'{assessment,state}'='pending'")).rows[0];assert.equal(pending.parsed.assessment.model_decision,undefined);assert.equal(pending.parsed.starts_at,'2026-11-04T11:00:00.000Z');
+ }finally{await db.close();}
+});
+
+test('Harvest completion leaves uncertain, supporting and no-change decisions unfilled and preserves the existing finding',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/harvest-website.json.gz',import.meta.url))));let action='new';
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[HARVEST])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-10-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async(_p,inputs)=>inputs.map(i=>({...result,source_id:i.source_id,action,record_id:action==='new'?null:i.exact_ids[0],candidate:full({kind:'event',title:i.scripted.title,description:i.scripted.description}),quotes:[i.scripted.title]}))};
+  await collectHSA(db,options);const before=(await db.query('select * from scout.records')).rows;
+  for(action of ['uncertain','supporting_evidence','no_substantive_change']){
+   for(const name of ['webinars','registration'])f[name].body=f[name].body.replaceAll('and more.',`and ${action}.`).replaceAll(/and (?:uncertain|supporting_evidence|no_substantive_change)\./g,`and ${action}.`);
+   const run=await collectHSA(db,options);assert.equal(run.created+run.changed,0,run.warnings.join('; '));assert.equal(run.assessed,1);assert.deepEqual((await db.query('select * from scout.records')).rows,before);
+   const source=(await db.query('select * from scout.evidence order by collected_at desc limit 1')).rows[0];assert.equal(source.parsed.assessment.action,action);assert.equal(source.parsed.assessment.model_decision,undefined);
+   for(const k of ['starts_at','ends_at','event_url','registration_url','status'])assert.equal(source.parsed.assessment.candidate[k],null);
+  }
+ }finally{await db.close();}
 });

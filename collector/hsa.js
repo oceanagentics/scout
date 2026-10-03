@@ -1322,6 +1322,12 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         // A parsed registration page supplies its own URL. An explicit link in
         // the retained post can resolve "new" only after the normal identity checks.
         const modelDecision=decision;
+        if (harvest && decision.candidate?.kind==='event' && ['new','update'].includes(decision.action)) {
+          const fields=['starts_at','ends_at','event_url','registration_url','status'].filter(field=>
+            decision.candidate[field]===null && input.scripted[field]!=null && !decision.clear_fields.includes(field));
+          if (fields.length) decision=validateDecision({...decision,candidate:{...decision.candidate,
+            ...Object.fromEntries(fields.map(field=>[field,input.scripted[field]]))}},input);
+        }
         if ((source.parsed.local_schedule || source.parsed.hsa_web?.session || (doalos || sideEvents) && source.parsed.source.item_key) && decision.candidate?.kind==='event' && ['new','update'].includes(decision.action)) {
           const linked=input.candidates.filter(candidate=>candidate.registration_link);
           decision={...decision,candidate:{...decision.candidate,...Object.fromEntries(['event_url','registration_url']
