@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -2142,5 +2142,109 @@ test('actual RISE UP Take Action assessment completes High corroboration, preser
   assert.equal(live.ledger.attempts,19);assert.equal(live.run.stats.model_attempts.length,1);assert.equal(live.run.stats.model_attempts[0].input_bound,7957);
   assert.equal(live.run.stats.model_usage[0].promptTokenCount,1636);assert.equal(live.run.stats.model_usage[0].candidatesTokenCount,435);assert.equal(live.repeat.stats.model_attempts,undefined);
   assert.equal(f.live.decision.state,'uncertain');assert.equal(f.live.decision.candidate,null);assert.equal(f.live.ledger.attempts,18);
+ }finally{await db.close();}
+});
+
+test('Blue Marine actual listing separates parent events, stale badges, related editions and the technical workshop recap',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/bluemarine-website.json.gz',import.meta.url))));let calls=0;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[BLUE_MARINE])).rows[0],requested=[];
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;requested.push(u);const r=Object.values(f).find(r=>r.url===u);assert.ok(r,u);return r;},model:async()=>{throw new Error('Observation-only fixture');}};
+  const first=await collectHSA(db,options);assert.equal(first.candidates,6,first.warnings.join('; '));assert.equal(first.pages,6);assert.equal(first.requests,6);
+  const sources=(await db.query('select * from scout.evidence')).rows,recap=sources.find(s=>s.parsed.blue_marine.recap),parent=sources.find(s=>s.parsed.blue_marine.id==='14884'&&!s.parsed.blue_marine.recap);
+  assert.equal(recap.parsed.kind,'announcement');assert.equal(recap.parsed.description.length,202);assert.equal(recap.parsed.organization,'Blue Marine Foundation');
+  assert.notEqual(recap.parsed.source.identity,parent.parsed.source.identity);assert.equal(recap.url,parent.url);assert.equal(parent.parsed.start_on,'2026-02-18');assert.equal(parent.parsed.end_on,'2026-02-20');
+  for(const field of ['starts_at','ends_at','start_on','end_on','time_zone','location','event_url','registration_url','status'])assert.equal(recap.parsed[field],null,field);
+  for(const s of sources){assert.equal(s.published_at,null);assert.equal(s.parsed.registration_url,null);assert.equal(s.parsed.status,null);assert.equal(s.parsed.starts_at,null);assert.equal(s.parsed.ends_at,null);}
+  const climate=sources.find(s=>s.parsed.blue_marine.id==='16222'),ocean=sources.find(s=>s.parsed.blue_marine.id==='14832'),summit=sources.find(s=>s.parsed.blue_marine.id==='15273');
+  assert.equal(climate.parsed.start_on,'2026-06-22');assert.equal(climate.parsed.end_on,'2026-06-25');assert.equal(ocean.parsed.start_on,'2026-06-16');assert.equal(summit.parsed.start_on,'2026-10-13');
+  const i=await assessmentInput(db,recap,tracker),p=await assessmentInput(db,parent,tracker);
+  assert.equal(i.context_truncated,false);assert.match(i.text,/17 February/);assert.match(i.text,/Latin America and the Caribbean/);assert.doesNotMatch(i.text,/18-20|Lima|Related|2025/);assert.doesNotMatch(p.text,/over 70|hosted a workshop/);
+  assert.equal(JSON.parse(recap.content).body,f.wildlabs.body);assert.equal(JSON.parse(recap.content).card.includes('Past event'),true);
+  assert.ok(summit.parsed.source.links.includes('https://blueearthsummit.com/register-2026'));assert.match(f.registration.body,/be the first to know when tickets are available/);
+  assert.equal(requested.length,6);assert.ok(!requested.some(u=>/songs|challenges|2025|register-2026|wp-json/.test(u)));
+  const scoped={...options,sourceId:recap.id,model:async(_p,inputs)=>{calls++;return inputs.map(x=>({...result,source_id:x.source_id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,x.scripted[k]??null]))),quotes:[x.scripted.description]}));}};
+  const accepted=await collectHSA(db,scoped);assert.equal(accepted.created,1,accepted.warnings.join('; '));assert.equal(accepted.pending,5);
+  const record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.priority,'high');assert.equal(record.starts_at,null);
+  f.home.body=f.home.body.replaceAll('Upcoming event','Past event');f.wildlabs.body=f.wildlabs.body.replaceAll('Related events','Unrelated footer');f.wildlabs.body=f.wildlabs.body.replaceAll('data-aos="fade-up"','data-aos="fade-down"');
+  const repeat=await collectHSA(db,scoped);assert.equal(repeat.skipped,6);assert.equal(repeat.candidates+repeat.assessed+repeat.created+repeat.changed,0);assert.equal(calls,1);assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+  assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('Blue Marine material revisions and workshop/annual identity guards cannot borrow parent facts',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/bluemarine-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[BLUE_MARINE])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const original=(await db.query("select * from scout.evidence where parsed#>>'{blue_marine,recap}'='true'")).rows[0],i=await assessmentInput(db,original,tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),decision={...result,source_id:i.source_id,candidate,quotes:[candidate.description]};
+  validateDecision(decision,i);
+  for(const change of [{kind:'event'},{starts_at:'2026-02-18T00:00:00Z'},{location:'Lima, Peru'},{registration_url:'https://wildlabs.net/event/international-conservation-technology-conference'},{title:'WILDLABS International Conservation Technology Conference 2026'},{description:'An incomplete fragment'}])assert.throws(()=>validateDecision({...decision,candidate:{...candidate,...change}},i));
+  for(const identity of ['bluemarine:14884:2026:event','bluemarine:14884:2025:'+original.parsed.source.item_key.split(':').slice(2).join(':'),'other-workshop']){
+   const existing={id:'other',identity_key:identity,kind:'announcement',title:candidate.title};
+   assert.throws(()=>validateDecision({...decision,action:'supporting_evidence',record_id:'other'},{...i,candidates:[existing],exact_ids:['other']}),/annual identities/);
+  }
+  f.wildlabs.body=f.wildlabs.body.replace('over 70 participants','over 80 participants');const material=await collectHSA(db,options);assert.equal(material.candidates,1);
+  let latest=(await db.query("select * from scout.evidence where parsed#>>'{blue_marine,recap}'='true' order by collected_at desc limit 1")).rows[0];
+  assert.equal(latest.parsed.source.item_key,original.parsed.source.item_key);assert.equal(latest.parsed.source.previous_id,original.id);assert.match(latest.parsed.description,/80 participants/);
+  f.wildlabs.body=f.wildlabs.body.replace('on 17 February:','on 16 February:');assert.equal((await collectHSA(db,options)).candidates,1);
+  latest=(await db.query("select * from scout.evidence where parsed#>>'{blue_marine,recap}'='true' order by collected_at desc limit 1")).rows[0];assert.equal(latest.parsed.start_on,null);assert.match(JSON.parse(latest.content).text,/16 February/);
+  const oldURL=f.wildlabs.url,newURL=oldURL.replace('2026','2027');
+  f.home.body=f.home.body.replaceAll(oldURL,newURL).replaceAll('WILDLABS International Conservation Technology Conference 2026','WILDLABS International Conservation Technology Conference 2027').replaceAll('18-20 February 2026','18-20 February 2027');
+  f.wildlabs={...f.wildlabs,url:newURL,body:f.wildlabs.body.replaceAll('2026','2027').replaceAll('/events/14884','/events/24884')};
+  const edition=await collectHSA(db,options);assert.equal(edition.candidates,2,edition.warnings.join('; '));
+  const newSources=(await db.query("select * from scout.evidence where parsed#>>'{blue_marine,edition}'='2027'")).rows;assert.equal(newSources.length,2);assert.ok(newSources.every(s=>s.parsed.source.identity.startsWith('bluemarine:24884:2027:')&&!s.parsed.source.previous_id));
+ }finally{await db.close();}
+});
+
+test('Blue Marine failed, malformed or conflicting current detail cannot assess stale evidence',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/bluemarine-website.json.gz',import.meta.url))));let fail=false,calls=0;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[BLUE_MARINE])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;if(fail&&u===f.wildlabs.url)throw new Error('Injected HTTP 503');return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const source=(await db.query("select * from scout.evidence where parsed#>>'{blue_marine,recap}'='true'")).rows[0],scoped={...options,sourceId:source.id,model:async()=>{calls++;throw new Error('Must not assess stale receipt');}},base=f.wildlabs.body;
+  for(const [from,to]of [['</html>',''],['<div id="post-content"','<div id="unknown-content"'],['18-20 February 2026','19-20 February 2026'],['<h1 class="postBanner__title animTitle">WILDLABS','<h1 class="postBanner__title animTitle">Other'],['/wp-json/wp/v2/events/14884','/wp-json/wp/v2/pages/14884']]){
+   assert.ok(base.includes(from));f.wildlabs.body=base.replace(from,to);const run=await collectHSA(db,scoped);assert.equal(run.assessed+run.created+run.changed+run.candidates,0);assert.match(run.warnings.join(' '),/Blue Marine/);
+  }
+  f.wildlabs.body=base;fail=true;const outage=await collectHSA(db,scoped);assert.match(outage.warnings.join(' '),/Injected HTTP 503/);assert.equal(calls,0);fail=false;
+  f.home.body=f.home.body.replace('</html>','');const badHome=await collectHSA(db,scoped);assert.equal(badHome.outcome,'failed');assert.equal(calls,0);
+  assert.equal((await db.query('select count(*)::int as n from scout.evidence')).rows[0].n,6);assert.equal((await db.query('select count(*)::int as n from scout.records')).rows[0].n,0);
+ }finally{await db.close();}
+});
+
+test('Blue Marine single-workshop title correction retains its post/edition identity and updates the same recap',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/bluemarine-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[BLUE_MARINE])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const first=(await db.query("select * from scout.evidence where parsed#>>'{blue_marine,recap}'='true'")).rows[0];
+  const model=async(_p,inputs)=>inputs.map(x=>({...result,source_id:x.source_id,action:x.exact_ids.length?'update':'new',record_id:x.exact_ids[0]??null,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,x.scripted[k]??null]))),quotes:[x.scripted.title,x.scripted.description]}));
+  const accepted=await collectHSA(db,{...options,sourceId:first.id,model});assert.equal(accepted.created,1);const record=(await db.query('select * from scout.records')).rows[0];
+  f.wildlabs.body=f.wildlabs.body.replace('The MPA Technology Workshop: Channelling','The MPA Technology Workshop: Applying');
+  const changed=await collectHSA(db,options);assert.equal(changed.candidates,1);const source=(await db.query("select * from scout.evidence where parsed#>>'{blue_marine,recap}'='true' order by collected_at desc limit 1")).rows[0],i=await assessmentInput(db,source,tracker);
+  assert.equal(source.parsed.source.item_key,first.parsed.source.item_key);assert.equal(source.parsed.source.identity,first.parsed.source.identity);assert.equal(source.parsed.source.previous_id,first.id);assert.deepEqual(i.exact_ids,[record.id]);
+  const updated=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(updated.created,0);assert.equal(updated.changed,1,updated.warnings.join('; '));
+  const records=(await db.query('select * from scout.records')).rows;assert.equal(records.length,1);assert.equal(records[0].id,record.id);assert.match(records[0].title,/Applying/);assert.equal(records[0].kind,'announcement');assert.equal(records[0].starts_at,null);
+  const repeat=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(repeat.candidates+repeat.assessed+repeat.changed+repeat.created,0);
+  const paragraph=f.wildlabs.body.slice(f.wildlabs.body.indexOf('<p dir="ltr">Blue Marine Foundation hosted'),f.wildlabs.body.indexOf('</p>',f.wildlabs.body.indexOf('<p dir="ltr">Blue Marine Foundation hosted'))+4);
+  f.wildlabs.body=f.wildlabs.body.replace(paragraph,paragraph+paragraph.replace('The MPA Technology Workshop','A Different Workshop'));
+  const ambiguous=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(ambiguous.assessed+ambiguous.candidates+ambiguous.changed+ambiguous.created,0);assert.match(ambiguous.warnings.join(' '),/paragraph\/session boundary unavailable/);
+ }finally{await db.close();}
+});
+
+test('actual Blue Marine response retains Normal priority and a complete recap, then repeats without calls or changes',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/bluemarine-website.json.gz',import.meta.url)))),live=f.live;let calls=0;
+ try{
+  for(const r of live.prior_records)await db.query('insert into scout.records select * from jsonb_populate_record(null::scout.records,$1::jsonb)',[r]);
+  const before=(await db.query('select * from scout.records order by id')).rows,tracker=(await db.query('select * from scout.trackers where url=$1',[BLUE_MARINE])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const source=(await db.query("select * from scout.evidence where parsed#>>'{blue_marine,recap}'='true'")).rows[0];
+  assert.equal(source.content_hash,live.receipt_hash);const decision=Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]]));validateDecision(decision,live.input);
+  const scoped={...options,sourceId:source.id,model:async()=>{calls++;return[{...decision,source_id:source.id}];}};
+  const first=await collectHSA(db,scoped);assert.equal(first.created,1,first.warnings.join('; '));assert.equal(first.assessed,1);assert.equal(first.changed,0);assert.equal(first.pending,5);
+  const accepted=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0],record=(await db.query('select * from scout.records where id=$1',[accepted.record_id])).rows[0];
+  assert.equal(accepted.parsed.assessment.state,'complete');assert.equal(accepted.parsed.assessment.priority,'normal');assert.equal(accepted.parsed.assessment.model_decision,undefined);assert.equal(record.priority,'normal');assert.equal(record.kind,'announcement');assert.equal(record.description.length,202);assert.equal(record.title,live.record.title);
+  for(const field of ['starts_at','ends_at','location','registration_url','event_url','status'])assert.equal(record[field],null);
+  assert.equal(accepted.parsed.source.item_key,'14884:2026:workshop');assert.equal(accepted.parsed.start_on,null);assert.equal(accepted.published_at,null);
+  const repeat=await collectHSA(db,scoped);assert.equal(repeat.requests,6);assert.equal(repeat.skipped,6);assert.equal(repeat.created+repeat.changed+repeat.assessed+repeat.candidates,0);assert.equal(calls,1);
+  const after=(await db.query('select * from scout.records order by id')).rows;assert.equal(after.length,before.length+1);assert.deepEqual(after.filter(r=>r.id!==record.id),before);assert.deepEqual(after.find(r=>r.id===record.id),record);
+  assert.equal(live.ledger.attempts,20);assert.equal(live.run.stats.model_attempts.length,1);assert.equal(live.run.stats.model_attempts[0].input_bound,7292);assert.equal(live.run.stats.model_usage[0].promptTokenCount,1243);assert.equal(live.run.stats.model_usage[0].candidatesTokenCount,329);assert.equal(live.repeat.stats.model_attempts,undefined);
  }finally{await db.close();}
 });

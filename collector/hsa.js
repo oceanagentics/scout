@@ -16,6 +16,7 @@ export const GOF = 'https://globaloceanforum.com/';
 export const OCEANCARE = 'https://www.oceancare.org/en/';
 export const HARVEST = 'https://harveststrategies.org/abnj/';
 export const RISE_UP = 'https://riseupfortheocean.org/latest/rise-up-navigator/';
+export const BLUE_MARINE = 'https://www.bluemarinefoundation.com/our-events/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -416,7 +417,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const oceancare=tracker.collector==='web' && tracker.url===OCEANCARE;
   const harvest=tracker.collector==='web' && tracker.url===HARVEST;
   const riseup=tracker.collector==='web' && tracker.url===RISE_UP;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const blueMarine=tracker.collector==='web' && tracker.url===BLUE_MARINE;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -798,6 +800,59 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         {listing:text(block),detail,agenda,structured:scripted},
         {rank:2,identity:`harvest:meeting:${key}`,item_key:key,links:[listing,registration]},now());
       stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});covered=true;
+    } else if (blueMarine) {
+      const home=await read(tracker.url,budget);stats.pages++;
+      const main=home.body.match(/<main\b[^>]*>([\s\S]*?)<\/main>/)?.[1];
+      const complete=page=>/<\/html>\s*$/.test(page.body.replace(/<!--[\s\S]*?-->/g,''));
+      const text=html=>visibleText(html.replace(/&#(\d{1,7});/g,(_m,n)=>String.fromCodePoint(+n)).replace(/&#x([a-f0-9]{1,6});/gi,(_m,n)=>String.fromCodePoint(parseInt(n,16))));
+      if (home.url!==tracker.url || !main || !complete(home) || !home.body.includes(`rel="canonical" href="${tracker.url}"`)) throw new Error('Blue Marine listing unavailable');
+      const rows=[...main.matchAll(/<article\b[^>]*>([\s\S]*?)<\/article>/g)].map(m=>({card:m[0],
+        url:m[1].match(/href="(https:\/\/www\.bluemarinefoundation\.com\/our-events\/[^"?#]+\/)"/)?.[1],
+        title:text(m[1].match(/<h[34] class="(?:featureCard|cards)__title">([\s\S]*?)<\/h[34]>/)?.[1]??'')}));
+      if (!rows.length || rows.some(r=>!r.url||!r.title) || new Set(rows.map(r=>r.url)).size!==rows.length) throw new Error('Blue Marine listing cards ambiguous');
+      const relevant=rows.filter(r=>/conference|summit|ocean hub|\bCOP\d+|\bBBNJ\b|high.seas|treaty/i.test(r.title)),selected=relevant.slice(0,LIMITS.pages-1);
+      stats.events_listed=rows.length;stats.events_selected=selected.length;
+      stats.warnings.push(`Blue Marine covers the first ${selected.length} of ${relevant.length} matching listing cards and explicitly named workshop recaps; remaining cards, archive pages, full programmes, PDFs and unverified registration/session schedules remain outside this slice. Upcoming badges do not establish status`);
+      for (const row of selected) try {
+        const page=await read(row.url,budget);stats.pages++;
+        const id=page.body.match(/<link rel="alternate" title="JSON" type="application\/json" href="https:\/\/www\.bluemarinefoundation\.com\/wp-json\/wp\/v2\/events\/(\d+)"/)?.[1];
+        const title=text(page.body.match(/<h1 class="postBanner__title animTitle">([\s\S]*?)<\/h1>/)?.[1]??'');
+        const content=page.body.match(/<div id="post-content"[^>]*>([\s\S]*?)<section id="media" class="related events\b/)?.[1];
+        const body=content?.match(/<section\s+class="postContent\b[^>]*>([\s\S]*?)<\/section>/)?.[1];
+        const years=title.match(/\b20\d\d\b/g)??[];
+        if (page.url!==row.url || !complete(page) || !id || !body || title!==row.title || years.length!==1 || !row.url.includes(years[0]) || !page.body.includes(`rel="canonical" href="${row.url}"`)) throw new Error('Blue Marine detail identity/content unavailable');
+        const dateText=text(content.match(/<h5 class="sidebar__title">Dates<\/h5>\s*<div[^>]*>\s*<p>([^<]+)<\/p>/)?.[1]??'');
+        const location=text(content.match(/<h5 class="sidebar__title">Location<\/h5>\s*<div[^>]*>\s*<p>([^<]+)<\/p>/)?.[1]??'')||null;
+        const range=dateText.match(/^(\d{1,2})(?:[-–](\d{1,2}))? (January|February|March|April|May|June|July|August|September|October|November|December) (20\d\d)$/);
+        const iso=day=>`${range[4]}-${String(['January','February','March','April','May','June','July','August','September','October','November','December'].indexOf(range[3])+1).padStart(2,'0')}-${day.padStart(2,'0')}`;
+        const schedule=range&&range[4]===years[0]?dates(iso(range[1]),iso(range[2]??range[1])):dates();
+        const cardDate=text(row.card.match(/<p class="(?:featureCard|cards)__dateText infoText">([^<]+)<\/p>/)?.[1]??'');
+        const heroDate=text(page.body.match(/<p class="postBanner__dateText">([^<]+)<\/p>/)?.[1]??'');
+        if (!schedule.start_on || !schedule.end_on || [cardDate,heroDate].some(d=>d!==dateText&&d+' '+years[0]!==dateText)) throw new Error('Blue Marine parent date range unconfirmed');
+        const paragraphs=[...body.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>({html:m[1],text:text(m[1])})).filter(p=>p.text);
+        const workshops=paragraphs.filter(p=>/^Blue Marine Foundation hosted a workshop alongside the event on /.test(p.text));
+        if (!paragraphs.length || workshops.length>1) throw new Error('Blue Marine paragraph/session boundary unavailable');
+        const workshop=workshops[0],at=paragraphs.indexOf(workshop);
+        const parent=paragraphs.slice(0,workshop?at:paragraphs.length).map(p=>p.text).join(' ');
+        const links=[...new Set([...content.matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(new URL(text(m[1]),row.url).href);}catch{return null;}}).filter(Boolean))].sort();
+        const sentence=value=>value.match(/[^.!?]+[.!?](?=\s|$)/g)?.map(s=>s.trim()).find(s=>Array.from(s).length<=280)??null;
+        const items=[{key:'event',text:parent,scripted:{kind:'event',title,organization:null,description:sentence(parent),...schedule,location,event_url:row.url,registration_url:null,status:null}}];
+        if (workshop) {
+          const name=text(workshop.html.match(/<strong>([\s\S]*?)<\/strong>/)?.[1]??''),recap=paragraphs.slice(at+1).map(p=>p.text).join(' ');
+          if (!name || !recap || !sentence(recap)) throw new Error('Blue Marine named workshop recap unavailable');
+          // The recap gives 17 February without its own year/clock/place. Keep it an
+          // announcement; the parent conference's 18–20 dates are not session facts.
+          items.push({key:'workshop',text:workshop.text+' '+recap,
+            scripted:{kind:'announcement',title:name,organization:'Blue Marine Foundation',description:sentence(recap),...dates(),location:null,event_url:null,registration_url:null,status:null}});
+        }
+        for (const item of items) {
+          const key=`${id}:${years[0]}:${item.key}`,scripted={...item.scripted,blue_marine:{id,edition:years[0],recap:item.key!=='event'}};
+          const source=await observe(db,tracker.id,row.url,JSON.stringify({text:scripted.title+' '+item.text+(scripted.kind==='event'?' '+dateText+' '+location:''),body:page.body,card:row.card}),null,scripted,{text:item.text,structured:scripted,links},
+            {rank:2,identity:`bluemarine:${key}`,item_key:key,parent_url:tracker.url,links},now());
+          stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+        }
+      } catch(error) {stats.warnings.push(`${row.url}: ${error.message}`);}
+      covered=true;
     } else if (oceancare) {
       const home=await read(tracker.url,budget);stats.pages++;
       const listing=OCEANCARE+'stories-and-news/';
@@ -1395,11 +1450,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
