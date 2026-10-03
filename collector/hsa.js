@@ -426,9 +426,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const cbd=tracker.collector==='web' && tracker.url===CBD_REGISTRY;
   const octo=tracker.collector==='web' && tracker.url===OCTO;
   const explorers=tracker.collector==='web' && tracker.url===EXPLORERS;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo && !explorers) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const discovery=tracker.collector==='bluesky_search' && tracker.url==='https://bsky.app/search?q=BBNJ';
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo && !explorers && !discovery) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
+  if (discovery && (Date.parse(since)>=Date.parse(started)||Date.parse(started)-Date.parse(since)>35*86400000)) throw Object.assign(new Error('Discovery requires a publication window of at most 35 days'),{status:400});
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
   const stats = { created: 0, changed: 0, posts: 0, pages: 0, candidates: 0, skipped: 0, assessed: 0, reused_uncertain: 0, warnings: [] };
   const budget = { requests: 0, deadline: Math.min(deadline, Date.now() + LIMITS.seconds * 1000) };
@@ -437,7 +439,78 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const dateWarnings = new Map();
   let cursor, covered = false, quota = false, feedFailed = false;
   try {
-    if (untc) {
+    if (discovery) {
+      const queries=['BBNJ','"High Seas Treaty"','"traité sur la haute mer"','BBNJCOP1'];
+      const results=[],posts=new Map(),supports=new Map();
+      // The public AppView is documented; the caching host denies search. Cursor
+      // requests also returned 403, so this path deliberately takes one page/query.
+      for (const q of queries) {
+        const params=new URLSearchParams({q,sort:'latest',since:new Date(since).toISOString(),until:started,limit:'5'});
+        try {
+          const url='https://api.bsky.app/xrpc/app.bsky.feed.searchPosts?'+params;
+          const r=await read(url,budget);stats.pages++;
+          if (sourceURL(r.url)!==sourceURL(url)) throw new Error('Unexpected search destination');
+          const data=JSON.parse(r.body);
+          if (!Array.isArray(data.posts)||data.posts.length>5) throw new Error('Unsupported search response');
+          results.push({q,url:r.url,posts:data.posts});
+          if (data.cursor) stats.warnings.push('Discovery one-page query bound reached; cursor access/full search coverage unproven');
+        } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(`Search ${q}: ${error.message}`);if(quota)break;}
+      }
+      // Interleave queries so one language/topic cannot consume all support slots.
+      for (let index=0;index<5;index++) for (const result of results) {
+        const post=result.posts[index];if (!post) continue;
+        const uri=post.uri?.match(/^at:\/\/(did:[^/]+)\/app\.bsky\.feed\.post\/([a-z0-9]+)$/);
+        if (!uri || uri[1]!==post.author?.did || typeof post.author.handle!=='string' || typeof post.cid!=='string' || !/^baf[a-z2-7]+$/.test(post.cid) || post.record?.$type!=='app.bsky.feed.post' || typeof post.record.text!=='string' || !dates(post.record.createdAt).starts_at || !dates(post.indexedAt).starts_at) {
+          stats.warnings.push('Skipped malformed discovery identity/record');continue;
+        }
+        // API since/until constrain sortAt, not necessarily createdAt. Retain both
+        // timestamps, and independently bound publication time for this collector.
+        if (Date.parse(post.record.createdAt)<Date.parse(since)||Date.parse(post.record.createdAt)>=Date.parse(started)) {stats.warnings.push('Discovery publication outside requested window');continue;}
+        const old=posts.get(post.uri);
+        if (old) {old.conflict ||= old.post.cid!==post.cid;old.queries.push({q:result.q,url:result.url});continue;}
+        posts.set(post.uri,{post,url:`https://bsky.app/profile/${uri[1]}/post/${uri[2]}`,queries:[{q:result.q,url:result.url}],urls:links(post)});
+      }
+      const selected=[...posts.values()].filter(item=>!item.conflict);
+      if (selected.length!==posts.size) stats.warnings.push('Conflicting search CIDs for one URI; capture deferred');
+      // One explicit destination/post, six distinct supports/run, registration first.
+      for (const item of [...selected].sort((a,b)=>Number(b.urls.some(u=>/\/register\//.test(u)))-Number(a.urls.some(u=>/\/register\//.test(u))))) {
+        const url=item.urls.find(u=>/\/register\//.test(u))??item.post.embed?.external?.uri??item.urls[0];
+        if (!url) continue;
+        let link;try{link=sourceURL(url);}catch{continue;}item.link=link;
+        if (supports.has(link)) continue;
+        if (supports.size>=LIMITS.pages) {stats.warnings.push('Discovery supporting-page bound reached');continue;}
+        supports.set(link,null);
+        try {
+          const r=await read(link,budget);stats.pages++;
+          if (!/text\/html/i.test(r.headers['content-type']??'') || !/<\/html>(?:\s|<!--[\s\S]*?-->)*$/i.test(r.body)) throw new Error('Supporting page format/integrity unavailable');
+          const parsed=structuredEvents(r.body,r.url);
+          const body=r.body.match(/<(?:article|main)\b[^>]*>([\s\S]*?)<\/(?:article|main)>/i)?.[1]??r.body;
+          supports.set(link,{url:r.url,body:r.body,text:visibleText(body.replace(/<!--[\s\S]*?-->/g,'')),parsed});
+        } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(`Discovery support ${link}: ${error.message}`);}
+      }
+      for (const item of selected) {
+        const {post,url,urls}=item,support=supports.get(item.link);
+        const extracted=support?.parsed;
+        const words=post.record.text.toLowerCase().match(/[\p{L}]{5,}/gu)??[];
+        const verified=extracted && new Set(words.filter(w=>extracted.title.toLowerCase().includes(w)&&!['treaty','webinar','event','register','registration','conference'].includes(w))).size>=2;
+        const scripted={...postRecord(post,[]),organization:null,...dates(),event_url:null,registration_url:null,status:null,date_parts:null};
+        if (/\bside[- ]event\b/i.test(post.record.text) && /attending|join|invited|invitation/i.test(post.record.text)) scripted.kind='event';
+        if (verified) Object.assign(scripted,extracted);
+        scripted.discovery={event_verified:Boolean(verified),support:item.link?(support?'fetched':'unavailable_or_bounded'):'no_link',
+          treaty_unverified:/ratif|accession|\b\d+\s+(?:parties|parti[es])\b|entr[ée]e? en vigueur/i.test([post.record.text,support?.text].filter(Boolean).join(' '))};
+        const text=[post.record.text,support?.text,verified?extracted.description:null].filter(Boolean).join('\n');
+        const source=await observe(db,tracker.id,url,JSON.stringify({text,post,urls,search:{queries:item.queries,since,until:started},support:support??null}),post.record.createdAt,scripted,
+          {uri:post.uri,cid:post.cid,record:post.record,author:{did:post.author.did,handle:post.author.handle,displayName:post.author.displayName??null},urls,
+            support:support?{url:support.url,text:support.text,structured:extracted}:null},
+          {rank:0,identity:`post:${post.uri}`,uri:post.uri,cid:post.cid,queries:item.queries,links:urls.slice(0,10)},now());
+        stats.posts++;stats[source.changed?'candidates':'skipped']++;pages.set(source.id,true);
+        if (post.embed?.$type?.includes('record')) stats.warnings.push('Discovery quoted posts are not expanded');
+      }
+      stats.queries=results.length;
+      covered=results.length===queries.length;
+      feedFailed=!results.length;
+      stats.warnings.push('Discovery covers four configured queries, five posts each and six supporting pages; no exhaustive search or publisher authority is implied');
+    } else if (untc) {
       const response=await read(tracker.url,budget);stats.pages++;
       if (sourceURL(response.url)!==sourceURL(tracker.url)) throw new Error('Unexpected UN source destination; status preserved');
       const parsed=treatyTable(response.body);
@@ -1715,7 +1788,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium || cbd || octo || explorers) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium||cbd||octo||explorers)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium || cbd || octo || explorers || discovery) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium||cbd||octo||explorers||discovery)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {

@@ -1082,9 +1082,15 @@ The missing completed-assessment/accepted-priority gate means these captures are
 
 Actual responses and proof are retained in `tests/fixtures/explorers-calendar.json.gz` and `.cache/scout10-18/`: baseline/final snapshots, source receipts, initial/final deployments, live runs, input previews, ledger, reader/denial checks, test/build logs and `final-verification.json`. Receipt/repeat/source/preservation/reader/file/migration checks pass; completed-assessment, accepted-priority and promotion gates remain explicitly false. Earlier Firebase, HSA/Pew, RISE UP, OCTO/CBD/Symposium and scheduling gaps remain unchanged. No frontend/hosting/login change, Slack/Tavily, schedule/heartbeat, branch or worker was added. **Stop for manager review before Explorers promotion, conditional SCOUT-10.19 or Bluesky discovery.**
 
+**Manager acceptance (2026-10-03):** accepted **d458b9b / v49** as SCOUT-10.18 bounded observation-only delivery after code, actual source/fixture, final 158 tests/build, schedule/programme/exclusion and syndication corrections, hosted initial/repeat and preservation/reader review. All three assessments remain pending and Explorers stays No. SCOUT-11.01 alone is assigned next.
+
+### SCOUT-10.19 — Conference-specific official programme (conditional)
+
+Status: **unconfigured; Enabled No**. Existing tracker `dbf31e84-3622-4fc3-8647-a7280f773aa6` has **no URL**. The intended conference and its official programme URL are required before bounded programme/session collection can be implemented or proven. Do not guess a conference or placeholder URL. Keep exact configuration/No; the manager will include this question in the final gap bundle. It does not block independent SCOUT-11.01 work.
+
 ## SCOUT-11 — Add discovery search
 
-Status: todo
+Status: in progress — SCOUT-11.01 has bounded manual observation proof; completed assessments, promotion, scheduling and Tavily remain open.
 Depends on: SCOUT-03, SCOUT-04, SCOUT-15, SCOUT-16.01; SCOUT-07 for scheduling only.
 
 Outcome: Scheduled Bluesky and web discovery trackers find relevant items outside the known source list within their collection and search budgets.
@@ -1099,7 +1105,7 @@ Acceptance criteria:
 - [ ] Surface potential new publishers for review; do not automatically activate new trackers or increase recurring work.
 - [ ] Verify both discovery methods, new findings, existing-record matches, irrelevant results, unavailable source pages, and quota exhaustion.
 
-Verification: Pending.
+Verification: SCOUT-11.01 below records the disabled Bluesky tracker’s private v51 receipt/repeat, corrected classifications, 162 tests/build and preservation proof. All 18 assessments remain pending under the 20/20 ledger; this does not complete discovery promotion or scheduling.
 Prerequisite: confirm Tavily paid-use/top-up controls and shared quota before its first discovery request; deferred from milestone one.
 
 ## SCOUT-12 — Answer questions in Slack
@@ -1315,7 +1321,7 @@ Normal enabled-model repeats of HUB and IDDRI returned `no_change`, with zero ca
 ## SCOUT-16 — Prove and enable every tracker
 
 Status: in-progress (SCOUT-16.01 backend, SCOUT-16.02, SCOUT-09 and bounded proofs through SCOUT-10.12 reviewed, with Pew’s accepted deferral; seventeen trackers promoted. RISE UP and Blue Marine proofs are accepted/promoted with their earlier uncertainties/pending items preserved; Symposium SCOUT-10.15, CBD SCOUT-10.16, OCTO SCOUT-10.17 and Explorers SCOUT-10.18 have bounded observation proof but quota-deferred live assessments and remain No; HSA website repeat and Pew’s accepted SCOUT-10.11 deferral remain open, and frontend deployment, pending assessments and remaining source proofs stay open.)
-CURRENT ASSIGNMENT: SCOUT-10.18 has reached its review stop. Explorers 2c4cc3ce-ec45-41b5-913e-7e5948b5a3ca remains No with exact configuration preserved. Final private v49 received/repeated three event/programme sources; fresh six-request repeat skips all three with zero changes or model calls. Dates/zones, parent/edition boundaries, ocean exclusions, canonical/registration syndication and bounded inputs pass; 158 tests/build, reader and full preservation checks pass. All three assessments are pending: Pacific2026-10-02 ledger20/20, completed assessment/accepted priority/promotion open. Revisit after genuine allowance and scoped authorization. Preserve prior gaps; no quota probe, cap/paid fallback, idle wait, backlog or OCTO/CBD/Symposium calls. Stop for manager review before Explorers promotion, conditional SCOUT-10.19 or Bluesky discovery.
+CURRENT ASSIGNMENT: SCOUT-11.01 bounded observation-only delivery is complete for manager review on private v51. The exact discovery tracker remains No with 18 pending assessments; actual receipt/repeat, corrected hosted interpretations, 162 tests/build and 31 preservation/access checks pass. Pacific2026-10-02 ledger remains 20/20, with zero model attempts. Stop before promotion or further work. Conditional SCOUT-10.19 remains unconfigured/No; intended conference and official programme URL belong in the manager's final gap bundle. See the SCOUT-11.01 proof below.
 Owner: [Scout milestone 1 manager](codex://threads/01a0f59f-1e17-7f70-beb9-6dc786ecd7cb), using the existing worker `01a0f5b1-68bb-7f90-8288-687b6daeb990` in this local checkout.
 Authorization: user request of 2026-10-02. Implement the plan below one reviewed assignment at a time, including necessary collector deployments and bounded live validation. Preserve the $0 limits, shared database, existing records and source evidence. No new imports, worktrees, scheduling, heartbeat restart, Slack sends or mailbox work is included.
 
@@ -1444,15 +1450,41 @@ Implement groups in this order: official sources; organizer sources with existin
 | 16 / SCOUT-10.16 | Seed 7 — [CBD side-event registry](https://www.cbd.int/side-events/) | BBNJ sessions within CBD meetings. Scope meeting/filter/pagination deliberately, preserve official session IDs where exposed and distinguish similar titles in different meetings. |
 | 17 / SCOUT-10.17 | `9dc6b107-5e12-4124-b4ce-583faf91e50d` — [OCTO webinars](https://octogroup.org/webinars/) | Ocean webinars, marine conservation tools and capacity building. Inspect structured calendar/feed options; follow webinar/registration details and deduplicate syndicated events. |
 | 18 / SCOUT-10.18 | `2c4cc3ce-ec45-41b5-913e-7e5948b5a3ca` — [The Explorers Club calendar](https://www.explorers.org/calendar-of-events/) | Ocean/science/Sea Stories events from a broader calendar. Verify one ocean-relevant inclusion and unrelated exclusion, session timezone/location and separate recurring editions. |
-| Conditional / SCOUT-10.19 | Seed 8 — Conference-specific official programmes; URL currently null | Stay No. Obtain the intended conference and official URL from the user when needed; then implement bounded programme/session extraction and prove exact dates, identity and updates. No guessed conference or placeholder URL. |
+| Conditional / SCOUT-10.19 | Seed 8 — `dbf31e84-3622-4fc3-8647-a7280f773aa6`, conference-specific official programmes; URL null | Unconfigured/No. Intended conference and official URL are deferred to the manager’s final gap bundle; then implement bounded programme/session extraction and prove exact dates, identity and updates. No guessed conference or placeholder URL. |
 
 ### SCOUT-11.01 — Prove the existing Bluesky discovery tracker
 
-Status: todo
+Status: **bounded observation-only delivery; awaiting manager review; Enabled No**
 Tracker: seed 21, `2f9bb18f-d925-4bf6-8ed4-8ba477c47cfc`, [BBNJ discovery search](https://bsky.app/search?q=BBNJ), `bluesky_search`.
 Depends on: SCOUT-16.01; run after the source groups above, without waiting on the unconfigured conference.
 
-Use `searchPosts` with the configured separate BBNJ/High Seas Treaty/French/conference queries. Verify actual API access, bounded pages/window, supporting links, irrelevant exclusions and deduplication against author feeds. Retain source provenance and avoid promoting newly discovered publishers automatically. Apply the common live/repeat gate before marking this tracker Yes. If authentication/access is unavailable, leave No and record the exact requirement; do not substitute Tavily silently.
+The [official API directory source](https://raw.githubusercontent.com/bluesky-social/bsky-docs/main/docs/advanced-guides/api-directory.mdx) documents direct public AppView access at `api.bsky.app`, with `public.api.bsky.app` preferred for caching. The [searchPosts lexicon](https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/app/bsky/feed/searchPosts.json) allows provider-dependent authentication and warns that cursors need not exhaust results; `since`/`until` constrain `sortAt`, not necessarily publication time. Actual Scout-transport probes found cached search **403**, cached author feed **200**, and direct AppView first-page search **200** for all four queries without credentials. Direct cursor requests returned **403**; runtime does not retry them or bypass access controls. The configured `bsky.app` page is a JavaScript shell. Documentation-site TLS/502 failures were resolved by reading the official repositories without disabling TLS.
+
+Implemented in the existing collector, with no new tracker, schema, helper, framework or dependency:
+
+- Four separate queries: `BBNJ`, `"High Seas Treaty"`, `"traité sur la haute mer"`, and observed conference tag `BBNJCOP1`. One five-post page each, interleaved to share support capacity; publication window at most 35 days, with default 30 days. The explicit proof window begins **2026-09-01**. API/index/publication timestamps remain distinct.
+- Deduplicate query overlap by AT URI; retain DID, CID, full post, queries/window and supporting HTML. Conflicting CIDs/author identity are deferred. Meaningful post/content/link changes survive; engagement counts, search order and changing query window do not create captures. One explicit support destination per post, six distinct destinations including failed attempts, with registration first and the existing request/time/byte/redirect limits.
+- Discovery has **rank 0** and never promotes publishers or trackers. A single matching structured event page can supply facts; the two HSA MGR posts retain **September 29, date only**, with no invented timezone, organizer or instant. Exact post identities and corroborated registration/date match the existing HSA policy-brief and MGR findings; fixture corroboration preserves reviewed facts and rejects duplicates, incompatible sessions and date changes.
+- The actual Nairobi COP12 **side-event invitation** remains an event with insufficient context and unknown organizer/schedule; no support URL was present. The WILDTRUST simulation recap remains an announcement, not an upcoming event. The Palau conservation-leadership interview supplies an unrelated/general example; its fetched article also contains treaty claims, so the recorded regression retains uncertainty rather than accepting those claims as an announcement or fabricating an event. No live relevance/Low assessment is claimed.
+- Treaty claims in **both posts and fetched supporting text** require official verification, including the Actu Alt Plus article's “101 parties” and entry-into-force claims. Changing the candidate kind cannot turn those claims into accepted announcements. Missing support, unresolved identity and bounded coverage remain explicit.
+
+**Hosted proof, final private v51** (`5f0b2e8b537ffe2779a827dbb3503e88c1319522814c2cbb952481a7320f66d7`):
+
+| Gate | Result |
+| --- | --- |
+| Tests/build | **162 passing tests**, production build passes; recorded identity, source-change, date, failure/quota and classification regressions. |
+| Initial receipt, v50 | `1e58b745-8f2b-4964-a8b2-5ba3a5712dbc`: 20 query results become **18 unique captures**; ten requests, eight successful pages; zero assessments/model attempts/record changes. |
+| Guarded interpretation repair | Before final repeat, repaired only **three unassessed, unowned discovery captures**: Actu Alt Plus and Blue Manifesto supporting treaty claims, and the Nairobi invitation. Collector lock, exact tracker, pending state, parsed metadata and raw-hash preconditions guarded the transaction. Raw content/hashes and initial receipt remain intact; `source.interpretation_correction.previous` retains the prior interpretation. No general migration or reprocessing was added. |
+| Actual prepared inputs | All **18** retained hosted inputs fit the unchanged 8,000-byte cap, maximum **7,947 bytes**, with explicit context truncation and full raw evidence retained. Actual previews confirm the French guard and Nairobi event/unknown facts; HSA policy-brief and webinar exact IDs are retained. Preview transport was injected: **zero actual model calls**. |
+| Fresh repeat, v51 | `e5923c51-5f0e-4406-a5ea-d31b31765f93`: ten requests, eight successful pages, **18 skipped**, zero new captures/assessments/model attempts/record changes. Corrected metadata survives reuse. |
+| Preservation/access | **31 checks pass**: full tracker configuration, every earlier record/capture/run/accounting row, Auth and other-service controls preserved; four tables/46 columns, thirteen migrations and six deployed files verified. Reader sees No/partial, cannot write records/Enabled or read raw evidence, and has zero newly published sources. Anonymous POST is 401; ordinary disabled-tracker POST is 400. |
+| Completion/promotion | **Open**: all 18 assessments remain pending; Pacific-day **2026-10-02 remains 20/20**. Both runs use `max_attempts=0`. Receipt, mocks and HTTP 200 are not completed-assessment/accepted-priority proof. **Discovery stays No.** |
+
+Hosted support differs from local access: HSA's brief page returned **HTTP 400**, and the Greenpeace redirect failed with a **TLS close_notify** error; both failures repeat without bypass. The other four selected supports were fetched. Locally, the CCF observatory exceeded the byte cap and Sustainability Magazine returned 403; the latter was accessible from hosted transport. Cursor continuation, further queries/tags/languages, older publications, more support links, quoted posts/images/PDFs, official treaty verification and completed relevance assessments remain gaps. The HSA brief's full local page is retained in the fixture; its hosted capture truthfully has unavailable support.
+
+Final totals: **19 records / 144 captures / 101 runs / seventeen Yes / 8 No / 113 pending-or-uncertain**. Only the two new discovery runs and 18 discovery captures were added. Proof is in `tests/fixtures/bluesky-discovery.json.gz` and `.cache/scout11-01/`, including official endpoint/access receipts, actual queries/support, before/after snapshots, v50/v51 deployments, initial/repeat runs, repair plan/readback and prior interpretation snapshots, actual prepared inputs, reader/denial checks, test/build logs and `final-verification.json`.
+
+**Stop for manager review before promotion or further work.** Revisit a targeted assessment only with genuine allowance and scoped authorization. No quota probe, paid fallback, idle reset wait, earlier-source retry, hosting/login change, Slack/Tavily, schedule, heartbeat, branch or worker was added. Conditional SCOUT-10.19 remains unconfigured/No; intended conference and official programme URL remain in the manager's final gap bundle.
 
 SCOUT-11's separate Tavily discovery tracker is **not one of the current 25** and remains future work requiring its existing paid-use/quota checks and a separately authorized inventory addition. Likewise the email-subscription planning tab is not a set of implemented trackers.
 

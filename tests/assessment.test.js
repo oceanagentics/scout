@@ -9,6 +9,70 @@ import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
 import {fieldLabel,filterRecords,orderRecords} from '../src/records.js';
 
+test('recorded discovery interleaves four bounded queries, preserves URI/CID and verifies support without promoting authors',async()=>{
+ const f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/bluesky-discovery.json.gz',import.meta.url)))),db=await database(),requests=[];
+ const aliases=['https://highseasalliance.org/resources/deep-dives-bbnj-cop1/','https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ','https://seas-at-risk.org/publications/blue-manifesto-assessment-2026/','https://earth.org/?p=43067',f.supports[4].url,f.supports[5].url,f.supports[6].url,'https://act.gp/4j1ovfo'];
+ const read=async(url,b)=>{b.requests++;requests.push(url);const u=new URL(url),r=u.pathname.endsWith('searchPosts')?f.queries.find(r=>new URL(r.url).searchParams.get('q')===u.searchParams.get('q')):f.supports[aliases.findIndex(a=>sourceURL(a)===sourceURL(url))];if(!r||r.error)throw new Error(r?.error??'Unrecorded URL');return{...r,url:u.pathname.endsWith('searchPosts')?url:r.url};};
+ try{
+  const tracker=(await db.query("select * from scout.trackers where collector='bluesky_search'")).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01T00:00:00Z',now:()=>f.collected_at,read};
+  const run=await collectHSA(db,options);assert.equal(run.candidates,18,run.warnings.join('; '));assert.equal(run.posts,18);assert.equal(run.queries,4);assert.equal(run.requests,10);assert.equal(run.assessed+run.created+run.changed,0);assert.equal(run.pending,18);
+  assert.deepEqual(requests.slice(0,4).map(u=>new URL(u).searchParams.get('q')),['BBNJ','"High Seas Treaty"','"traité sur la haute mer"','BBNJCOP1']);assert.ok(requests.every(u=>!new URL(u).searchParams.has('cursor')));
+  const sources=(await db.query('select * from scout.evidence where tracker_id=$1',[tracker.id])).rows;
+  for(const s of sources){assert.equal(s.parsed.source.rank,0);assert.equal(s.parsed.assessment.state,'pending');assert.equal(s.parsed.organization,null);assert.equal(s.record_id,null);assert.equal(JSON.parse(s.content).post.cid,s.parsed.source.cid);}
+  const webinar=sources.find(s=>s.url.endsWith('3mw7xgyguen2r'));assert.equal(webinar.parsed.discovery.event_verified,true);assert.equal(webinar.parsed.start_on,'2026-09-29');assert.equal(webinar.parsed.starts_at,null);assert.equal(webinar.parsed.time_zone,null);
+  const recap=sources.find(s=>s.url.endsWith('3mwvgavy4nc2p')),ri=await assessmentInput(db,recap,tracker),rc=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,ri.scripted[k]??null])));assert.equal(rc.kind,'announcement');assert.throws(()=>validateDecision({...result,source_id:ri.source_id,candidate:{...rc,kind:'event'},quotes:[ri.text.slice(0,80)]},ri),/Discovery facts/);
+  const treaty=sources.find(s=>s.url.endsWith('3mwtg3dq5222r')),ti=await assessmentInput(db,treaty,tracker);assert.equal(ti.scripted.discovery.treaty_unverified,true);assert.throws(()=>validateDecision({...result,source_id:ti.source_id,candidate:full({title:ti.scripted.title}),quotes:[ti.text.slice(0,80)]},ti),/official verification/);
+  const article=sources.find(s=>s.url.endsWith('3mwvqlg37oy2c')),ai=await assessmentInput(db,article,tracker);assert.equal(ai.scripted.discovery.treaty_unverified,true);assert.ok(JSON.parse(article.content).support.text.includes('101 parties'));assert.throws(()=>validateDecision({...result,source_id:ai.source_id,candidate:full({title:ai.scripted.title}),quotes:[ai.text.slice(0,80)]},ai),/official verification/);
+  const invitation=sources.find(s=>s.url.endsWith('3mwvcxiobyt26')),ii=await assessmentInput(db,invitation,tracker);assert.equal(ii.scripted.kind,'event');assert.equal(ii.scripted.discovery.event_verified,false);assert.equal(ii.scripted.organization,null);assert.equal(invitation.parsed.starts_at,null);for(const kind of ['announcement','event'])assert.throws(()=>validateDecision({...result,source_id:ii.source_id,candidate:full({kind,title:ii.scripted.title}),quotes:[ii.text.slice(0,80)]},ii),/verified supporting page/);
+  for(const s of sources){const i=await assessmentInput(db,s,tracker);let bytes=0;await gemini({apiKey:'fixture-only',ledger:{query:async()=>({rows:[]})},runId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',fetch:async(_u,o)=>{bytes=Buffer.byteLength(o.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}})(INSTRUCTION,[i],SCHEMA);assert.ok(bytes<=8000,bytes);}
+  const repeat=await collectHSA(db,options);assert.equal(repeat.skipped,18);assert.equal(repeat.candidates+repeat.assessed+repeat.created+repeat.changed,0);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+  await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);await assert.rejects(collectHSA(db,{...options,since:'2026-08-01'}),/35 days/);
+ }finally{await db.close();}
+});
+
+test('discovery deduplicates actual author-feed identities and linked sessions without replacing reviewed facts',async()=>{
+ const f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/bluesky-discovery.json.gz',import.meta.url)))),db=await database();
+ const read=async(url,b)=>{b.requests++;if(url.includes('searchPosts')){const q=new URL(url).searchParams.get('q');return{url,body:JSON.stringify({posts:q==='BBNJCOP1'?JSON.parse(f.queries[3].body).posts:[]})};}const r=f.supports.find(r=>sourceURL(r.url)===sourceURL(url));if(!r||r.error)throw new Error('Unrecorded support');return r;};
+ try{
+  const tracker=(await db.query("select * from scout.trackers where collector='bluesky_search'")).rows[0],author=(await db.query("select id from scout.trackers where seed_key='bbnj-trackers-2026-10-01:17'")).rows[0];
+  for(const r of f.reviewed_records){const fields=['id','identity_key','priority','date_evidence','evidence_rank',...CONTENT_FIELDS];await db.query(`insert into scout.records(${fields.join(',')}) values(${fields.map((_k,i)=>'$'+(i+1)).join(',')})`,fields.map(k=>r[k]));}
+  for(const e of f.reviewed_evidence){await db.query('insert into scout.evidence(id,tracker_id,record_id,url,content_hash,content,parsed,authoritative,last_seen_at) values($1,$2,$3,$4,$5,$6,$7,true,clock_timestamp())',[e.id,author.id,e.record_id,e.url,e.content_hash,JSON.stringify({text:e.parsed.description,urls:[e.parsed.event_url].filter(Boolean)}),e.parsed]);}
+  const original=(await db.query('select * from scout.records order by id')).rows,options={trackerId:tracker.id,validate:true,since:'2026-09-01T00:00:00Z',now:()=>f.collected_at,read};await collectHSA(db,options);
+  const sources=(await db.query('select * from scout.evidence where tracker_id=$1',[tracker.id])).rows;
+  for(const r of f.reviewed_records){const source=sources.find(s=>s.parsed.source.identity===r.identity_key),i=await assessmentInput(db,source,tracker),c=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),d={...result,source_id:i.source_id,action:'supporting_evidence',record_id:r.id,priority:r.priority,candidate:c,quotes:[i.text.slice(0,80)]};assert.ok(i.exact_ids.includes(r.id));validateDecision(d,i);assert.throws(()=>validateDecision({...d,action:'new',record_id:null},i),/existing finding/);assert.throws(()=>validateDecision({...d,action:'update'},i),/existing finding/);
+   let bytes=0;await gemini({apiKey:'fixture-only',ledger:{query:async()=>({rows:[]})},runId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',fetch:async(_u,o)=>{bytes=Buffer.byteLength(o.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify([d])}]}}]});}})(INSTRUCTION,[i],SCHEMA);assert.ok(bytes<=8000,bytes);
+   const model=async(_p,inputs)=>inputs.map(x=>({...d,source_id:x.source_id}));const run=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(run.assessed,1,run.warnings.join('; '));assert.equal(run.created+run.changed,0);
+  }
+  assert.deepEqual((await db.query('select * from scout.records order by id')).rows,original);
+  const old=sources.find(s=>s.url.endsWith('3mvkyjyep6m24')),i=await assessmentInput(db,old,tracker);assert.ok(i.exact_ids.includes(f.reviewed_records.find(r=>r.kind==='event').id));
+  const uncertain={...i,exact_ids:[],candidates:i.candidates.map(r=>({...r,exact:false,calendar_date:'2027-09-29'}))};assert.throws(()=>validateDecision({...result,source_id:i.source_id,action:'supporting_evidence',record_id:f.reviewed_records.find(r=>r.kind==='event').id,candidate:full({kind:'event',title:i.scripted.title}),quotes:[i.text.slice(0,50)]},uncertain),/session\/date/);
+ }finally{await db.close();}
+});
+
+test('discovery detects CID and linked-date changes, ignores engagement, and defers failed or conflicting identities',async()=>{
+ const f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/bluesky-discovery.json.gz',import.meta.url)))),db=await database(),post=JSON.parse(f.queries[3].body).posts[1];let fail=false,conflict=false;
+ const read=async(url,b)=>{b.requests++;if(fail)throw Object.assign(new Error('Source returned HTTP 429'),{quota:true});if(url.includes('searchPosts')){const q=new URL(url).searchParams.get('q');return{url,body:JSON.stringify({posts:q==='BBNJ'?[post]:conflict&&q==='BBNJCOP1'?[{...post,cid:post.cid+'a'}]:[]})};}return f.supports[1];};
+ try{
+  const tracker=(await db.query("select * from scout.trackers where collector='bluesky_search'")).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01T00:00:00Z',now:()=>f.collected_at,read};assert.equal((await collectHSA(db,options)).candidates,1);const old=(await db.query('select * from scout.evidence')).rows[0];
+  post.likeCount=900;post.replyCount=100;post.indexedAt='2026-10-02T00:00:00Z';assert.equal((await collectHSA(db,options)).candidates,0);
+  post.cid=post.cid+'a';assert.equal((await collectHSA(db,options)).candidates,1);f.supports[1].body=f.supports[1].body.replace('Sep 29, 2026 07:30 AM','Sep 30, 2026 07:30 AM');assert.equal((await collectHSA(db,options)).candidates,1);
+  let calls=0;const scoped={...options,sourceId:old.id,model:async()=>{calls++;throw new Error('Stale evidence');}};fail=true;const denied=await collectHSA(db,scoped);assert.equal(denied.outcome,'quota');assert.equal(denied.candidates+denied.assessed+denied.created+denied.changed,0);assert.equal(calls,0);
+  fail=false;conflict=true;assert.equal((await collectHSA(db,scoped)).candidates,0);assert.equal(calls,0);conflict=false;post.author.did='did:plc:wrong';assert.equal((await collectHSA(db,scoped)).candidates,0);assert.equal(calls,0);
+ }finally{await db.close();}
+});
+
+test('recorded discovery interview preserves incidental unverified treaty claims without creating a finding',async()=>{
+ const f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/bluesky-discovery.json.gz',import.meta.url)))),db=await database(),post=JSON.parse(f.queries[1].body).posts[3];
+ const read=async(url,b)=>{b.requests++;return url.includes('searchPosts')?{url,body:JSON.stringify({posts:new URL(url).searchParams.get('q')==='"High Seas Treaty"'?[post]:[]})}:f.supports[3];};
+ try{
+  const tracker=(await db.query("select * from scout.trackers where collector='bluesky_search'")).rows[0];
+  // Fixture decision exercises uncertainty; it is not live model proof.
+  const model=async(_p,inputs)=>inputs.map(i=>({...result,source_id:i.source_id,action:'uncertain',priority:null,reason:'General conservation interview also reports unverified treaty actions; retain uncertainty.',candidate:null,quotes:[post.record.text.split('\n')[0]]}));
+  const run=await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2026-09-01T00:00:00Z',now:()=>f.collected_at,read,model});assert.equal(run.assessed,1,run.warnings.join('; '));assert.equal(run.created+run.changed,0);
+  const source=(await db.query('select * from scout.evidence')).rows[0];assert.equal(source.parsed.assessment.state,'uncertain');assert.equal(source.parsed.discovery.treaty_unverified,true);assert.equal(source.record_id,null);assert.ok(JSON.parse(source.content).support.body.includes('Pragmatic Conservationist'));
+ }finally{await db.close();}
+});
+
 async function database({last=true}={}) {
   const db=new PGlite();
   await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
