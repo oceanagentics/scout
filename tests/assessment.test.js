@@ -297,7 +297,7 @@ test('recorded HUB calendar uses explicit UTC evidence, gates repeats and preser
    action:supporting?'supporting_evidence':i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,
    candidate:{...Object.fromEntries(CONTENT_FIELDS.map(field=>[field,i.scripted[field]??null])),...(supporting?{starts_at:null,ends_at:null,event_url:null,registration_url:null}:{})},quotes:['This practical webinar demonstrates how large language models can help people work with real ocean data in the Ocean Data Platform.']}));};
  try{
-  const tracker=(await db.query("insert into scout.trackers(name,url,collector,coverage,cadence) values('HUB Ocean events calendar','https://www.hubocean.earth/events-calendar','web','Ocean data and AI training','7 days') returning *")).rows[0];
+  const tracker=(await db.query("insert into scout.trackers(name,url,collector,coverage,cadence,enabled) values('HUB Ocean events calendar','https://www.hubocean.earth/events-calendar','web','Ocean data and AI training','7 days',true) returning *")).rows[0];
   const options={trackerId:tracker.id,since:'2026-09-24',read,model};
   const first=await collectHSA(db,options);assert.equal(first.created,1,JSON.stringify(first));assert.equal(calls,1);
   let row=(await db.query('select * from scout.records')).rows[0];assert.equal(row.priority,'high');assert.equal(row.starts_at.toISOString(),'2026-10-22T13:30:00.000Z');assert.equal(row.ends_at.toISOString(),'2026-10-22T14:15:00.000Z');

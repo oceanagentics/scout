@@ -17,6 +17,7 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 
 - Implement only when the user requests implementation. Creating this checklist does not start the build.
 - The user authorized milestone 1 (SCOUT-01–06) with manager chat `01a0f59f-1e17-7f70-beb9-6dc786ecd7cb` assigning/reviewing one worker. The manager heartbeat is paused. Later user-directed chats have their own explicit scopes; this reconciliation neither restarts them nor expands milestone authorization. Stop for review after an assignment; SCOUT-07+ remain unstarted unless separately authorized. Coordinate writers in this shared checkout.
+- **2026-10-02 authorization:** the user requested the Enabled definition/data change and a stepped plan for every tracker, handed to the existing manager for implementation. SCOUT-16 below authorizes that collector sequence, its tests, bounded live proof, scoped deployment and evidence-based promotion. It supersedes older stop-after-expansion limits for this work. The manager may assign/review the existing worker in this same checkout. Scheduling, heartbeat restart, Slack sends, mailbox signup/ingestion, paid services and new tracker imports remain separate decisions.
 - After two unsuccessful approaches or roughly 20 minutes without new evidence, reassess the specific failure and move to independent work; do not automatically hand off or repeat an unchanged failure. Check prior chats/documentation and try materially different supported paths. Respect actual authorization denials and sandbox boundaries. Request user action only for an essential missing capability/decision after authorized alternatives and useful independent work are exhausted. Keep unverified criteria open. Keep the collector sequence; add no upfront feasibility or backup work.
 - Record material changes and deviations under the affected task: date, change, reason, verification/gap, and deferred work's revisit condition. Manager-approved independent work may proceed before a dependency is fully complete; dependent deployment/integration, source evidence, correctness, and the $0 constraint remain required.
 - Use statuses `todo`, `in-progress`, `blocked`, and `done`. Keep task IDs stable. Start with the first task whose dependencies are complete.
@@ -35,12 +36,14 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 - Extract and summarize only new or changed content; reuse stored results. Send only public source material and the specific Scout question to the proposed free model service.
 - Keep collection and notification schedules independent. Trackers retain one cadence interval: daily Bluesky feeds, mostly weekly websites, weekly discovery. Meeting-period notes were intentionally removed and are not operative schedule configuration. Notification time, weekday and time zone still need a decision; UTC event display does not decide them.
 - Import the sheet once to seed trackers. The app owns subsequent edits; do not introduce continuing sheet synchronization.
+- **Enabled = proven collector:** Yes requires a working, tested collector with actual received/persisted source data for the exact configuration. No means unconfigured, unimplemented, unproven or invalidated proof. It is not a pause flag, schedule or complete-coverage claim. New trackers default to No. Use SCOUT-16's validation/promotion gate; historical references to Enabled as a pause switch are superseded.
 - Keep credentials server-side. Latest accepted access direction (2026-10-01): retain Firebase Hosting Spark with a public static login shell/assets and private Scout data/actions. Any Google-verified `oceanagentics.com` Workspace user receives reader access on first sign-in, without individual invitations/passwords or manually provisioned memberships. Verify Google's signed hosted-domain assertion on a trusted server path; a client `hd` hint, email suffix or editable metadata is insufficient. Supabase independently enforces data/API access. Admin elevation and backend collector access remain denied by default. This supersedes the earlier whole-frontend IAM gateway hold. No Cloudflare, IAP, Cloud Run, hosting migration or billing upgrade.
 - Store only supported event instants; render and query them in UTC. Preserve date-only/unknown precision in source captures rather than inventing a time or restoring removed record columns. Keep source publication, capture, last-seen and record-version times distinct.
 
 ## Current delivery and outstanding work
 
 - **Current hosted release (2026-10-01):** Firebase `1790892171758000` / version `9ddf94ac63279126`, collector version 18, and all eleven migrations through `20261001190000`. Four tables/46 columns remain; all three frontend assets match the build and security headers. Billing remains disabled and Ryu release `1790266049490000` is unchanged. No new Slack message was sent.
+- **2026-10-02 collector readiness:** the hosted audit confirms only five of 25 trackers have real captures and completed assessments. SCOUT-16 records the five proven configurations, reconciles Enabled to five Yes / 20 No, and gives the manager the next implementation sequence. Last-run health and known coverage/relevance gaps remain separate.
 - **Expansion verification:** all 49 tests/build pass. HSA fixes and four additional trackers have live assessments. Current totals are five findings, 22 captures and 28 runs, with eleven pending source assessments. All 25 tracker configurations and eleven pre-expansion run/accounting rows are preserved. Reader SQL checks pass for five findings; no login was repeated. The previous authorized reset is not repeated. Detailed counts, quality misses and remaining coverage are in the SCOUT-15 expansion checkpoint below.
 - **SCOUT-06 hosted preview verified:** minimal timestamp state, model selection, hosted-record CLI access and real record links are implemented and tested with injected Slack. A preview read the two fresh hosted records using an injected selector, with no extra model call or Slack send. Communication timestamps remain null. Slack visual layout remains an approved deferral, distinct from verified receipt/content. There is no calendar obligation.
 - **Coverage boundary:** HSA official proof/supporting pages remain pending; DOSI second-hop newsletter items are missed; GFW's concrete AI partnership was classified Low, a potential false negative. These limitations are separate from working transport, source gating and valid completed assessments. No overall accuracy estimate or full coverage claim is made.
@@ -166,7 +169,7 @@ Acceptance criteria:
 
 - [x] Read and reconcile the original live sheet, importing all 22 populated trackers. The approved local seed now retains identity, URL/account, coverage, short `collector`, cadence and enabled state; removed channel/configuration/meeting notes are historical evidence, not current config.
 - [x] Reconcile the imported inventory against the sheet. Report invalid, incomplete, or unsupported entries instead of silently dropping them.
-- [x] Repeating the import creates no duplicates and does not overwrite app edits. Paused trackers remain paused.
+- [x] Repeating the import creates no duplicates and does not overwrite app edits or collector-proof decisions.
 - [x] Retain enabled state and derive attempt/success/outcome/warnings from collection runs through `tracker_status` in the local schema. An imported tracker is uncollected, not successful; stored status and `next_run_at` are no longer required.
 - [x] Verify one website, one Bluesky feed, and the discovery tracker retain their distinct methods and cadences.
 
@@ -320,7 +323,7 @@ Outcome: Due trackers and notifications run automatically with visible outcomes 
 
 Acceptance criteria:
 
-- [ ] Supabase Cron invokes small collection jobs using each tracker's method and cadence; paused and not-yet-due trackers are skipped. Prefix Scout's deployed Edge Functions and scheduled jobs with `scout-` to avoid collisions with other `chm` services.
+- [ ] Supabase Cron invokes small collection jobs using each tracker's method and cadence; unproven (`enabled=false`) and not-yet-due trackers are skipped. Enabled remains proof, not a pause switch; design any future scheduling pause separately. Prefix Scout's deployed Edge Functions and scheduled jobs with `scout-` to avoid collisions with other `chm` services.
 - [ ] Schedule a lightweight daily keep-alive database query via `pg_cron` to prevent the Supabase free tier from auto-pausing after 7 days of inactivity.
 - [ ] Overlapping runs cannot collect the same tracker concurrently. Interrupted runs can recover without leaving the tracker permanently stuck.
 - [ ] Persist attempt/outcome/warnings in collection runs and derive freshness/due selection from runs, cadence and the approved schedule policy. Do not restore cached tracker status or unused next-run columns. Retry transient failures within caps; quota failures wait for allowance.
@@ -352,7 +355,7 @@ Limitations: DOSI's second-hop, multi-item newsletter is not collected; GFW's co
 ## SCOUT-09 — Collect authoritative treaty-status changes
 
 Status: todo
-Depends on: SCOUT-03, SCOUT-04, SCOUT-07, SCOUT-15
+Depends on: SCOUT-03, SCOUT-04, SCOUT-15, SCOUT-16.01; SCOUT-07 for scheduling only.
 
 Outcome: Changes in the UN Treaty Collection become source-backed country/action/date records.
 
@@ -370,11 +373,11 @@ Blockers: None recorded.
 ## SCOUT-10 — Add website and document collectors
 
 Status: in-progress
-Depends on: SCOUT-03, SCOUT-04, SCOUT-07, SCOUT-15
+Depends on: SCOUT-03, SCOUT-04, SCOUT-15, SCOUT-16.01; SCOUT-07 for scheduling only.
 
 Outcome: The remaining website trackers have verified collection methods or explicitly documented coverage limitations.
 
-Before implementation, split this task into child tasks here using stable IDs such as `SCOUT-10.01`. Use one task per source or genuinely shared collection pattern, with the source URL, expected record types, sample input, and acceptance checks. Start with official UN/DOALOS announcements and meeting/side-event pages, then the remaining organizer websites and registries from the imported inventory.
+The source-by-source child tasks SCOUT-10.02–10.19 are specified in SCOUT-16 below; SCOUT-10.01 remains the completed HUB collector. Start with official UN/DOALOS announcements and meeting/side-event pages, then the listed organizer websites and registries. Read each live source when its task begins; proposed feed/API options are hypotheses until observed. Each child requires real samples and SCOUT-16's proof gate before Enabled becomes Yes.
 
 Acceptance criteria for every child task:
 
@@ -405,7 +408,7 @@ Verification: the live October 22 event is stored at High priority with explicit
 ## SCOUT-11 — Add discovery search
 
 Status: todo
-Depends on: SCOUT-03, SCOUT-04, SCOUT-07, SCOUT-15
+Depends on: SCOUT-03, SCOUT-04, SCOUT-15, SCOUT-16.01; SCOUT-07 for scheduling only.
 
 Outcome: Scheduled Bluesky and web discovery trackers find relevant items outside the known source list within their collection and search budgets.
 
@@ -450,8 +453,8 @@ Outcome: An authorized user can maintain tracker configuration and inspect colle
 
 Acceptance criteria:
 
-- [ ] Add/edit approved tracker configuration: source name, URL/account, supported `collector`, coverage, cadence and enabled state. Do not restore removed channel/notes/status fields or imply that an arbitrary URL creates a working scraper.
-- [ ] Pause/resume a tracker and request a manual run through the same collection path and usage caps as scheduled runs.
+- [ ] Add/edit approved tracker configuration: source name, URL/account, supported `collector`, coverage and cadence. New or changed source/collector configurations stay disabled until the reviewed proof gate passes; Enabled must not be an unrestricted on/off checkbox. Do not restore removed channel/notes/status fields or imply that an arbitrary URL creates a working scraper.
+- [ ] Request a manual run through the same collection path and usage caps as scheduled runs. Any future pause/resume scheduling control must remain separate from collector proof; do not reuse Enabled for it.
 - [ ] Show recent collection history and run-derived last attempt/success/outcome/warnings. Once scheduling exists, derive due information from its approved policy; do not store duplicate tracker status/next-run fields. Distinguish unsupported, partial and quota-limited coverage.
 - [ ] App edits survive any repeated seed import. Manual runs do not bypass concurrency protections or reactivate paused schedules.
 - [ ] Explicitly choose/provision any admin through backend-controlled `auth.users.raw_app_meta_data.scout.admin`. Enforce verified Workspace identity plus that flag server-side; reject ordinary-reader/user-metadata elevation and unauthorized mutations. No membership table or inferred admin is required, and collector secrets must never enter the browser.
@@ -629,3 +632,116 @@ Normal enabled-model repeats of HUB and IDDRI returned `no_change`, with zero ca
 **Deployment and verification:** collector **v18**, SHA-256 `1a6a786dd7b2ef6d114ce5ed1a388ea985a6e025b2756ef4518447c2d2ed1807`, uses the same six files and existing secret/auth boundary. No schema, secret, scheduling or notification change. Firebase **1790892171758000** / **9ddf94ac63279126** deploys only the supported-tracker status update (three compressed files, 62,667 bytes); exact live bytes/security headers match. Unsupported websites stay unimplemented. Billing remains disabled; Ryu release **1790266049490000** is unchanged. Shared reported storage (~11 MB) and transfer (<4 MB) remain far below 10-GiB limits; storage reporting lags releases.
 
 **49 tests**, production build, diff and secret scans pass. New tests cover configured-feed isolation/recovery, cross-feed identity, targeted pending selection, recorded HUB UTC dates/reschedule/malformed response, nullable source-fact preservation, actual DOSI cosmetic changes and reader status. The established Workspace identity reads five findings and all 25 trackers with zero tracker writes and no record-write/raw-evidence privilege. No new login was attempted. No Slack/Tavily/model-notification calls, paid fallback, extra worker, branch/worktree, scheduler or heartbeat was used. Manager accepted this checkpoint; the authorized implementation is closed. The documented misses, broader POC and unsupported collectors remain open.
+
+
+## SCOUT-16 — Prove and enable every tracker
+
+Status: in-progress (definition/reconciliation implemented; collector sequence handed to manager after verification)
+Owner: [Scout milestone 1 manager](codex://threads/01a0f59f-1e17-7f70-beb9-6dc786ecd7cb), using the existing worker `01a0f5b1-68bb-7f90-8288-687b6daeb990` in this local checkout.
+Authorization: user request of 2026-10-02. Implement the plan below one reviewed assignment at a time, including necessary collector deployments and bounded live validation. Preserve the $0 limits, shared database, existing records and source evidence. No new imports, worktrees, scheduling, heartbeat restart, Slack sends or mailbox work is included.
+
+### Enabled contract and promotion evidence
+
+`enabled=true` means **a working, tested collector is proven to receive and persist real source data for this exact tracker configuration**. It does not mean a heartbeat watches it, a schedule exists, the latest run succeeded, every linked document is covered, or every assessment is correct. `false` means unconfigured, not implemented, not yet proven, or no longer proven after a source/collector change. It is no longer a pause/resume setting.
+
+Every new collector follows these steps:
+
+1. **Inspect and bound the source.** Confirm the configured URL/account and required record types against the live source. Prefer observed feeds/APIs and structured data; use a small source-specific HTML parser only where needed. Set coverage/window, pagination, link depth, byte and runtime limits. Capture actual representative source input; no advance claim that an endpoint exists.
+2. **Implement while disabled.** Reuse existing source storage, identity/deduplication, assessment and durable usage accounting. Keep original precision for dates and unknown facts. A website tracker must independently collect its configured source; a linked page fetched by a Bluesky tracker does not prove the website tracker.
+3. **Verify behavior.** Use recorded source examples for initial extraction, unchanged repeat, real content/date/cancellation change, duplicate across sources, different recurring editions, and malformed/empty/failed response. Cosmetic navigation changes must not create captures/model calls. A fetch failure must preserve accepted records. Exercise only applicable cases, not duplicated boilerplate tests.
+4. **Prove real receipt while still disabled.** Use the restricted validation path in SCOUT-16.01 for one exact tracker ID and a bounded window containing at least one real item. Persist a source capture and run evidence, verify extracted facts against the source and complete at least one valid assessment (a correct Low/no-record decision counts). Empty feeds, HTTP 200 alone, mocked results or wholly pending assessments are not proof. Widen a historical window deliberately if the source has no recent items; never invent data.
+5. **Repeat and review.** Run a bounded unchanged repeat and verify no duplicate record/capture or unnecessary model call. Record actual limits, pending items and partial coverage honestly. If a broader run is partial, demonstrate the completed sample's repeat and explain exactly what remains unsupported; partial is never relabelled success.
+6. **Promote explicitly.** In the task row/checkpoint record tracker ID, exact URL/collector, implementation commit/deployed version, sample source URL and capture ID, initial/repeat run IDs, observed facts/assessment, test result, usage, and limitations. The manager reviews that evidence, then authorizes the exact tracker update to Yes and verifies the stored flag. This is not automatic on HTTP success or test completion. If proof fails, leave No with the blocker and next step.
+
+A change to URL/account or collector invalidates proof and requires revalidation. A cadence-only change does not. Temporary source/network/quota failures belong in collection health and do not automatically erase proof; a demonstrated broken parser/transport should be marked No until repaired and proven again. Scheduling pauses, if later required, need a separate decision.
+
+### SCOUT-16.00 — Reconcile the existing inventory
+
+Status: done (2026-10-02; hosted and persistent local reconciliation verified)
+
+The hosted read on 2026-10-02 found 25 trackers, five records, 22 captures and 28 runs, with no running collector. Only these exact configurations have reviewed implementation, retained real captures and completed assessments:
+
+| Tracker / existing task | Exact configuration / tracker ID | Retained proof on 2026-10-02 | Enabled |
+| --- | --- | --- | --- |
+| HSA Bluesky / SCOUT-04 | [Account](https://bsky.app/profile/highseasalliance.bsky.social), `bluesky_feed`, `45a2adc6-9a5d-44b3-8a03-7bf0a9fbe42d` | 9 captures, 4 completed assessments; run `412dacb3-2e80-4edb-81f3-5d10e1bbe0c0` received 5 posts/4 pages and created a finding; completed-source repeat `dd4da01d-49ff-4110-a720-c5cc9fe2bdc5` skipped 7 observations. Supporting evidence remains pending. | Yes |
+| DOSI Bluesky / SCOUT-08 | [Account](https://bsky.app/profile/deepstewardship.bsky.social), `bluesky_feed`, `ac8f807b-bd05-4982-aeef-bde22fb63ea2` | 5 captures, 1 completed assessment; run `1237e20a-1007-4734-88a6-55c7aaabebd8` received 2 posts/1 page; corrected-boundary repeat `58932af1-ced6-4e0b-98bf-b290fdd126e4` skipped all 3 observations. Newsletter second-hop coverage is incomplete. | Yes |
+| GFW Bluesky / SCOUT-08 | [Account](https://bsky.app/profile/globalfishingwatch.org), `bluesky_feed`, `4b9c1d5d-1c46-4afa-9de2-b88981c8b82f` | 6 captures, 2 completed assessments; run `5ec16656-40dc-4002-9a8a-a8d016ae7813` received 4 posts/2 pages; repeat `35ffa7b3-d1fe-4261-bd20-94ad4adf46b2` skipped 5 observations. Pending items and potential relevance miss remain. | Yes |
+| IDDRI Bluesky / SCOUT-08 | [Account](https://bsky.app/profile/iddri.bsky.social), `bluesky_feed`, `7a2cda97-ed71-4e30-8c83-0dc9c2159175` | 1 capture/complete Low assessment in `9f415ac3-73a6-41f7-b3cd-081312796dfb`; clean repeat `aab077a7-cdb0-4bb6-81d0-bb7f86d83be5`. Correct exclusion is still receipt proof. | Yes |
+| HUB Ocean / SCOUT-10.01 | [Calendar](https://www.hubocean.earth/events-calendar), `web`, `98bce44c-60bc-4159-84d0-fa6daa503c59` | 1 capture/complete assessment; `ea880085-922d-444d-ba3f-d5c7b7c86c40` received JSON/ICS and created the event; `40872e86-431b-4a42-a9cc-6154cf3f3776` repeated without changes/calls. | Yes |
+
+The other 20 trackers have no captures or collection attempts and must be No. The 2026-10-01 expansion checkpoint remains the detailed quality/usage record; these counts do not establish complete coverage. Existing accepted proof is reused rather than spending model calls to reproduce it.
+
+Implementation: migration `20261002130000_scout_proven_collectors.sql` sets the default false, documents the column meaning and reconciles only the five exact collector/URL pairs. Seed changes retain four proven Bluesky configurations as Yes and all other seed rows as No; repeats still preserve existing app-owned decisions. New/unknown configurations default to No. No table, proof registry or duplicated stored status is added. The status helper and disabled-collector diagnostic use the new meaning.
+
+Verification (2026-10-02): all **50 tests**, the production build and diff check pass. Before deployment, all eleven existing hosted migration bodies matched local files. Migration `20261002130000` is now applied and recorded atomically with its exact SQL in hosted migration history: **25 trackers = five Yes / 20 No**. Every non-enabled tracker field, all five records, 22 captures and 28 runs remained unchanged. The persistent local fixture has **22 trackers = four Yes / 18 No**, with its zero records/captures and six run/accounting rows preserved; HUB exists only in the hosted inventory. New tracker inserts default to false. Regression checks cover unknown feeds, wrong collector/URL pairs, data preservation, repeat seeding and other-service isolation. One malformed deployment wrapper failed and rolled back before applying; readback confirmed unchanged rows/no migration, then the corrected wrapper succeeded. No source fetch, model/Tavily call, Slack message or schedule was needed. The live table reads the corrected database flags on refresh; only the diagnostic/status wording remains local for the manager's next scoped deployment.
+
+### SCOUT-16.01 — Validate before promotion
+
+Status: todo — **first manager assignment**
+Depends on: SCOUT-16.00
+
+- [ ] Add the smallest backend-only manual validation mode for an explicit tracker ID with `enabled=false`; keep ordinary runs rejecting unproven trackers.
+- [ ] Preserve private endpoint authentication, source safety checks, overlap lock, source/record provenance and the shared request/model caps. Reject unscoped/all-tracker validation and unsupported collector configurations before source/model work.
+- [ ] Validation must not change Enabled or fabricate `last_success_at`. Persist the real run outcome/captures; use existing run stats to identify validation if needed, with truthful freshness semantics.
+- [ ] Prove disabled normal runs do no I/O, authorized validation can collect only the selected supported tracker without enabling it, and unauthorized validation cannot run. Verify later explicit promotion works.
+- [ ] Ensure supported URL/account/collector edits reset proof to No in the minimal authoritative write path; proof promotion belongs to the reviewed backend workflow, not a general reader or arbitrary checkbox.
+- [ ] Deploy and verify this prerequisite before building the next collector. The diagnostic/status wording change from SCOUT-16.00 can ride this scoped deployment; no new schema abstraction or scheduling control.
+
+### SCOUT-16.02 — Finish known coverage and relevance gaps
+
+Status: todo
+Depends on: SCOUT-16.01
+
+Keep the five existing collectors enabled unless the investigation demonstrates that their proved collection path has broken. Reuse existing fixes/tests; do not rebuild these collectors.
+
+- [ ] HSA: resolve supporting registration/date evidence and official treaty corroboration for the recorded pending items within existing limits; defer official status acceptance until SCOUT-09 supplies proof.
+- [ ] DOSI: follow the observed newsletter link one bounded additional hop and extract distinct items. Check the recorded BBNJ governance paper and October 6 African implementation event, while preserving article-only change detection and per-item identity.
+- [ ] GFW: review the concrete Ai2/ocean-monitoring partnership against the approved technical scope; correct the relevance decision/rubric only with source evidence and a regression. Retain uncertain/pending items honestly.
+- [ ] IDDRI and HUB: retain their accepted clean repeats; add verification only if shared changes affect them. Do not treat the existence of low/no findings as a failed collector.
+
+### Ordered source tasks — SCOUT-09 and SCOUT-10.02–10.19
+
+All rows start **todo / Enabled No** and require SCOUT-16.01 plus the common proof gate. Source URLs below come from the current hosted inventory, not a new import. Seed suffix `N` means `bbnj-trackers-2026-10-01:N`; resolve and preserve the existing UUID before writing. Each row is a separate reviewable task, even where it reuses another parser. After capturing real input, record its sample URL/fixture and initial/repeat run IDs under that row.
+
+Implement groups in this order: official sources; organizer sources with existing feed context; remaining organizations; event registries/calendars; discovery. The conference-specific placeholder waits for an actual conference URL and does not block independent work.
+
+| Step / task | Tracker identity and configured source | Expected records and source-specific proof |
+| --- | --- | --- |
+| 1 / SCOUT-09 | Seed 0 — [UN Treaty Collection](https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en) | Treaty actions with exact country/action/date. Capture participant table and notes; baseline historical entries without new-item announcements; demonstrate addition, correction and incomplete-response protection. |
+| 2 / SCOUT-10.02 | Seed 1 — [UN BBNJ / DOALOS](https://www.un.org/bbnjagreement/en) | Official announcements, notices and deadlines. Inspect feeds/structured lists first, then bounded notice detail pages; distinguish publication from event/deadline dates and preserve official document links. |
+| 3 / SCOUT-10.03 | Seed 2 — [UN meeting and side-event pages](https://www.un.org/bbnjagreement/en/capacity-building-and-technical-assistance/side-events) | Meeting/side-event sessions and schedule updates. Extract each session separately from lists/programmes, preserve timezone precision, and deduplicate the same session against DOALOS. |
+| 4 / SCOUT-10.04 | Seed 3 — [High Seas Alliance website](https://highseasalliance.org/) | Events, webinars, registration and announcements. Independently enumerate relevant site items; verify overlap with HSA Bluesky merges while different events remain distinct. |
+| 5 / SCOUT-10.05 | Seed 5 — [IDDRI High Seas website](https://www.iddri.org/en/publications-and-events/high-seas?page=0) | Publications/briefings and events in English/French. Bound pagination; distinguish articles from scheduled events, follow detail pages and verify deduplication against IDDRI Bluesky. |
+| 6 / SCOUT-10.06 | Seed 9 — [DOSI BBNJ website](https://www.dosi-project.org/biodiversity-beyond-national-jurisdiction-bbnj/) | BBNJ scientific updates, webinars and working-group items. Prove direct site discovery, reuse bounded newsletter work, and retain separate newsletter items without rotating-page noise. |
+| 7 / SCOUT-10.07 | Seed 16 — [Global Fishing Watch media centre](https://globalfishingwatch.org/mediacenter/) | Ocean-data announcements, policy and events. Identify stable detail content and the concrete partnership case; validate relevance and identity against the GFW feed. |
+| 8 / SCOUT-10.08 | Seed 4 — [IUCN High Seas](https://iucn.org/our-work/topic/high-seas) | Implementation announcements, workshops and expert events. Separate topic navigation from dated items and follow actual event/registration details. |
+| 9 / SCOUT-10.09 | Seed 11 — [Global Ocean Forum](https://globaloceanforum.com/) | BBNJ webinars, workshops and side events. Inspect publisher feed/API availability, bound archive traversal and validate linked event/programme dates. |
+| 10 / SCOUT-10.10 | Seed 12 — [OceanCare](https://www.oceancare.org/en/) | BBNJ/ChM announcements and meeting/side events. Filter the broader site using the coverage contract; verify a relevant item and an unrelated exclusion. |
+| 11 / SCOUT-10.11 | Seed 13 — [Pew High Seas](https://www.pew.org/en/projects/protecting-ocean-life-on-the-high-seas) | Treaty implementation and high-seas MPA briefings. Extract current content/detail links, distinguish advocacy from substantive developments and corroborate official treaty actions. |
+| 12 / SCOUT-10.12 | Seed 14 — [Harvest Strategies ABNJ](https://harveststrategies.org/abnj/) | Technical fisheries/BBNJ webinars and announcements. Follow supporting material and prove relevance to the configured scope without requiring a BBNJ keyword in every item. |
+| 13 / SCOUT-10.13 | Seed 10 — [RISE UP Navigator](https://riseupfortheocean.org/latest/rise-up-navigator/) | Civil-society/regional workshops and events. Verify the observed publication/newsletter structure, bounded linked items and regional dates; no mailbox subscription required. |
+| 14 / SCOUT-10.14 | Seed 15 — [Blue Marine events](https://www.bluemarinefoundation.com/our-events/) | Relevant conferences, high-seas events and gatherings. Distinguish past/upcoming entries and unrelated fundraising; prove recurring-event identity and registration links. |
+| 15 / SCOUT-10.15 | Seed 6 — [BBNJ Symposium Series](https://bbnjsymposium.org/) | Symposium editions, participation calls and programmes. Preserve edition/session identity across years and distinguish deadlines from session dates; handle linked programme formats honestly. |
+| 16 / SCOUT-10.16 | Seed 7 — [CBD side-event registry](https://www.cbd.int/side-events/) | BBNJ sessions within CBD meetings. Scope meeting/filter/pagination deliberately, preserve official session IDs where exposed and distinguish similar titles in different meetings. |
+| 17 / SCOUT-10.17 | `9dc6b107-5e12-4124-b4ce-583faf91e50d` — [OCTO webinars](https://octogroup.org/webinars/) | Ocean webinars, marine conservation tools and capacity building. Inspect structured calendar/feed options; follow webinar/registration details and deduplicate syndicated events. |
+| 18 / SCOUT-10.18 | `2c4cc3ce-ec45-41b5-913e-7e5948b5a3ca` — [The Explorers Club calendar](https://www.explorers.org/calendar-of-events/) | Ocean/science/Sea Stories events from a broader calendar. Verify one ocean-relevant inclusion and unrelated exclusion, session timezone/location and separate recurring editions. |
+| Conditional / SCOUT-10.19 | Seed 8 — Conference-specific official programmes; URL currently null | Stay No. Obtain the intended conference and official URL from the user when needed; then implement bounded programme/session extraction and prove exact dates, identity and updates. No guessed conference or placeholder URL. |
+
+### SCOUT-11.01 — Prove the existing Bluesky discovery tracker
+
+Status: todo
+Tracker: seed 21, `2f9bb18f-d925-4bf6-8ed4-8ba477c47cfc`, [BBNJ discovery search](https://bsky.app/search?q=BBNJ), `bluesky_search`.
+Depends on: SCOUT-16.01; run after the source groups above, without waiting on the unconfigured conference.
+
+Use `searchPosts` with the configured separate BBNJ/High Seas Treaty/French/conference queries. Verify actual API access, bounded pages/window, supporting links, irrelevant exclusions and deduplication against author feeds. Retain source provenance and avoid promoting newly discovered publishers automatically. Apply the common live/repeat gate before marking this tracker Yes. If authentication/access is unavailable, leave No and record the exact requirement; do not substitute Tavily silently.
+
+SCOUT-11's separate Tavily discovery tracker is **not one of the current 25** and remains future work requiring its existing paid-use/quota checks and a separately authorized inventory addition. Likewise the email-subscription planning tab is not a set of implemented trackers.
+
+### Manager execution and completion
+
+- [ ] Assign SCOUT-16.01 to the existing worker first; review its focused commit, private validation behavior and deployed result.
+- [ ] Continue SCOUT-16.02 and the ordered source tasks one assignment at a time. A concrete blocker leaves that tracker No and allows the next independent source to proceed. Reuse a verified collection pattern when sources genuinely share one.
+- [ ] Review each source's proof record before promotion; verify only the intended tracker changes, with records, evidence, usage accounting and other services preserved.
+- [ ] Before every live batch, read the current shared usage ledger and allocate within existing limits; yesterday's remaining allowance is not today's budget. Make no model/search calls merely to recreate already accepted proof.
+- [ ] Update each task's status and verification in this file, committing once per focused implementation. Do not add a parallel tracking document or generic scraper framework.
+- [ ] Final audit: every current tracker has a proven Yes with evidence or an explicit No with its exact blocker/gap. Report counts and remaining gaps; a documented blocker is not collector completion. Scheduling remains SCOUT-07 and requires its own activation/timing decision.

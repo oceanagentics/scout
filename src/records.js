@@ -75,9 +75,7 @@ export function filterRecords(records, filters = {}, now = new Date()) {
 }
 
 export function trackerState(tracker) {
-  const implemented = (tracker.collector === 'bluesky_feed' && /^https:\/\/bsky\.app\/profile\/[a-z0-9.-]+$/.test(tracker.url)) ||
-    (tracker.collector === 'web' && tracker.url === 'https://www.hubocean.earth/events-calendar');
-  const availability = !tracker.url ? 'Unconfigured · Paused' : !tracker.enabled ? 'Paused' : implemented ? 'Manual collection only' : 'Collector not implemented';
+  const availability = !tracker.url ? 'Unconfigured' : tracker.enabled ? 'Manual collection only' : 'Collector not yet proven';
   const outcomes = { success: 'Success', no_change: 'No change', partial: 'Partial', failed: 'Failed', quota: 'Quota reached', unsupported: 'Unsupported' };
   return { availability, outcome: outcomes[tracker.last_outcome] ?? (tracker.last_attempt_at ? 'No completed result' : 'Never collected'),
     success: tracker.last_success_at ? stamp(tracker.last_success_at) : 'Never' };

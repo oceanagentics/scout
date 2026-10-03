@@ -419,6 +419,42 @@ test('five-table migration preserves captures, shared associations, current evid
   } finally { await db.close(); }
 });
 
+test('collector proof migration enables only verified configurations and preserves collected data', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(auth + fixture + beforeSchema + schemaMigration + fiveTablesMigration);
+    await db.exec(await readFile(new URL('../supabase/migrations/20261001190000_assessment_and_communication.sql', import.meta.url), 'utf8'));
+    await db.exec(trackerSeed);
+    await db.exec(`insert into scout.trackers(name,url,collector,cadence) values
+      ('HUB','https://www.hubocean.earth/events-calendar','web','7 days'),
+      ('Untested feed','https://bsky.app/profile/example.org','bluesky_feed','1 day'),
+      ('Wrong collector','https://bsky.app/profile/highseasalliance.bsky.social','web','7 days');
+      update scout.trackers set enabled=true where url is not null;
+      insert into scout.records(kind,title,identity_key) values('announcement','Preserved finding','proof-fixture');
+      insert into scout.collection_runs(tracker_id,outcome,finished_at) select id,'partial',now() from scout.trackers where seed_key like '%:17';
+      insert into scout.evidence(tracker_id,url,content,content_hash) select id,url,'Preserved evidence','proof-hash' from scout.trackers where seed_key like '%:17';`);
+    const before = (await db.query('select * from scout.trackers order by id')).rows;
+    const preserved = {};
+    for (const table of ['records','evidence','collection_runs']) preserved[table] = (await db.query(`select * from scout.${table} order by id`)).rows;
+    const otherService = (await db.query(sharedState)).rows;
+    await db.exec(await readFile(new URL('../supabase/migrations/20261002130000_scout_proven_collectors.sql', import.meta.url), 'utf8'));
+    const after = (await db.query('select * from scout.trackers order by id')).rows;
+    assert.deepEqual(after.map(({enabled,...row})=>row), before.map(({enabled,...row})=>row));
+    assert.deepEqual(after.filter(row=>row.enabled).map(row=>row.url).sort(), [
+      'https://bsky.app/profile/highseasalliance.bsky.social',
+      'https://bsky.app/profile/deepstewardship.bsky.social',
+      'https://bsky.app/profile/globalfishingwatch.org',
+      'https://bsky.app/profile/iddri.bsky.social',
+      'https://www.hubocean.earth/events-calendar',
+    ].sort());
+    for (const table of Object.keys(preserved)) assert.deepEqual((await db.query(`select * from scout.${table} order by id`)).rows,preserved[table]);
+    assert.deepEqual((await db.query(sharedState)).rows, otherService);
+    await db.exec(trackerSeed);
+    assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,after);
+    assert.equal((await db.query("insert into scout.trackers(name,url,collector,cadence) values('New','https://example.org','web','1 day') returning enabled")).rows[0].enabled,false);
+  } finally { await db.close(); }
+});
+
 test('all tracker seeds are uncollected and repeat safely after app edits', async () => {
   const db = new PGlite();
   try {
@@ -444,6 +480,8 @@ test('all tracker seeds are uncollected and repeat safely after app edits', asyn
     assert.match(discovery.coverage, /traité sur la haute mer/);
     assert.equal(initial.filter(row => row.collector === 'web').length, 17);
     assert.equal(initial.filter(row => row.collector === feed.collector).length, 4);
+    assert.deepEqual(initial.filter(row => row.enabled).map(row => row.seed_key),
+      [17, 18, 19, 20].map(id => `bbnj-trackers-2026-10-01:${id}`));
     const incomplete = initial.find(row => row.seed_key.endsWith(':8'));
     assert.equal(incomplete.url, null);
     assert.equal(incomplete.enabled, false);

@@ -38,14 +38,14 @@ test('tracker freshness uses run-derived status without a stored schedule', () =
   const unchanged = { ...success, last_success_at: '2026-10-01T11:30:00Z', last_outcome: 'no_change' };
   assert.notEqual(trackerState(success, now).success, trackerState(unchanged, now).success);
   for (const outcome of ['partial', 'failed', 'quota']) assert.equal(trackerState({ ...unchanged, last_outcome: outcome }, now).success, trackerState(unchanged, now).success);
-  assert.equal(trackerState({ ...tracker, url: null, enabled: false }, now).availability, 'Unconfigured · Paused');
-  assert.equal(trackerState({ ...tracker, url: 'https://example.org' }, now).availability, 'Collector not implemented');
+  assert.equal(trackerState({ ...tracker, url: null, enabled: false }, now).availability, 'Unconfigured');
+  assert.equal(trackerState({ ...tracker, url: 'https://example.org', enabled: false }, now).availability, 'Collector not yet proven');
   for (const actor of ['highseasalliance.bsky.social','deepstewardship.bsky.social','globalfishingwatch.org','iddri.bsky.social'])
     assert.equal(trackerState({...tracker,url:`https://bsky.app/profile/${actor}`}).availability,'Manual collection only');
   const hub={...tracker,collector:'web',url:'https://www.hubocean.earth/events-calendar'};
   assert.equal(trackerState(hub).availability,'Manual collection only');
-  assert.equal(trackerState({...hub,enabled:false}).availability,'Paused');
-  assert.equal(trackerState({...hub,url:'https://octogroup.org/webinars/'}).availability,'Collector not implemented');
+  assert.equal(trackerState({...hub,enabled:false}).availability,'Collector not yet proven');
+  assert.equal(trackerState({...hub,url:'https://octogroup.org/webinars/',enabled:false}).availability,'Collector not yet proven');
 });
 
 test('member data reads load every page and surface errors instead of silently truncating', async () => {

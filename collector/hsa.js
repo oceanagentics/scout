@@ -305,7 +305,7 @@ async function save(db, identity, source, rank, observedAt, stats) {
 export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000, model, makeModel, sourceId = null, trackerId = null } = {}) {
   if (!Number.isFinite(Date.parse(since))) throw new Error('A valid coverage start is required');
   const tracker = (await db.query("select * from scout.trackers where id=$1 or ($1::uuid is null and seed_key='bbnj-trackers-2026-10-01:17')",[trackerId])).rows[0];
-  if (!tracker?.enabled) throw new Error('Tracker is missing or paused');
+  if (!tracker?.enabled) throw new Error('Tracker is missing or its collector is not yet proven');
   const actor=tracker.collector==='bluesky_feed' && tracker.url?.match(/^https:\/\/bsky\.app\/profile\/([a-z0-9.-]+)$/)?.[1];
   const hub=tracker.collector==='web' && tracker.url==='https://www.hubocean.earth/events-calendar';
   if (!actor && !hub) throw new Error('Unsupported tracker configuration; review before collecting');
