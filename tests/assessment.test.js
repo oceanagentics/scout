@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN]])).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF]])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -632,6 +632,86 @@ test('actual IUCN assessment retains technical High relevance, literal descripti
  assert.deepEqual(live.input.exact_ids,[]);assert.equal(live.input.candidates.length,3);assert.equal(live.input.scripted.iucn.publication,'2026');assert.equal(live.input.scripted.iucn.precision,'year');
  for(const key of ['starts_at','ends_at','event_url','registration_url','location','status','last_communicated_at','evidence_at'])assert.equal(live.record[key],null);
  assert.equal(live.accounting.model_attempts.length,1);assert.equal(live.accounting.model_attempts[0].input_bound,7878);assert.equal(live.accounting.model_usage[0].promptTokenCount,1555);assert.equal(live.accounting.model_usage[0].candidatesTokenCount,311);
+});
+
+test('GOF independently discovers its current project and workshop in three reads, retaining complete context and unchanged repeats',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/gof-website.json.gz',import.meta.url))));let calls=0;const requested=[];
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[GOF])).rows[0];for(const r of f.existing)await db.query('insert into scout.records select * from jsonb_populate_record(null::scout.records,$1::jsonb)',[r]);
+  const before=(await db.query('select * from scout.records order by id')).rows;
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;requested.push(u);return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);const first=await collectHSA(db,options);assert.equal(first.candidates,2,first.warnings.join('; '));assert.equal(first.requests,3);assert.deepEqual(requested,[f.home.url,f.glore.url,f.gloreAPI.url]);assert.match(first.warnings.join(' '),/older RSS\/archive/);
+  const sources=(await db.query('select * from scout.evidence')).rows,project=sources.find(s=>s.parsed.gof.item==='project'),event=sources.find(s=>s.parsed.kind==='event'),i=await assessmentInput(db,project,tracker);
+  assert.equal(project.published_at.toISOString(),'2026-10-02T15:53:17.000Z');assert.equal(project.parsed.source.identity,'gof:8624:project');assert.equal(event.parsed.source.identity,'gof:8624:iwc11:2026:workshop9');assert.equal(JSON.parse(project.content).body,f.glore.body);
+  assert.equal(i.context_truncated,false);assert.match(i.text,/global gap analysis of capacity needs, challenges, and priorities\./);assert.match(i.text,/new capacity building materials and products to support accession/);assert.doesNotMatch(i.text,/Workshop 9|COP30|UNEP-led Outputs with a kickoff/);
+  assert.equal(i.scripted.description,'Work has started on the first foundational output of the project, including the data gathering that will result in a global gap analysis of capacity needs, challenges, and priorities.');assert.ok(i.scripted.description.length<=280);assert.equal(i.candidates.length,3);assert.deepEqual(i.exact_ids,[]);
+  const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null])));for(const c of i.candidates)assert.throws(()=>validateDecision({...result,source_id:i.source_id,action:'supporting_evidence',record_id:c.id,candidate,quotes:[candidate.title]},i),/exact conference edition\/session/);
+  let bytes;await gemini({apiKey:'injected-only',runId:project.id,ledger:{query:async()=>({rows:[]})},fetch:async(_u,r)=>{bytes=Buffer.byteLength(r.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}})(INSTRUCTION,[i],SCHEMA);assert.ok(bytes<8000);
+  const model=async(_p,[input])=>{calls++;return[{...result,source_id:input.source_id,candidate,quotes:[candidate.title]}];};assert.equal((await collectHSA(db,{...options,sourceId:project.id,model})).created,1);const records=(await db.query('select * from scout.records order by id')).rows;
+  for(const r of before)assert.deepEqual(records.find(row=>row.id===r.id),r);
+  f.home.body=f.home.body.replace('304531 bytes','300000 bytes');f.glore.body=f.glore.body.replaceAll('<p class=','<p data-format="1" class=');const api=JSON.parse(f.gloreAPI.body);api.modified_gmt='2026-10-03T12:00:00';api.content.rendered=api.content.rendered.replaceAll('<p class=','<p data-format="1" class=');f.gloreAPI.body=JSON.stringify(api);
+  const repeat=await collectHSA(db,{...options,sourceId:project.id,model});assert.equal(repeat.skipped,2);assert.equal(repeat.requests,3);assert.equal(repeat.candidates+repeat.created+repeat.changed,0);assert.equal(calls,1);assert.deepEqual((await db.query('select * from scout.records order by id')).rows,records);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('GOF material corrections preserve source history and separate workshop numbers and conference years',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/gof-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[GOF])).rows[0];const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const original=(await db.query('select * from scout.evidence order by id')).rows,project=original.find(s=>s.parsed.gof.item==='project'),event=original.find(s=>s.parsed.kind==='event');
+  f.glore.body=f.glore.body.replace('global gap analysis of capacity needs','global gap analysis of regional capacity needs');let a=JSON.parse(f.gloreAPI.body);a.content.rendered=a.content.rendered.replace('global gap analysis of capacity needs','global gap analysis of regional capacity needs');f.gloreAPI.body=JSON.stringify(a);assert.equal((await collectHSA(db,options)).candidates,1);
+  a.date_gmt='2026-10-03T15:53:17';f.gloreAPI.body=JSON.stringify(a);assert.equal((await collectHSA(db,options)).candidates,2);const latest=(await db.query("select * from scout.evidence where parsed#>>'{gof,item}'='project' order by collected_at desc limit 1")).rows[0];assert.equal(latest.parsed.source.identity,project.parsed.source.identity);assert.equal(latest.parsed.starts_at,null);
+  const prior=(await db.query('insert into scout.records(kind,title,identity_key) values($1,$2,$3) returning *',['event',event.parsed.title,event.parsed.source.identity])).rows[0];
+  f.glore.body=f.glore.body.replace('Workshop 9,','Workshop 10,');a.content.rendered=a.content.rendered.replace('Workshop 9,','Workshop 10,');f.gloreAPI.body=JSON.stringify(a);assert.equal((await collectHSA(db,options)).candidates,1);
+  f.glore.body=f.glore.body.replace('19 to 22 October 2026','19 to 22 October 2027');a.content.rendered=a.content.rendered.replace('19 to 22 October 2026','19 to 22 October 2027');f.gloreAPI.body=JSON.stringify(a);assert.equal((await collectHSA(db,options)).candidates,1);
+  const next=(await db.query("select * from scout.evidence where parsed#>>'{gof,item}'='iwc11:2027:workshop10'")).rows[0],i=await assessmentInput(db,next,tracker);assert.deepEqual(i.exact_ids,[]);assert.throws(()=>validateDecision({...result,source_id:i.source_id,action:'update',record_id:prior.id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),quotes:[i.scripted.title]},i),/exact conference edition\/session/);
+  for(const old of original)assert.deepEqual((await db.query('select content,content_hash from scout.evidence where id=$1',[old.id])).rows[0],{content:old.content,content_hash:old.content_hash});
+ }finally{await db.close();}
+});
+
+test('GOF parent-conference ranges, project timelines and past meetings do not manufacture a Workshop 9 schedule',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/gof-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[GOF])).rows[0];const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const sources=(await db.query('select * from scout.evidence')).rows,event=sources.find(s=>s.parsed.kind==='event'),i=await assessmentInput(db,event,tracker);
+  assert.equal(i.scripted.title,'From Negotiation to Action: Building capacity for cross-sectoral implementation of the BBNJ Agreement');assert.equal(i.scripted.gof.schedule_unconfirmed,true);assert.equal(i.scripted.organization,null);assert.ok(i.scripted.description.length<=280);assert.ok(i.scripted.description.endsWith('.'));assert.match(i.text,/19 to 22 October 2026/);assert.doesNotMatch(i.text,/28 March|10 June|10 July|August 2028/);
+  const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null])));for(const field of ['starts_at','ends_at','location','event_url','registration_url','status'])assert.equal(candidate[field],null);
+  assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,location:'Bali, Indonesia'},quotes:[i.scripted.title]},i),/unconfirmed/);assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,kind:'announcement'},quotes:[i.scripted.title]},i),/unconfirmed/);
+  assert.equal(f['iwc-error'].error,'Source returned HTTP 403');assert.match(f.iwlearn.body,/IWC11/);assert.doesNotMatch(f.agenda.body,/From Negotiation to Action|Workshop 9/);assert.match(f.feed.body,/<lastBuildDate>Tue, 23 Dec 2025/);
+ }finally{await db.close();}
+});
+
+test('GOF discovery, API and disagreement failures stop stale assessments and preserve prior raw captures',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/gof-website.json.gz',import.meta.url))));let fail,calls=0;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[GOF])).rows[0];const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;if(u===fail)throw new Error('Injected HTTP 503');return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const before=(await db.query('select id,content_hash,content,parsed from scout.evidence order by id')).rows,source=before.find(s=>s.parsed.gof.item==='project'),model=async()=>{calls++;throw new Error('Must not assess stale captures');};
+  for(const [index,key]of ['home','glore','gloreAPI'].entries()){fail=f[key].url;const run=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(run.outcome,'failed');assert.equal(run.requests,index+1);}fail=null;
+  const original=f.gloreAPI.body;for(const change of [a=>{a.content.rendered=a.content.rendered.replace('global gap analysis','unsupported change');},a=>{a.date_gmt='2026-02-30T15:53:17';},a=>{a.id=99999;},a=>{a.content.rendered=a.content.rendered.replace('Updates on UNEP-led Outputs','Missing boundary');}]){const a=JSON.parse(original);change(a);f.gloreAPI.body=JSON.stringify(a);assert.equal((await collectHSA(db,{...options,sourceId:source.id,model})).outcome,'failed');}f.gloreAPI.body=original;
+  assert.equal(calls,0);assert.deepEqual((await db.query('select id,content_hash,content,parsed from scout.evidence order by id')).rows,before);
+ }finally{await db.close();}
+});
+
+test('GOF recorded generic ocean advocacy does not gain the project gap-analysis text or an automatic High classification',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/gof-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[GOF])).rows[0],html=f.home.body.match(/<p\b[^>]*>This free online platform[\s\S]*?<\/p>/)[0];
+  const source=await observe(db,tracker.id,GOF,html,null,{kind:'announcement',title:'COP30 Virtual Ocean Pavilion'},html,{identity:'recorded-gof-advocacy',item_key:'fixture-advocacy'},new Date().toISOString()),i=await assessmentInput(db,source,tracker);
+  assert.match(i.text,/raising the visibility of the ocean/);assert.doesNotMatch(i.text,/gap analysis of capacity needs|data gathering/);assert.match(INSTRUCTION,/Low: generic advocacy/);
+  validateDecision({...result,source_id:i.source_id,action:'no_substantive_change',candidate:null,priority:'low',quotes:[i.text.slice(0,70)],reason:'Injected recorded advocacy exclusion, not live classification'},i);assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+ }finally{await db.close();}
+});
+
+test('actual GOF assessment preserves Normal project relevance, complete description and publication precision without merging technical findings',async()=>{
+ const {live}=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/gof-website.json.gz',import.meta.url))));
+ validateDecision(Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]])),live.input);
+ assert.equal(live.decision.state,'complete');assert.equal(live.decision.action,'new');assert.equal(live.decision.priority,'normal');assert.equal(live.record.priority,'normal');
+ assert.equal(live.record.identity_key,'gof:8624:project');assert.equal(live.record.organization,'Global Ocean Forum');assert.equal(live.record.kind,'announcement');assert.equal(live.record.title,live.input.scripted.title);
+ assert.equal(live.record.description,live.input.scripted.description);assert.ok(live.record.description.length<=280);assert.ok(live.record.description.endsWith('.'));
+ assert.equal(live.input.context_truncated,false);assert.match(live.input.text,/global gap analysis of capacity needs, challenges, and priorities\./);assert.match(live.input.text,/new capacity building materials and products to support accession/);
+ assert.deepEqual(live.input.exact_ids,[]);assert.equal(live.input.candidates.length,3);assert.equal(new Date(live.record.evidence_at).toISOString(),'2026-10-02T15:53:17.000Z');
+ for(const key of ['starts_at','ends_at','event_url','registration_url','location','status','last_communicated_at'])assert.equal(live.record[key],null);
+ assert.equal(live.accounting.model_attempts.length,1);assert.equal(live.accounting.model_attempts[0].input_bound,7688);assert.equal(live.accounting.model_usage[0].promptTokenCount,1472);assert.equal(live.accounting.model_usage[0].candidatesTokenCount,331);
 });
 
 test('GFW website independently captures recorded news and proves Ai2 identity without changing the retained finding, then gates cosmetic repeats',async()=>{

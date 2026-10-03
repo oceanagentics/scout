@@ -12,6 +12,7 @@ export const IDDRI = 'https://www.iddri.org/en/publications-and-events/high-seas
 export const DOSI_WEB = 'https://www.dosi-project.org/biodiversity-beyond-national-jurisdiction-bbnj/';
 export const GFW_WEB = 'https://globalfishingwatch.org/mediacenter/';
 export const IUCN = 'https://iucn.org/our-work/topic/high-seas';
+export const GOF = 'https://globaloceanforum.com/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -408,7 +409,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const dosiWeb=tracker.collector==='web' && tracker.url===DOSI_WEB;
   const gfw=tracker.collector==='web' && tracker.url===GFW_WEB;
   const iucn=tracker.collector==='web' && tracker.url===IUCN;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const gof=tracker.collector==='web' && tracker.url===GOF;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -631,6 +633,46 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         stats[source.changed?'candidates':'skipped']++;pages.set(url,{source});
       }
       covered=selected.length<=3;
+    } else if (gof) {
+      const home=await read(tracker.url,budget);stats.pages++;
+      const projectURL=GOF+'8624-2/',apiURL=GOF+'wp-json/wp/v2/pages/8624';
+      if (home.url!==tracker.url || !/<\/html>\s*$/.test(home.body.replace(/<!--[\s\S]*?-->/g,'')) || !home.body.includes(`rel="canonical" href="${tracker.url}"`) || !home.body.includes(`href="${projectURL}">BBNJ G&#038;R Project</a>`)) throw new Error('GOF project discovery unavailable');
+      const page=await read(projectURL,budget);stats.pages++;
+      if (page.url!==projectURL || !/<\/html>\s*$/.test(page.body.replace(/<!--[\s\S]*?-->/g,'')) || !page.body.includes('article id="post-8624"') || !page.body.includes(`rel="canonical" href="${projectURL}"`) || !page.body.includes(`type="application/json" href="${apiURL}"`)) throw new Error('GOF project detail/API identity unavailable');
+      const response=await read(apiURL,budget);stats.pages++;
+      if (response.url!==apiURL || !/application\/json/i.test(response.headers['content-type']??'')) throw new Error('Unexpected GOF project API destination/format');
+      const article=JSON.parse(response.body),published=dates(article.date_gmt+'Z').starts_at;
+      if (article.id!==8624 || article.type!=='page' || article.status!=='publish' || article.link!==projectURL || !published || article.content?.protected!==false || typeof article.content.rendered!=='string') throw new Error('GOF project API facts unavailable');
+      const text=html=>visibleText(html.replace(/&#(\d{1,7});/g,(_m,n)=>String.fromCodePoint(+n)).replace(/&#x([a-f0-9]{1,6});/gi,(_m,n)=>String.fromCodePoint(parseInt(n,16))));
+      const body=article.content.rendered,first=body.match(/^\s*<p\b[^>]*>([\s\S]*?)<\/p>/)?.[1],title=text(first?.split(/<br\s*\/?\s*>/)[1]??'');
+      const updates=body.match(/<h4 class="wp-block-heading">Updates on UNEP-led Outputs<\/h4>([\s\S]*?)<hr\b/)?.[1];
+      if (!title || !updates || !/<\/p>\s*$/.test(body) || !text(page.body).includes(title)) throw new Error('GOF project content boundary unavailable');
+      const paragraphs=[...updates.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>({html:m[0],text:text(m[1])}));
+      const workshop=paragraphs.filter(p=>/will also be featured in Workshop \d+,/.test(p.text)),project=paragraphs.filter(p=>!workshop.includes(p));
+      if (!project.length || workshop.length>1 || paragraphs.some(p=>!text(page.body).includes(p.text))) throw new Error('GOF project update/detail disagreement');
+      stats.warnings.push('GOF covers the linked BBNJ G&R project and its named upcoming workshop in three reads; homepage recaps, other projects, the older RSS/archive, PDFs and full programmes remain outside this slice');
+      const items=[{key:'project',kind:'announcement',title,organization:'Global Ocean Forum',context:project.find(p=>p.text.startsWith('Since kickoff,'))?.text??project.map(p=>p.text).join(' '),
+        content:body.replace(workshop[0]?.html??'','').split(/<p\b[^>]*><strong>PROJECT AT-A-GLANCE<\/strong>/)[0]}];
+      for (const item of workshop) {
+        const session=item.text.match(/will also be featured in Workshop (\d+),/),name=item.html.match(/<em>([^<]+)<\/em>/),conference=item.html.match(/href="(https:\/\/www\.unep\.org\/gef\/events\/conference\/(\d+)-gef-international-waters-conference-iwc\2)"/),edition=item.text.match(/\(IWC(\d+)\).* from (\d{1,2}) to (\d{1,2}) ([A-Z][a-z]+) (20\d{2})\./);
+        if (!session || !name || !conference || !edition || conference[2]!==edition[1]) {stats.warnings.push('GOF workshop edition/identity unavailable');continue;}
+        items.push({key:`iwc${edition[1]}:${edition[5]}:workshop${session[1]}`,kind:'event',title:text(name[1]),organization:null,context:item.text,content:item.html,
+          parent:conference[1],edition:edition[1],year:edition[5],session:session[1]});
+        stats.warnings.push('GOF workshop schedule, organizer and registration remain unconfirmed: UNEP returned HTTP 403 during discovery; its observed IW:LEARN alternative and HTML agenda identify the parent conference, not the specific session. PDF programme remains unparsed');
+      }
+      const seen=(await db.query('select 1 from scout.evidence where tracker_id=$1 and url=$2 limit 1',[tracker.id,projectURL])).rows.length;
+      if (published>=new Date(since).toISOString()||seen) for (const item of items) {
+        const sentences=item.context.match(/[^.!?]+[.!?](?=\s|$)/g)?.map(s=>s.trim()).filter(s=>Array.from(s).length<=280)??[];
+        const description=sentences.find(s=>s.startsWith('Work has started'))??sentences[0]??null;
+        const scripted={kind:item.kind,title:item.title,description,organization:item.organization,location:null,starts_at:null,ends_at:null,event_url:null,registration_url:null,status:null,
+          gof:{id:8624,item:item.key,...(item.parent?{parent_conference:item.parent,edition:item.edition,year:item.year,session:item.session,schedule_unconfirmed:true}:{})}};
+        const links=[...new Set([...item.content.matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(new URL(text(m[1]),projectURL).href);}catch{return null;}}).filter(Boolean))].sort();
+        const source=await observe(db,tracker.id,projectURL,JSON.stringify({text:item.title+' '+item.context,body:page.body,api:response,item:item.content}),published,scripted,
+          {text:text(item.content),links,published_at:published,structured:scripted},
+          {rank:2,identity:`gof:8624:${item.key}`,item_key:item.key,parent_url:tracker.url},now());
+        stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+      }
+      covered=true;
     } else if (iucn) {
       const home=await read(tracker.url,budget);stats.pages++;
       if (home.url!==tracker.url || !/<\/html>\s*$/.test(home.body) || !home.body.includes(`rel="canonical" href="${tracker.url}"`) || !home.body.includes('Topic Search View')) throw new Error('IUCN High Seas discovery unavailable');
@@ -1148,11 +1190,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
