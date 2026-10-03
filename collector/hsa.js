@@ -4,10 +4,11 @@ import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
 import { isIP } from 'node:net';
 import { isDeepStrictEqual } from 'node:util';
-import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTENT_FIELDS, normalize, fingerprint, visibleText, dosiArticle, ASSESSMENT_VERSION } from './assessment.js';
+import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTENT_FIELDS, normalize, fingerprint, visibleText, dosiArticle, doalosArticle, ASSESSMENT_VERSION } from './assessment.js';
 
 export const HSA = 'highseasalliance.bsky.social';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
+export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const USER_AGENT = 'BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)';
 export const LIMITS = { feedPages: 2, postsPerPage: 25, pages: 6, redirects: 3, requests: 24, bytes: 524288, seconds: 120 };
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -394,7 +395,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const actor=tracker.collector==='bluesky_feed' && tracker.url?.match(/^https:\/\/bsky\.app\/profile\/([a-z0-9.-]+)$/)?.[1];
   const hub=tracker.collector==='web' && tracker.url==='https://www.hubocean.earth/events-calendar';
   const untc=tracker.collector==='web' && tracker.url===UNTC;
-  if (!actor && !hub && !untc) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const doalos=tracker.collector==='web' && tracker.url===DOALOS;
+  if (!actor && !hub && !untc && !doalos) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -435,6 +437,107 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         }
       });
       stats.baseline_participants=parsed.participants.length;stats.baseline_parties=parsed.parties;covered=true;
+    } else if (doalos) {
+      const home=await read(tracker.url,budget);stats.pages++;
+      const listingURL=DOALOS+'/notifications';
+      if (home.url!==tracker.url || !home.body.includes('href="/bbnjagreement/en/notifications"') || !/<\/html>\s*$/.test(home.body)) throw new Error('DOALOS notifications link unavailable');
+      const listing=await read(listingURL,budget);stats.pages++;
+      if (listing.url!==listingURL) throw new Error('Unexpected DOALOS listing destination');
+      const article=doalosArticle(listing.body,listing.url);
+      const day=text=>{
+        if (!/^\d{1,2} (January|February|March|April|May|June|July|August|September|October|November|December) \d{4}$/.test(text)) throw new Error('Invalid DOALOS notice date');
+        const date=new Date(text+' 00:00:00 GMT');
+        if (!Number.isFinite(+date) || date.toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric',timeZone:'UTC'})!==text.replace(/^0/,'')) throw new Error('Invalid DOALOS notice date');
+        return date.toISOString().slice(0,10);
+      };
+      const news=home.body.match(/<h2\b[^>]*>\s*New\s*<\/h2>[\s\S]*?<ul>([\s\S]*?)<\/ul>/)?.[1];
+      if (!news) stats.warnings.push('DOALOS homepage New list unavailable');
+      const conferences=[...(news??'').matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/g)].filter(m=>/International Conference on BBNJ/.test(visibleText(m[1])));
+      if (conferences.length>1) stats.warnings.push('DOALOS homepage conference limit reached');
+      for (const item of conferences.slice(0,1)) {
+        const link=item[1].match(/<a\b[^>]*href="(https:\/\/www\.deepoceanbbnj\.cn\/\d{4}\.html)"[^>]*>([\s\S]*?)<\/a>/);
+        const heading=link && visibleText(link[2]).match(/^(.+) \((\d{1,2} [A-Za-z]+ \d{4})\)$/);
+        const deadline=visibleText(item[1]).match(/Registration by (\d{1,2} [A-Za-z]+ \d{4})/);
+        if (!heading || !deadline) {stats.warnings.push('Unsupported DOALOS homepage conference item');continue;}
+        const start=day(heading[2]),due=day(deadline[1]);
+        if (start<since.slice(0,10) && due<since.slice(0,10)) continue;
+        const url=sourceURL(link[1]);
+        const scripted={kind:'event',title:heading[1],description:visibleText(item[1]),organization:null,location:null,
+          ...dates(start),event_url:url,registration_url:null,status:null,registration_deadline_on:due};
+        let detail=null,detailText='',technicalText='';
+        try {
+          const response=await read(url,budget);stats.pages++;
+          if (response.url!==url || !/text\/html/i.test(response.headers['content-type']??'') || !/<\/html>\s*$/.test(response.body)) throw new Error('Conference detail destination/format unavailable');
+          const body=response.body.replace(/<!--[\s\S]*?-->/g,'');
+          const from=body.indexOf('<div class="info-bar">'),to=body.indexOf('<h3>Contact</h3>');
+          if (from<0 || to<from || visibleText(body.match(/<title>([\s\S]*?)<\/title>/)?.[1]??'')!==heading[1]) throw new Error('Conference detail layout unavailable');
+          const content=body.slice(from,to);
+          const date=visibleText(content.match(/<h4>DATE<\/h4>\s*<p>([^<]+)<\/p>/)?.[1]??'');
+          const closing=visibleText(content).match(/Registration deadline: (\d{1,2} [A-Za-z]+ \d{4})/);
+          if (day(date)!==start || !closing || day(closing[1])!==due) throw new Error('Conference listing/detail dates disagree');
+          scripted.organization=visibleText(content.match(/<h4>HOST<\/h4>\s*<small>([\s\S]*?)<\/small>/)?.[1]??'')||null;
+          const venue=content.match(/<h4>VENUE<\/h4>\s*<p>([^<]+)<\/p>\s*<small>([^<]+)<\/small>/);
+          scripted.location=venue?visibleText(venue[1]+' '+venue[2]):null;
+          const register=content.match(/onClick="document\.location='([^']+)'"[^>]*>\s*<h1>Registration and participation<\/h1>/);
+          scripted.registration_url=register?sourceURL(new URL(register[1],url).href):null;
+          const paragraphs=[...content.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>visibleText(m[1]));
+          const technical=paragraphs.find(p=>p.includes('This Panel will explore'));
+          if (technical) {
+            technicalText=technical;
+            scripted.description=Array.from(technical.match(/^.*?\.(?:\s|$)/)?.[0].trim()??technical).slice(0,280).join('');
+          }
+          detail={url,body:response.body};detailText=visibleText(content);
+        } catch(error) {
+          quota ||= Boolean(error.quota);stats.warnings.push(error.message+'; conference listing facts only');
+          // An outage must not replace richer accepted evidence or spend a call on stale detail.
+          if ((await db.query("select id from scout.evidence where tracker_id=$1 and url=$2 and parsed#>>'{source,item_key}'=$3 limit 1",[tracker.id,DOALOS,url])).rows.length) continue;
+        }
+        const text=[visibleText(item[1]),scripted.organization,scripted.location,technicalText||scripted.description,
+          detailText.match(/Roundtable Discussion: The Clearing-House Mechanism \(CHM\) and Data Sharing/)?.[0]].filter(Boolean).join(' ');
+        const source=await observe(db,tracker.id,DOALOS,JSON.stringify({text,listing:item[1],detail}),null,scripted,
+          {listing:visibleText(item[1]),detail:detailText,structured:scripted},
+          {rank:2,identity:`event:${url}`,item_key:url,links:[url,scripted.registration_url].filter(Boolean)},now());
+        stats[source.changed?'candidates':'skipped']++;pages.set(DOALOS,{source});
+        stats.warnings.push('Conference has date-only evidence; draft programme clocks lack a time zone and individual panels are not extracted');
+      }
+      const rows=[...article.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map(match=>{
+        const cells=[...match[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)];
+        const links=[...match[1].matchAll(/href="(https:\/\/www\.un\.org\/bbnjagreement\/en\/notification-(\d{4}-\d{3}))"/g)];
+        if (cells.length!==2 || links.length!==1) throw new Error('Invalid DOALOS notice row');
+        return {url:links[0][1],number:links[0][2],issued_on:day(visibleText(cells[0][1])),text:visibleText(match[1])};
+      });
+      if (!rows.length || rows.length>50 || new Set(rows.map(r=>r.url)).size!==rows.length) throw new Error('Invalid DOALOS notifications list');
+      const seen=(await db.query('select distinct url from scout.evidence where tracker_id=$1',[tracker.id])).rows.map(r=>r.url);
+      const selected=rows.filter(r=>r.issued_on>=since.slice(0,10)||seen.includes(r.url)).sort((a,b)=>b.issued_on.localeCompare(a.issued_on));
+      stats.notices_listed=rows.length;stats.notices_in_window=selected.length;
+      stats.warnings.push('DOALOS covers the notifications table and one linked homepage conference; other homepage announcements, PDFs and side-event programmes are not collected');
+      const detailLimit=LIMITS.pages-2-conferences.slice(0,1).length;
+      if (selected.length>detailLimit) stats.warnings.push('DOALOS notice detail limit reached');
+      if (/class="[^"]*\bpager\b|rel="next"/.test(article)) stats.warnings.push('DOALOS listing pagination is not followed');
+      for (const item of selected.slice(0,detailLimit)) {
+        try {
+          const response=await read(item.url,budget);stats.pages++;
+          if (response.url!==item.url || !/text\/html/i.test(response.headers['content-type']??'')) throw new Error('Unexpected DOALOS notice destination/format');
+          const content=doalosArticle(response.body,item.url),text=visibleText(content);
+          const headings=[...content.matchAll(/<h4\b[^>]*>([\s\S]*?)<\/h4>/g)].map(m=>visibleText(m[1]));
+          if (headings.length!==3 || !headings[0] || day(headings[1])!==item.issued_on || !item.text.includes(headings[0]) || !item.text.includes(headings[2])) throw new Error('DOALOS notice/list facts disagree');
+          const required=headings[2].match(/^Action required by (.+)$/);
+          if (!required && headings[2]!=='No action required') throw new Error('Unrecognized DOALOS notice action');
+          const links=[...new Set([...content.matchAll(/href="([^"]+)"/g)].map(m=>{
+            try{return sourceURL(new URL(m[1].replaceAll('&amp;','&'),item.url).href);}catch{return null;}
+          }).filter(Boolean))].sort();
+          if (links.length>10) throw new Error('DOALOS notice link limit reached');
+          const description=[...content.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>visibleText(m[1])).find(p=>p.startsWith('In this regard,'))??headings[0];
+          const scripted={kind:'announcement',title:headings[0],organization:text.includes('Division for Ocean Affairs and the Law of the Sea')?'Division for Ocean Affairs and the Law of the Sea':null,
+            description:Array.from(description).slice(0,280).join(''),...Object.fromEntries(['location','event_url','registration_url','starts_at','ends_at','status'].map(f=>[f,null])),
+            notification:{number:item.number,issued_on:item.issued_on,action_required_by:required?day(required[1]):null}};
+          const source=await observe(db,tracker.id,item.url,response.body,null,scripted,{text,links,notification:scripted.notification},
+            {rank:2,identity:`page:${item.url}`,listing_url:listingURL,links},now());
+          stats[source.changed?'candidates':'skipped']++;
+          pages.set(item.url,{source});
+        } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
+      }
+      covered=selected.length<=detailLimit;
     } else if (hub) {
       const feedURL=tracker.url+'?format=json';
       const response=await read(feedURL,budget);stats.pages++;
@@ -555,11 +658,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = untc && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows;
+  const queued = (untc || doalos) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>!doalos||pages.has(source.url));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
@@ -588,7 +691,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         // A parsed registration page supplies its own URL. An explicit link in
         // the retained post can resolve "new" only after the normal identity checks.
         const modelDecision=decision;
-        if (source.parsed.local_schedule && decision.candidate?.kind==='event' && ['new','update'].includes(decision.action)) {
+        if ((source.parsed.local_schedule || doalos && source.parsed.source.item_key) && decision.candidate?.kind==='event' && ['new','update'].includes(decision.action)) {
           const linked=input.candidates.filter(candidate=>candidate.registration_link);
           decision={...decision,candidate:{...decision.candidate,...Object.fromEntries(['event_url','registration_url']
             .filter(field=>!decision.candidate[field]&&!decision.clear_fields.includes(field)).map(field=>[field,input.scripted[field]??null]))}};

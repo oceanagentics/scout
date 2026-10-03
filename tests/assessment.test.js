@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,UNTC} from '../collector/hsa.js';
+import {collectHSA,HSA,UNTC,DOALOS} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>$1 limit 1",[UNTC])).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>$1 and url<>$2 limit 1",[UNTC,DOALOS])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -423,6 +423,179 @@ test('recorded DOSI newsletter keeps separate items, real URLs, changes and boun
   const next=(await db.query("select * from scout.evidence where url=$1 and parsed->>'title'=$2",[issue,event.parsed.title])).rows[0];
   assert.notEqual(next.parsed.source.identity,event.parsed.source.identity);
  }finally{await db.close();}
+});
+
+test('recorded DOALOS notices retain official facts, date-only metadata, stable updates and cosmetic repeat gating while disabled',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/doalos-notices.json.gz',import.meta.url))));let calls=0;
+ f[DOALOS].body=f[DOALOS].body.replaceAll('International Conference on BBNJ','Other homepage item'); // Isolate the notice path.
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[DOALOS])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-07-01',read:async(url,budget)=>{budget.requests++;assert.ok(f[url],url);return f[url];},model:async(_instruction,inputs)=>{
+   calls++;return inputs.map(i=>{
+    assert.equal(i.scripted.notification.issued_on,'2026-07-16');assert.equal(i.scripted.notification.action_required_by,null);
+    assert.match(i.text,/Permanent Mission of Ireland/);assert.ok(!i.text.includes('Skip to main content'));
+    const candidate=Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]));
+    assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,kind:'event',starts_at:'2026-07-16T00:00:00Z'},quotes:[candidate.title]},i),/unsupported starts_at/);
+    return {...result,source_id:i.source_id,action:i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,candidate,quotes:[candidate.title]};
+   });
+  }};
+  await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);
+  const first=await collectHSA(db,options);assert.equal(first.outcome,'partial');assert.equal(first.created,1);assert.equal(first.assessed,1);assert.equal(first.pending,0);assert.equal(first.requests,3);
+  assert.ok(first.warnings.some(w=>w.includes('PDFs')));assert.equal(calls,1);
+  let record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.kind,'announcement');assert.equal(record.priority,'high');
+  assert.equal(record.organization,'Division for Ocean Affairs and the Law of the Sea');
+  for(const key of ['location','event_url','registration_url','starts_at','ends_at','status','last_communicated_at'])assert.equal(record[key],null);
+  const source=(await db.query('select * from scout.evidence')).rows[0];assert.equal(source.content,f[source.url].body);assert.equal(source.published_at,null);
+  assert.equal(source.parsed.source.listing_url,DOALOS+'/notifications');assert.ok(source.parsed.source.links.some(link=>link.endsWith('20260716BBNJNotification2026002.pdf')));
+  const context=await assessmentInput(db,source,tracker);let bytes=0;
+  await gemini({apiKey:'injected',runId:first.run_id,ledger:{query:async()=>({rows:[]})},fetch:async(_url,r)=>{bytes=Buffer.byteLength(r.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}})(INSTRUCTION,[context],SCHEMA);
+  assert.ok(bytes<8000);
+  f[source.url].body=f[source.url].body.replace('</body>','<nav>Rotating navigation</nav><script>random()</script></body>').replaceAll('col-lg-8','col-lg-9');
+  const repeat=await collectHSA(db,options);assert.equal(repeat.candidates,0);assert.equal(repeat.created+repeat.changed,0);assert.equal(repeat.pending,0);assert.equal(calls,1);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,1);
+  for(const url of [DOALOS+'/notifications',source.url])f[url].body=f[url].body.replaceAll('Pre-collection notification under article 12','Corrected pre-collection notification under article 12');
+  const changed=await collectHSA(db,{...options,since:'2026-10-01'});assert.equal(changed.created,0);assert.equal(changed.changed,1);assert.equal(calls,2);
+  const revised=(await db.query('select * from scout.records')).rows[0];assert.equal(revised.id,record.id);assert.equal(revised.identity_key,record.identity_key);assert.match(revised.title,/^Corrected/);
+  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,2);
+  assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('DOALOS deadline notice and cross-source identity remain separate from publication and other notices',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/doalos-notices.json.gz',import.meta.url))));
+ f[DOALOS].body=f[DOALOS].body.replaceAll('International Conference on BBNJ','Other homepage item');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[DOALOS])).rows[0];
+  const title='Pre-collection notification under article 12, paragraph 2, of the BBNJ Agreement';
+  const known=(await db.query("insert into scout.records(kind,title,organization,identity_key,priority) values('announcement',$1,'Division for Ocean Affairs and the Law of the Sea','post:known-notice','normal') returning *",[title])).rows[0];
+  const run=await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2026-02-01',read:async(url,budget)=>{budget.requests++;return f[url];},model:async(_instruction,inputs)=>inputs.map(i=>{
+   const existing=i.candidates.find(r=>r.title===i.scripted.title);
+   if(i.scripted.notification.number==='2026-001'){
+    assert.equal(i.scripted.notification.issued_on,'2026-02-10');assert.equal(i.scripted.notification.action_required_by,'2026-03-16');assert.match(i.text,/Action required by 16 March 2026/);
+    assert.ok(i.links.includes('https://forms.office.com/e/dVpJpcpRZR'));assert.equal(i.scripted.registration_url,null);
+   }else assert.equal(existing.id,known.id);
+   return {...result,source_id:i.source_id,action:existing?'supporting_evidence':'new',record_id:existing?.id??null,quotes:[i.scripted.title],
+    candidate:Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]))};
+  })});
+  assert.equal(run.pending,0);assert.equal(run.assessed,2);assert.equal(run.created,1);assert.equal(run.changed,1);
+  const records=(await db.query('select * from scout.records')).rows;assert.equal(records.length,2);assert.ok(records.every(r=>r.starts_at===null&&r.ends_at===null));
+  assert.ok(records.some(r=>r.id===known.id&&r.identity_key===known.identity_key&&r.priority==='high'));
+  assert.equal((await db.query('select count(distinct url)::int n from scout.evidence')).rows[0].n,2);
+ }finally{await db.close();}
+});
+
+test('DOALOS malformed/challenged sources cannot replace captures or assess stale pending content',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/doalos-notices.json.gz',import.meta.url))));let changed=null,calls=0;
+ f[DOALOS].body=f[DOALOS].body.replaceAll('International Conference on BBNJ','Other homepage item');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[DOALOS])).rows[0],detail=DOALOS+'/notification-2026-002';
+  const options={trackerId:tracker.id,validate:true,since:'2026-07-01',read:async(url,budget)=>{budget.requests++;return changed?.[url]??f[url];},model:async()=>{calls++;throw new Error('Injected assessment outage');}};
+  assert.equal((await collectHSA(db,options)).pending,1);assert.equal(calls,1);
+  const evidence=(await db.query('select * from scout.evidence')).rows;
+  for(const [url,body] of [[DOALOS,'<html>Challenge</html>'],[DOALOS+'/notifications','<html>Unexpected list</html>'],
+   [DOALOS+'/notifications',f[DOALOS+'/notifications'].body.replaceAll('16 July 2026','31 February 2026')],
+   [detail,f[detail].body.replace('</html>','')],[detail,f[detail].body.replaceAll('16 July 2026','17 July 2026')]]){
+   changed={[url]:{...f[url],body}};const run=await collectHSA(db,options);assert.ok(['failed','partial'].includes(run.outcome));assert.equal(run.pending,1);assert.equal(calls,1);
+   assert.deepEqual((await db.query('select * from scout.evidence')).rows,evidence);
+  }
+  assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+ }finally{await db.close();}
+});
+
+test('DOALOS notification bounds and low-relevance decisions never imply full website coverage',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/doalos-notices.json.gz',import.meta.url))));
+ f[DOALOS].body=f[DOALOS].body.replaceAll('International Conference on BBNJ','Other homepage item');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[DOALOS])).rows[0];
+  const detail=DOALOS+'/notification-2026-002',title='Pre-collection notification under article 12, paragraph 2, of the BBNJ Agreement';
+  // An injected generic-explainer notice exercises the assessment gate, not a claim about the real official notice.
+  for(const url of [DOALOS+'/notifications',detail])f[url].body=f[url].body.replaceAll(title,'Explainer video: An introduction to the BBNJ Agreement');
+  let calls=0;
+  const options={trackerId:tracker.id,validate:true,since:'2026-07-01',read:async(url,budget)=>{budget.requests++;assert.ok(f[url],url);return f[url];},model:async(_q,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,priority:'low',candidate:Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]])),quotes:[i.scripted.title]}));}};
+  const low=await collectHSA(db,options);assert.equal(low.created,0);assert.equal(low.assessed,1);assert.equal(low.pending,0);assert.equal(low.outcome,'partial');
+  assert.equal((await collectHSA(db,options)).candidates,0);assert.equal(calls,1);
+  const row=[...f[DOALOS+'/notifications'].body.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)].at(-1)[0];
+  for(let n=3;n<=7;n++){
+   const number=`2026-00${n}`,url=DOALOS+'/notification-'+number;
+   f[DOALOS+'/notifications'].body=f[DOALOS+'/notifications'].body.replace('</tbody>',row.replaceAll('2026-002',number)+'</tbody>');
+   f[url]={...f[detail],url,body:f[detail].body.replaceAll('notification-2026-002','notification-'+number)};
+  }
+  const bounded=await collectHSA(db,{...options,model:async()=>{throw new Error('Bounded observation only');}});
+  assert.equal(bounded.pages,6);assert.equal(bounded.requests,6);assert.equal(bounded.notices_in_window,6);assert.ok(bounded.warnings.some(w=>w.includes('detail limit')));
+ }finally{await db.close();}
+});
+
+test('recorded DOALOS homepage conference includes real detail and registration, with distinct date/deadline and no invented session clocks',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/doalos-notices.json.gz',import.meta.url))));let calls=0,fail=false;
+ const url='https://www.deepoceanbbnj.cn/2026.html';
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[DOALOS])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-07-01',read:async(u,budget)=>{budget.requests++;assert.ok(f[u],u);if(fail&&u===url)throw new Error('Source returned HTTP 403');return f[u];},model:async(_q,inputs)=>{
+   calls++;return inputs.map(i=>{
+    if(i.scripted.kind==='event'){
+     assert.equal(i.url,DOALOS);assert.equal(i.scripted.event_url,url);assert.equal(i.scripted.start_on,'2026-11-05');assert.equal(i.scripted.registration_deadline_on,'2026-10-15');
+     assert.equal(i.scripted.registration_url,'https://www.deepoceanbbnj.cn/index/register/');assert.equal(i.scripted.starts_at,null);assert.equal(i.scripted.ends_at,null);assert.equal(i.scripted.time_zone,null);
+     assert.match(i.scripted.organization,/China Deep Ocean Affairs Administration/);assert.match(i.scripted.location,/Xiamen International Conference Center/);
+     assert.match(i.text,/DePTH-GPT/);assert.match(i.text,/Clearing-House Mechanism/);
+    }
+    const candidate=Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]));
+    if(candidate.kind==='event'){candidate.event_url=null;candidate.registration_url=null;} // Reproduce the first live model omission.
+    return {...result,source_id:i.source_id,candidate,quotes:[i.scripted.title]};
+   });
+  }};
+  const first=await collectHSA(db,options);assert.equal(first.created,2,JSON.stringify(first));assert.equal(first.pending,0);assert.equal(first.pages,4);assert.equal(first.outcome,'partial');
+  const records=(await db.query('select * from scout.records order by id')).rows;assert.equal(records.filter(r=>r.kind==='event').length,1);
+  const retained=records.find(r=>r.kind==='event');assert.equal(retained.event_url,url);assert.equal(retained.registration_url,'https://www.deepoceanbbnj.cn/index/register/');
+  const event=(await db.query('select * from scout.evidence where url=$1',[DOALOS])).rows[0];assert.equal(event.parsed.source.item_key,url);assert.equal(event.published_at,null);
+  assert.equal(event.parsed.assessment.model_decision.candidate.event_url,null);assert.equal(event.parsed.assessment.candidate.event_url,url);
+  const raw=JSON.parse(event.content);assert.equal(raw.detail.url,url);assert.equal(raw.detail.body,f[url].body);assert.match(raw.listing,/Registration by 15 October 2026/);
+  const context=await assessmentInput(db,event,tracker);let bytes=0;
+  await gemini({apiKey:'injected',runId:first.run_id,ledger:{query:async()=>({rows:[]})},fetch:async(_u,r)=>{bytes=Buffer.byteLength(r.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}})(INSTRUCTION,[context],SCHEMA);assert.ok(bytes<8000);
+  const before=calls;f[url].body=f[url].body.replace('width:100%;','width:99%;').replace('</body>','<!-- New comment --><script>random()</script></body>');
+  const repeat=await collectHSA(db,options);assert.equal(repeat.candidates,0);assert.equal(repeat.created+repeat.changed,0);assert.equal(calls,before);
+  fail=true;const failed=await collectHSA(db,options);assert.equal(failed.outcome,'partial');assert.equal(failed.candidates,0);assert.equal(calls,before);
+  assert.deepEqual((await db.query('select * from scout.records order by id')).rows,records);
+  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,2);
+  assert.equal((await db.query('select enabled from scout.trackers where id=$1',[tracker.id])).rows[0].enabled,false);
+ }finally{await db.close();}
+});
+
+test('DOALOS conference listing survives unavailable details; recovery and deadline corrections retain its existing identity',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/doalos-notices.json.gz',import.meta.url))));let fail=true,calls=0;
+ const url='https://www.deepoceanbbnj.cn/2026.html';
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[DOALOS])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-10-01',read:async(u,budget)=>{budget.requests++;if(fail&&u===url)throw new Error('Source unavailable');return f[u];},model:async(_q,inputs)=>{
+   calls++;return inputs.map(i=>({...result,source_id:i.source_id,action:i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,
+    priority:fail?'normal':'high',candidate:Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]])),quotes:[i.scripted.title]}));
+  }};
+  assert.equal((await collectHSA(db,options)).created,1);const first=(await db.query('select * from scout.records')).rows[0];
+  assert.equal(first.event_url,url);assert.equal(first.registration_url,null);assert.equal(first.location,null);assert.equal(first.starts_at,null);
+  assert.equal((await collectHSA(db,options)).candidates,0);assert.equal(calls,1);
+  fail=false;assert.equal((await collectHSA(db,options)).changed,1);assert.equal(calls,2);
+  const recovered=(await db.query('select * from scout.records')).rows[0];assert.equal(recovered.id,first.id);assert.equal(recovered.identity_key,first.identity_key);assert.equal(recovered.priority,'high');assert.ok(recovered.registration_url);
+  for(const u of [DOALOS,url])f[u].body=f[u].body.replaceAll('15 October 2026','16 October 2026');
+  const corrected=await collectHSA(db,options);assert.equal(corrected.candidates,1);assert.equal(corrected.created,0);assert.equal(calls,3);
+  const evidence=(await db.query('select * from scout.evidence order by collected_at desc')).rows;
+  assert.equal(evidence[0].parsed.registration_deadline_on,'2026-10-16');assert.equal(evidence[0].parsed.start_on,'2026-11-05');
+  assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,1);
+  f[url].body=f[url].body.replaceAll('5 November 2026','6 November 2026');
+  const conflict=await collectHSA(db,options);assert.equal(conflict.outcome,'partial');assert.equal(conflict.candidates,0);assert.equal(calls,3);assert.ok(conflict.warnings.some(w=>w.includes('dates disagree')));
+ }finally{await db.close();}
+});
+
+test('actual DOALOS live assessments preserve identity and the corrected complete source-backed event',async()=>{
+ const f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/doalos-notices.json.gz',import.meta.url))));
+ for(const sample of f.live){
+  const decision=sample.decision.model_decision??Object.fromEntries(SCHEMA.items.required.map(k=>[k,sample.decision[k]]));
+  validateDecision(decision,sample.input);
+ }
+ const [first,last]=f.live;
+ assert.equal(first.record.event_url,null);assert.equal(first.record.id,last.record.id);assert.equal(first.record.identity_key,last.record.identity_key);
+ assert.equal(last.record.event_url,'https://www.deepoceanbbnj.cn/2026.html');assert.equal(last.record.registration_url,'https://www.deepoceanbbnj.cn/index/register/');
+ assert.equal(last.record.priority,'high');assert.equal(last.record.starts_at,null);assert.equal(last.record.ends_at,null);assert.equal(last.record.last_communicated_at,null);
+ assert.equal(last.input.scripted.start_on,'2026-11-05');assert.equal(last.input.scripted.registration_deadline_on,'2026-10-15');
+ assert.doesNotMatch(last.decision.reason,/architecture/i);assert.ok(last.record.description.endsWith('.'));
 });
 
 test('official UN baseline preserves all action types/notes and assesses only the selected current window while disabled',async()=>{
