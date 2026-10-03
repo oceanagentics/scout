@@ -19,7 +19,7 @@ test('missing, invalid, publishable, other secret and valid user JWT never open 
   let connects = 0, collections = 0;
   for (const headers of [{}, { apikey: 'invalid' }, { apikey: env.publishableKeys.default }, { apikey: env.secretKeys.other },
     { Authorization: `Bearer ${jwt}` }, { Authorization: `Bearer ${jwt}`, apikey: env.publishableKeys.default }]) {
-    const response = await hostedHSA(request(headers), { env: testEnv, databaseURL: 'unused',
+    const response = await hostedHSA(request(headers, '?validate=true&tracker_id=00000000-0000-0000-0000-000000000001'), { env: testEnv, databaseURL: 'unused',
       connect: () => { connects++; }, collect: () => { collections++; } });
     assert.equal(response.status, 401);
   }
@@ -33,6 +33,10 @@ test('invalid authenticated requests do no database work', async () => {
     request(undefined, '?since=2026-09-01&since=2026-10-01'), request(undefined, '?sql=delete'),
     request(undefined, '?source_id=invalid'), request(undefined, '?source_id=00000000-0000-0000-0000-000000000001&source_id=00000000-0000-0000-0000-000000000002'),
     request(undefined, '?tracker_id=invalid'), request(undefined, '?tracker_id=00000000-0000-0000-0000-000000000001&tracker_id=00000000-0000-0000-0000-000000000002'),
+    ...['true','false','','all','true&validate=true'].map(value=>request(undefined, `?validate=${value}`)),
+    request(undefined, '?validate=false&tracker_id=00000000-0000-0000-0000-000000000001'),
+    request(undefined, '?validate=true&tracker_id=all'),
+    request(undefined, '?validate=true&validate=true&tracker_id=00000000-0000-0000-0000-000000000001'),
     ...['-1','11','1.2','','2&max_attempts=3'].map(value=>request(undefined, `?max_attempts=${value}`)),
     new Request('https://example.test', { method: 'POST', headers: { apikey: secret }, body: '{}' })]) {
     const response = await hostedHSA(req, { env, databaseURL: 'unused', connect: () => { connects++; } });
@@ -47,7 +51,7 @@ test('overlap skips collection; authorized work uses parameters/transactions and
     let collected = 0, closed = 0, transactions = 0;
     const tx = { unsafe: async (query, params) => { queries.push({ query, params }); if(query==='begin') transactions++; return [{ acquired }]; },
       release() {} };
-    const req = new Request('https://example.test/collect?since=2026-09-01&max_attempts=0&source_id=00000000-0000-0000-0000-000000000001&tracker_id=00000000-0000-0000-0000-000000000002', {
+    const req = new Request('https://example.test/collect?validate=true&since=2026-09-01&max_attempts=0&source_id=00000000-0000-0000-0000-000000000001&tracker_id=00000000-0000-0000-0000-000000000002', {
       method: 'POST', headers: { apikey: secret }, body: new ReadableStream({ start(controller) { controller.close(); } }), duplex: 'half' });
     const response = await hostedHSA(req, { env, databaseURL: 'unused',
       connect: (_url, options) => {
@@ -60,6 +64,7 @@ test('overlap skips collection; authorized work uses parameters/transactions and
         assert.equal(options.since, '2026-09-01T00:00:00Z');
         assert.equal(options.sourceId, '00000000-0000-0000-0000-000000000001');
         assert.equal(options.trackerId, '00000000-0000-0000-0000-000000000002');
+        assert.equal(options.validate, true);
         await assert.rejects(options.makeModel('unused')(), /Observation-only run/);
         assert.ok(options.deadline <= Date.now() + 100000);
         await db.transaction(inner => inner.query('select $1::jsonb, $2::text', [{ proof: true }, "quote'; --"]));

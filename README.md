@@ -38,7 +38,7 @@ The Letter mentions an optional weekly email digest; Features currently specifie
 
 Records keep a title, type, organization, description of at most 280 characters, location, event/registration links, supported UTC start/end timestamps and status. Publication and collection timestamps belong to sources. Full text, date-only values and treaty details remain in captured source evidence; records no longer duplicate them in summary, date-only, publication, country, treaty-action, recorded-date or collection columns. `updated_at` remains the record version. Compact `date_evidence` references the schedule and zone captures used to establish a UTC instant; the component values stay in those captures. Calendar generation has been removed.
 
-The schema through migration `20261002130000` has **four tables and 46 columns**; the latest migration changes tracker defaults and enabled values without adding columns:
+The schema through migration `20261002150000` has **four tables and 46 columns**; the latest migration protects collector proof with column permissions and a trigger, without adding columns:
 
 | Table | Columns | Purpose |
 | --- | ---: | --- |
@@ -52,6 +52,8 @@ A tracker defines where to collect; evidence stores what its returned URLs conta
 **Enabled means a working, tested collector has been proven to receive and persist real source data for that exact tracker configuration.** Yes is not a schedule, heartbeat subscription, pause/resume setting, or guarantee of complete/current coverage. No means unimplemented, unconfigured, not yet proven, or proof invalidated by a source/configuration change. New trackers default to No. A completed low-relevance/no-record decision can prove collection; an HTTP 200, empty run, matching URL pattern, or passing fixture alone cannot.
 
 The 2026-10-02 hosted audit identifies **five proven collectors out of 25**: HSA, DOSI, GFW and IDDRI Bluesky feeds, plus HUB Ocean's calendar. Only those five are enabled; the other 20 remain No. DOSI/GFW partial coverage and the HSA supporting-source backlog remain visible in run outcomes and [tasks.md](tasks.md#scout-16--prove-and-enable-every-tracker). Scheduling remains separate and unimplemented. The per-tracker plan requires recorded examples, a bounded live validation while still disabled, a repeat check, and manager-reviewed evidence before explicit promotion to Yes. Changing the source URL/account or collector requires fresh proof; cadence changes alone do not. Do not turn a tracker on merely to test it.
+
+Enabled writes belong to the private backend after review. Ordinary authenticated admins can still insert/edit tracker configuration, but must omit `enabled`; readers still cannot edit configuration. New rows default to No. The database resets Enabled to No whenever the URL or collector changes, including a backend update that also tries to retain/set Yes. An unchanged URL/collector or cadence-only edit retains proof. A later separate backend update can promote the reviewed configuration.
 
 The browser reads current source metadata through `source_details`; raw evidence stays backend-only. `tracker_status` derives attempt/success/outcome/error from runs. These views store no additional data. Trackers have no cadence/configuration notes, cached status, timestamps or next-run field. There is no `memberships` table: backend-controlled Auth app metadata grants admin access to an otherwise eligible Workspace identity.
 
@@ -67,14 +69,14 @@ Derive each tracker's last attempt, last successful collection and latest comple
 
 ## Configured services
 
-Status as of 2026-10-01, matching the Services tab. See [tasks.md](tasks.md) for verification evidence and remaining acceptance criteria.
+Services-tab baseline with deployment updates through 2026-10-02. See [tasks.md](tasks.md) for verification dates, evidence and remaining acceptance criteria.
 
 | Service | Purpose | Current status |
 | --- | --- | --- |
 | Firebase Hosting | Hosts [Scout's website](https://bbnj-scout.web.app) in project `ryustatic`, with its own `bbnj-scout` site. | Deployed on Spark, with billing disabled. |
 | Supabase database and API | Stores trackers, findings, evidence and collection/model history in shared project `chm`, schema `scout`. | Four-table schema deployed: 25 trackers and five findings, with access restrictions enforced. Free plan, no paid add-ons. |
 | Google sign-in through Supabase Auth | Gives verified `oceanagentics.com` Workspace users automatic reader access. | OAuth configured; real reader sign-in and sign-out verified on the earlier deployed release. |
-| Supabase Edge Functions | Runs collection in the cloud. | Private `scout-collect-hsa` version 18 deployed; selects a configured tracker while retaining HSA as the default. Manual only. |
+| Supabase Edge Functions | Runs collection in the cloud. | Private `scout-collect-hsa` version 19 deployed; explicit tracker validation can collect while Enabled remains No. Ordinary collection retains HSA as the default and rejects unproven trackers. Manual only. |
 | Bluesky public API | Collects HSA, DOSI, Global Fishing Watch and IDDRI posts and supporting links. | All four feeds exercised; Low/no-record outcomes are valid assessments. DOSI/GFW coverage remains partial. |
 | HUB Ocean public calendar | Supplies structured event content and explicit UTC schedules through JSON/ICS. | October 22 AI/data webinar created at High; normal repeat makes no model calls or changes. |
 | Slack Scout app | Posts findings and digests into [#scout](https://oceanagentics.slack.com/archives/C0C5PE21KN1). | Webhook delivery verified with a finding and a digest. Signing secret saved; answering mentions remains pending. |
@@ -139,7 +141,7 @@ Before the schema cleanup, a real Google sign-in as `danny@oceanagentics.com` lo
 
 ## Database deployment
 
-The shared Supabase project is `chm` (`vhlfumeyhkeospnemukq`), using database `postgres`. All twelve migrations through the 2026-10-02 enabled-definition migration `20261002130000` are applied with matching SQL; the persistent local database is also migrated (deployment evidence in SCOUT-16). Hosted Enabled flags are five Yes / 20 No. Collector v18 and the frontend's supported-tracker status update remain deployed; the new diagnostic/status wording is committed for the manager's next scoped deployment. The frontend requires the restricted `tracker_status` and `source_details` projections. The manual notifier supports hosted records; its local mode applies the same migrations to its separate database.
+The shared Supabase project is `chm` (`vhlfumeyhkeospnemukq`), using database `postgres`. All thirteen migrations through the 2026-10-02 proof guard `20261002150000` are applied with matching SQL; the persistent local database is also migrated (deployment evidence in SCOUT-16.01). The one-time `20261002130000` reconciliation was not replayed. Hosted Enabled flags remain five Yes / 20 No, with all five records, 22 captures and 28 runs preserved. Collector v19 is deployed. The new frontend wording and sortable headers are built but await Firebase reauthentication before deployment. The frontend requires the restricted `tracker_status` and `source_details` projections. The manual notifier supports hosted records; its local mode applies the same migrations to its separate database.
 
 The authorized SCOUT-15 cutover deleted 13 hosted records and 29 evidence captures under a transaction-scoped collector lock, preserving all 25 trackers, eight existing collection/model runs, Auth/access, migration history and other-service controls. The initial bounded pull had two records, nine captures and eleven runs; the expansion checkpoint below supersedes those totals. The persistent local database was also narrowly cleared: 12 records and their legacy collected/delivery rows were removed; all 22 local trackers and six run/accounting rows remain. Conflicting legacy publication timestamps required clearing that already-authorized collected state before completing the last three local migrations in one transaction. No project/database reset or new tracker import occurred.
 
@@ -223,6 +225,10 @@ Version 12 removes redundant shortlist descriptions/raw excerpts and duplicate s
 
 The existing private endpoint accepts optional `tracker_id=UUID` and `source_id=UUID`, alongside `since` and `max_attempts`. Omitting the tracker retains HSA. A source selector assesses only that tracker’s selected pending capture; fetching and the overall pending count still cover the tracker. It does not reset completed decisions or rewrite observation timestamps to prioritize work; normal fetching still advances last-seen metadata. Invocations serialize under the existing collector lock and use the same durable hosted model ledger. The local `collect:hsa` command remains HSA-specific.
 
+For reviewed manual validation, add `validate=true` with one explicit existing `tracker_id=UUID`. This allows an implemented source configuration to collect while Enabled stays No; it never promotes the tracker. The same backend secret, source checks, lock, persistence and durable caps apply. Missing/all/duplicate selectors and unsupported configurations are rejected before source/model work; ordinary disabled runs return HTTP 400 without creating a run. Validation records `stats.validation=true` when its run starts, then persists actual captures, assessments and outcome. Successful collection health is derived only from actual `success`/`no_change` runs; a partial/quota/failed validation cannot manufacture freshness or proof.
+
+SCOUT-16.01 passed 52 tests/build and nine live rejection checks with zero source/model calls. Positive disabled-source validation, repeat, quota and later backend promotion are verified with injected/PGlite tests only. No currently disabled hosted configuration has an implemented collector, so positive hosted receipt is deliberately deferred to the first new source assignment. No proven tracker was disabled and no tracker was fabricated for this check.
+
 | Tracker | Hosted ID | Method / verified window |
 | --- | --- | --- |
 | DOSI Bluesky | `ac8f807b-bd05-4982-aeef-bde22fb63ea2` | Configured `getAuthorFeed`; since 2026-09-24 |
@@ -271,4 +277,6 @@ Scout uses Firebase Spark project `ryustatic`, site `bbnj-scout`, deployment tar
 firebase deploy --project ryustatic --only hosting:scout
 ```
 
-The predeploy step builds `dist`. Deployment uses the documented [Hosting REST API](https://firebase.google.com/docs/hosting/api-deploy) and the saved Firebase login, refreshed in memory. The current expansion release is `sites/bbnj-scout/releases/1790892171758000`, version `9ddf94ac63279126`, including the supported-tracker availability correction. All three live assets match the build and retain the configured security headers. Shared capacity was checked and billing remains disabled; Ryu release `sites/ryustatic/releases/1790266049490000` is unchanged. The previous SCOUT-15 cutover release was `1790890018095000` / `9de0d0e7519c9d10`.
+The predeploy step builds `dist`. Deployment uses the documented [Hosting REST API](https://firebase.google.com/docs/hosting/api-deploy) and the saved Firebase login, refreshed in memory. The last successful release is `sites/bbnj-scout/releases/1790892171758000`, version `9ddf94ac63279126`. Its three live assets still match that prior build and retain the configured security headers (rechecked 2026-10-02). The 2026-10-01 deployment verified shared capacity, disabled billing and unchanged Ryu release `sites/ryustatic/releases/1790266049490000`.
+
+SCOUT-16.01 hosting deployment is blocked: the saved Firebase refresh token returns `invalid_grant` / `invalid_rapt` (Google reauthentication required). The assignment permits noninteractive credentials only; no login or Firebase mutation was attempted. The production build includes the Enabled/status wording and `b57eb8a` sortable headers (three compressed files, 63,192 bytes), but remains undeployed. Renew Firebase credentials, recheck billing/capacity/Ryu, then deploy only `hosting:scout` and verify exact assets/security headers before closing this criterion.

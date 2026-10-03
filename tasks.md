@@ -42,7 +42,7 @@ Build a proof of concept that collects BBNJ events, announcements, and treaty-st
 
 ## Current delivery and outstanding work
 
-- **Current hosted release (2026-10-01):** Firebase `1790892171758000` / version `9ddf94ac63279126`, collector version 18, and all eleven migrations through `20261001190000`. Four tables/46 columns remain; all three frontend assets match the build and security headers. Billing remains disabled and Ryu release `1790266049490000` is unchanged. No new Slack message was sent.
+- **Current hosted release (2026-10-02):** collector version 19 and all thirteen migrations through `20261002150000`; four tables/46 columns remain. Firebase still serves `1790892171758000` / version `9ddf94ac63279126`, whose three assets/security headers match the prior build. The new frontend is built but deployment requires Firebase reauthentication; billing/capacity/Ryu could not be rechecked, and no Firebase mutation was attempted. See SCOUT-16.01. No new Slack message was sent.
 - **2026-10-02 collector readiness:** the hosted audit confirms only five of 25 trackers have real captures and completed assessments. SCOUT-16 records the five proven configurations, reconciles Enabled to five Yes / 20 No, and gives the manager the next implementation sequence. Last-run health and known coverage/relevance gaps remain separate.
 - **Expansion verification:** all 49 tests/build pass. HSA fixes and four additional trackers have live assessments. Current totals are five findings, 22 captures and 28 runs, with eleven pending source assessments. All 25 tracker configurations and eleven pre-expansion run/accounting rows are preserved. Reader SQL checks pass for five findings; no login was repeated. The previous authorized reset is not repeated. Detailed counts, quality misses and remaining coverage are in the SCOUT-15 expansion checkpoint below.
 - **SCOUT-06 hosted preview verified:** minimal timestamp state, model selection, hosted-record CLI access and real record links are implemented and tested with injected Slack. A preview read the two fresh hosted records using an injected selector, with no extra model call or Slack send. Communication timestamps remain null. Slack visual layout remains an approved deferral, distinct from verified receipt/content. There is no calendar obligation.
@@ -211,7 +211,7 @@ Acceptance criteria:
 - [x] Verify a real source example and repeatable cases for initial collection, repeat collection, changed date, missing date, irrelevant content, and failed fetch.
 - [x] Deploy/reverify the updated collector with SCOUT-02's migrations: live bounded success/stable repeat, preserved captured evidence, derived freshness and secret-only authorization. Local regression tests cover correction precedence.
 
-Current status: collector version 18 is deployed. HSA has four findings and nine captures, with five source assessments pending after the distinct EOI and bounded webinar input were validated live. The enabled-model resume skipped all six previously fetched sources and preserved both record versions, but newly available supporting pages added captures. This is partial coverage, not a fully completed live `no_change` run. Missing/publishable credentials return 401. Source failures, request-input bounds and identity/official-verification uncertainty remain explicit limits; see SCOUT-15 for exact runs and fixes.
+Current status: collector version 19 is deployed. HSA has four findings and nine captures, with five source assessments pending after the distinct EOI and bounded webinar input were validated live. The enabled-model resume skipped all six previously fetched sources and preserved both record versions, but newly available supporting pages added captures. This is partial coverage, not a fully completed live `no_change` run. Missing/publishable credentials return 401. Source failures, request-input bounds and identity/official-verification uncertainty remain explicit limits; see SCOUT-15 for exact runs and fixes.
 
 Historical verification and deviations (2026-10-01):
 
@@ -636,7 +636,7 @@ Normal enabled-model repeats of HUB and IDDRI returned `no_change`, with zero ca
 
 ## SCOUT-16 — Prove and enable every tracker
 
-Status: in-progress (definition/reconciliation implemented; collector sequence handed to manager after verification)
+Status: in-progress (definition/reconciliation and private validation implemented; SCOUT-16.01 review and frontend deployment remain open)
 Owner: [Scout milestone 1 manager](codex://threads/01a0f59f-1e17-7f70-beb9-6dc786ecd7cb), using the existing worker `01a0f5b1-68bb-7f90-8288-687b6daeb990` in this local checkout.
 Authorization: user request of 2026-10-02. Implement the plan below one reviewed assignment at a time, including necessary collector deployments and bounded live validation. Preserve the $0 limits, shared database, existing records and source evidence. No new imports, worktrees, scheduling, heartbeat restart, Slack sends or mailbox work is included.
 
@@ -677,15 +677,25 @@ Verification (2026-10-02): all **50 tests**, the production build and diff check
 
 ### SCOUT-16.01 — Validate before promotion
 
-Status: todo — **first manager assignment**
+Status: in-progress (backend deployed; awaiting manager review and Firebase reauthentication for frontend deployment)
 Depends on: SCOUT-16.00
 
-- [ ] Add the smallest backend-only manual validation mode for an explicit tracker ID with `enabled=false`; keep ordinary runs rejecting unproven trackers.
-- [ ] Preserve private endpoint authentication, source safety checks, overlap lock, source/record provenance and the shared request/model caps. Reject unscoped/all-tracker validation and unsupported collector configurations before source/model work.
-- [ ] Validation must not change Enabled or fabricate `last_success_at`. Persist the real run outcome/captures; use existing run stats to identify validation if needed, with truthful freshness semantics.
-- [ ] Prove disabled normal runs do no I/O, authorized validation can collect only the selected supported tracker without enabling it, and unauthorized validation cannot run. Verify later explicit promotion works.
-- [ ] Ensure supported URL/account/collector edits reset proof to No in the minimal authoritative write path; proof promotion belongs to the reviewed backend workflow, not a general reader or arbitrary checkbox.
+- [x] Add the smallest backend-only manual validation mode for an explicit tracker ID with `enabled=false`; keep ordinary runs rejecting unproven trackers.
+- [x] Preserve private endpoint authentication, source safety checks, overlap lock, source/record provenance and the shared request/model caps. Reject unscoped/all-tracker validation and unsupported collector configurations before source/model work.
+- [x] Validation must not change Enabled or fabricate `last_success_at`. Persist the real run outcome/captures; use existing run stats to identify validation if needed, with truthful freshness semantics.
+- [x] Prove disabled normal runs do no I/O, authorized validation can collect only the selected supported tracker without enabling it, and unauthorized validation cannot run. Verify later explicit promotion works. Positive receipt/promotion is injected/PGlite evidence; the precise hosted deferral is below.
+- [x] Ensure supported URL/account/collector edits reset proof to No in the minimal authoritative write path; proof promotion belongs to the reviewed backend workflow, not a general reader or arbitrary checkbox.
 - [ ] Deploy and verify this prerequisite before building the next collector. The diagnostic/status wording change from SCOUT-16.00 can ride this scoped deployment; no new schema abstraction or scheduling control.
+
+Implementation checkpoint (2026-10-02): the private endpoint accepts `validate=true` only with an explicit tracker UUID. Validation uses the existing collector and records `stats.validation=true` at run creation; actual source/assessment outcomes determine health. It never writes Enabled. Missing/invalid/duplicate/all-tracker arguments, missing trackers and unsupported configurations are rejected before source/model work. Ordinary disabled runs return HTTP 400 before creating a run. Migration `20261002150000_scout_collector_proof_guard.sql` revokes authenticated inserts/updates of Enabled and adds a trigger that forces No on URL/collector changes, even when a backend caller also supplies Yes. Cadence-only/unchanged configuration edits preserve proof; a later separate backend promotion remains possible. Ordinary admins retain configuration editing without the Enabled property; readers remain read-only.
+
+Verification/deployment: **52 tests**, production build, diff and secret scans pass. Injected/PGlite coverage includes persisted disabled-source receipt/assessment, repeat without duplicate work, durable pre-call reservations/usage, shared quota rejection, normal disabled runs without source/model I/O or run mutation, explicit selection, private authentication/overlap, proof invalidation, cadence edits, admin/reader permissions and backend promotion. Hosted collector **v19 ACTIVE**, six files, SHA-256 `3f48f00c6270ab96d2e042ddd7cb5f241c4756215e9e65cca22dd26c01d5beaf`. Nine live checks returned the expected 401/400 for missing/invalid/publishable auth, unscoped/all/duplicate validation, unsupported validation, normal disabled collection and a missing tracker. No source or model request was made.
+
+Migration/preservation: all **13 hosted migration bodies match exactly**. Readback caught a quoting error in the new history entry; that entry alone was corrected, without replaying the applied guard. The one-time `20261002130000` reconciliation was never replayed. Hosted state remains **25 trackers, five Yes / 20 No, five findings, 22 captures and 28 runs**; all tracker/run rows and record/evidence hashes are unchanged. Auth user/identity hashes and other-schema relation/column permissions, RLS, policies, functions and default privileges match the preflight. The existing Workspace reader still reads five records/25 trackers, with no Enabled/record-write/raw-evidence privilege. The persistent local guard migration preserves **22 trackers, four Yes / 18 No, zero records/captures and six runs**. The Pacific-day ledger was read before and after: **2026-10-02, zero attempts**. No new secret, tracker, model/Tavily call, Slack send, schedule, heartbeat, branch or worker was added.
+
+Remaining verification: every currently supported hosted configuration is already proven. Positive hosted validation of a disabled supported configuration is deferred to the first new source assignment, as authorized; no proven tracker was disabled and no fake tracker was added. Local fixtures are not claimed as live receipt proof.
+
+Hosting blocker: the saved Firebase login now returns **`invalid_grant` / `invalid_rapt`**, requiring Google reauthentication. The noninteractive-only assignment precludes starting that login. No Firebase mutation occurred. The new build includes the previously authorized Enabled/status wording and `b57eb8a` sortable headers (three compressed files, **63,192 bytes**), but is not deployed. Public readback confirms all three prior release assets/security headers remain intact. Billing/capacity/Ryu API checks await restored Firebase access. Renew the credentials, recheck those prerequisites, deploy only `hosting:scout`, and verify live bytes/headers before closing the deployment criterion. Stop for manager review; SCOUT-16.02 and new collectors have not started.
 
 ### SCOUT-16.02 — Finish known coverage and relevance gaps
 

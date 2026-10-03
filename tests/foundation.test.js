@@ -455,6 +455,52 @@ test('collector proof migration enables only verified configurations and preserv
   } finally { await db.close(); }
 });
 
+test('proof guard preserves data, invalidates source edits and reserves promotion for the backend', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(auth + fixture + beforeSchema + schemaMigration + fiveTablesMigration);
+    for (const name of ['20261001190000_assessment_and_communication.sql','20261002130000_scout_proven_collectors.sql']) {
+      await db.exec(await readFile(new URL(`../supabase/migrations/${name}`, import.meta.url), 'utf8'));
+    }
+    await db.exec(trackerSeed);
+    const before=(await db.query('select * from scout.trackers order by id')).rows;
+    const shared=(await db.query(sharedState)).rows, users=(await db.query('select * from auth.users order by id')).rows;
+    await db.exec(await readFile(new URL('../supabase/migrations/20261002150000_scout_collector_proof_guard.sql', import.meta.url), 'utf8'));
+    assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,before);
+    assert.deepEqual((await db.query(sharedState)).rows,shared);
+    assert.deepEqual((await db.query('select * from auth.users order by id')).rows,users);
+    const tracker=before.find(row=>row.seed_key.endsWith(':17'));
+    await db.query("update auth.users set raw_app_meta_data='{\"scout\":{\"admin\":true}}' where id=$1",[admin]);
+    await db.exec('set role authenticated');
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)",[admin]);
+    assert.equal((await db.query('select scout.access_role() role')).rows[0].role,'admin');
+    await db.query('update scout.trackers set cadence=$1,url=$2,collector=$3 where id=$4',['2 days',tracker.url,tracker.collector,tracker.id]);
+    assert.equal((await db.query('select enabled from scout.trackers where id=$1',[tracker.id])).rows[0].enabled,true);
+    for (const enabled of [true,false]) {
+      await assert.rejects(db.query('update scout.trackers set enabled=$1 where id=$2',[enabled,tracker.id]),{code:'42501'});
+      await assert.rejects(db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Self-promote','https://example.org','web','1 day',$1)",[enabled]),{code:'42501'});
+    }
+    const inserted=(await db.query("insert into scout.trackers(name,url,collector,cadence) values('Unproven','https://example.org','web','1 day') returning *")).rows[0];
+    assert.equal(inserted.enabled,false);
+    await db.query("update scout.trackers set url='https://bsky.app/profile/changed.org' where id=$1",[tracker.id]);
+    assert.equal((await db.query('select enabled from scout.trackers where id=$1',[tracker.id])).rows[0].enabled,false);
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)",[reader]);
+    assert.equal((await db.query('select scout.access_role() role')).rows[0].role,'reader');
+    assert.equal((await db.query("update scout.trackers set cadence='3 days' where id=$1 returning id",[tracker.id])).rows.length,0);
+    await assert.rejects(db.query('update scout.trackers set enabled=true where id=$1',[tracker.id]),{code:'42501'});
+    await assert.rejects(db.query("insert into scout.trackers(name,url,collector,cadence) values('Reader','https://reader.org','web','1 day')"),{code:'42501'});
+    await db.exec('reset role; set role service_role');
+    await db.query('update scout.trackers set enabled=true where id=$1',[tracker.id]);
+    assert.equal((await db.query('select enabled from scout.trackers where id=$1',[tracker.id])).rows[0].enabled,true);
+    for(const edit of ["url='https://bsky.app/profile/another.org'","collector='web'","url=null"]) {
+      await db.query(`update scout.trackers set ${edit},enabled=true where id=$1`,[tracker.id]);
+      assert.equal((await db.query('select enabled from scout.trackers where id=$1',[tracker.id])).rows[0].enabled,false);
+    }
+    await db.exec('reset role');
+    assert.deepEqual((await db.query(sharedState)).rows,shared);
+  } finally { await db.close(); }
+});
+
 test('all tracker seeds are uncollected and repeat safely after app edits', async () => {
   const db = new PGlite();
   try {

@@ -233,6 +233,58 @@ test('targeted resume assesses only selected pending evidence and retains all pe
  }finally{await db.close();}
 });
 
+test('explicit validation persists disabled source receipt and quota evidence without promoting proof',async()=>{
+ const db=await database();let reads=0,calls=0,factories=0;
+ const feed={feed:[{post:{uri:'at://did:plc:test/app.bsky.feed.post/validation',author:{handle:HSA},indexedAt:'2026-10-01T00:00:00Z',
+  record:{text:'Interoperability consultation',createdAt:'2026-10-01T00:00:00Z'}}}]};
+ const read=async(url,budget)=>{reads++;budget.requests++;assert.equal(new URL(url).searchParams.get('actor'),HSA);return{url,body:JSON.stringify(feed)};};
+ const makeModel=runId=>{factories++;return gemini({apiKey:'fixture-only',ledger:db,runId,fetch:async(_url,request)=>{
+  calls++;const inputs=JSON.parse(JSON.parse(request.body).contents[0].parts[0].text);
+  const run=(await db.query('select stats from scout.collection_runs where id=$1',[runId])).rows[0];
+  assert.equal(run.stats.validation,true);assert.equal(run.stats.model_attempts.length,1);
+  return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(inputs.map(i=>({...result,source_id:i.source_id})))}]}}],
+   usageMetadata:{promptTokenCount:100,candidatesTokenCount:50}});
+ }});};
+ try{
+  const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' limit 1")).rows[0].id;
+  const options={since:'2026-09-01',read,makeModel};
+  for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
+   {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
+   await assert.rejects(collectHSA(db,{...options,...selection}),error=>error.status===400);
+  }
+  assert.equal(reads,0);assert.equal(calls,0);assert.equal(factories,0);
+  assert.equal((await db.query('select count(*)::int n from scout.collection_runs')).rows[0].n,0);
+  const first=await collectHSA(db,{...options,trackerId:tracker.id,validate:true});
+  assert.equal(first.outcome,'success');assert.equal(first.created,1);assert.equal(first.assessed,1);assert.equal(calls,1);
+  const record=(await db.query('select * from scout.records')).rows[0];
+  const captures=(await db.query('select * from scout.evidence')).rows;
+  assert.equal(captures.length,1);assert.equal(captures[0].tracker_id,tracker.id);assert.equal(captures[0].record_id,record.id);
+  assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+  const completed=(await db.query('select * from scout.collection_runs where id=$1',[first.run_id])).rows[0];
+  assert.deepEqual(completed.stats.model_usage,[{promptTokenCount:100,candidatesTokenCount:50}]);
+  assert.deepEqual((await db.query('select last_success_at from scout.tracker_status where id=$1',[tracker.id])).rows[0].last_success_at,completed.finished_at);
+  const repeat=await collectHSA(db,{...options,trackerId:tracker.id,validate:true});
+  assert.equal(repeat.outcome,'no_change');assert.equal(repeat.candidates,0);assert.equal(calls,1);
+  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,1);
+  // A shared cap from another run still blocks validation before model transport.
+  await db.query("update scout.collection_runs set stats=stats||jsonb_build_object('model_attempts',$1::jsonb) where id=$2",
+   [JSON.stringify(Array(20).fill({at:new Date().toISOString()})),first.run_id]);
+  feed.feed[0].post.record.text+=' Updated technical guidance';
+  const limited=await collectHSA(db,{...options,trackerId:tracker.id,validate:true});
+  assert.equal(limited.outcome,'quota');assert.equal(limited.pending,1);assert.equal(calls,1);
+  assert.deepEqual((await db.query('select * from scout.records')).rows[0],record);
+  const beforeNormal=(await db.query('select * from scout.collection_runs order by id')).rows,readCount=reads,factoryCount=factories;
+  await assert.rejects(collectHSA(db,{...options,trackerId:tracker.id}),/not yet proven/);
+  assert.equal(reads,readCount);assert.equal(factories,factoryCount);
+  assert.deepEqual((await db.query('select * from scout.collection_runs order by id')).rows,beforeNormal);
+  await db.exec('set role service_role');
+  await db.query('update scout.trackers set enabled=true where id=$1',[tracker.id]);
+  await db.exec('reset role');
+  assert.equal((await db.query('select enabled from scout.trackers where id=$1',[tracker.id])).rows[0].enabled,true);
+ }finally{await db.close();}
+});
+
 test('configured Bluesky feeds retain separate health, skip repeats and recover one failed feed',async()=>{
  const db=await database(),feeds=JSON.parse(await readFile(new URL('./fixtures/expansion-feeds.json',import.meta.url),'utf8'));
  const dosi=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/dosi-roundup-captures.json.gz',import.meta.url))));
