@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM,CBD_REGISTRY,OCTO,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM,CBD_REGISTRY,OCTO,EXPLORERS,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -2466,5 +2466,82 @@ test('OCTO failed sources, malformed clocks/identity, irrelevant categories and 
   const ignored=await collectHSA(db,scoped);assert.equal(ignored.assessed,0);assert.equal(ignored.skipped,5);assert.equal(ignored.requests,5);assert.equal(calls,0);
   Object.assign(f,structuredClone(base));const item=[...f.feed.body.matchAll(/<item>[\s\S]*?<\/item>/g)][4][0];f.feed.body=f.feed.body.replace(item,item+item.replaceAll('16285','99999').replaceAll('maskelp-protecting-kelp-ecosystems-through-science-capacity-building-and-communication','additional-future-webinar'));
   const bounded=await collectHSA(db,options);assert.equal(bounded.items_listed,10);assert.equal(bounded.items_selected,6);assert.equal(bounded.requests,6);assert.equal(bounded.skipped,6);assert.match(bounded.warnings.join(' '),/upcoming webinar limit/);assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+ }finally{await db.close();}
+});
+
+test('Explorers recorded calendar excludes unrelated events and preserves three corroborated event/programme schedules, ticket links and exact repeat',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/explorers-calendar.json.gz',import.meta.url))));
+ try{
+  await db.query('insert into scout.trackers select * from jsonb_populate_record(null::scout.trackers,$1::jsonb)',[f.tracker]);
+  const requested=[],options={trackerId:f.tracker.id,validate:true,since:'2026-09-01',now:()=> '2026-10-03T06:30:00Z',read:async(u,b)=>{b.requests++;requested.push(u);const r=Object.values(f).find(r=>r.url===u);assert.ok(r,u);return r;}};
+  const run=await collectHSA(db,options);assert.equal(run.candidates,3,run.warnings.join('; '));assert.equal(run.requests,6);assert.equal(run.calendar_items,34);assert.ok(run.irrelevant>20);assert.equal(run.pending,3);assert.equal(run.assessed+run.created+run.changed,0);
+  const sources=(await db.query('select * from scout.evidence')).rows;
+  for(const[id,start,end,location]of [['24877','2026-11-02T23:00:00.000Z','2026-11-03T01:30:00.000Z','The Explorers Club'],['25442','2026-11-14T14:00:00.000Z','2026-11-15T00:00:00.000Z','The Explorers Club'],['24865','2026-12-02T17:00:00.000Z','2026-12-02T18:00:00.000Z','Virtual']]){
+   const s=sources.find(s=>s.parsed.explorers.id===id);assert.equal(s.parsed.starts_at,start);assert.equal(s.parsed.ends_at,end);assert.equal(s.parsed.location,location);assert.equal(s.parsed.time_zone,'America/New_York');assert.equal(s.parsed.status,'scheduled');assert.equal(s.parsed.source.identity,'explorers:'+id+':2026');assert.equal(s.parsed.source.item_key,id+':2026');assert.equal(s.parsed.assessment.state,'pending');assert.equal(s.record_id,null);assert.ok(s.parsed.description.length<=280);assert.match(s.parsed.description,/[.!?]$/);
+  }
+  assert.ok(!sources.some(s=>['24722','25503','24684','24137'].includes(s.parsed.explorers.id)));assert.ok(!requested.some(u=>/annual-three-island|club-closed|lee-morgan|glex-ignition/.test(u)));
+  const sea=sources.find(s=>s.parsed.explorers.id==='25442'),paul=sources.find(s=>s.parsed.explorers.id==='24865');assert.equal(sea.parsed.explorers.scope,'programme');assert.equal(sea.parsed.organization,null);assert.equal(sea.parsed.registration_url,'https://store.explorers.org/products/sea-stories-2026');assert.equal(paul.parsed.organization,null);assert.match(paul.parsed.registration_url,/zoom.us\/meeting\/register/);assert.match(JSON.parse(paul.content).text,/Members only/);
+  assert.equal(sources.find(s=>s.parsed.explorers.id==='24877').parsed.organization,'The Explorers Club');
+  for(const source of sources){
+   const i=await assessmentInput(db,source,f.tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),d={...result,source_id:i.source_id,candidate,quotes:[candidate.description]};validateDecision(d,i);
+   for(const change of [{starts_at:'2026-11-14T15:00:00Z'},{organization:'Speaker Name'},{event_url:EXPLORERS},{location:'New York inferred from venue'},{kind:'announcement'},{description:'Truncated fragment'}])assert.throws(()=>validateDecision({...d,candidate:{...candidate,...change}},i));
+   let bytes=0;const transport=gemini({apiKey:'fixture-only',ledger:{query:async()=>({rows:[]})},runId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',fetch:async(_u,o)=>{bytes=Buffer.byteLength(o.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify([d])}]}}]});}});await transport(INSTRUCTION,[i],SCHEMA);assert.ok(bytes<=8000,source.parsed.title+': '+bytes);
+  }
+  f.home.body=f.home.body.replace('Website Design','Site Design');f['detail-25442'].body=f['detail-25442'].body.replace('data-aos-duration="2000"','data-aos-duration="1900"');
+  const repeat=await collectHSA(db,options);assert.equal(repeat.skipped,3);assert.equal(repeat.requests,6);assert.equal(repeat.candidates+repeat.assessed+repeat.created+repeat.changed,0);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[f.tracker.id])).rows[0],f.tracker);
+ }finally{await db.close();}
+});
+
+test('Explorers exact official URL/date corroborates syndication; shared titles, missing dates and distinct editions cannot merge',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/explorers-calendar.json.gz',import.meta.url))));
+ try{
+  await db.query('insert into scout.trackers select * from jsonb_populate_record(null::scout.trackers,$1::jsonb)',[f.tracker]);
+  const options={trackerId:f.tracker.id,validate:true,since:'2026-09-01',now:()=> '2026-10-03T06:30:00Z',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);}};await collectHSA(db,options);
+  const source=(await db.query("select * from scout.evidence where parsed#>>'{explorers,id}'='24865'")).rows[0],i=await assessmentInput(db,source,f.tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null])));
+  const record=(await db.query('insert into scout.records(kind,title,event_url,starts_at,identity_key,priority) values($1,$2,$3,$4,$5,$6) returning *',['event',candidate.title,candidate.event_url,candidate.starts_at,'syndicated-paul','high'])).rows[0],matched=await assessmentInput(db,source,f.tracker);assert.deepEqual(matched.exact_ids,[record.id]);
+  await db.query('update scout.records set event_url=$2 where id=$1',[record.id,candidate.registration_url]);const registered=await assessmentInput(db,source,f.tracker);assert.deepEqual(registered.exact_ids,[record.id]);assert.throws(()=>validateDecision({...result,source_id:source.id,candidate,quotes:[candidate.description]},{...registered,candidates:[{...registered.candidates[0],starts_at:null}],exact_ids:[]}),/syndication schedule/);await db.query('update scout.records set event_url=$2 where id=$1',[record.id,record.event_url]);Object.assign(record,(await db.query('select * from scout.records where id=$1',[record.id])).rows[0]);
+  const d={...result,source_id:source.id,action:'supporting_evidence',record_id:record.id,candidate,quotes:[candidate.description]};
+  const proof=await collectHSA(db,{...options,sourceId:source.id,model:async()=>[d]});assert.equal(proof.assessed,1,proof.warnings.join('; '));assert.equal(proof.created+proof.changed,0);assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+  for(const existing of [{...matched.candidates[0],starts_at:null},{...matched.candidates[0],starts_at:'2026-12-03T17:00:00Z'},{...matched.candidates[0],starts_at:'2027-12-02T17:00:00Z'},{...matched.candidates[0],event_url:'https://example.org/similar-topic'}])assert.throws(()=>validateDecision(d,{...matched,candidates:[existing],exact_ids:[]}),/Explorers identity/);
+  assert.throws(()=>validateDecision({...d,action:'new',record_id:null},{...matched,candidates:[{...matched.candidates[0],starts_at:null}],exact_ids:[]}),/syndication schedule/);
+  let bytes=0;const transport=gemini({apiKey:'fixture-only',ledger:{query:async()=>({rows:[]})},runId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',fetch:async(_u,o)=>{bytes=Buffer.byteLength(o.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify([d])}]}}]});}});await transport(INSTRUCTION,[matched],SCHEMA);assert.ok(bytes<=8000,bytes);
+ }finally{await db.close();}
+});
+
+test('Explorers material, title, clock and cancellation changes retain identity; subsequent annual occurrences stay distinct',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/explorers-calendar.json.gz',import.meta.url))));let tick=0;
+ try{
+  await db.query('insert into scout.trackers select * from jsonb_populate_record(null::scout.trackers,$1::jsonb)',[f.tracker]);
+  const options={trackerId:f.tracker.id,validate:true,since:'2026-09-01',now:()=>new Date(Date.parse('2026-10-03T06:30:00Z')+tick++*1000).toISOString(),read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);}};
+  const model=async(_i,inputs)=>inputs.map(i=>{const c=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null])));return{...result,source_id:i.source_id,action:i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,candidate:c,quotes:[i.text.slice(0,100)]};});
+  await collectHSA(db,options);let source=(await db.query("select * from scout.evidence where parsed#>>'{explorers,id}'='25442'")).rows[0];
+  assert.equal((await collectHSA(db,{...options,sourceId:source.id,model})).created,1);const record=(await db.query('select * from scout.records')).rows[0];
+  f.list2.body=f.list2.body.replaceAll('Sea Stories 2026','Sea Stories 2026 — updated');f['detail-25442'].body=f['detail-25442'].body.replaceAll('Sea Stories 2026','Sea Stories 2026 — updated');assert.equal((await collectHSA(db,options)).candidates,1);
+  source=(await db.query("select * from scout.evidence where parsed#>>'{explorers,id}'='25442' order by collected_at desc limit 1")).rows[0];assert.equal((await collectHSA(db,{...options,sourceId:source.id,model})).changed,1);
+  f.list2.body=f.list2.body.replaceAll('Tickets will NOT be sold at door.','Tickets will NOT be sold at door. New marine research sessions announced.');f['detail-25442'].body=f['detail-25442'].body.replaceAll('Tickets will NOT be sold at door.','Tickets will NOT be sold at door. New marine research sessions announced.');assert.equal((await collectHSA(db,options)).candidates,1);
+  f.list2.body=f.list2.body.replaceAll('2026-11-14 09:00:00','2026-11-14 10:00:00').replaceAll('2026-11-14 14:00:00','2026-11-14 15:00:00');f['detail-25442'].body=f['detail-25442'].body.replaceAll('2026-11-14T09:00:00-05:00','2026-11-14T10:00:00-05:00').replaceAll('alt="9:00 AM"','alt="10:00 AM"');assert.equal((await collectHSA(db,options)).candidates,1);
+  let rows=JSON.parse(f.list2.body);rows.events.find(e=>e.id===25442).description+='<p>This event has been cancelled.</p>';f.list2.body=JSON.stringify(rows);f['detail-25442'].body=f['detail-25442'].body.replace('</strong></p>\n\t\t\t\t\t\t</div>','</strong></p><p>This event has been cancelled.</p>\n\t\t\t\t\t\t</div>').replaceAll('EventScheduled','EventCancelled');const cancellation=await collectHSA(db,options);assert.equal(cancellation.candidates,1,cancellation.warnings.join('; '));
+  source=(await db.query("select * from scout.evidence where parsed#>>'{explorers,id}'='25442' order by collected_at desc limit 1")).rows[0];assert.equal(source.parsed.status,'cancelled');assert.equal(source.parsed.source.identity,'explorers:25442:2026');const accepted=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(accepted.changed,1,accepted.warnings.join('; '));assert.equal((await db.query('select id from scout.records')).rows[0].id,record.id);
+  const originalPaul=(await db.query("select * from scout.evidence where parsed#>>'{explorers,id}'='24865'")).rows[0];assert.equal((await collectHSA(db,{...options,sourceId:originalPaul.id,model})).created,1);
+  rows=JSON.parse(f.list2.body);const paul=rows.events.find(e=>e.id===24865);for(const key of ['start_date','end_date','utc_start_date','utc_end_date'])paul[key]=paul[key].replace('2026-12-02','2027-01-02');f.list2.body=JSON.stringify(rows);f['detail-24865'].body=f['detail-24865'].body.replaceAll('2026-12-02','2027-01-02').replaceAll('December 2,2026','January 2,2027').replaceAll('December 2, 2026','January 2, 2027');const next=await collectHSA(db,options);assert.equal(next.candidates,1,next.warnings.join('; '));const edition=(await db.query("select * from scout.evidence where parsed#>>'{explorers,year}'='2027'")).rows[0];assert.equal(edition.parsed.source.item_key,'24865:2027');assert.equal(edition.parsed.source.previous_id,null);assert.equal((await collectHSA(db,{...options,sourceId:edition.id,model})).created,1);assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,3);
+ }finally{await db.close();}
+});
+
+test('Explorers failed, malformed, recurring and contradictory sources never assess stale captures; calendar bounds stay enforced',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/explorers-calendar.json.gz',import.meta.url))));let fail='',calls=0;
+ try{
+  await db.query('insert into scout.trackers select * from jsonb_populate_record(null::scout.trackers,$1::jsonb)',[f.tracker]);
+  const options={trackerId:f.tracker.id,validate:true,since:'2026-09-01',now:()=> '2026-10-03T06:30:00Z',read:async(u,b)=>{b.requests++;if(fail&&u.includes(fail))throw new Error('Injected Explorers HTTP 403');return Object.values(f).find(r=>r.url===u);}};
+  await collectHSA(db,options);const source=(await db.query("select * from scout.evidence where parsed#>>'{explorers,id}'='25442'")).rows[0],scoped={...options,sourceId:source.id,model:async()=>{calls++;throw new Error('No stale assessment');}},base=structuredClone(f);
+  for(const path of ['calendar-of-events/','page=1','page=2','sea-stories-2026']){fail=path;const run=await collectHSA(db,scoped);assert.equal(run.candidates+run.assessed+run.created+run.changed,0);assert.equal(calls,0);}fail='';
+  for(const mutate of [e=>e.timezone='Europe/London',e=>e.timezone=null,e=>e.utc_start_date='2026-11-31 14:00:00',e=>e.utc_end_date='2026-11-13 14:00:00',e=>e.global_id='www.explorers.org?id=1',e=>e.is_recurring=true,e=>e.description+='<p>This event has been cancelled.</p>',e=>e.all_day=true,e=>e.start_date='2026-11-14']){
+   Object.assign(f,structuredClone(base));const rows=JSON.parse(f.list2.body);mutate(rows.events.find(e=>e.id===25442));f.list2.body=JSON.stringify(rows);const run=await collectHSA(db,scoped);assert.equal(run.assessed+run.created+run.changed,0);assert.equal(calls,0);
+  }
+  Object.assign(f,structuredClone(base));let recorded=JSON.parse(f.list2.body);recorded.events.find(e=>e.id===25442).description+='<p>Watch the recording of this event.</p>';f.list2.body=JSON.stringify(recorded);f['detail-25442'].body=f['detail-25442'].body.replace(/(<div class="news-details__content">[\s\S]*?)(<\/div>)/,'$1<p>Watch the recording of this event.</p>$2');const recording=await collectHSA(db,scoped);assert.equal(recording.candidates+recording.assessed,0);assert.match(recording.warnings.join(' '),/recording identity/);assert.equal(calls,0);
+  Object.assign(f,structuredClone(base));f['detail-25442'].body=f['detail-25442'].body.replace('</head>','<script type="application/ld+json">'+JSON.stringify({'@type':'Event',name:'Other session',url:'https://example.org'})+'</script></head>');assert.equal((await collectHSA(db,scoped)).assessed,0);assert.equal(calls,0);
+  Object.assign(f,structuredClone(base));f['detail-25442'].body=f['detail-25442'].body.replace('alt="November 14,2026"','alt="November 15,2026"');assert.equal((await collectHSA(db,scoped)).assessed,0);assert.equal(calls,0);
+  Object.assign(f,structuredClone(base));f['detail-25442'].body=f['detail-25442'].body.replace('</html>','');assert.equal((await collectHSA(db,scoped)).assessed,0);assert.equal(calls,0);
+  Object.assign(f,structuredClone(base));for(const key of ['list1','list2']){const data=JSON.parse(f[key].body);data.total=60;data.total_pages=3;if(key==='list2')while(data.events.length<20){const e=structuredClone(data.events[0]);e.id=90000+data.events.length;e.global_id='www.explorers.org?id='+e.id;e.title='Unrelated local gardening';e.description='<p>Local gardening workshop.</p>';data.events.push(e);}f[key].body=JSON.stringify(data);}
+  const bounded=await collectHSA(db,options);assert.equal(bounded.requests,6);assert.equal(bounded.calendar_items,40);assert.equal(bounded.skipped,3);assert.match(bounded.warnings.join(' '),/pagination\/detail/);assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
  }finally{await db.close();}
 });

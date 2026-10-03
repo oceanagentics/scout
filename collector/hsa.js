@@ -20,6 +20,7 @@ export const BLUE_MARINE = 'https://www.bluemarinefoundation.com/our-events/';
 export const SYMPOSIUM = 'https://bbnjsymposium.org/';
 export const CBD_REGISTRY = 'https://www.cbd.int/side-events/';
 export const OCTO = 'https://octogroup.org/webinars/';
+export const EXPLORERS = 'https://www.explorers.org/calendar-of-events/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -424,7 +425,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const symposium=tracker.collector==='web' && tracker.url===SYMPOSIUM;
   const cbd=tracker.collector==='web' && tracker.url===CBD_REGISTRY;
   const octo=tracker.collector==='web' && tracker.url===OCTO;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const explorers=tracker.collector==='web' && tracker.url===EXPLORERS;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo && !explorers) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -566,6 +568,61 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
       }
       covered=selected.length<=detailLimit;
+    } else if (explorers) {
+      const text=html=>visibleText(html.replace(/&#(x[\da-f]+|\d+);/gi,(_m,n)=>String.fromCodePoint(n[0].toLowerCase()==='x'?parseInt(n.slice(1),16):+n)));
+      const marine=/\b(?:oceans?|marine|sea stories|underwater|coral|whales?|sharks?|shipwrecks?|scuba|sailing|high[- ]seas|BBNJ)\b/i;
+      const home=await read(tracker.url,budget);stats.pages++;
+      const api='https://www.explorers.org/wp-json/tribe/events/v1/';
+      if(home.url!==tracker.url||!/<\/html>\s*$/.test(home.body)||!home.body.includes('href="'+api+'"'))throw new Error('Explorers public calendar API discovery unavailable');
+      const start=new Date(since).toISOString().slice(0,10),end=new Date(Date.parse(start)+180*86400000).toISOString().slice(0,10),rows=[];
+      let total;
+      for(let page=1;page<=2;page++){
+        const url=sourceURL(api+'events?'+new URLSearchParams({start_date:start,end_date:end,per_page:'20',page:String(page)}));
+        const r=await read(url,budget);stats.pages++;
+        if(sourceURL(r.url)!==url||!/json/i.test(r.headers['content-type']??''))throw new Error('Explorers public API destination/format unavailable');
+        const data=JSON.parse(r.body);
+        if(!Array.isArray(data.events)||data.events.length>20||!Number.isSafeInteger(data.total)||data.total<0||data.total_pages!==Math.ceil(data.total/20)||total!==undefined&&total!==data.total||data.events.length!==Math.min(20,Math.max(0,data.total-(page-1)*20)))throw new Error('Explorers calendar page/count conflict');
+        total=data.total;rows.push(...data.events);if(page>=data.total_pages)break;
+      }
+      if(new Set(rows.map(e=>e.id)).size!==rows.length||rows.some(e=>!Number.isSafeInteger(e.id)||e.id<=0||e.global_id!=='www.explorers.org?id='+e.id||e.status!=='publish'||!/^https:\/\/www\.explorers\.org\/calendar-of-events\/[^/?#]+\/$/.test(e.url)||typeof e.title!=='string'||typeof e.description!=='string'||!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(e.start_date??'')||e.start_date.slice(0,10)<start||e.start_date.slice(0,10)>end))throw new Error('Explorers calendar identity/date window unavailable');
+      stats.calendar_items=rows.length;
+      const relevant=rows.filter(e=>marine.test(text(e.title+' '+e.description)));
+      stats.irrelevant=rows.length-relevant.length;
+      const eligible=relevant.filter(e=>e.start_date.slice(0,10)===e.end_date?.slice(0,10)&&!e.all_day);
+      const selected=eligible.sort((a,b)=>Number(a.start_date.slice(0,10)<started.slice(0,10))-Number(b.start_date.slice(0,10)<started.slice(0,10))||a.start_date.localeCompare(b.start_date)||a.id-b.id).slice(0,3);
+      stats.warnings.push('Explorers coverage is two twenty-event API pages in a 180-day window from since, with three single-day details, upcoming first. Other vocabulary, older/later events, multi-day programmes, individual programme talks and recordings remain unexamined; overall event ranges are not individual talk times');
+      if(total>rows.length||eligible.length>selected.length||relevant.length>eligible.length)stats.warnings.push('Explorers pagination/detail or multi-day bound leaves relevant calendar items unexamined');
+      for(const e of selected){
+        try{
+          const r=await read(e.url,budget);stats.pages++;
+          const own=r.body.match(/<section class="section section--news-details[^"]*">([\s\S]*?)<\/section>/)?.[1];
+          const body=own?.match(/<div class="news-details__content">([\s\S]*?)<\/div>/)?.[1],event=structuredEvents(r.body,e.url);
+          const title=text(e.title),year=e.start_date.slice(0,4),schedule=dates(e.utc_start_date?.replace(' ','T')+'Z',e.utc_end_date?.replace(' ','T')+'Z');
+          if(r.url!==e.url||!/<\/html>\s*$/.test(r.body)||!own||!body||text(body)!==text(e.description)||!event||text(event.title)!==title||event.event_url!==e.url||!schedule.starts_at||!schedule.ends_at||event.starts_at!==schedule.starts_at||event.ends_at!==schedule.ends_at||typeof e.timezone!=='string'||!e.timezone.includes('/')||e.is_recurring||e.recurrence||e.recurrence_rules||e.series)throw new Error('Explorers detail/API identity, content, single occurrence or schedule conflict');
+          if(title.match(/\b20\d{2}\b/g)?.some(y=>y!==year)||/\b(?:watch (?:the )?(?:recording|replay)|recording of|this (?:event|session) (?:originally aired|was recorded))\b/i.test(text(body)))throw new Error('Explorers edition/recording identity requires review');
+          for(const [instant,local]of [[schedule.starts_at,e.start_date],[schedule.ends_at,e.end_date]]){
+            const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:e.timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(new Date(instant)).map(p=>[p.type,p.value]));
+            if(p.year+'-'+p.month+'-'+p.day+' '+p.hour+':'+p.minute+':'+p.second!==local)throw new Error('Explorers explicit time zone disagrees with local/UTC clocks');
+          }
+          const icons=Object.fromEntries([...own.matchAll(/assets\/svg\/(date|start_time|location)\.svg" alt="([^"]*)"/g)].map(m=>[m[1],text(m[2])]));
+          const expectedDay=new Date(schedule.starts_at).toLocaleDateString('en-US',{timeZone:e.timezone,month:'long',day:'numeric',year:'numeric'}),expectedClock=new Date(schedule.starts_at).toLocaleTimeString('en-US',{timeZone:e.timezone,hour:'numeric',minute:'2-digit'});
+          if(icons.date?.replaceAll(' ','')!==expectedDay.replaceAll(' ','')||icons.start_time!==expectedClock)throw new Error('Explorers visible date/clock conflicts with structured schedule');
+          const paragraphs=[...body.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>text(m[1])),description=paragraphs.flatMap(p=>p.match(/[^.!?]+[.!?](?=\s|$)/g)??[]).map(p=>p.trim()).find(p=>p.length<=280&&marine.test(p));
+          if(!description)throw new Error('Explorers complete ocean-relevant description unavailable');
+          const registrations=[...new Set([...own.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)].filter(m=>/^(?:click here (?:for tickets|to purchase tickets|to register))$/i.test(text(m[2]))).map(m=>sourceURL(text(m[1]))))];
+          if(registrations.length>1||registrations.some(u=>!/^https:\/\/(?:store\.explorers\.org\/products\/|[a-z0-9]+\.zoom\.us\/meeting\/register\/)/.test(u)))throw new Error('Explorers registration identity needs review');
+          if(/\bThis (?:event|lecture|programme|program|session) (?:has been|is) cancell?ed\b/i.test(text(body))&&event.status!=='cancelled')throw new Error('Explorers cancellation conflicts with structured status; retained status needs review');
+          const programme=own.includes('class="schedule-event-item"'),itemKey=e.id+':'+year;
+          const scripted={kind:'event',title,description,organization:/\bJoin The Explorers Club\b/.test(text(body))?'The Explorers Club':event.organization,
+            ...schedule,time_zone:e.timezone,location:icons.location||null,event_url:e.url,registration_url:registrations[0]??null,status:event.status,
+            explorers:{id:String(e.id),year,scope:programme?'programme':'event'}};
+          const links=[e.url,...registrations],context=[title,description,...paragraphs.filter(p=>marine.test(p)),text(own)].join(' ');
+          const source=await observe(db,tracker.id,e.url,JSON.stringify({text:context,api:e,detail:{url:r.url,body:r.body}}),dates(e.date_utc?.replace(' ','T')+'Z').starts_at,scripted,
+            {text:text(own),structured:scripted,links},{rank:2,identity:'explorers:'+itemKey,item_key:itemKey,listing_url:tracker.url,links},now());
+          stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+        }catch(error){quota ||= Boolean(error.quota);stats.warnings.push('Explorers '+e.id+': '+error.message);}
+      }
+      covered=true;
     } else if (octo) {
       const text=html=>visibleText(html.replace(/&#(x[\da-f]+|\d+);/gi,(_m,n)=>String.fromCodePoint(n[0].toLowerCase()==='x'?parseInt(n.slice(1),16):+n)));
       const home=await read(tracker.url,budget);stats.pages++;
@@ -1654,11 +1711,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo && !explorers) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium || cbd || octo) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium||cbd||octo)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium || cbd || octo || explorers) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium||cbd||octo||explorers)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
