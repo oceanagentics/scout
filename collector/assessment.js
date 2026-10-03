@@ -75,6 +75,7 @@ export function validateDecision(result, input) {
       ['event_url','registration_url'].some(field=>c[field]!==null && c[field]!==input.scripted[field])) fail('newsletter link is not a verified event/registration destination');
   if (result.clear_fields.some(f=>c[f]!==null)) fail('clear field must be null');
   if (c.kind==='treaty_status' && !/(^|\.)un\.org$/.test(new URL(input.url).hostname)) fail('official treaty evidence required');
+  if (input.scripted.treaty && (c.kind!=='treaty_status'||c.title!==input.scripted.title)) fail('official country/action/date representation required');
   if (existing && c.kind!==existing.kind) fail('different finding kind');
   if (existing) {
     const session=title=>title?.match(/\b(?:session|edition|part)\s+([\w-]+)/i)?.[0].toLowerCase();
@@ -133,12 +134,12 @@ export async function assessmentInput(db, source, tracker) {
       order by authoritative desc,evidence_at desc nulls last,last_seen_at desc limit 1) as calendar_date,
     (select md5(string_agg(content_hash,',' order by url)) from scout.current_evidence where record_id=r.id) as evidence
     from scout.records r where (not $7::boolean or r.kind='event') and
-      (r.id=$2 or r.event_url=$1 or r.event_url=$3 or r.organization=$4 or
+      (r.id=$2 or r.identity_key=$8 or r.event_url=$1 or r.event_url=$3 or r.organization=$4 or
       exists(select 1 from unnest($5::text[]) word where lower(r.title) like '%'||word||'%'))
-    order by (r.id=$2) desc nulls last,(r.event_url=$3) desc nulls last,
+    order by (r.id=$2) desc nulls last,(r.identity_key=$8) desc nulls last,(r.event_url=$3) desc nulls last,
       (select count(*) from unnest($5::text[]) word where lower(r.title) like '%'||word||'%') desc,
       (r.organization=$4) desc nulls last,updated_at desc,id limit 3`,
-  [source.url,source.record_id,scripted.event_url??null,scripted.organization??null,words,source.parsed.source.item_key??null,Boolean(zoom)])).rows;
+  [source.url,source.record_id,scripted.event_url??null,scripted.organization??null,words,source.parsed.source.item_key??null,Boolean(zoom),source.parsed.source.identity??null])).rows;
   // The fetched HTML remains evidence, but model context starts with useful text,
   // including parsed metadata whose source lives beyond a long HTML head.
   let text;

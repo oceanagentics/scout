@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA} from '../collector/hsa.js';
+import {collectHSA,HSA,UNTC} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' limit 1")).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>$1 limit 1",[UNTC])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -422,6 +422,75 @@ test('recorded DOSI newsletter keeps separate items, real URLs, changes and boun
   await collectHSA(db,options);
   const next=(await db.query("select * from scout.evidence where url=$1 and parsed->>'title'=$2",[issue,event.parsed.title])).rows[0];
   assert.notEqual(next.parsed.source.identity,event.parsed.source.identity);
+ }finally{await db.close();}
+});
+
+test('official UN baseline preserves all action types/notes and assesses only the selected current window while disabled',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/un-treaty.json.gz',import.meta.url))));let calls=0;
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[UNTC])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-10-01',read:async(url,budget)=>{assert.equal(url,UNTC);budget.requests++;return f.html;},model:async(_instruction,inputs)=>{
+   calls++;assert.equal(inputs.length,1);const i=inputs[0];assert.equal(i.scripted.treaty.country,'Mozambique');
+   assert.equal(i.scripted.treaty.action,'accession');assert.equal(i.scripted.treaty.date,'2026-10-02');
+   const candidate=Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]));
+   assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,title:'Mozambique'},quotes:[candidate.title]},i),/country\/action\/date/);
+   return [{...structuredClone(f.decision),source_id:i.source_id}];
+  }};
+  await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);
+  const first=await collectHSA(db,options);assert.equal(first.outcome,'success',first.warnings.join('; '));assert.equal(first.created,1);assert.equal(calls,1);
+  assert.equal(first.baseline_participants,149);assert.equal(first.baseline_parties,102);
+  const evidence=(await db.query('select * from scout.evidence')).rows;assert.equal(evidence.length,2);
+  const baseline=evidence.find(e=>e.parsed.assessment.state==='baseline');assert.equal(baseline.content,f.html.body);assert.equal(baseline.published_at,null);
+  const rows=baseline.parsed.participants;assert.equal(rows.find(r=>r.country==='Germany').action,'ratification');
+  assert.equal(rows.find(r=>r.country==='Mozambique').action,'accession');assert.equal(rows.find(r=>r.country==='Morocco').action,'acceptance');
+  assert.equal(rows.find(r=>r.country==='Armenia').action,'approval');assert.deepEqual(rows.find(r=>r.country==='Denmark').note_refs,['1']);
+  assert.match(baseline.parsed.notes['1'],/Faroe Islands and Greenland/);
+  assert.equal(Number(f.xml.body.match(/<Parties>(\d+)<\/Parties>/)[1]),baseline.parsed.parties);
+  assert.match(f.xml.body,/<Entry>Mozambique<\/Entry><Entry\/><Entry>\s*2 Oct\s+2026 a/);
+  const record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.kind,'treaty_status');assert.equal(record.priority,'high');
+  assert.equal(record.title,'Mozambique — accession — 2 Oct 2026');assert.equal(record.starts_at,null);assert.equal(record.last_communicated_at,null);
+  const source=evidence.find(e=>e.record_id===record.id);assert.equal(source.url,UNTC);assert.equal(source.published_at,null);
+  const repeat=await collectHSA(db,options);assert.equal(repeat.outcome,'no_change');assert.equal(repeat.candidates,0);assert.equal(calls,1);
+  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,2);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+  assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+  assert.equal((await db.query('select stats from scout.collection_runs where id=$1',[first.run_id])).rows[0].stats.validation,true);
+ }finally{await db.close();}
+});
+
+test('UN additions and corrections retain identity; inconsistent, missing-row and malformed responses preserve the baseline',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/un-treaty.json.gz',import.meta.url))));let html=f.html.body,calls=0;
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[UNTC])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-10-04',read:async(_url,budget)=>{budget.requests++;return {...f.html,body:html};},model:async(_instruction,inputs)=>{
+   calls++;return inputs.map(i=>({...result,source_id:i.source_id,record_id:i.exact_ids[0]??null,action:i.exact_ids.length?'update':'new',
+    candidate:Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]])),quotes:[i.scripted.title]}));
+  }};
+  const initial=await collectHSA(db,options);assert.equal(initial.outcome,'no_change');assert.equal(calls,0);
+  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,1);
+  const row=html.match(/<tr\b[^>]*>(?:(?!<\/tr>)[\s\S])*?\bPeru\b[\s\S]*?<\/tr>/)[0];
+  html=html.replace(row,row.replace('<td>&nbsp;</td>','<td>3 Oct 2026 a<br></td>')).replace(/(Parties\s*:\s*)102/,(_m,prefix)=>prefix+'103');
+  const added=await collectHSA(db,options);assert.equal(added.created,1,added.warnings.join('; '));assert.equal(calls,1);
+  const record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.title,'Peru — accession — 3 Oct 2026');
+  html=html.replace('3 Oct 2026 a','2 Oct 2026 AA');
+  const corrected=await collectHSA(db,options);assert.equal(corrected.created,0);assert.equal(corrected.changed,1);assert.equal(calls,2);
+  const records=(await db.query('select * from scout.records')).rows;assert.equal(records.length,1);assert.equal(records[0].id,record.id);
+  assert.equal(records[0].identity_key,record.identity_key);assert.equal(records[0].title,'Peru — approval — 2 Oct 2026');
+  const count=(await db.query('select count(*)::int n from scout.evidence')).rows[0].n;
+  html=html.replace('background-color:#D7D7D7','background-color:white').replace('</body>','<script>/* rotating cosmetic content */</script></body>');
+  assert.equal((await collectHSA(db,options)).outcome,'no_change');assert.equal(calls,2);
+  const valid=html,evidence=(await db.query('select * from scout.evidence order by id')).rows;
+  const missing=valid.replace(/<tr\b[^>]*>(?:(?!<\/tr>)[\s\S])*?\bPeru\b[\s\S]*?<\/tr>/,'')
+   .replace(/(Parties\s*:\s*)103/,(_m,p)=>p+'102').replace(/(Signatories\s*:\s*)145/,(_m,p)=>p+'144');
+  const missingStatus=valid.replace('2 Oct 2026 AA','').replace(/(Parties\s*:\s*)103/,(_m,p)=>p+'102');
+  for(const broken of [valid.slice(0,valid.length/2),'<html></html>',valid.replace('2 Oct 2026 AA','31 Feb 2026 AA'),
+   valid.replace(/(Parties\s*:\s*)103/,(_m,p)=>p+'101'),missing,missingStatus,valid.replace("name='1'","name='2'")]){
+   html=broken;const failed=await collectHSA(db,options);assert.equal(failed.outcome,'failed');assert.equal(calls,2);
+   assert.deepEqual((await db.query('select * from scout.records')).rows,records);
+   assert.deepEqual((await db.query('select * from scout.evidence order by id')).rows,evidence);
+  }
+  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,count);
+  assert.equal((await db.query('select enabled from scout.trackers where id=$1',[tracker.id])).rows[0].enabled,false);
  }finally{await db.close();}
 });
 

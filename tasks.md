@@ -354,21 +354,41 @@ Limitations: DOSI's second-hop, multi-item newsletter is not collected; GFW's co
 
 ## SCOUT-09 — Collect authoritative treaty-status changes
 
-Status: todo
+Status: in-progress (implemented/deployed and live-validated; Enabled remains No pending manager review)
 Depends on: SCOUT-03, SCOUT-04, SCOUT-15, SCOUT-16.01; SCOUT-07 for scheduling only.
 
 Outcome: Changes in the UN Treaty Collection become source-backed country/action/date records.
 
 Acceptance criteria:
 
-- [ ] Collect the official participant record identified in the tracker inventory and preserve the distinction between ratification, accession, acceptance, approval, and other reported actions.
-- [ ] Establish an initial baseline without announcing all historical entries as new. Later verified additions or corrections produce appropriate changes.
-- [ ] Preserve country, action and date at their original precision in official source captures and the concise record representation; keep capture/publication times distinct. Query those facts without restoring removed country/action/date record columns unless separately approved. Treat NGO/social reports as leads until verified officially.
-- [ ] A failed or incomplete fetch cannot imply a reversal or deletion of a country's status.
-- [ ] Verify initial baseline, a new action, a correction, repeated collection, and an incomplete source response.
+- [x] Collect the official participant record identified in the tracker inventory and preserve the four currently reported action types. Unknown future actions/suffixes fail visibly rather than being guessed.
+- [x] Establish an initial baseline without announcing all historical entries as new. Later verified additions or corrections produce appropriate changes.
+- [x] Preserve country, action and date at their original precision in official source captures and the concise record representation; keep capture/publication times distinct. Query those facts in evidence JSON without restoring country/action/date record columns. Treat NGO/social reports as leads until verified officially.
+- [x] A failed or incomplete fetch cannot imply a reversal or deletion of a country's status.
+- [x] Verify initial baseline, a new action, a correction, repeated collection, and incomplete source protection.
 
-Verification: Pending.
-Blockers: None recorded.
+Implementation/proof checkpoint: **2026-10-02 local / 2026-10-03 UTC**. Existing seed 0 tracker **`fa465a3b-c9d3-4810-9efb-cd6ab9dcc49c`**, collector **`web`**, URL **`https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en`**, cadence **7 days**, remains **Enabled No**. No configuration field changed. The existing private collector now recognizes this exact configuration; normal disabled runs still reject it, while `validate=true` performs the bounded proof. No new table, record columns, scraper framework, secret or frontend deployment was added.
+
+Source comparison: direct bounded HTTP captures of the configured HTML (**314,063 bytes**) and its observed XML publication (**78,477 bytes**) both report **102 parties / 145 signatories**. All **149** country/signature/action cells match between these fresh captures, including **Mozambique: 2 Oct 2026 a** and the Denmark territorial-exclusion note. The manager's earlier XML reading showed 101; publication/cache lag had cleared by this inspection. The collector uses the configured HTML and does not let stale XML override it. Literal action codes are case-sensitive: blank suffix → ratification (**90**); `a` → accession (**4**); `A` → acceptance (**3**); `AA` → approval (**5**). Treating all 102 as ratifications would be incorrect.
+
+Baseline/diff behavior: validate the complete table/notes, header legend, unique participants, valid dates, referenced notes and exact signatory/party totals before accepting a capture. The parser is bounded to 250 participant rows under the existing 512-KiB/request/runtime limits. Full HTML and parsed facts/notes stay in one baseline evidence row (`assessment.state=baseline`, explicitly not a model assessment). The initial finding window starts **2026-10-01**, containing the real Mozambique sample; the other **101** historic party actions create no findings or fabricated communication timestamps. Later additions/corrections use stable `untc:XXI-10:<country>` record identity and `participant:<country>` item keys, preserving original country/action/date in evidence and concise record text. Changed action/date facts become source versions rather than duplicate findings. A missing participant, vanished status/note, invalid date, inconsistent count, truncation or unsupported format withholds the whole baseline/diff and preserves accepted records. Country renames/removals and future unsupported action types need review; this is the current participant table, not complete depositary-notification/declaration coverage.
+
+| Proof | Hosted evidence |
+| --- | --- |
+| Full baseline | `491eb0ec-63e9-4e5e-8602-2b90d4d265c1`; 149 participants, 102 parties, full HTML and participant notes |
+| Current sample capture | `9061f591-c2a7-4059-aa6b-7581beb379c6`; Mozambique, **accession**, **2026-10-02**, literal suffix `a` |
+| Retained record | `38855c3b-a2bf-4e14-b349-c15a24390dad`; **Mozambique — accession — 2 Oct 2026**, `treaty_status`, **High** |
+| Initial observation | `21c6ad07-c4b4-4bdb-958f-718823fb8496`; validation, two captures, no model calls, honestly partial with one pending assessment |
+| Completed validation | `2ef646fc-54f7-4585-8b67-763c0ee3121d`; `success`, one valid completed assessment/record, no warnings, zero UN pending |
+| Enabled-model repeat | `a3c0f3b8-36f9-47ce-8ffa-ea0fdbaee022`; `no_change`, zero new captures/records/material changes/model calls, no warnings |
+
+All three runs use `validate=true`, this exact tracker ID and the October 1 window; assessment/repeat additionally target the exact sample capture. Each makes one official page request. The record's complete candidate preserves the precise action/date, all six inapplicable event fields are null, `published_at` remains null and `last_communicated_at` remains null. The accepted reason is “Officially verified treaty action (accession by Mozambique), treated as high priority.” No event instant or source publication date was invented. The ordinary authenticated request without validation returns **400**, leaving the run count at **40**; Enabled remains No throughout. This completes SCOUT-16.01's deferred positive hosted disabled-source receipt/repeat check, without promoting the tracker.
+
+Deployment/verification: private collector **v22 ACTIVE**, same six files, SHA-256 **`760fd95a1f745b61f06b4e3e007d3e51c6de14aee379d52c994ed76212b3eb87`**. All deployed file hashes and all 13 existing migration bodies match the final local source. **57 tests**, production build, diff and secret scans pass. The actual HTML/XML and completed live decision are retained in `tests/fixtures/un-treaty.json.gz`. Recorded/injected tests cover all four action types, date-only representation, initial-window suppression, disabled validation, actual decision replay, unchanged/cosmetic repeats, additions, action/date corrections retaining ID, missing-row/status/notes and malformed/count/date failure preservation. Local audit snapshots are in `.cache/scout09/`; authoritative run/model accounting and raw evidence remain in Supabase.
+
+Usage/preservation: the Pacific-day ledger was read at **four** attempts before this assignment. Exactly **one** live attempt was used (**811 prompt / 248 output tokens**, 5,283-byte input bound, no retry), leaving the second allocated attempt unused and the day at **five / 20**. The repeat had model access enabled but reserved/made no call. Hosted totals are now **25 trackers (five Yes / 20 No), nine records, 50 captures and 40 runs**. All 25 tracker rows, original eight records, 48 captures and 37 runs are unchanged, as are Auth hashes and other-service permissions/RLS/policies/functions/defaults. The repeat preserves the record hash and capture count. A rolled-back existing Workspace-reader check sees nine records, 25 trackers and 11 source projections, with no record/Enabled write or raw-evidence access. No collector remains running.
+
+Remaining scope: the **33 existing pending/uncertain HSA/DOSI/GFW assessments** remain untouched. HSA's country/action leads overlap the table, but their posts omit exact action dates and sometimes call aggregate parties “ratifications”; post publication dates are not action dates. No unrelated backlog was reassessed or promoted to official fact. No Slack/Tavily, scheduling/heartbeat, Firebase login/retry, paid service, reset/import, new branch/worktree/worker or SCOUT-10.02 work occurred. Await manager review of this proof before changing Enabled to Yes. Firebase frontend deployment remains the approved bounded deferral.
 
 ## SCOUT-10 — Add website and document collectors
 
@@ -636,7 +656,7 @@ Normal enabled-model repeats of HUB and IDDRI returned `no_change`, with zero ca
 
 ## SCOUT-16 — Prove and enable every tracker
 
-Status: in-progress (SCOUT-16.01 backend accepted; SCOUT-16.02 implemented and awaiting review; frontend deployment and new-source proofs remain open)
+Status: in-progress (SCOUT-16.01 backend and SCOUT-16.02 accepted; SCOUT-09 proof awaits review; frontend deployment and remaining source proofs stay open)
 Owner: [Scout milestone 1 manager](codex://threads/01a0f59f-1e17-7f70-beb9-6dc786ecd7cb), using the existing worker `01a0f5b1-68bb-7f90-8288-687b6daeb990` in this local checkout.
 Authorization: user request of 2026-10-02. Implement the plan below one reviewed assignment at a time, including necessary collector deployments and bounded live validation. Preserve the $0 limits, shared database, existing records and source evidence. No new imports, worktrees, scheduling, heartbeat restart, Slack sends or mailbox work is included.
 
@@ -677,7 +697,7 @@ Verification (2026-10-02): all **50 tests**, the production build and diff check
 
 ### SCOUT-16.01 — Validate before promotion
 
-Status: in-progress (backend deployed and manager-accepted; frontend deployment and first disabled-source live proof deferred)
+Status: in-progress (backend accepted and first disabled-source live proof complete; frontend deployment deferred)
 Depends on: SCOUT-16.00
 
 - [x] Add the smallest backend-only manual validation mode for an explicit tracker ID with `enabled=false`; keep ordinary runs rejecting unproven trackers.
@@ -685,7 +705,8 @@ Depends on: SCOUT-16.00
 - [x] Validation must not change Enabled or fabricate `last_success_at`. Persist the real run outcome/captures; use existing run stats to identify validation if needed, with truthful freshness semantics.
 - [x] Prove disabled normal runs do no I/O, authorized validation can collect only the selected supported tracker without enabling it, and unauthorized validation cannot run. Verify later explicit promotion works. Positive receipt/promotion is injected/PGlite evidence; the precise hosted deferral is below.
 - [x] Ensure supported URL/account/collector edits reset proof to No in the minimal authoritative write path; proof promotion belongs to the reviewed backend workflow, not a general reader or arbitrary checkbox.
-- [ ] Complete frontend deployment and the first disabled-source live proof. The deployed backend prerequisite is accepted; the manager authorizes independent collector work during the bounded deferrals below.
+- [x] Complete the first disabled-source hosted receipt/assessment/repeat proof, using the existing UN tracker in SCOUT-09 without promoting it.
+- [ ] Complete frontend deployment. The deployed backend prerequisite is accepted; independent collector work is authorized during the bounded Firebase deferral.
 
 Implementation checkpoint (2026-10-02): the private endpoint accepts `validate=true` only with an explicit tracker UUID. Validation uses the existing collector and records `stats.validation=true` at run creation; actual source/assessment outcomes determine health. It never writes Enabled. Missing/invalid/duplicate/all-tracker arguments, missing trackers and unsupported configurations are rejected before source/model work. Ordinary disabled runs return HTTP 400 before creating a run. Migration `20261002150000_scout_collector_proof_guard.sql` revokes authenticated inserts/updates of Enabled and adds a trigger that forces No on URL/collector changes, even when a backend caller also supplies Yes. Cadence-only/unchanged configuration edits preserve proof; a later separate backend promotion remains possible. Ordinary admins retain configuration editing without the Enabled property; readers remain read-only.
 
@@ -693,7 +714,7 @@ Verification/deployment: **52 tests**, production build, diff and secret scans p
 
 Migration/preservation: all **13 hosted migration bodies match exactly**. Readback caught a quoting error in the new history entry; that entry alone was corrected, without replaying the applied guard. The one-time `20261002130000` reconciliation was never replayed. Hosted state remains **25 trackers, five Yes / 20 No, five findings, 22 captures and 28 runs**; all tracker/run rows and record/evidence hashes are unchanged. Auth user/identity hashes and other-schema relation/column permissions, RLS, policies, functions and default privileges match the preflight. The existing Workspace reader still reads five records/25 trackers, with no Enabled/record-write/raw-evidence privilege. The persistent local guard migration preserves **22 trackers, four Yes / 18 No, zero records/captures and six runs**. The Pacific-day ledger was read before and after: **2026-10-02, zero attempts**. No new secret, tracker, model/Tavily call, Slack send, schedule, heartbeat, branch or worker was added.
 
-Remaining verification: every currently supported hosted configuration is already proven. Positive hosted validation of a disabled supported configuration is deferred to the first new source assignment, as authorized; no proven tracker was disabled and no fake tracker was added. Local fixtures are not claimed as live receipt proof.
+Positive hosted verification is now complete in SCOUT-09: the original disabled UN tracker persisted its actual baseline/current sample, completed a valid assessment and repeated without changes/model calls. It remained No, and ordinary collection still rejected it before creating a run. No proven tracker was disabled and no fake tracker was added. Later promotion still requires the manager's separate authorization; it is not implied by receipt proof.
 
 Hosting blocker: the saved Firebase login returns **`invalid_grant` / `invalid_rapt`**, requiring Google reauthentication. No Firebase mutation occurred. The new build includes the previously authorized Enabled/status wording and `b57eb8a` sortable headers (three compressed files, **63,192 bytes**), but is not deployed. Public readback confirmed all three prior release assets/security headers remain intact. Billing/capacity/Ryu API checks await restored Firebase access. Once credentials are renewed, recheck those prerequisites, deploy only `hosting:scout`, and verify live bytes/headers before closing the deployment criterion.
 
@@ -701,7 +722,7 @@ Hosting blocker: the saved Firebase login returns **`invalid_grant` / `invalid_r
 
 ### SCOUT-16.02 — Finish known coverage and relevance gaps
 
-Status: in-progress (implemented/deployed with bounded live evidence; awaiting manager review)
+Status: done (manager accepted the bounded fixes; documented coverage limitations remain open)
 Depends on: SCOUT-16.01
 
 Keep the five existing collectors enabled unless the investigation demonstrates that their proved collection path has broken. Reuse existing fixes/tests; do not rebuild these collectors.
@@ -734,7 +755,9 @@ The code now narrows known Zoom event shortlists, retains source-backed organize
 
 **Usage and repeats.** The Pacific-day ledger began at zero and ends at **four attempts on 2026-10-02**, with **5,380 prompt / 1,376 output tokens** and no retries. Per-call input bounds were 7,174 / 7,822 / 5,997 / 7,413 bytes; output remained below 1,024 tokens. Reservations precede calls; call spacing stayed within two per minute. Sixteen of the daily 20 attempts remain, but this assignment's four-attempt allocation is exhausted. Live repeats used `max_attempts=0`, preserving every record byte-for-byte and every completed sample capture; injected enabled-model repeats verify no unnecessary call. All repeat runs remain honestly partial. The broader HSA repeat fetched one previously unavailable ratification page (`7ecb3a8f-6a42-4a62-8d86-6ae9cdc86644`); it remains unassessed, with official verification still deferred to SCOUT-09.
 
-**Preservation and remaining limits.** Hosted totals are **25 trackers (five Yes / 20 No), eight records, 48 captures and 37 runs**. Every tracker field, all 28 pre-assignment runs, all 22 original raw captures/hashes/timestamps, original record identities, Auth hashes and other-schema permissions/RLS/policies/functions/defaults are preserved. The four other original records and IDDRI/HUB accepted evidence remain unchanged. There are **33 latest pending/uncertain assessments** (11 HSA, 17 DOSI, five GFW); 36 historical captures carry pending/uncertain state including superseded captures. HTTP 400/403, TLS EOF, oversized pages, unsupported links and bounded newsletter coverage remain explicit. No Slack/Tavily, scheduling, heartbeat, Firebase retry/login/deployment, new tracker, schema migration, reset, branch or worker was added. Stop here for manager review; SCOUT-09 and new collectors have not started.
+**Preservation and remaining limits.** Hosted totals are **25 trackers (five Yes / 20 No), eight records, 48 captures and 37 runs**. Every tracker field, all 28 pre-assignment runs, all 22 original raw captures/hashes/timestamps, original record identities, Auth hashes and other-schema permissions/RLS/policies/functions/defaults are preserved. The four other original records and IDDRI/HUB accepted evidence remain unchanged. There are **33 latest pending/uncertain assessments** (11 HSA, 17 DOSI, five GFW); 36 historical captures carry pending/uncertain state including superseded captures. HTTP 400/403, TLS EOF, oversized pages, unsupported links and bounded newsletter coverage remain explicit. No Slack/Tavily, scheduling, heartbeat, Firebase retry/login/deployment, new tracker, schema migration, reset, branch or worker was added. This checkpoint stopped for review before SCOUT-09; manager acceptance and the next scoped assignment follow.
+
+**Manager acceptance (2026-10-02):** `f9dbb08` is accepted after review of the code, exact live outputs/repair provenance, 55 tests/build, repeats, usage and preservation. The 33 pending assessments, newsletter bounds, official-corroboration and Firebase deferrals remain explicit; this is not full-source completion. SCOUT-09 alone is assigned next, with at most two live model attempts and the UN tracker kept No until the manager reviews its proof.
 
 ### Ordered source tasks — SCOUT-09 and SCOUT-10.02–10.19
 

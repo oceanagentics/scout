@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTENT_FIELDS, normalize, fingerprint, visibleText, dosiArticle, ASSESSMENT_VERSION } from './assessment.js';
 
 export const HSA = 'highseasalliance.bsky.social';
+export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const USER_AGENT = 'BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)';
 export const LIMITS = { feedPages: 2, postsPerPage: 25, pages: 6, redirects: 3, requests: 24, bytes: 524288, seconds: 120 };
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -205,6 +206,46 @@ function dosiNewsletter(html, url) {
   return {items,unsupported};
 }
 
+function treatyTable(html) {
+  const fail=()=>{throw new Error('Incomplete or unsupported UN participant table/notes; previous status preserved');};
+  const table=html.match(/<table\b[^>]*id="[^"]*_tblgrid"[^>]*>([\s\S]*?)<\/table>/i);
+  const notesTable=html.match(/<table\b[^>]*id="[^"]*_dgNotesAll"[^>]*>([\s\S]*?)<\/table>/i);
+  const counts=html.match(/Signatories\s*:\s*(\d+)\.\s*Parties\s*:\s*(\d+)/);
+  if (!table || !notesTable || !counts || !/<\/html>\s*$/i.test(html) || !html.includes('Marine Biological Diversity of Areas beyond National Jurisdiction')) fail();
+  const notes={};
+  for (const match of notesTable[1].matchAll(/<div\b[^>]*id="[^"]*_divNotesAll"[^>]*>([\s\S]*?)<\/div>/gi)) {
+    const anchor=match[1].match(/<a name=['"](\d+)['"]>\d+<\/a>/i);
+    const text=visibleText(match[1].replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi,''));
+    if (!anchor || !text || notes[anchor[1]]) fail();
+    notes[anchor[1]]=text;
+  }
+  const rows=[...table[1].matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)];
+  if (rows.length<2 || rows.length>251 || rows.length!==(table[1].match(/<tr\b/gi)??[]).length) fail();
+  const header=visibleText(rows.shift()[1]);
+  if (header!=='Participant Signature Ratification, Accession(a), Acceptance(A), Approval(AA)') fail();
+  const parse=value=>{
+    if (!value) return null;
+    const m=value.match(/^(\d{1,2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4})(?: (AA|A|a))?$/);
+    if (!m) fail();
+    const on=dates(`${m[3]}-${String(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].indexOf(m[2])+1).padStart(2,'0')}-${m[1].padStart(2,'0')}`).start_on;
+    if (!on) fail();
+    return {date:on,symbol:m[4]??'',date_text:`${m[1]} ${m[2]} ${m[3]}`};
+  };
+  const participants=rows.map(row=>{
+    const cells=[...row[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(m=>m[1]);
+    if (cells.length!==3) fail();
+    const refs=[...cells[0].matchAll(/<sup\b[^>]*>([\s\S]*?)<\/sup>/gi)].flatMap(m=>visibleText(m[1]).split(/[,\s]+/));
+    const country=visibleText(cells[0].replace(/<sup\b[^>]*>[\s\S]*?<\/sup>/gi,''));
+    const signature=parse(visibleText(cells[1])),action=parse(visibleText(cells[2]));
+    if (!country || /&[^;\s]+;/.test(country) || refs.some(ref=>!notes[ref]) || signature?.symbol || !signature&&!action) fail();
+    return {country,signature:signature?.date??null,...(action??{date:null,symbol:null,date_text:null}),
+      action:action?({'':'ratification',a:'accession',A:'acceptance',AA:'approval'})[action.symbol]:null,note_refs:refs,content:row[0]};
+  });
+  if (new Set(participants.map(p=>p.country)).size!==participants.length || !+counts[1] || !+counts[2] ||
+      participants.filter(p=>p.signature).length!==+counts[1] || participants.filter(p=>p.action).length!==+counts[2]) fail();
+  return {participants,notes,signatories:+counts[1],parties:+counts[2],header};
+}
+
 function material(record) {
   const names = [...CONTENT_FIELDS, 'priority', 'start_on', 'end_on', 'time_zone'];
   const values = names.map(name => typeof record[name] === 'string' ? normalized(record[name]).toLowerCase() : record[name] ?? null);
@@ -352,7 +393,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   if (!tracker || (!validate && !tracker.enabled)) throw Object.assign(new Error('Tracker is missing or its collector is not yet proven'), { status: 400 });
   const actor=tracker.collector==='bluesky_feed' && tracker.url?.match(/^https:\/\/bsky\.app\/profile\/([a-z0-9.-]+)$/)?.[1];
   const hub=tracker.collector==='web' && tracker.url==='https://www.hubocean.earth/events-calendar';
-  if (!actor && !hub) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const untc=tracker.collector==='web' && tracker.url===UNTC;
+  if (!actor && !hub && !untc) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -363,7 +405,37 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const dateWarnings = new Map();
   let cursor, covered = false, quota = false, feedFailed = false;
   try {
-    if (hub) {
+    if (untc) {
+      const response=await read(tracker.url,budget);stats.pages++;
+      if (sourceURL(response.url)!==sourceURL(tracker.url)) throw new Error('Unexpected UN source destination; status preserved');
+      const parsed=treatyTable(response.body);
+      const facts={...parsed,participants:parsed.participants.map(({content,...row})=>row)};
+      const previous=(await db.query(`select * from scout.evidence where tracker_id=$1 and parsed#>>'{source,item_key}'='baseline'
+        and parsed#>>'{assessment,state}'='baseline' order by coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id limit 1`,[tracker.id])).rows[0];
+      if (previous?.parsed.participants.some(old=>!facts.participants.some(row=>row.country===old.country && (!old.action||row.action))) ||
+          Object.keys(previous?.parsed.notes??{}).some(ref=>!facts.notes[ref])) throw new Error('UN participant or note disappeared; baseline/diff withheld for review');
+      await db.transaction(async tx=>{
+        const baseline=await observe(tx,tracker.id,tracker.url,response.body,null,facts,facts,
+          {rank:2,identity:'untc:XXI-10:baseline',item_key:'baseline',coverage_since:previous?.parsed.source.coverage_since??since},now());
+        stats[baseline.changed?'candidates':'skipped']++;
+        if (baseline.changed) await tx.query("update scout.evidence set parsed=jsonb_set(parsed,'{assessment,state}','\"baseline\"') where id=$1",[baseline.id]);
+        for (const item of parsed.participants.filter(row=>row.action)) {
+          const old=previous?.parsed.participants.find(row=>row.country===item.country);
+          const {content,...current}=item;
+          const changed=previous && (!old?.action || !isDeepStrictEqual(current,old) || item.note_refs.some(ref=>parsed.notes[ref]!==previous.parsed.notes[ref]));
+          if (!changed && (previous || item.date<since.slice(0,10))) continue;
+          const notes=item.note_refs.map(ref=>`${ref}: ${parsed.notes[ref]}`).join(' ');
+          const title=`${item.country} — ${item.action} — ${item.date_text}`;
+          const scripted={kind:'treaty_status',title,organization:item.country,description:title,
+            ...Object.fromEntries(['location','event_url','registration_url','starts_at','ends_at','status'].map(field=>[field,null])),treaty:{...current,notes}};
+          const source=await observe(tx,tracker.id,tracker.url,`<p>${parsed.header}</p>${content}<p>${notes}</p>`,null,scripted,{...current,notes},
+            {rank:2,identity:`untc:XXI-10:${item.country}`,item_key:`participant:${item.country}`,baseline_id:baseline.id,
+              change_type:old?.action?'correction':previous?'addition':'initial_window'},now());
+          stats[source.changed?'candidates':'skipped']++;
+        }
+      });
+      stats.baseline_participants=parsed.participants.length;stats.baseline_parties=parsed.parties;covered=true;
+    } else if (hub) {
       const feedURL=tracker.url+'?format=json';
       const response=await read(feedURL,budget);stats.pages++;
       const feed=JSON.parse(response.body);
@@ -483,11 +555,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows;
+  const queued = untc && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows;
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
