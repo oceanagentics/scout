@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>$1 and url<>$2 and url<>$3 limit 1",[UNTC,DOALOS,UN_SIDE_EVENTS])).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB]])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -423,6 +423,167 @@ test('recorded DOSI newsletter keeps separate items, real URLs, changes and boun
   const next=(await db.query("select * from scout.evidence where url=$1 and parsed->>'title'=$2",[issue,event.parsed.title])).rows[0];
   assert.notEqual(next.parsed.source.identity,event.parsed.source.identity);
  }finally{await db.close();}
+});
+
+test('HSA website independently follows recorded RSS/API and registration, preserves explicit timezone precision and gates cosmetic repeats',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/hsa-website.json.gz',import.meta.url))));let calls=0;
+ f.feed.body=f.feed.body.replace(/<item>[\s\S]*?<\/item>/g,s=>s.includes('>6800</post-id>')?s:'');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[HSA_WEB])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-28',read:async(url,budget)=>{budget.requests++;return url==='https://bit.ly/clhmreg1'?f.registration:Object.values(f).find(r=>r.url===sourceURL(url));},model:async(_instruction,inputs)=>{calls++;return inputs.map(i=>{
+   assert.equal(i.scripted.hsa_web.session,true);assert.match(i.scripted.title,/^Session 1 - Designing/);assert.equal(i.scripted.starts_at,'2026-10-15T13:00:00.000Z');
+   assert.equal(i.scripted.ends_at,null);assert.equal(i.scripted.location,null);assert.equal(i.scripted.organization,'High Seas Alliance and partners');
+   assert.match(i.scripted.event_url,/zoom.us\/webinar\/register\/WN_NvlqQrDmR8WISTqMw-vSeg$/);assert.match(i.text,/basic functions and operational requirements/);
+   const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]])));
+   assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,starts_at:'2026-09-28T07:46:32Z'},quotes:[candidate.title]},i),/unsupported|unconfirmed/);
+   assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,ends_at:'2026-10-15T14:00:00Z'},quotes:[candidate.title]},i),/unsupported|unconfirmed/);
+   return {...result,source_id:i.source_id,candidate:{...candidate,event_url:null,registration_url:null},quotes:[candidate.title]};
+  });}};
+  await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);
+  const first=await collectHSA(db,options);assert.equal(first.created,1,first.warnings.join('; '));assert.equal(first.assessed,1);assert.equal(first.requests,3);assert.equal(first.outcome,'partial');
+  const record=(await db.query('select * from scout.records')).rows[0],source=(await db.query('select * from scout.evidence')).rows[0];
+  assert.equal(record.priority,'high');assert.equal(record.starts_at.toISOString(),'2026-10-15T13:00:00.000Z');assert.equal(record.event_url,record.registration_url);
+  assert.equal(source.published_at.toISOString(),'2026-09-28T07:46:32.000Z');assert.equal(source.url,JSON.parse(f['chm-api'].body).link);assert.equal(source.parsed.assessment.model_decision.candidate.event_url,null);
+  f['chm-api'].body=f['chm-api'].body.replace('"modified_gmt":"2026-09-28T07:46:32"','"modified_gmt":"2026-10-03T01:00:00"').replace('<p>','<p class=\\"cosmetic\\">');
+  f.registration.body=f.registration.body.replace('window.setData = {','/* harmless asset revision */ window.setData = {');
+  const repeated=await collectHSA(db,options);assert.equal(repeated.candidates+repeated.created+repeated.changed,0);assert.equal(calls,1);assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,1);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('HSA website material descriptions and compatible date corrections update the same retained session',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/hsa-website.json.gz',import.meta.url))));let calls=0;
+ f.feed.body=f.feed.body.replace(/<item>[\s\S]*?<\/item>/g,s=>s.includes('>6800</post-id>')?s:'');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[HSA_WEB])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-28',read:async(url,budget)=>{budget.requests++;return url==='https://bit.ly/clhmreg1'?f.registration:Object.values(f).find(r=>r.url===sourceURL(url));},model:async(_instruction,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,action:i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]))),quotes:[i.text.slice(0,100)]}));}};
+  await collectHSA(db,options);const before=(await db.query('select * from scout.records')).rows[0];
+  f['chm-api'].body=f['chm-api'].body.replace('basic functions and operational requirements','revised basic functions and operational requirements');
+  const description=await collectHSA(db,options);assert.equal(description.changed,1,description.warnings.join('; '));assert.equal(description.created,0);
+  f['chm-api'].body=f['chm-api'].body.replace('15 October 2026','16 October 2026');f.registration.body=f.registration.body.replace('Oct 15, 2026','Oct 16, 2026');
+  const schedule=await collectHSA(db,{...options,since:'2026-10-01'});assert.equal(schedule.changed,1,schedule.warnings.join('; '));assert.equal(schedule.created,0);assert.equal(calls,3);
+  const after=(await db.query('select * from scout.records')).rows[0];assert.equal(after.id,before.id);assert.equal(after.identity_key,before.identity_key);assert.equal(after.starts_at.toISOString(),'2026-10-16T13:00:00.000Z');assert.equal(after.status,'rescheduled');
+  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,3);
+ }finally{await db.close();}
+});
+
+test('HSA literal cancellation survives failed registration and removal; omitted status or unrelated past cancellation cannot clear it',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/hsa-website.json.gz',import.meta.url))));let calls=0,fail=false;
+ f.feed.body=f.feed.body.replace(/<item>[\s\S]*?<\/item>/g,s=>s.includes('>6800</post-id>')?s:'');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[HSA_WEB])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-28',read:async(url,budget)=>{budget.requests++;if(fail&&url==='https://bit.ly/clhmreg1')throw new Error('Source returned HTTP 404');return url==='https://bit.ly/clhmreg1'?f.registration:Object.values(f).find(r=>r.url===sourceURL(url));},model:async(_instruction,inputs)=>{calls++;return inputs.map(i=>{
+   const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]))),record_id=i.exact_ids[0]??null,action=record_id?'update':'new';
+   if(i.scripted.status==='cancelled')assert.ok(i.text.includes('This webinar has been cancelled.'));
+   if(i.text.includes('An earlier unrelated workshop was cancelled.')){
+    assert.equal(i.scripted.status,null);
+    assert.throws(()=>validateDecision({...result,source_id:i.source_id,action,record_id,candidate:{...candidate,status:'cancelled'},quotes:['An earlier unrelated workshop was cancelled.']},i),/unconfirmed/);
+    assert.throws(()=>validateDecision({...result,source_id:i.source_id,action,record_id,candidate,clear_fields:['status'],quotes:['An earlier unrelated workshop was cancelled.']},i),/cannot be cleared/);
+   }
+   return {...result,source_id:i.source_id,action,record_id,candidate,quotes:[i.scripted.status==='cancelled'?'This webinar has been cancelled.':i.text.slice(0,100)]};
+  });}};
+  await collectHSA(db,options);const original=(await db.query('select * from scout.records')).rows[0],article=JSON.parse(f['chm-api'].body);
+  const title=article.title.rendered,content=article.content.rendered;fail=true;
+  article.title.rendered='A different webinar';article.content.rendered='<p>This webinar has been cancelled.</p>'+content;
+  f.feed.body=f.feed.body.replace(title,article.title.rendered);f['chm-api'].body=JSON.stringify(article);
+  const ambiguous=await collectHSA(db,options);assert.equal(ambiguous.assessed+ambiguous.candidates,0);assert.equal(calls,1);assert.deepEqual((await db.query('select * from scout.records')).rows,[original]);
+  f.feed.body=f.feed.body.replace(article.title.rendered,title);article.title.rendered=title;article.content.rendered=content;
+  const retained=article.content.rendered.replace(/<p>REGISTER HERE:[\s\S]*?<\/p>/,'');
+  article.content.rendered='<p>This webinar has been cancelled.</p>'+article.content.rendered;f['chm-api'].body=JSON.stringify(article);fail=true;
+  const cancelled=await collectHSA(db,options);assert.equal(cancelled.changed,1,cancelled.warnings.join('; '));assert.equal(cancelled.created,0);
+  assert.ok(cancelled.warnings.includes('Source returned HTTP 404'));const record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.id,original.id);assert.equal(record.identity_key,original.identity_key);assert.equal(record.status,'cancelled');assert.equal(record.registration_url,original.registration_url);assert.deepEqual(record.starts_at,original.starts_at);
+  for(const body of ['<p>This webinar has been cancelled.</p>'+retained,retained,'<p>An earlier unrelated workshop was cancelled.</p>'+retained]){
+   article.content.rendered=body;f['chm-api'].body=JSON.stringify(article);const change=await collectHSA(db,options);assert.equal(change.assessed,1,change.warnings.join('; '));assert.equal(change.created,0);
+   assert.equal((await db.query('select status from scout.records')).rows[0].status,'cancelled');
+  }
+  const repeat=await collectHSA(db,options);assert.equal(repeat.candidates+repeat.changed+repeat.created,0);assert.equal(calls,5);assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,5);
+ }finally{await db.close();}
+});
+
+test('HSA current RSS enumeration captures separate articles; recap publication and multiple sessions cannot become one scheduled event',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/hsa-website.json.gz',import.meta.url))));
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[HSA_WEB])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-28',read:async(url,budget)=>{budget.requests++;return url==='https://bit.ly/clhmreg1'?f.registration:Object.values(f).find(r=>r.url===sourceURL(url));}};
+  const first=await collectHSA(db,options);assert.equal(first.articles_listed,10);assert.equal(first.articles_selected,4);assert.equal(first.candidates,4,first.warnings.join('; '));assert.equal(first.requests,6);assert.equal(first.pending,4);
+  const sources=(await db.query('select * from scout.evidence')).rows,recap=sources.find(s=>s.parsed.hsa_web.id==='6810'),multi=sources.find(s=>s.parsed.hsa_web.id==='6803');
+  assert.equal(recap.published_at.toISOString(),'2026-10-01T10:26:53.000Z');assert.equal(recap.parsed.hsa_web.recap,true);
+  const i=await assessmentInput(db,recap,tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]])));
+  assert.equal(candidate.kind,'announcement');assert.equal(candidate.starts_at,null);assert.equal(candidate.event_url,null);
+  assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,kind:'event'},quotes:[candidate.title]},i),/unconfirmed/);
+  const m=await assessmentInput(db,multi,tracker);assert.equal(m.scripted.hsa_web.multiple,true);
+  assert.throws(()=>validateDecision({...result,source_id:m.source_id,candidate:full({title:m.scripted.title}),quotes:[m.scripted.title]},m),/multiple HSA/);
+  const bounded=await collectHSA(db,{...options,since:'2026-09-01'});assert.equal(bounded.articles_selected,7);assert.ok(bounded.warnings.includes('HSA article limit reached'));assert.equal(bounded.requests,6);assert.equal(bounded.candidates,0);
+ }finally{await db.close();}
+});
+
+test('HSA RSS/API failures and conflicting article/registration clocks preserve known evidence and never assess stale pending data',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/hsa-website.json.gz',import.meta.url))));let fail=null,calls=0;
+ f.feed.body=f.feed.body.replace(/<item>[\s\S]*?<\/item>/g,s=>s.includes('>6800</post-id>')?s:'');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[HSA_WEB])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-28',read:async(url,budget)=>{budget.requests++;const key=url==='https://bit.ly/clhmreg1'?'registration':url.endsWith('/feed/')?'feed':'chm-api';
+   if(fail?.key===key){if(fail.error)throw new Error(fail.error);return {...f[key],body:fail.body};}return f[key];}};
+  await collectHSA(db,options);const sources=(await db.query('select * from scout.evidence')).rows;assert.equal(sources.length,1);
+  for(const bad of [{key:'feed',body:'<html>challenge</html>'},{key:'feed',body:f.feed.body.replace('</rss>','')},{key:'chm-api',body:'{}'},{key:'chm-api',body:f['chm-api'].body.replace('"id":6800','"id":6810')},
+   {key:'chm-api',body:f['chm-api'].body.replace('9AM EDT','10AM EDT')},{key:'chm-api',body:f['chm-api'].body.replace('15 October 2026','31 February 2026')},{key:'registration',body:f.registration.body.replace('Oct 15, 2026 09:00 PM','Oct 15, 2026 10:00 PM')},{key:'registration',error:'HTTP 403'}]){
+   fail=bad;const run=await collectHSA(db,{...options,model:async()=>{calls++;throw new Error('Stale assessment');}});assert.equal(run.candidates+run.assessed,0,run.warnings.join('; '));assert.equal(calls,0);assert.deepEqual((await db.query('select * from scout.evidence')).rows,sources);
+  }
+ }finally{await db.close();}
+});
+
+test('HSA unavailable registration never infers the publisher as organizer; unrelated advocacy stays Low with no record',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/hsa-website.json.gz',import.meta.url))));
+ f.feed.body=f.feed.body.replace(/<item>[\s\S]*?<\/item>/g,s=>s.includes('>6800</post-id>')?s:'');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[HSA_WEB])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-28',read:async(url,budget)=>{budget.requests++;if(url==='https://bit.ly/clhmreg1')throw new Error('HTTP 403');return Object.values(f).find(r=>r.url===sourceURL(url));}};
+  const initial=await collectHSA(db,{...options,model:async(_instruction,inputs)=>inputs.map(i=>{
+   assert.equal(i.scripted.organization,null);assert.equal(i.scripted.starts_at,'2026-10-15T13:00:00.000Z');
+   const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]])));
+   assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,organization:'High Seas Alliance'},quotes:[candidate.title]},i),/unsupported|unconfirmed/);
+   return {...result,source_id:i.source_id,candidate,quotes:[candidate.title]};
+  })});assert.equal(initial.created,1,initial.warnings.join('; '));assert.equal((await db.query('select organization from scout.records')).rows[0].organization,null);
+  const article=JSON.parse(f['chm-api'].body),old=article.title.rendered;article.id=6801;article.link=article.link.replace('webinar-alert','generic-advocacy');article.title.rendered='Generic ocean advocacy';article.content.rendered='<p>Celebrate the ocean and share your love for marine life.</p>';
+  f.feed.body=f.feed.body.replaceAll(old,article.title.rendered).replaceAll('>6800<','>6801<').replaceAll('webinar-alert','generic-advocacy');f['chm-api']={...f['chm-api'],url:f['chm-api'].url.replace('/6800?','/6801?'),body:JSON.stringify(article)};
+  const low=await collectHSA(db,{...options,model:async(_instruction,inputs)=>inputs.map(i=>({...result,source_id:i.source_id,priority:'low',candidate:full({title:i.scripted.title,description:i.scripted.description}),quotes:[i.scripted.title]}))});
+  assert.equal(low.created,0);assert.equal(low.assessed,1,low.warnings.join('; '));assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,1);
+ }finally{await db.close();}
+});
+
+test('HSA website reuses corroborated Bluesky session identity while keeping series, policy brief, EOI, MGR and future sessions separate',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/hsa-website.json.gz',import.meta.url))));
+ f.feed.body=f.feed.body.replace(/<item>[\s\S]*?<\/item>/g,s=>s.includes('>6800</post-id>')?s:'');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[HSA_WEB])).rows[0],url='https://us06web.zoom.us/webinar/register/WN_NvlqQrDmR8WISTqMw-vSeg';
+  const title='Session 1 - Designing the BBNJ Clearing-House Mechanism: Basic Functions across the Agreement';
+  const existing=(await db.query("insert into scout.records(kind,title,event_url,identity_key,priority) values('event',$1,$2,'post:existing-chm-session','normal') returning *",[title,url])).rows[0];
+  const other=(await db.query("insert into scout.records(kind,title,identity_key,priority) values ('announcement','Designing the Clearing-House Mechanism webinar series','series','normal'),('announcement','Clearing-House Mechanism policy brief','policy','high'),('announcement','Expression of Interest Clearing-House Mechanism','eoi','high'),('event','Unpacking Part II Marine Genetic Resources','mgr','normal') returning *")).rows;
+  const bsky=(await db.query("select id from scout.trackers where seed_key='bbnj-trackers-2026-10-01:17'")).rows[0];
+  await db.query("insert into scout.evidence(tracker_id,record_id,url,content_hash,content,parsed) values($1,$2,'https://bsky.app/profile/highseasalliance.bsky.social/post/sample','sample','Recorded session link','{}')",[bsky.id,existing.id]);
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-28',read:async(u,budget)=>{budget.requests++;return u==='https://bit.ly/clhmreg1'?f.registration:Object.values(f).find(r=>r.url===sourceURL(u));},model:async(_instruction,inputs)=>inputs.map(i=>{
+   assert.ok(i.candidates.every(r=>r.kind==='event'));const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]])));
+   if(candidate.title.startsWith('Session 2')) {assert.throws(()=>validateDecision({...result,source_id:i.source_id,action:'update',record_id:existing.id,candidate,quotes:[candidate.title]},i),/distinct session/);return {...result,source_id:i.source_id,candidate,quotes:[candidate.title]};}
+   assert.ok(i.candidates.some(r=>r.id===existing.id));return {...result,source_id:i.source_id,action:'update',record_id:existing.id,candidate,quotes:[candidate.title]};
+  })};
+  const merged=await collectHSA(db,options);assert.equal(merged.created,0,merged.warnings.join('; '));assert.equal(merged.assessed,1);
+  assert.equal((await db.query('select identity_key from scout.records where id=$1',[existing.id])).rows[0].identity_key,existing.identity_key);
+  f.registration.body=f.registration.body.replaceAll('Session 1','Session 2').replaceAll('WN_NvlqQrDmR8WISTqMw-vSeg','WN_SecondSession').replace('Oct 15, 2026','Oct 16, 2026');f.registration.url=f.registration.url.replace('WN_NvlqQrDmR8WISTqMw-vSeg','WN_SecondSession');
+  f['chm-api'].body=f['chm-api'].body.replaceAll('first session','second session').replace('15 October 2026','16 October 2026');
+  const distinct=await collectHSA(db,options);assert.equal(distinct.created,1,distinct.warnings.join('; '));assert.equal(distinct.assessed,1);
+  const all=(await db.query('select * from scout.records')).rows;assert.equal(all.length,6);for(const prior of other)assert.deepEqual(all.find(r=>r.id===prior.id),prior);
+ }finally{await db.close();}
+});
+
+test('actual HSA website assessment retains the technical workshop, compatible UTC start, real registration and supported organizer',async()=>{
+ const {live}=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/hsa-website.json.gz',import.meta.url))));
+ validateDecision(live.decision.model_decision,live.input);validateDecision(Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]])),live.input);
+ assert.equal(live.decision.state,'complete');assert.equal(live.record.priority,'high');assert.equal(live.record.title,live.input.scripted.title);
+ assert.equal(live.record.organization,'High Seas Alliance and partners');assert.equal(new Date(live.record.starts_at).toISOString(),'2026-10-15T13:00:00.000Z');
+ assert.equal(live.record.event_url,live.record.registration_url);assert.equal(live.record.event_url,'https://us06web.zoom.us/webinar/register/WN_NvlqQrDmR8WISTqMw-vSeg');
+ assert.equal(live.record.description,live.input.scripted.description);assert.ok(live.record.description.endsWith('.'));
+ assert.deepEqual(live.decision.candidate,live.decision.model_decision.candidate);
+ for(const key of ['ends_at','location','status','last_communicated_at'])assert.equal(live.record[key],null);
 });
 
 test('recorded UN side event keeps unpublished reservation and parent dates unknown, retaining hosts, identity and repeat gating',async()=>{

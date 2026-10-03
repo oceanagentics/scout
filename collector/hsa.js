@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTENT_FIELDS, normalize, fingerprint, visibleText, dosiArticle, doalosArticle, ASSESSMENT_VERSION } from './assessment.js';
 
 export const HSA = 'highseasalliance.bsky.social';
+export const HSA_WEB = 'https://highseasalliance.org/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -398,7 +399,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const untc=tracker.collector==='web' && tracker.url===UNTC;
   const doalos=tracker.collector==='web' && tracker.url===DOALOS;
   const sideEvents=tracker.collector==='web' && tracker.url===UN_SIDE_EVENTS;
-  if (!actor && !hub && !untc && !doalos && !sideEvents) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const hsaWeb=tracker.collector==='web' && tracker.url===HSA_WEB;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -621,6 +623,96 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         stats[source.changed?'candidates':'skipped']++;pages.set(url,{source});
       }
       covered=selected.length<=3;
+    } else if (hsaWeb) {
+      const feedURL=tracker.url+'feed/',feed=await read(feedURL,budget);stats.pages++;
+      if (feed.url!==feedURL || !/xml/i.test(feed.headers['content-type']??'') || !/<\/rss>\s*$/.test(feed.body)) throw new Error('Invalid HSA RSS feed');
+      const text=html=>visibleText(html.replace(/^<!\[CDATA\[|\]\]>$/g,'').replace(/&#(\d{1,7});/g,(_m,n)=>String.fromCodePoint(+n)));
+      const items=[...feed.body.matchAll(/<item>([\s\S]*?)<\/item>/g)].map(m=>{
+        const url=sourceURL(m[1].match(/<link>([^<]+)<\/link>/)?.[1]),title=text(m[1].match(/<title>([\s\S]*?)<\/title>/)?.[1]??'');
+        const id=m[1].match(/<post-id\b[^>]*>(\d+)<\/post-id>/)?.[1],published=m[1].match(/<pubDate>([^<]+)<\/pubDate>/)?.[1];
+        if (!id || !title || !url.startsWith(HSA_WEB) || !Number.isFinite(Date.parse(published))) throw new Error('HSA feed item identity/date unavailable');
+        return {id,url,title,published:new Date(published).toISOString(),raw:m[0]};
+      });
+      if (!items.length || items.length>50 || new Set(items.map(i=>i.id)).size!==items.length || new Set(items.map(i=>i.url)).size!==items.length) throw new Error('Invalid HSA feed items');
+      const previous=(await db.query("select distinct on(url) url,parsed,content from scout.evidence where tracker_id=$1 order by url,coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id",[tracker.id])).rows;
+      const seen=previous.map(r=>r.url);
+      const selected=items.filter(i=>Date.parse(i.published)>=Date.parse(since)||seen.includes(i.url));let followed=false;
+      stats.articles_listed=items.length;stats.articles_selected=selected.length;
+      stats.warnings.push('HSA coverage is limited to the current RSS page and four article details; archives, attachments and other pages are not fully collected');
+      if (selected.length>4) stats.warnings.push('HSA article limit reached');
+      for (const item of selected.slice(0,4)) {
+        try {
+          const apiURL=sourceURL(tracker.url+'wp-json/wp/v2/posts/'+item.id+'?_fields=id,link,date_gmt,modified_gmt,title,content,excerpt,status,type');
+          const response=await read(apiURL,budget);stats.pages++;
+          if (response.url!==apiURL || !/application\/json/i.test(response.headers['content-type']??'')) throw new Error('Unexpected HSA article API format/destination');
+          const article=JSON.parse(response.body);
+          if (article.id!==+item.id || article.status!=='publish' || article.type!=='post' || sourceURL(article.link)!==item.url ||
+              text(article.title?.rendered??'')!==item.title || new Date(article.date_gmt+'Z').toISOString()!==item.published ||
+              article.content?.protected!==false || typeof article.content.rendered!=='string' || !text(article.content.rendered)) throw new Error('HSA article/feed facts disagree');
+          const content=article.content.rendered,body=text(content),paragraphs=[...content.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>text(m[1]));
+          const links=[...new Set([...content.matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(text(m[1]));}catch{return null;}}).filter(Boolean))].sort();
+          const registrations=[...content.matchAll(/<p\b[^>]*>\s*REGISTER HERE:\s*<a\b[^>]*href="([^"]+)"/gi)].map(m=>sourceURL(text(m[1])));
+          if (registrations.length>1) throw new Error('Multiple HSA sessions/registration links need review');
+          const cancelled=paragraphs.some(p=>/^(?:This|The) (?:webinar|session|event) (?:has been|is) cancell?ed\b/i.test(p));
+          const saved=previous.find(p=>p.url===item.url),prior=saved?.parsed;
+          const knownSession=prior?.hsa_web?.session===true&&text(JSON.parse(JSON.parse(saved.content).api.body).title.rendered)===item.title;
+          const session=(registrations.length===1||knownSession)&&/\bwebinar|\bsession/i.test(body),recap=/watch the full recording/i.test(body);
+          const description=paragraphs.find(p=>/^The first webinar will focus/.test(p))??paragraphs.find(p=>p&&!/^Blog by /.test(p))??body;
+          const scripted={kind:session?'event':'announcement',title:item.title,description:Array.from(description).slice(0,280).join(''),organization:null,location:null,...dates(),
+            event_url:session?item.url:null,registration_url:session?registrations[0]??null:null,status:session&&cancelled?'cancelled':null,hsa_web:{id:item.id,session,recap,multiple:/co-hosting two events/i.test(body)}};
+          if (session&&!registrations.length) {scripted.title=prior.title;scripted.event_url=prior.event_url;}
+          if (scripted.hsa_web.multiple) stats.warnings.push('HSA article contains multiple sessions; separate session extraction remains unsupported');
+          let support=null;
+          if (session) {
+            const schedules=paragraphs.map(p=>p.match(/\b(\d{1,2}) (January|February|March|April|May|June|July|August|September|October|November|December) (\d{4}),\s*(.+)$/)).filter(Boolean);
+            if (schedules.length>1) throw new Error('Conflicting HSA session dates; existing schedule requires review');
+            if (schedules.length) {
+              const m=schedules[0],month=['January','February','March','April','May','June','July','August','September','October','November','December'].indexOf(m[2])+1;
+              const day=dates(m[3]+'-'+String(month).padStart(2,'0')+'-'+m[1].padStart(2,'0')).start_on;
+              if (!day) throw new Error('Invalid HSA session date');
+              Object.assign(scripted,dates(day));
+              const clocks=m[4].split('|').map(c=>c.trim().match(/^(\d{1,2})(?::([0-5]\d))?\s*(AM|PM) (CEST|EDT|UTC[+-]\d{1,2})$/));
+              if (clocks.some(c=>!c||+c[1]<1||+c[1]>12||c[4].startsWith('UTC')&&Math.abs(+c[4].slice(3))>14)) stats.warnings.push('HSA session clock format/zone unsupported; date only');
+              else {
+                const instants=clocks.map(c=>Date.parse(day+'T00:00:00Z')+((+c[1]%12+(c[3]==='PM'?12:0))*60+(+c[2]||0)-(c[4]==='CEST'?120:c[4]==='EDT'?-240:+c[4].slice(3)*60))*60000);
+                if (new Set(instants).size!==1) throw new Error('Conflicting HSA session clocks; existing schedule requires review');
+                Object.assign(scripted,dates(new Date(instants[0]).toISOString()));
+              }
+            } else stats.warnings.push('HSA session date/time unavailable');
+            if (registrations.length&&followed) stats.warnings.push('HSA registration detail limit reached');
+            else if (registrations.length) {
+              followed=true;
+              try {
+                const r=await read(registrations[0],budget);stats.pages++;support={url:r.url,body:r.body};
+                if (!/^https:\/\/[^/]+\.zoom\.us\/webinar\/register\/WN_[\w-]+(?:\?|$)/.test(r.url)) throw new Error('Unsupported HSA registration destination');
+                const zoom=JSON.parse(r.body.match(/\bregisterVO:(\{[^\n]+\}),\s*\n/)?.[1]??'null');
+                const url=sourceURL(zoom?.shareVO?.url),title=zoom?.meetingVO?.topic,agenda=zoom?.meetingVO?.agenda;
+                const when=zoom?.viewerEmail?.match(/When: ([A-Z][a-z]{2}) (\d{1,2}), (\d{4}) (\d{2}):([0-5]\d) (AM|PM) /);
+                const words=item.title.toLowerCase().match(/[a-z]{5,}/g)??[];
+                if (new URL(url).origin!==new URL(r.url).origin || new URL(url).pathname!==new URL(r.url).pathname || typeof title!=='string' || typeof agenda!=='string' ||
+                    words.filter(w=>title.toLowerCase().includes(w)).length<2 || !when || !scripted.starts_at || typeof zoom.timezoneVO?.timezoneId!=='string' || !zoom.timezoneVO.timezoneId) throw new Error('HSA registration identity/schedule unconfirmed');
+                const local=new Intl.DateTimeFormat('en-US',{timeZone:zoom.timezoneVO?.timezoneId,month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true}).formatToParts(new Date(scripted.starts_at));
+                const parts=Object.fromEntries(local.map(p=>[p.type,p.value]));
+                if (['month','day','year','hour','minute','dayPeriod'].some((k,i)=>parts[k]!==when[i+1])) throw new Error('HSA article/registration clocks conflict; existing schedule requires review');
+                scripted.title=title;scripted.event_url=url;scripted.registration_url=url;
+                scripted.organization=agenda.match(/High Seas Alliance and partners(?= are organizing)/)?.[0]??null;
+                support.facts={title,agenda,url};links.push(url);
+              } catch(error) {
+                quota ||= Boolean(error.quota);stats.warnings.push(error.message);
+                if (cancelled&&knownSession&&!/clocks conflict/.test(error.message)) Object.assign(scripted,dates(),{title:prior.title,event_url:prior.event_url,registration_url:prior.registration_url});
+                else if (seen.includes(item.url) || /clocks conflict/.test(error.message)) continue;
+              }
+            }
+          }
+          if (links.length>10) stats.warnings.push('HSA article model-link limit reached');
+          const context=[scripted.title,scripted.description,body,scripted.organization,support?.facts?.agenda].filter(Boolean).join(' ');
+          const source=await observe(db,tracker.id,item.url,JSON.stringify({text:context,feed_item:item.raw,api:{url:response.url,body:response.body},support}),item.published,scripted,
+            {title:item.title,text:body,links,structured:scripted,registration:support?.facts??null},
+            {rank:2,identity:session?`event:${scripted.event_url}`:`page:${item.url}`,feed_url:feedURL,links:links.slice(0,10)},now());
+          stats[source.changed?'candidates':'skipped']++;pages.set(item.url,{source});
+        } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(`HSA article ${item.url}: ${error.message}`);}
+      }
+      covered=selected.length<=4;
     } else if (hub) {
       const feedURL=tracker.url+'?format=json';
       const response=await read(feedURL,budget);stats.pages++;
@@ -741,11 +833,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!doalos||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key)));
+  const queued = (untc || doalos || sideEvents || hsaWeb) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
@@ -774,7 +866,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         // A parsed registration page supplies its own URL. An explicit link in
         // the retained post can resolve "new" only after the normal identity checks.
         const modelDecision=decision;
-        if ((source.parsed.local_schedule || (doalos || sideEvents) && source.parsed.source.item_key) && decision.candidate?.kind==='event' && ['new','update'].includes(decision.action)) {
+        if ((source.parsed.local_schedule || source.parsed.hsa_web?.session || (doalos || sideEvents) && source.parsed.source.item_key) && decision.candidate?.kind==='event' && ['new','update'].includes(decision.action)) {
           const linked=input.candidates.filter(candidate=>candidate.registration_link);
           decision={...decision,candidate:{...decision.candidate,...Object.fromEntries(['event_url','registration_url']
             .filter(field=>!decision.candidate[field]&&!decision.clear_fields.includes(field)).map(field=>[field,input.scripted[field]??null]))}};

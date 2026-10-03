@@ -54,6 +54,8 @@ export function validateDecision(result, input) {
   if (!Array.isArray(result.clear_fields) || result.clear_fields.some(f=>!CONTENT_FIELDS.includes(f)||['title','kind'].includes(f))) fail('clear fields');
   if (result.clear_fields.length && (!existing || !/withdraw|no longer|cancel|reschedul|incorrect|correction/i.test(result.quotes.join(' ')))) fail('withdrawal evidence');
   const c = result.candidate;
+  if (input.scripted.hsa_web?.multiple && result.action!=='uncertain') fail('multiple HSA sessions need separate evidence');
+  if (input.scripted.hsa_web && result.clear_fields.includes('status')) fail('HSA status cannot be cleared from missing or unrelated text');
   if (c===null) {
     if (!['uncertain','no_substantive_change'].includes(result.action)) fail('candidate required');
     return result;
@@ -87,6 +89,9 @@ export function validateDecision(result, input) {
   if (input.scripted.treaty && (c.kind!=='treaty_status'||c.title!==input.scripted.title)) fail('official country/action/date representation required');
   if (input.scripted.side_event && (c.kind!=='event'||c.title!==input.scripted.title ||
       ['starts_at','ends_at','location','status','event_url','registration_url'].some(f=>c[f]!==null&&c[f]!==input.scripted[f]))) fail('side-event identity or unconfirmed session facts');
+  if (input.scripted.hsa_web && (input.scripted.hsa_web.session && (c.kind!=='event'||c.title!==input.scripted.title) ||
+      input.scripted.hsa_web.recap && c.kind!=='announcement' ||
+      ['starts_at','ends_at','location','status','event_url','registration_url',...(c.kind==='event'?['organization']:[])].some(f=>c[f]!==null&&c[f]!==input.scripted[f]))) fail('HSA article/session facts unconfirmed');
   if (existing && c.kind!==existing.kind) fail('different finding kind');
   if (existing) {
     const session=title=>title?.match(/\b(?:session|edition|part)\s+([\w-]+)/i)?.[0].toLowerCase();
@@ -132,7 +137,7 @@ export async function assessmentInput(db, source, tracker) {
   const content=source.parsed.side_event?source.content:doalosArticle(dosiArticle(source.content,source.url),source.url);
   const scripted=Object.fromEntries(Object.entries(source.parsed).filter(([key])=>!['source','assessment'].includes(key)));
   const zoom=/^https:\/\/[^/]+\.zoom\.us\/webinar\/register\//.test(source.url) && scripted.local_schedule;
-  const conference=scripted.side_event || source.url==='https://www.un.org/bbnjagreement/en' && scripted.kind==='event' && scripted.registration_deadline_on;
+  const conference=scripted.side_event || scripted.hsa_web?.session || source.url==='https://www.un.org/bbnjagreement/en' && scripted.kind==='event' && scripted.registration_deadline_on;
   if (zoom && /co-organized by the High Seas Alliance\b/.test(scripted.description??'')) scripted.organization='High Seas Alliance';
   if (scripted.description) scripted.description=Array.from(scripted.description).slice(0,280).join('');
   if (scripted.title) scripted.title=Array.from(scripted.title).slice(0,400).join('');
