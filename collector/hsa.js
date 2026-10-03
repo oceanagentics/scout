@@ -18,6 +18,7 @@ export const HARVEST = 'https://harveststrategies.org/abnj/';
 export const RISE_UP = 'https://riseupfortheocean.org/latest/rise-up-navigator/';
 export const BLUE_MARINE = 'https://www.bluemarinefoundation.com/our-events/';
 export const SYMPOSIUM = 'https://bbnjsymposium.org/';
+export const CBD_REGISTRY = 'https://www.cbd.int/side-events/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -420,7 +421,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const riseup=tracker.collector==='web' && tracker.url===RISE_UP;
   const blueMarine=tracker.collector==='web' && tracker.url===BLUE_MARINE;
   const symposium=tracker.collector==='web' && tracker.url===SYMPOSIUM;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const cbd=tracker.collector==='web' && tracker.url===CBD_REGISTRY;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -562,6 +564,73 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
       }
       covered=selected.length<=detailLimit;
+    } else if (cbd) {
+      // Queries/joins follow the public registry's index.js and mongo-storage.js.
+      // Two latest meetings and two ten-row phrase-search pages; never all history.
+      const responses=[],api=async(path,params={})=>{
+        const url=sourceURL('https://api.cbd.int/api/'+path+(Object.keys(params).length?'?'+new URLSearchParams(Object.fromEntries(Object.entries(params).map(([k,v])=>[k,typeof v==='object'?JSON.stringify(v):String(v)]))):''));
+        if(stats.pages>=LIMITS.pages)throw new Error('CBD supporting-page limit reached');
+        const r=await read(url,budget);stats.pages++;
+        if(sourceURL(r.url)!==url||!/json/i.test(r.headers['content-type']??''))throw new Error('Unexpected CBD registry destination/format');
+        const rows=JSON.parse(r.body);if(!Array.isArray(rows))throw new Error('Invalid CBD registry response');
+        responses.push({url:r.url});return rows;
+      };
+      const meetings=await api('v2016/conferences',{q:{$and:[{$or:[{institution:'CBD'},{institution:'cbd'}]},{$or:[{'schedule.sideEvents.seTiers':{$exists:true}}]}]},s:{StartDate:-1},l:2,
+        f:{Title:1,code:1,StartDate:1,EndDate:1,timezone:1,venueId:1,institution:1,'schedule.sideEvents.sideEventsPublished':1,'schedule.sideEvents.seTiers':1}});
+      if(!meetings.length||meetings.length>2||new Set(meetings.map(m=>m._id)).size!==meetings.length||meetings.some(m=>!/^[a-f0-9]{24}$/.test(m._id)||!m.Title?.en||!m.code||!['CBD','cbd'].includes(m.institution)||!Number.isFinite(Date.parse(m.StartDate))||typeof m.schedule?.sideEvents?.sideEventsPublished!=='boolean')||meetings.some((m,i)=>i&&m.StartDate>meetings[i-1].StartDate))throw new Error('CBD meeting identity/publication unavailable');
+      const types=['570fd0a52e3fa5cfa61d90ee','570fd2b82e3fa5cfa61d90f9','572bda113fa4920100f1f0f6','5720c12b10019e01006fa798','570fd27a2e3fa5cfa61d90f8','572bcfa4240149400a234903'];
+      const q={start:{$ne:null},'location.conference':{$in:meetings.map(m=>m._id)},$text:{$search:'"BBNJ"'},'meta.status':{$nin:['deleted','archived']},type:{$in:types}};
+      const f={start:1,end:1,open:1,type:1,'meta.status':1,'location.conference':1,'location.room':1,'sideEvent.id':1,'sideEvent.title':1,'sideEvent.description':1,'sideEvent.hostOrgs':1,'sideEvent.conference':1,'sideEvent.links':1,'sideEvent.publications':1,'sideEvent.meta.status':1};
+      const rows=[];
+      for(let page=0;page<2;page++){
+        const part=await api('v2016/reservations',{q,f,s:{start:1,_id:1},sk:page*10,l:10});
+        if(part.length>10)throw new Error('CBD pagination bound not respected');
+        rows.push(...part);if(part.length<10)break;
+        if(page===1)stats.warnings.push('CBD reservation pagination limit reached; additional matching sessions remain unexamined');
+      }
+      if(new Set(rows.map(r=>r.sideEvent?.id)).size!==rows.length||rows.some(r=>!Number.isSafeInteger(r.sideEvent?.id)||r.sideEvent.id<=0||!r.sideEvent.title||typeof r.sideEvent.description!=='string'||!meetings.some(m=>m._id===r.sideEvent.conference&&m._id===r.location?.conference)||!types.includes(r.type)||['deleted','archived'].includes(r.meta?.status)))throw new Error('CBD session/meeting identity or filter conflict; observations withheld');
+      const selected=rows.filter(r=>/\bBBNJ\b/i.test(r.sideEvent.title+' '+visibleText(r.sideEvent.description)));
+      const valid=selected.filter(r=>['scheduled','published'].includes(r.sideEvent.meta?.status));
+      if(valid.length!==selected.length)stats.warnings.push('CBD publisher status does not confirm a session; cancellation/publication changes need review and retained facts are preserved');
+      if(valid.some(r=>!Array.isArray(r.sideEvent.hostOrgs)||r.sideEvent.hostOrgs.length>10||new Set(r.sideEvent.hostOrgs).size!==r.sideEvent.hostOrgs.length||r.sideEvent.hostOrgs.some(h=>!/^(?:[a-f0-9]{24}|[a-z]{2})$/.test(h))))throw new Error('Unsupported CBD host identity/bound');
+      const hostIds=[...new Set(valid.flatMap(r=>r.sideEvent.hostOrgs).filter(h=>h.length===24))].sort();
+      const roomIds=[...new Set(valid.filter(r=>meetings.find(m=>m._id===r.sideEvent.conference).schedule.sideEvents.sideEventsPublished&&r.open===true).map(r=>r.location.room).filter(Boolean))].sort();
+      if(hostIds.length>80||roomIds.some(r=>!/^[a-f0-9]{24}$/.test(r)))throw new Error('CBD supporting identity/bound unavailable');
+      const hosts=hostIds.length?await api('v2016/inde-orgs',{q:{_id:{$in:hostIds.map(v=>({$oid:v}))}},f:{title:1,acronym:1}}):[];
+      const rooms=roomIds.length?await api('v2016/venue-rooms',{q:{_id:{$in:roomIds.map(v=>({$oid:v}))}},f:{title:1,location:1}}):[];
+      const countries=valid.some(r=>r.sideEvent.hostOrgs.some(h=>h.length===2))?await api('v2015/countries'):[];
+      stats.meetings=meetings.map(m=>({id:m._id,code:m.code,published:m.schedule.sideEvents.sideEventsPublished}));
+      stats.sessions_listed=rows.length;stats.sessions_selected=valid.length;stats.irrelevant=rows.length-selected.length;
+      stats.warnings.push('CBD coverage is limited to the two newest meetings, BBNJ in title/body and at most two ten-row public search pages. Unscheduled, other phrases/languages, older meetings, PDFs and linked materials remain unexamined; application windows are not attendance registration');
+      for(const r of valid){
+        try{
+          const event=r.sideEvent,meeting=meetings.find(m=>m._id===event.conference),url=CBD_REGISTRY+event.id,body=visibleText(event.description);
+          const old=(await db.query("select parsed#>>'{cbd_registry,meeting,id}' as meeting from scout.evidence where tracker_id=$1 and parsed#>>'{side_event,id}'=$2",[tracker.id,String(event.id)])).rows;
+          if(old.some(o=>o.meeting!==meeting._id))throw new Error('CBD official session ID changed meeting; identity needs review');
+          const orgs=event.hostOrgs.map(id=>id.length===2?countries.filter(c=>c.code?.toLowerCase()===id).map(c=>c.name?.en):hosts.filter(h=>h._id===id).map(h=>h.title));
+          if(orgs.some(names=>names.length!==1||typeof names[0]!=='string'||!names[0]))throw new Error('CBD host identity unavailable');
+          const paragraphs=[...event.description.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>visibleText(m[1]));
+          const sentences=paragraphs.flatMap(p=>p.match(/[^.!?]+[.!?](?=\s|$)/g)??[]).map(s=>s.trim()).filter(s=>s.length<=280);
+          const description=sentences.find(s=>/\b(?:this|the) (?:side event|session)\b/i.test(s))??sentences[0]??null;
+          const scripted={kind:'event',title:visibleText(event.title),description,organization:orgs.flat().join('; ')||null,location:null,...dates(),event_url:url,registration_url:null,status:null,
+            side_event:{id:String(event.id),schedule_published:meeting.schedule.sideEvents.sideEventsPublished},
+            cbd_registry:{meeting:{id:meeting._id,code:meeting.code,title:meeting.Title.en},publisher_status:event.meta.status}};
+          if(scripted.side_event.schedule_published&&r.open===true){
+            const schedule=dates(r.start,r.end);
+            if(!schedule.starts_at||!schedule.ends_at||!meeting.timezone)throw new Error('CBD published session timestamps/zone unavailable; retained schedule needs review');
+            new Intl.DateTimeFormat('en',{timeZone:meeting.timezone});
+            Object.assign(scripted,schedule,{time_zone:meeting.timezone,status:'scheduled'});
+            if(r.location.room){const matched=rooms.filter(room=>room._id===r.location.room);if(matched.length!==1||typeof matched[0].title!=='string')throw new Error('CBD room identity unavailable');scripted.location=[matched[0].title,matched[0].location].filter(v=>typeof v==='string'&&v).join(', ')||null;}
+          }else stats.warnings.push('CBD '+event.id+': schedule unpublished or reservation closed; session clocks, zone and room withheld, retained schedule requires review');
+          const materials=[...(event.links??[]),...(event.publications??[])].map(m=>({url:sourceURL(m.uri),title:m.title??null,description:m.description?visibleText(m.description):null}));
+          if(materials.length>10)throw new Error('CBD material link bound exceeded');
+          const text=[scripted.title,description,scripted.organization,scripted.location,scripted.starts_at,scripted.ends_at,scripted.status,meeting.Title.en,body].filter(Boolean).join(' ');
+          const source=await observe(db,tracker.id,url,JSON.stringify({text,reservation:r,conference:meeting,responses,hosts:event.hostOrgs.map((id,i)=>({id,title:orgs[i][0]})),room:scripted.location}),null,scripted,
+            {body,structured:scripted,materials},{rank:2,identity:'event:'+url,item_key:meeting._id+':'+event.id,listing_url:tracker.url,links:[url,...materials.map(m=>m.url)]},now());
+          stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+        }catch(error){quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
+      }
+      covered=true;
     } else if (sideEvents) {
       const listing=await read(tracker.url,budget);stats.pages++;
       if (listing.url!==tracker.url || !/text\/html/i.test(listing.headers['content-type']??'')) throw new Error('Unexpected UN side-event listing destination/format');
@@ -1512,11 +1581,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium || cbd) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium||cbd)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {

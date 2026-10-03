@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM,CBD_REGISTRY,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM]])).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM,CBD_REGISTRY]])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -2317,5 +2317,74 @@ test('Symposium workshop date combines same-page edition and session components,
   }
   f['satellite-events-2026'].body=base.replace('10-12 March 2026','9-11 March 2026');await collectHSA(db,options);const restored=(await db.query("select * from scout.evidence where parsed#>>'{symposium,key}' like 'workshop:%' order by (parsed#>>'{source,observed_at}') desc limit 1")).rows[0];assert.equal(restored.parsed.start_on,'2026-03-13');assert.equal(restored.parsed.end_on,null);
   assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+ }finally{await db.close();}
+});
+
+test('CBD actual registry pages retain thirteen official sessions, published schedules and exact reviewed corroboration',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/cbd-registry.json.gz',import.meta.url))));
+ try{
+  await db.query('insert into scout.records select * from jsonb_populate_record(null::scout.records,$1::jsonb)',[f.reviewed_record]);
+  const before=(await db.query('select * from scout.records')).rows,tracker=(await db.query('select * from scout.trackers where url=$1',[CBD_REGISTRY])).rows[0],requested=[];
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;requested.push(u);const r=Object.values(f).find(r=>r.url===u);assert.ok(r,u);return r;}};
+  const run=await collectHSA(db,options);assert.equal(run.candidates,13,run.warnings.join('; '));assert.equal(run.requests,6);assert.equal(run.pages,6);assert.equal(run.pending,13);assert.equal(run.assessed+run.created+run.changed,0);assert.equal(run.sessions_listed,13);
+  const qs=requested.filter(u=>u.includes('/reservations?')).map(u=>new URL(u).searchParams);assert.deepEqual(qs.map(p=>p.get('sk')),['0','10']);assert.ok(qs.every(p=>p.get('l')==='10'&&JSON.parse(p.get('q')).$text.$search==='"BBNJ"'));assert.equal(JSON.parse(qs[0].get('q'))['location.conference'].$in.length,2);
+  const sources=(await db.query('select * from scout.evidence')).rows,old=sources.find(s=>s.parsed.side_event.id==='6915'),similar=sources.find(s=>s.parsed.side_event.id==='7228'),technical=sources.find(s=>s.parsed.side_event.id==='7401'),countries=sources.find(s=>s.parsed.side_event.id==='7219');
+  assert.equal(old.parsed.title,similar.parsed.title);assert.notEqual(old.parsed.source.item_key,similar.parsed.source.item_key);assert.notEqual(old.parsed.source.identity,similar.parsed.source.identity);
+  for(const s of sources){assert.equal(s.parsed.kind,'event');assert.equal(s.published_at,null);assert.equal(s.record_id,null);assert.equal(s.parsed.registration_url,null);assert.equal(s.parsed.start_on,null);assert.equal(s.parsed.end_on,null);assert.equal(s.parsed.assessment.state,'pending');if(s.parsed.description){assert.ok(s.parsed.description.length<=280);assert.match(s.parsed.description,/[.!?]$/);}}
+  for(const id of ['6915','6947'])for(const k of ['starts_at','ends_at','time_zone','location','status'])assert.equal(sources.find(s=>s.parsed.side_event.id===id).parsed[k],null,k);
+  assert.equal(technical.parsed.starts_at,'2026-10-19T14:15:00.000Z');assert.equal(technical.parsed.ends_at,'2026-10-19T15:45:00.000Z');assert.equal(technical.parsed.time_zone,'Asia/Yerevan');assert.match(technical.parsed.location,/Tatev/);assert.match(technical.parsed.organization,/Deep Ocean Stewardship Initiative/);
+  assert.equal(countries.parsed.organization,'Secretariat of the Convention on Biological Diversity; Norway; Philippines');
+  const i=await assessmentInput(db,old,tracker);assert.deepEqual(i.exact_ids,[f.reviewed_record.id]);assert.equal(i.scripted.description,f.reviewed_record.description);
+  const decision={...result,source_id:i.source_id,action:'supporting_evidence',record_id:f.reviewed_record.id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),priority:'normal',quotes:[i.scripted.description]};validateDecision(decision,i);
+  const other=await assessmentInput(db,similar,tracker);assert.ok(!other.exact_ids.includes(f.reviewed_record.id));assert.throws(()=>validateDecision({...decision,source_id:other.source_id,quotes:[other.scripted.title]},other),/CBD identity|distinct CBD|identity outside shortlist/);
+  let calls=0;const accepted=await collectHSA(db,{...options,sourceId:old.id,model:async()=>{calls++;return[decision];}});assert.equal(accepted.assessed,1,accepted.warnings.join('; '));assert.equal(accepted.created+accepted.changed,0);assert.equal(calls,1);assert.deepEqual((await db.query('select * from scout.records')).rows,before);
+  const repeat=await collectHSA(db,{...options,sourceId:old.id,model:async()=>{calls++;throw new Error('Unchanged source must not call');}});assert.equal(repeat.skipped,13);assert.equal(repeat.requests,6);assert.equal(repeat.candidates+repeat.assessed+repeat.created+repeat.changed,0);assert.equal(calls,1);
+  assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('CBD published date/title/material revisions preserve ID while unpublished clocks and cosmetic changes do not create work',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/cbd-registry.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[CBD_REGISTRY])).rows[0],options={trackerId:tracker.id,validate:true,read:async(u,b)=>{b.requests++;const url=new URL(u);return{...f[url.pathname.endsWith('/conferences')?'meetings':url.pathname.endsWith('/reservations')?'reservations'+(Number(url.searchParams.get('sk'))/10):url.pathname.endsWith('/inde-orgs')?'hosts':url.pathname.endsWith('/venue-rooms')?'rooms':'countries'],url:u};}};
+  await collectHSA(db,options);const initial=(await db.query("select * from scout.evidence where parsed#>>'{side_event,id}'='7401'")).rows[0],rows=JSON.parse(f.reservations0.body);
+  rows[0].start='2026-07-30T11:15:00Z';rows[0].end='2026-07-30T12:35:00Z';rows[0].location.room='000000000000000000000000';rows[2].sideEvent.description=rows[2].sideEvent.description.replaceAll('font-size: 11.5pt','font-size: 12pt');f.reservations0.body=JSON.stringify(rows);
+  assert.equal((await collectHSA(db,options)).candidates,0);
+  rows[2].start='2026-10-20T14:15:00Z';rows[2].end='2026-10-20T15:45:00Z';f.reservations0.body=JSON.stringify(rows);assert.equal((await collectHSA(db,options)).candidates,1);
+  rows[2].sideEvent.title+=' — Updated';f.reservations0.body=JSON.stringify(rows);assert.equal((await collectHSA(db,options)).candidates,1);
+  rows[2].sideEvent.description=rows[2].sideEvent.description.replace('water samples','seawater samples');f.reservations0.body=JSON.stringify(rows);assert.equal((await collectHSA(db,options)).candidates,1);
+  rows[2].sideEvent.publications[0].title+=' revised';f.reservations0.body=JSON.stringify(rows);assert.equal((await collectHSA(db,options)).candidates,1);
+  const latest=(await db.query("select * from scout.evidence where parsed#>>'{side_event,id}'='7401' order by collected_at desc limit 1")).rows[0];assert.equal(latest.parsed.source.identity,initial.parsed.source.identity);assert.equal(latest.parsed.source.item_key,initial.parsed.source.item_key);assert.ok(latest.parsed.source.previous_id);assert.equal(latest.parsed.starts_at,'2026-10-20T14:15:00.000Z');
+  const i=await assessmentInput(db,latest,tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),decision={...result,source_id:i.source_id,candidate,quotes:[i.text.slice(0,100)]};validateDecision(decision,i);
+  for(const change of [{kind:'treaty_status'},{starts_at:'2026-10-19T00:00:00Z'},{registration_url:CBD_REGISTRY},{organization:'Invented host'},{status:'cancelled'},{description:'Incomplete fragment'}])assert.throws(()=>validateDecision({...decision,candidate:{...candidate,...change}},i));
+  rows[2].sideEvent.meta.status='cancelled';f.reservations0.body=JSON.stringify(rows);let calls=0;const status=await collectHSA(db,{...options,sourceId:latest.id,model:async()=>{calls++;throw new Error('Unconfirmed status');}});assert.equal(status.candidates,0);assert.equal(calls,0);assert.match(status.warnings.join(' '),/cancellation/);
+  assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+ }finally{await db.close();}
+});
+
+test('CBD failed joins/pages, conflicting meetings and invalid published dates preserve pending evidence without stale assessment',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/cbd-registry.json.gz',import.meta.url))));let fail='',calls=0;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[CBD_REGISTRY])).rows[0],options={trackerId:tracker.id,validate:true,read:async(u,b)=>{b.requests++;if(fail&&u.includes(fail))throw new Error('Injected CBD HTTP 403');const url=new URL(u);return{...f[url.pathname.endsWith('/conferences')?'meetings':url.pathname.endsWith('/reservations')?'reservations'+(Number(url.searchParams.get('sk'))/10):url.pathname.endsWith('/inde-orgs')?'hosts':url.pathname.endsWith('/venue-rooms')?'rooms':'countries'],url:u};}};
+  await collectHSA(db,options);const source=(await db.query("select * from scout.evidence where parsed#>>'{side_event,id}'='7401'")).rows[0],scoped={...options,sourceId:source.id,model:async()=>{calls++;throw new Error('Stale source must not be assessed');}};
+  for(const path of ['/conferences','sk=10','/inde-orgs','/venue-rooms','/countries']){fail=path;const run=await collectHSA(db,scoped);assert.equal(run.candidates+run.assessed+run.created+run.changed,0);assert.equal(calls,0);assert.match(run.warnings.join(' '),/Injected CBD HTTP 403/);}fail='';
+  const base=f.reservations0.body;
+  for(const mutate of [rows=>rows[2].sideEvent.conference='000000000000000000000000',rows=>rows[2].sideEvent.id=rows[0].sideEvent.id,rows=>rows[2].start='2026-10-19',rows=>rows[2].end='2026-10-18T00:00:00Z',rows=>rows[2].meta.status='archived']){
+   const rows=JSON.parse(base);mutate(rows);f.reservations0.body=JSON.stringify(rows);const run=await collectHSA(db,scoped);assert.equal(run.candidates+run.assessed+run.created+run.changed,0);assert.equal(calls,0);
+  }
+  f.reservations0.body=base;const meetings=JSON.parse(f.meetings.body);meetings[0].schedule.sideEvents.sideEventsPublished=false;f.meetings.body=JSON.stringify(meetings);
+  const unpublished=await collectHSA(db,options);assert.equal(unpublished.candidates,11);const current=(await db.query("select * from scout.evidence where parsed#>>'{side_event,id}'='7401' order by collected_at desc limit 1")).rows[0];assert.equal(current.parsed.starts_at,null);assert.equal(current.parsed.location,null);assert.equal(current.parsed.time_zone,null);
+  assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+ }finally{await db.close();}
+});
+
+test('CBD bounded second page, body relevance and changed meeting identity cannot broaden scope or merge sessions',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/cbd-registry.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[CBD_REGISTRY])).rows[0],requested=[],options={trackerId:tracker.id,validate:true,read:async(u,b)=>{b.requests++;requested.push(u);const url=new URL(u);return{...f[url.pathname.endsWith('/conferences')?'meetings':url.pathname.endsWith('/reservations')?'reservations'+(Number(url.searchParams.get('sk'))/10):url.pathname.endsWith('/inde-orgs')?'hosts':url.pathname.endsWith('/venue-rooms')?'rooms':'countries'],url:u};}};
+  await collectHSA(db,options);let rows=JSON.parse(f.reservations0.body);rows[0].sideEvent.conference=rows[0].location.conference=rows[2].sideEvent.conference;f.reservations0.body=JSON.stringify(rows);const conflict=await collectHSA(db,options);assert.equal(conflict.candidates,0);assert.match(conflict.warnings.join(' '),/changed meeting/);
+  const second=JSON.parse(f.reservations1.body);while(second.length<10){const r=structuredClone(second[0]);r._id='fixture-'+second.length;r.sideEvent.id=9000+second.length;r.sideEvent.title='Unrelated local workshop';r.sideEvent.description='<p>Local gardening event.</p>';r.sideEvent.publications=[{title:'BBNJ index-only match',url:'https://www.cbd.int/doc/test.pdf'}];second.push(r);}f.reservations1.body=JSON.stringify(second);
+  const bounded=await collectHSA(db,options);assert.equal(bounded.requests,6);assert.equal(bounded.sessions_listed,20);assert.equal(bounded.irrelevant,7);assert.equal(bounded.candidates,0);assert.match(bounded.warnings.join(' '),/pagination limit/);assert.ok(!requested.some(u=>u.includes('sk=20')));
+  const old=(await db.query("select * from scout.evidence where parsed#>>'{side_event,id}'='6915'")).rows;assert.equal(old.length,1);assert.equal(old[0].parsed.cbd_registry.meeting.code,'nairobi-2026');assert.equal(old[0].parsed.starts_at,null);
  }finally{await db.close();}
 });

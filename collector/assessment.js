@@ -46,6 +46,7 @@ export function validateDecision(result, input) {
   if (!['high','normal','low',null].includes(result.priority) || typeof result.reason!=='string' || !result.reason.trim() || result.reason.length>240) fail('priority/reason');
   if (!Array.isArray(result.quotes) || result.quotes.length>3 || result.quotes.some(q=>typeof q!=='string'||!q.isWellFormed()||!q.trim()||!input.text.includes(q))) fail('unsupported quote');
   const existing = input.candidates.find(item=>item.id===result.record_id);
+  if (input.scripted.cbd_registry && existing && (!input.exact_ids.includes(existing.id)||existing.event_url!==input.scripted.event_url)) fail('CBD identity requires the same official session ID and meeting');
   if (input.scripted.iddri && existing && !input.exact_ids.includes(existing.id) && !existing.registration_link && existing.event_url!==input.url) fail('IDDRI identity needs the same explicitly linked publication/session');
   if (input.scripted.gfw && existing && !input.exact_ids.includes(existing.id)) fail('GFW identity needs the same article or verified linked announcement');
   if (input.scripted.iucn && existing && !input.exact_ids.includes(existing.id)) fail('IUCN identity needs the same source or verified node, not a shared topic/year');
@@ -123,6 +124,7 @@ export function validateDecision(result, input) {
       ['starts_at','ends_at','location','status','event_url','registration_url',...(c.kind==='event'?['organization']:[])].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.includes('status'))) fail('IDDRI publication/session facts unconfirmed');
   if (input.scripted.side_event && (c.kind!=='event'||c.title!==input.scripted.title ||
       ['starts_at','ends_at','location','status','event_url','registration_url'].some(f=>c[f]!==null&&c[f]!==input.scripted[f]))) fail('side-event identity or unconfirmed session facts');
+  if (input.scripted.cbd_registry && (c.organization!==null&&c.organization!==input.scripted.organization||c.description&&!/[.!?]$/.test(c.description)||result.clear_fields.length)) fail('CBD host, complete description or publication change unconfirmed');
   if (input.scripted.hsa_web && (input.scripted.hsa_web.session && (c.kind!=='event'||c.title!==input.scripted.title) ||
       input.scripted.hsa_web.recap && c.kind!=='announcement' ||
       ['starts_at','ends_at','location','status','event_url','registration_url',...(c.kind==='event'?['organization']:[])].some(f=>c[f]!==null&&c[f]!==input.scripted[f]))) fail('HSA article/session facts unconfirmed');
@@ -185,7 +187,7 @@ export async function assessmentInput(db, source, tracker) {
     (select parsed->>'start_on' from scout.current_evidence where record_id=r.id and parsed->>'start_on' is not null
       order by authoritative desc,evidence_at desc nulls last,last_seen_at desc limit 1) as calendar_date,
     (select md5(string_agg(content_hash,',' order by url)) from scout.current_evidence where record_id=r.id) as evidence
-    from scout.records r where ${(scripted.iddri||scripted.gfw||scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium)&&scripted.kind==='announcement'?"r.kind='announcement' and ":''}(not $9::boolean or r.kind='event') and
+    from scout.records r where ${scripted.cbd_registry?"(r.identity_key=$8 or r.event_url=$3) and ":''}${(scripted.iddri||scripted.gfw||scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium)&&scripted.kind==='announcement'?"r.kind='announcement' and ":''}(not $9::boolean or r.kind='event') and
       (r.id=$2 or r.id=$11::uuid or r.identity_key=$8 or r.event_url=$1 or r.event_url=$3 or r.organization=$4 or
       exists(select 1 from scout.current_evidence e where e.record_id=r.id and e.url=$10) or exists(select 1 from unnest($5::text[]) word where lower(r.title) like '%'||word||'%'))
     order by (r.id=$11::uuid) desc nulls last,${scripted.iddri?'exact desc,':''}(r.id=$2) desc nulls last,(r.identity_key=$8) desc nulls last,(r.event_url=$3) desc nulls last,
@@ -224,5 +226,5 @@ export async function assessmentInput(db, source, tracker) {
   }
   return {source_id:source.id,url:source.url,coverage:tracker.coverage?.slice(0,240),text:whole.slice(start,start+1400).join(''),
     context_truncated:whole.length>1400,links:zoom?[source.url]:source.parsed.source.links??[],scripted,
-    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id||r.id===scripted.gfw?.corroborates||(scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium)&&r.identity_key===source.parsed.source.identity||scripted.riseup&&scripted.event_url&&r.event_url===scripted.event_url||scripted.iddri&&(r.identity_key===source.parsed.source.identity||scripted.iddri.translation_of&&r.registration_link)).map(r=>r.id)};
+    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id||r.id===scripted.gfw?.corroborates||(scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium||scripted.cbd_registry)&&r.identity_key===source.parsed.source.identity||(scripted.riseup||scripted.cbd_registry)&&scripted.event_url&&r.event_url===scripted.event_url||scripted.iddri&&(r.identity_key===source.parsed.source.identity||scripted.iddri.translation_of&&r.registration_link)).map(r=>r.id)};
 }
