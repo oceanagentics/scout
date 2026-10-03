@@ -15,6 +15,7 @@ export const IUCN = 'https://iucn.org/our-work/topic/high-seas';
 export const GOF = 'https://globaloceanforum.com/';
 export const OCEANCARE = 'https://www.oceancare.org/en/';
 export const HARVEST = 'https://harveststrategies.org/abnj/';
+export const RISE_UP = 'https://riseupfortheocean.org/latest/rise-up-navigator/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -414,7 +415,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const gof=tracker.collector==='web' && tracker.url===GOF;
   const oceancare=tracker.collector==='web' && tracker.url===OCEANCARE;
   const harvest=tracker.collector==='web' && tracker.url===HARVEST;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const riseup=tracker.collector==='web' && tracker.url===RISE_UP;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -637,6 +639,69 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         stats[source.changed?'candidates':'skipped']++;pages.set(url,{source});
       }
       covered=selected.length<=3;
+    } else if (riseup) {
+      const clean=html=>html.replace(/<!--[\s\S]*?-->/g,'');
+      const text=html=>visibleText(clean(html).replace(/&#(\d{1,7});/g,(_m,n)=>String.fromCodePoint(+n)).replace(/&#x([a-f0-9]{1,6});/gi,(_m,n)=>String.fromCodePoint(parseInt(n,16))));
+      // Public Past Issues destination observed in the Navigator's Mailchimp issues.
+      // Its archive is newer than the website list; signup and oversized RSS are unused.
+      const archiveURL='https://us11.campaign-archive.com/home/?id=e2f06a2916&u=740487e7a7306085143176166';
+      const archive=await read(archiveURL,budget);stats.pages++;
+      if (archive.url!==archiveURL || !/<\/html>\s*$/.test(clean(archive.body)) || !archive.body.includes('id="archive-list"')) throw new Error('RISE UP public campaign archive unavailable');
+      const rows=[...archive.body.matchAll(/<li class="campaign">(\d{2})\/(\d{2})\/(20\d{2}) - <a href="([^"]+)"[^>]*>[\s\S]*?<\/a><\/li>/g)].map(m=>({raw:m[0],url:m[4],day:dates(`${m[3]}-${m[1]}-${m[2]}`).start_on,month:`${m[3]}-${m[1]}`}));
+      if (!rows.length || rows.length!==(archive.body.match(/<li class="campaign">/g)??[]).length || rows.some(r=>!r.day) || new Set(rows.map(r=>r.url)).size!==rows.length) throw new Error('RISE UP campaign archive date/issue identity unavailable');
+      const latest=rows.sort((a,b)=>b.day.localeCompare(a.day))[0];
+      if (rows.filter(r=>r.day===latest.day).length!==1) throw new Error('RISE UP latest archive day has multiple issues; selection needs review');
+      // Only the publisher's observed eepurl link is upgraded to HTTPS, retaining its token.
+      const issueURL=sourceURL(text(latest.url.replace(/^http:\/\/eepurl\.com\//,'https://eepurl.com/')));
+      if (!/^https:\/\/(?:eepurl\.com\/[^/?]+|mailchi\.mp\/riseupfortheocean\.org\/[^/?]+|us11\.campaign-archive\.com\/\?)/.test(issueURL)) throw new Error('Unsupported RISE UP public issue link');
+      const issue=await read(issueURL,budget);stats.pages++;
+      const destination=new URL(issue.url),html=clean(issue.body),months=['January','February','March','April','May','June','July','August','September','October','November','December'];
+      if (!(destination.hostname==='us11.campaign-archive.com' && destination.searchParams.get('u')==='740487e7a7306085143176166' && /^[a-f0-9]{10}$/.test(destination.searchParams.get('id')??'') || destination.hostname==='mailchi.mp'&&destination.pathname.startsWith('/riseupfortheocean.org/')) ||
+          !/text\/html/i.test(issue.headers['content-type']??'') || !/<\/html>\s*$/.test(html) || !text(html).includes(`| ${months[+latest.month.slice(5)-1].toUpperCase()} ${latest.month.slice(0,4)}`)) throw new Error('RISE UP issue destination/publication month disagreement');
+      const headings=[...html.matchAll(/<h([12])\b[^>]*>([\s\S]*?)<\/h\1>/gi)];
+      const begin=headings.findIndex(m=>m[1]==='1'&&text(m[2])==='Updates'),end=headings.findIndex((m,i)=>i>begin&&m[1]==='1');
+      if (begin<0 || end<0 || !headings.slice(begin+1,end).length || headings.slice(begin+1,end).some(m=>m[1]!=='2')) throw new Error('RISE UP Updates item layout unavailable');
+      const items=headings.slice(begin+1,end).map((heading,index)=>{
+        const block=html.slice(heading.index,headings[begin+index+2].index);
+        const button=[...block.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/g)].find(m=>/mso-style-priority:100/.test(m[0])||/^Read More About /.test(text(m[0])));
+        const body=button?block.slice(0,button.index+button[0].length):block,paragraphs=[...body.matchAll(/<p\b[^>]*>[\s\S]*?<\/p>/g)].filter(m=>!/<p\b[^>]*font-size:11px/.test(m[0])).map(m=>text(m[0])).filter(Boolean);
+        if (!paragraphs.length) throw new Error('RISE UP Updates body unavailable');
+        const link=button?sourceURL(text(button[1])):`heading:${hash(text(heading[2]))}`,links=[...new Set([...body.matchAll(/href="([^"]+)"/g)].map(m=>sourceURL(text(m[1]))))].sort();
+        const when=paragraphs[0].match(/^From (\d{1,2})[–-](\d{1,2}) (January|February|March|April|May|June|July|August|September|October|November|December) (20\d{2}), .*?Summit\b/);
+        const eventURL=links.find(u=>/^https:\/\/www\.fao\.org\/voluntary-guidelines-small-scale-fisheries\/home\/ssf-summit\/20\d{2}\/en$/.test(u));
+        const event=Boolean(when&&eventURL),recording=/Watch the (?:Recording|Video)/i.test(text(button?.[0]??''));
+        const date=when&&`${when[4]}-${String(months.indexOf(when[3])+1).padStart(2,'0')}-`;
+        const schedule=dates(event?date+when[1].padStart(2,'0'):null,event?date+when[2].padStart(2,'0'):null);
+        if (event&&(!schedule.start_on||!schedule.end_on||!eventURL.includes('/'+when[4]+'/'))) throw new Error('RISE UP summit date/edition disagreement');
+        const sentences=paragraphs.join(' ').match(/[^.!?]+[.!?](?=\s|$)/g)?.map(s=>s.trim()).filter(s=>Array.from(s).length<=280)??[];
+        const description=sentences.find(s=>s.startsWith('Participants exchanged practical experience'))??sentences[0]??null;
+        return {body,link,links,paragraphs,scripted:{kind:event?'event':'announcement',title:text(heading[2]),description,organization:null,location:null,
+          ...schedule,event_url:event?eventURL:null,registration_url:null,status:null,
+          riseup:{publication_on:latest.day,recording,multiple:/Save the Date/i.test(paragraphs.join(' '))||!event&&!recording&&/\bwill (?:host|bring together)\b/i.test(paragraphs.join(' '))}}};
+      });
+      if (new Set(items.map(i=>i.link)).size!==items.length) throw new Error('RISE UP issue has ambiguous repeated item links');
+      stats.issues_listed=rows.length;stats.items_listed=items.length;
+      stats.warnings.push('RISE UP uses the observed public Mailchimp archive because the configured website returns hosted HTTP 403 and its listing is stale. Up to five Updates items in the latest listed issue and one linked FAO summit detail are covered; other issues, Member Spotlight, Take Action, papers, calendar, PDFs/video and multiple-event items remain outside proven coverage. Publication is date-only; NGO treaty claims are not official actions');
+      let details=0;
+      for (const item of items.slice(0,5)) {
+        try {
+          let detail=null;
+          if (item.scripted.kind==='event') {
+            if (++details>1) throw new Error('RISE UP linked summit detail limit reached');
+            detail=await read(item.scripted.event_url,budget);stats.pages++;
+            const block=detail.body.match(/<div class="sfContentBlock sf-Long-text"[^>]*>([\s\S]*?The 3rd Small-Scale Fisheries Summit[\s\S]*?)<\/div>/)?.[1];
+            const proof=text(block??''),when=item.paragraphs[0].match(/^From (\d{1,2})[–-](\d{1,2}) (\w+) (20\d{2}),/);
+            if (detail.url!==item.scripted.event_url || !/<\/html>\s*$/.test(detail.body) || !proof.includes(`SSF Summit ${when[4]}`) || !proof.includes(`held from ${when[1]} to ${when[2]} ${when[3]}, at the FAO Headquarters in Rome, Italy`)) throw new Error('RISE UP newsletter/FAO summit schedule disagreement');
+            item.scripted.location='FAO Headquarters in Rome';
+          }
+          const key=`${destination.searchParams.get('id')??destination.pathname}:${latest.month}:${item.link}`,scripted=item.scripted;
+          const source=await observe(db,tracker.id,issue.url,JSON.stringify({text:[scripted.title,scripted.description,...item.paragraphs].filter(Boolean).join(' '),body:issue.body,archive:latest.raw,item:item.body,detail}),null,scripted,
+            {text:[scripted.title,...item.paragraphs].join(' '),links:item.links,structured:scripted},
+            {rank:2,identity:`riseup:${key}`,item_key:key,parent_url:tracker.url,links:item.links},now());
+          stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+        } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
+      }
+      covered=true;
     } else if (harvest) {
       const home=await read(tracker.url,budget);stats.pages++;
       const listing='https://harveststrategies.org/what-are-harvest-strategies/resources-webinars/';
@@ -1288,11 +1353,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
@@ -1322,8 +1387,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         // A parsed registration page supplies its own URL. An explicit link in
         // the retained post can resolve "new" only after the normal identity checks.
         const modelDecision=decision;
-        if (harvest && decision.candidate?.kind==='event' && ['new','update'].includes(decision.action)) {
-          const fields=['starts_at','ends_at','event_url','registration_url','status'].filter(field=>
+        if ((harvest||riseup) && decision.candidate?.kind==='event' && ['new','update'].includes(decision.action)) {
+          const fields=['starts_at','ends_at','event_url','registration_url','status',...(riseup?['location']:[])].filter(field=>
             decision.candidate[field]===null && input.scripted[field]!=null && !decision.clear_fields.includes(field));
           if (fields.length) decision=validateDecision({...decision,candidate:{...decision.candidate,
             ...Object.fromEntries(fields.map(field=>[field,input.scripted[field]]))}},input);

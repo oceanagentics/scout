@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -1912,5 +1912,145 @@ test('Harvest completion leaves uncertain, supporting and no-change decisions un
    const source=(await db.query('select * from scout.evidence order by collected_at desc limit 1')).rows[0];assert.equal(source.parsed.assessment.action,action);assert.equal(source.parsed.assessment.model_decision,undefined);
    for(const k of ['starts_at','ends_at','event_url','registration_url','status'])assert.equal(source.parsed.assessment.candidate[k],null);
   }
+ }finally{await db.close();}
+});
+
+
+test('RISE UP actual archive, issue and summit produce separate items, honest dates and fresh no-call repeats',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/riseup-website.json.gz',import.meta.url))));let calls=0;const requested=[];
+ // Replay the recorded July issue by injecting the archive boundary before September.
+ f.archive.body=f.archive.body.replace(/<li class="campaign">09\/30\/2026 - [\s\S]*?<\/li>/,'');
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-07-01',read:async(u,b)=>{const r=Object.values(f).find(r=>r.url===u||r.requested_url===u);b.requests+=r.requests??1;requested.push(u);return r;},
+   model:async(_p,inputs)=>{calls++;return inputs.map(i=>i.scripted.riseup.multiple?{...result,source_id:i.source_id,action:'uncertain',candidate:null,priority:null,quotes:[],reason:'Newsletter mixes luncheon and COP31; separate session evidence required.'}:
+    {...result,source_id:i.source_id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),priority:i.scripted.kind==='event'?'high':'low',quotes:[i.scripted.title]});}};
+  await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);
+  const first=await collectHSA(db,options);assert.equal(first.created,1,first.warnings.join('; '));assert.equal(first.requests,4);assert.equal(first.pages,3);assert.equal(first.candidates,5);assert.equal(first.assessed,5);assert.equal(first.outcome,'partial');
+  assert.deepEqual(requested,[f.archive.url,f.july.requested_url,f.ssf.url]);
+  const rows=(await db.query('select * from scout.evidence')).rows,source=rows.find(r=>r.parsed.kind==='event'),record=(await db.query('select * from scout.records')).rows[0];
+  assert.equal(record.event_url,f.ssf.url);assert.equal(record.registration_url,null);assert.equal(record.starts_at,null);assert.equal(record.ends_at,null);assert.equal(record.organization,null);assert.equal(record.location,'FAO Headquarters in Rome');
+  assert.equal(record.description.length,279);assert.match(record.description,/\.$/);assert.equal(source.published_at,null);assert.equal(source.parsed.riseup.publication_on,'2026-07-31');
+  assert.equal(source.parsed.start_on,'2026-09-04');assert.equal(source.parsed.end_on,'2026-09-06');assert.equal(source.parsed.time_zone,null);
+  assert.equal(fieldLabel(record,'starts_at'),'Unknown');
+  assert.equal(JSON.parse(source.content).body,f.july.body);assert.equal(JSON.parse(source.content).detail.body,f.ssf.body);assert.match(JSON.parse(source.content).archive,/07\/31\/2026/);
+  const recording=rows.find(r=>r.parsed.riseup.recording),mixed=rows.find(r=>r.parsed.riseup.multiple),mining=rows.find(r=>r.parsed.title.startsWith('The Case'));
+  assert.equal(recording.parsed.kind,'announcement');assert.equal(recording.parsed.start_on,null);assert.equal(recording.parsed.registration_url,null);
+  assert.deepEqual(recording.parsed.source.links,['https://youtu.be/9DD3GzMhkqo']);assert.equal(mixed.parsed.assessment.state,'uncertain');assert.equal(mixed.record_id,null);
+  assert.ok(mining.parsed.source.links.some(u=>u.includes('/from-kingston-')));assert.ok(!mining.parsed.source.links.some(u=>u.includes('/from-dialogue-')));
+  const i=await assessmentInput(db,source,tracker);assert.equal(i.context_truncated,true);assert.doesNotMatch(i.text,/Second Small-Scale|2025|Kingston|Youth4MPAs|12:00|registration|Sign up/i);
+  const count=calls;f.july.body=f.july.body.replaceAll('font-size:14px','font-size:15px').replaceAll('Second Small-Scale Fisheries Summit in 2024','Unrelated photo caption in 2025');
+  const repeat=await collectHSA(db,options);assert.equal(repeat.skipped,5);assert.equal(repeat.assessed+repeat.created+repeat.changed,0);assert.equal(calls,count);assert.equal(repeat.requests,4);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('RISE UP material and jointly confirmed date changes preserve the summit while separate editions remain separate',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/riseup-website.json.gz',import.meta.url))));
+ // Replay the recorded July issue by injecting the archive boundary before September.
+ f.archive.body=f.archive.body.replace(/<li class="campaign">09\/30\/2026 - [\s\S]*?<\/li>/,'');
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-07-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u||r.requested_url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);let source=(await db.query("select * from scout.evidence where parsed->>'kind'='event'")).rows[0];
+  const model=async(_p,inputs)=>inputs.map(i=>({...result,source_id:i.source_id,action:i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,
+   candidate:full({kind:'event',title:i.scripted.title,description:i.scripted.description}),quotes:[i.text.slice(0,100)]}));
+  let run=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(run.created,1,run.warnings.join('; '));const record=(await db.query('select * from scout.records')).rows[0];
+  assert.equal(record.event_url,f.ssf.url);assert.equal(record.location,'FAO Headquarters in Rome');
+  f.july.body=f.july.body.replace('identifying priorities for collaboration','identifying practical priorities for collaboration');
+  await collectHSA(db,options);source=(await db.query("select * from scout.evidence where parsed->>'kind'='event' order by collected_at desc limit 1")).rows[0];
+  run=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(run.changed,1,run.warnings.join('; '));assert.equal(run.created,0);
+  f.july.body=f.july.body.replaceAll('4–6 September 2026','5–7 September 2026');f.ssf.body=f.ssf.body.replace('held from 4 to 6 September','held from 5 to 7 September');
+  await collectHSA(db,options);source=(await db.query("select * from scout.evidence where parsed->>'kind'='event' order by collected_at desc limit 1")).rows[0];
+  run=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(run.assessed,1,run.warnings.join('; '));assert.equal(run.created,0);assert.equal(source.parsed.start_on,'2026-09-05');assert.equal(source.parsed.end_on,'2026-09-07');
+  for(const key of ['archive','july','ssf']){f[key].body=f[key].body.replaceAll('2026','2027');f[key].url=f[key].url.replaceAll('/2026/','/2027/');}
+  await collectHSA(db,options);source=(await db.query("select * from scout.evidence where parsed->>'kind'='event' order by collected_at desc limit 1")).rows[0];
+  const i=await assessmentInput(db,source,tracker);assert.ok(!i.exact_ids.includes(record.id));
+  assert.throws(()=>validateDecision({...result,source_id:i.source_id,action:'update',record_id:record.id,candidate:full({kind:'event',title:i.scripted.title}),quotes:[i.scripted.title]},i),/same issue\/item/);
+  run=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(run.created,1,run.warnings.join('; '));assert.equal((await db.query('select * from scout.records')).rows.length,2);
+ }finally{await db.close();}
+});
+
+test('RISE UP failed source, malformed layout and unconfirmed dates never assess stale pending evidence',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/riseup-website.json.gz',import.meta.url))));let fail=null,calls=0;
+ // Replay the recorded July issue by injecting the archive boundary before September.
+ f.archive.body=f.archive.body.replace(/<li class="campaign">09\/30\/2026 - [\s\S]*?<\/li>/,'');
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0],read=async(u,b)=>{b.requests++;if(u===fail)throw new Error('Injected HTTP 503');return Object.values(f).find(r=>r.url===u||r.requested_url===u);};
+  await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2026-07-01',read,model:async()=>{throw new Error('Observation-only fixture');}});
+  const source=(await db.query("select * from scout.evidence where parsed->>'kind'='event'")).rows[0],before=(await db.query('select id,content_hash,content,parsed from scout.evidence order by id')).rows;
+  const options={trackerId:tracker.id,sourceId:source.id,validate:true,since:'2026-07-01',read,model:async()=>{calls++;throw new Error('Stale assessment');}};
+  for(fail of [f.archive.url,f.july.requested_url,f.ssf.url]){const run=await collectHSA(db,options);assert.equal(run.assessed+run.candidates,0);assert.equal(calls,0);}fail=null;
+  for(const [key,from,to]of [['archive','07/31/2026','08/31/2026'],['archive','</html>',''],['july','</html>',''],['july',' Updates ',' Unknown '],['july','4–6 September 2026','31–32 September 2026'],['ssf','held from 4 to 6 September','held from 5 to 7 September'],['ssf','SSF Summit 2026','SSF Summit 2025']]){
+   const good=f[key].body;assert.ok(good.includes(from));f[key].body=good.replaceAll(from,to);const run=await collectHSA(db,options);assert.equal(run.assessed+run.candidates,0,key+' '+run.warnings.join('; '));assert.equal(calls,0);f[key].body=good;
+  }
+  const good=f.july.url;f.july.url=good.replace('740487e7a7306085143176166','another-list');assert.equal((await collectHSA(db,options)).outcome,'failed');f.july.url=good;
+  assert.deepEqual((await db.query('select id,content_hash,content,parsed from scout.evidence order by id')).rows,before);assert.equal(calls,0);
+ }finally{await db.close();}
+});
+
+test('RISE UP recording, mixed-event, publication, host and advocacy evidence cannot manufacture session or official treaty facts',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/riseup-website.json.gz',import.meta.url))));
+ // Replay the recorded July issue by injecting the archive boundary before September.
+ f.archive.body=f.archive.body.replace(/<li class="campaign">09\/30\/2026 - [\s\S]*?<\/li>/,'');
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0];
+  await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2026-07-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u||r.requested_url===u);},model:async()=>{throw new Error('Observation-only fixture');}});
+  for(const source of (await db.query('select * from scout.evidence')).rows){
+   const i=await assessmentInput(db,source,tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),decision={...result,source_id:i.source_id,candidate,quotes:[i.scripted.title]};
+   if(i.scripted.riseup.multiple){assert.throws(()=>validateDecision(decision,i),/multiple RISE UP/);continue;}validateDecision(decision,i);
+   assert.equal(source.published_at,null);
+   for(const change of [{kind:'treaty_status'},{starts_at:'2026-07-01T00:00:00Z'},{organization:'RISE UP'},{description:'An incomplete fragment'}]){
+    assert.throws(()=>validateDecision({...decision,candidate:{...candidate,...change}},i));
+   }
+   if(i.scripted.kind==='event'){
+    assert.throws(()=>validateDecision({...decision,candidate:{...candidate,registration_url:i.links.find(u=>u.includes('openknowledge'))}},i),/RISE UP item/);
+    assert.throws(()=>validateDecision({...decision,candidate:{...candidate,starts_at:'2026-09-04T00:00:00Z'}},i),/unsupported/);
+   }
+   if(i.scripted.riseup.recording)assert.throws(()=>validateDecision({...decision,candidate:{...candidate,kind:'event',event_url:i.links[0],registration_url:i.links[0]}},i),/RISE UP item/);
+  }
+ }finally{await db.close();}
+});
+
+
+test('RISE UP current public archive discovers September beyond the stale website and keeps separate complete recap evidence',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/riseup-website.json.gz',import.meta.url))));let calls=0;const requested=[];
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01',
+   read:async(u,b)=>{const r=Object.values(f).find(r=>r.url===u||r.requested_url===u);assert.ok(r);b.requests+=r.requests??1;requested.push(u);return r;},
+   model:async(_p,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),priority:i.scripted.title.startsWith('September in Rome')?'normal':'low',quotes:[i.scripted.description]}));}};
+  const first=await collectHSA(db,options);assert.equal(first.created,1,first.warnings.join('; '));assert.equal(first.candidates,4);assert.equal(first.assessed,4);assert.equal(first.requests,3);assert.equal(first.pages,2);assert.equal(first.issues_listed,20);
+  assert.deepEqual(requested,[f.archive.url,f.september.requested_url]);assert.ok(!requested.includes(RISE_UP));
+  const source=(await db.query("select * from scout.evidence where record_id is not null")).rows[0],record=(await db.query('select * from scout.records')).rows[0],i=await assessmentInput(db,source,tracker);
+  assert.equal(record.kind,'announcement');assert.equal(record.description.length,200);assert.match(record.description,/Preferential Access Areas and co-management/);assert.ok(i.text.includes(record.description));assert.equal(i.context_truncated,true);
+  assert.equal(source.parsed.riseup.publication_on,'2026-09-30');assert.equal(source.published_at,null);assert.equal(source.parsed.start_on,null);assert.equal(record.starts_at,null);assert.equal(record.organization,null);
+  assert.equal(JSON.parse(source.content).body,f.september.body);assert.match(JSON.parse(source.content).text,/From Rome, the conversation moved to Geneva/);assert.doesNotMatch(i.text,/15 October|15:00|NFDS Africa/);
+  const count=calls,repeat=await collectHSA(db,options);assert.equal(repeat.candidates+repeat.assessed+repeat.created+repeat.changed,0);assert.equal(repeat.skipped,4);assert.equal(calls,count);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+  f.archive.body=f.archive.body.replace('09/30/2026','10/01/2026');const failed=await collectHSA(db,options);assert.equal(failed.outcome,'failed');assert.equal(calls,count);
+ }finally{await db.close();}
+});
+
+
+test('actual RISE UP uncertainty stays unaccepted and repeats without a new call or changing prior findings',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/riseup-website.json.gz',import.meta.url)))),live=f.live;let calls=0;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0];
+  for(const r of live.prior_records)await db.query('insert into scout.records select * from jsonb_populate_record(null::scout.records,$1::jsonb)',[r]);
+  const records=(await db.query('select * from scout.records order by id')).rows,options={trackerId:tracker.id,validate:true,since:'2026-09-01',
+   read:async(u,b)=>{const r=Object.values(f).find(r=>r.url===u||r.requested_url===u);b.requests+=r.requests??1;return r;},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const source=(await db.query("select * from scout.evidence where parsed->>'title' like 'September in Rome%'")).rows[0];
+  assert.equal(source.content_hash,live.receipt_hash);
+  const decision=Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]]));validateDecision(decision,live.input);
+  const scoped={...options,sourceId:source.id,model:async()=>{calls++;return[{...decision,source_id:source.id}];}};
+  const initial=await collectHSA(db,scoped);assert.equal(initial.assessed,1);assert.equal(initial.created+initial.changed,0);assert.equal(initial.pending,4);
+  const row=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];
+  assert.equal(row.record_id,null);assert.equal(row.parsed.assessment.state,'uncertain');assert.equal(row.parsed.assessment.priority,null);assert.equal(row.parsed.assessment.candidate,null);assert.equal(row.parsed.assessment.reason,live.decision.reason);
+  assert.equal(row.parsed.description.length,200);assert.equal(row.parsed.riseup.publication_on,'2026-09-30');assert.equal(row.published_at,null);
+  const repeat=await collectHSA(db,scoped);assert.equal(repeat.reused_uncertain,1);assert.equal(repeat.assessed+repeat.created+repeat.changed+repeat.candidates,0);assert.equal(calls,1);
+  assert.deepEqual((await db.query('select * from scout.records order by id')).rows,records);assert.equal(live.record,null);
+  assert.equal(live.ledger.attempts,18);assert.equal(live.run.stats.model_attempts.length,1);assert.equal(live.run.stats.model_attempts[0].input_bound,7949);
+  assert.equal(live.run.stats.model_usage[0].promptTokenCount,1450);assert.equal(live.run.stats.model_usage[0].candidatesTokenCount,167);
+  assert.equal(live.repeat.stats.requests,3);assert.equal(live.repeat.stats.reused_uncertain,1);assert.equal(live.repeat.stats.model_attempts,undefined);
  }finally{await db.close();}
 });
