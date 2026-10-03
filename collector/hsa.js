@@ -8,6 +8,7 @@ import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTEN
 
 export const HSA = 'highseasalliance.bsky.social';
 export const HSA_WEB = 'https://highseasalliance.org/';
+export const IDDRI = 'https://www.iddri.org/en/publications-and-events/high-seas?page=0';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -400,7 +401,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const doalos=tracker.collector==='web' && tracker.url===DOALOS;
   const sideEvents=tracker.collector==='web' && tracker.url===UN_SIDE_EVENTS;
   const hsaWeb=tracker.collector==='web' && tracker.url===HSA_WEB;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const iddri=tracker.collector==='web' && tracker.url===IDDRI;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -713,6 +715,100 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(`HSA article ${item.url}: ${error.message}`);}
       }
       covered=selected.length<=4;
+    } else if (iddri) {
+      const text=html=>visibleText(html.replace(/&#(x[\da-f]+|\d+);/gi,(_m,n)=>String.fromCodePoint(n[0].toLowerCase()==='x'?parseInt(n.slice(1),16):+n)));
+      const months=['jan january janvier','feb february fev fevrier','mar march mars','apr april avr avril','may mai','jun june juin','jul july juil juillet','aug august aou aout','sep sept september septembre','oct october octobre','nov november novembre','dec december decembre'];
+      const date=value=>{
+        const parts=text(value).normalize('NFD').replace(/\p{M}/gu,'').toLowerCase().replace(/(\d)(?:st|nd|rd|th|er)\b/g,'$1').split(' ');
+        const year=parts.find(p=>/^\d{4}$/.test(p)),month=months.findIndex(m=>m.split(' ').some(p=>parts.includes(p))),day=parts.find(p=>/^\d{1,2}$/.test(p));
+        if (!year || month<0 || parts.length!==(day?3:2)) throw new Error('Unsupported IDDRI date');
+        const valueISO=year+'-'+String(month+1).padStart(2,'0')+(day?'-'+day.padStart(2,'0'):'');
+        if (day&&!dates(valueISO).start_on) throw new Error('Invalid IDDRI date');
+        return valueISO;
+      };
+      const eventDays=html=>[...html.matchAll(/<span class="event-date__day">([^<]+)<\/span>\s*<span class="event-date__month">([^<]+)<\/span>/g)].map(m=>date(m[1]+' '+m[2]));
+      const previous=(await db.query('select distinct url from scout.evidence where tracker_id=$1',[tracker.id])).rows.map(r=>r.url);
+      const items=[],details=new Map();let listURL=tracker.url;
+      for (let page=0;page<2;page++) {
+        const r=await read(listURL,budget);stats.pages++;
+        if (r.url!==listURL || !/<\/html>\s*$/.test(r.body)) throw new Error('Invalid IDDRI listing destination/layout');
+        const found=[...r.body.matchAll(/<article class="line-teaser">([\s\S]*?)<\/article>/g)];
+        if (!found.length||found.length>30) throw new Error('IDDRI listing items unavailable');
+        for (const m of found) {
+          const url=sourceURL(new URL(m[1].match(/<a href="([^"]+)"/)?.[1],listURL).href);
+          const title=text(m[1].match(/<h3 class="line-teaser__title">([\s\S]*?)<\/h3>/)?.[1]??'');
+          const days=eventDays(m[1]),metas=m[1].match(/<div class="publication__metas">([\s\S]*?)<\/div>/)?.[1];
+          const publication=days.length?null:date((metas??'').replace(/<span[\s\S]*?<\/span>/g,''));
+          if (!/^https:\/\/www\.iddri\.org\/(?:en\/publications-and-events|fr\/publications-et-evenements)\/[^/]+\/[^/?#]+$/.test(url)||!title||days.length>2) throw new Error('Unsupported IDDRI listing identity');
+          if (!items.some(i=>i.url===url)) items.push({url,title,days,publication,raw:m[0],listing:listURL});
+        }
+        const next=r.body.match(/<link rel="next" href="([^"]+)"/)?.[1];
+        if (next) stats.warnings.push('IDDRI pagination is bounded to page 0 of each language; older pages are not fully collected');
+        if (page===0) {
+          const french=r.body.match(/<link rel="alternate" hreflang="fr" href="([^"]+)"/)?.[1];
+          if (french!=='https://www.iddri.org/fr/publications-et-evenements/haute-mer') throw new Error('IDDRI French listing link unavailable');
+          listURL=french+'?page=0';
+        }
+      }
+      const selected=items.filter(i=>previous.includes(i.url)||(i.days.at(-1)??i.publication)>=since.slice(0,(i.publication?.length===7?7:10)));
+      stats.articles_listed=items.length;stats.articles_selected=selected.length;
+      if (selected.length>3) stats.warnings.push('IDDRI three-detail limit reached; remaining language editions/items deferred');
+      let followed=false;
+      for (const item of selected.slice(0,3)) {
+        try {
+          const r=await read(item.url,budget);stats.pages++;
+          const lang=new URL(item.url).pathname.split('/')[1],canonical=r.body.match(/<link rel="canonical" href="([^"]+)"/)?.[1];
+          const node=r.body.match(/<link rel="shortlink" href="https:\/\/www\.iddri\.org\/(en|fr)\/node\/(\d+)"/);
+          const header=r.body.match(/<article class="(?:publication publication-full page-wrapper|page-wrapper event-full)">\s*<header\b[^>]*>([\s\S]*?)<\/header>/)?.[1];
+          const content=r.body.match(/<div class="page-content">([\s\S]*?)<div class="footnotes_container /)?.[1];
+          const title=text(header?.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/)?.[1]??'');
+          const type=r.body.match(/<meta property="og:type" content="(article|event)"/)?.[1];
+          if (r.url!==item.url||canonical!==item.url||node?.[1]!==lang||!header||!content||!title||title!==item.title||!type||!/<\/html>\s*$/.test(r.body)) throw new Error('IDDRI detail identity/layout disagrees with listing');
+          const event=type==='event',days=eventDays(header),pub=event?null:date(header.match(/<div class="publication__metas">([\s\S]*?)<\/div>/)?.[1].replace(/<span[\s\S]*?<\/span>/g,'')??'');
+          if (event!==Boolean(item.days.length)||!isDeepStrictEqual(days,item.days)||pub!==item.publication) throw new Error('IDDRI detail/listing dates disagree');
+          const body=text(content),intro=text(header.match(/<p class="page-intro">([\s\S]*?)<\/p>/)?.[1]??'');
+          const paragraphs=[...content.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>text(m[1]));
+          const links=[...new Set([...(header+content).matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(new URL(text(m[1]),item.url).href);}catch{return null;}}).filter(Boolean))].sort();
+          const buttons=[...content.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)].filter(m=>/^(register|s'inscrire|inscription|programme|program)$/i.test(text(m[2]))).map(m=>sourceURL(new URL(text(m[1]),item.url).href));
+          const multiple=event&&(/<hr\b/i.test(content)&&buttons.length>1||/Events &amp; Publications|Événements et publications/.test(content));
+          const description=paragraphs.flatMap(p=>p.match(/[^.!?]+[.!?](?:\s|$)/g)??[]).map(p=>p.trim()).find(p=>p.length>80&&p.length<=280)??body;
+          const scripted={kind:event?'event':'announcement',title,description:Array.from(description).slice(0,280).join(''),organization:event?null:'IDDRI',location:null,...(event&&!multiple?dates(days[0],days[1]):dates()),event_url:event?item.url:null,registration_url:event&&!multiple?buttons.find(u=>/\/webinar\/register\//.test(u))??null:null,status:null,
+            iddri:{node:node[2],language:lang,publication:pub,multiple}};
+          const english=r.body.match(/<link rel="alternate" hreflang="en" href="([^"]+)"/)?.[1],other=details.get(english);
+          if (lang==='fr'&&english&&english!==item.url) {
+            const reciprocal=other?.body.match(/<link rel="alternate" hreflang="fr" href="([^"]+)"/)?.[1]===item.url;
+            const common=event?scripted.registration_url&&scripted.registration_url===other?.scripted.registration_url&&isDeepStrictEqual(days,other.days)
+              :links.some(u=>u.endsWith('.pdf')&&other?.links.includes(u));
+            if (reciprocal&&common&&other.scripted.kind===scripted.kind&&other.scripted.iddri.node===node[2]) scripted.iddri.translation_of=english;
+            else {scripted.iddri.translation_unconfirmed=true;stats.warnings.push('IDDRI translation needs reciprocal publication/session corroboration before assessment');}
+          }
+          let support=null;
+          if (multiple) stats.warnings.push('IDDRI programme contains multiple sessions; parent dates cannot supply a session schedule');
+          if (event&&!multiple) {
+            const practical=text(r.body.match(/field--name-field-event-infos[^>]*>([\s\S]*?)<\/div>/)?.[1]??'');
+            const clocks=[...new Set([...text(intro+' '+practical).matchAll(/\b(\d{1,2})(?::([0-5]\d))?\s*(am|pm)\s+(EST|EDT|CET|CEST|UTC)\b/gi)].map(m=>JSON.stringify(m.slice(1))))].map(s=>JSON.parse(s));
+            if (clocks.length>1) throw new Error('Conflicting IDDRI clocks; schedule requires review');
+            if (days.length===1&&clocks.length===1) {
+              const [h,m,ap,z]=clocks[0];if (+h<1||+h>12) throw new Error('Invalid IDDRI clock');
+              const offset={EST:-300,EDT:-240,CET:60,CEST:120,UTC:0}[z.toUpperCase()];
+              Object.assign(scripted,dates(new Date(Date.parse(days[0]+'T00:00:00Z')+((+h%12+(ap.toLowerCase()==='pm'?12:0))*60+(+m||0)-offset)*60000).toISOString()));
+            } else stats.warnings.push('IDDRI event has date-only or unsupported clock/zone; UTC times remain unknown');
+            if (/^On Zoom(?:,|$)/.test(practical)) scripted.location='On Zoom';
+          }
+          if (buttons.length&&!followed) {
+            followed=true;
+            try {const s=await read(buttons[0],budget);stats.pages++;support={url:s.url,body:s.body};stats.warnings.push('IDDRI linked programme/registration captured; unconfirmed external facts are not assigned to sessions');}
+            catch(error) {quota ||= Boolean(error.quota);support={url:buttons[0],error:error.message};stats.warnings.push('IDDRI programme/registration: '+error.message);}
+          } else if (buttons.length) stats.warnings.push('IDDRI supporting-page limit reached');
+          stats.warnings.push('IDDRI PDFs, images and embedded media are not parsed; HTML evidence only');
+          const source=await observe(db,tracker.id,item.url,JSON.stringify({text:[title,intro,body].filter(Boolean).join(' '),listing:item.raw,detail:r,support}),null,scripted,
+            {title,intro,text:body,links,structured:scripted},
+            {rank:2,identity:'page:'+(scripted.iddri.translation_of??item.url),listing_url:item.listing,links:links.slice(0,6)},now());
+          details.set(item.url,{body:r.body,links,scripted,days});
+          stats[source.changed?'candidates':'skipped']++;pages.set(item.url,{source});
+        } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push('IDDRI article '+item.url+': '+error.message);}
+      }
+      covered=selected.length<=3;
     } else if (hub) {
       const feedURL=tracker.url+'?format=json';
       const response=await read(feedURL,budget);stats.pages++;
@@ -833,11 +929,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
@@ -850,7 +946,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   for (let index=0; index<pending.length;) {
     // A post and its exact event page need the first accepted finding available
     // before the second assessment. Independent sources can share one request.
-    const sameEvent=pending[index].parsed.event_url && pending[index].parsed.event_url===pending[index+1]?.parsed.event_url;
+    const sameEvent=pending[index].parsed.event_url && pending[index].parsed.event_url===pending[index+1]?.parsed.event_url ||
+      pending[index].parsed.iddri && pending[index].parsed.source.identity===pending[index+1]?.parsed.source.identity;
     const batch=pending.slice(index,index+(sameEvent?1:2));
     index+=batch.length;
     try {

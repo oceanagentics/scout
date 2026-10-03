@@ -46,6 +46,7 @@ export function validateDecision(result, input) {
   if (!['high','normal','low',null].includes(result.priority) || typeof result.reason!=='string' || !result.reason.trim() || result.reason.length>240) fail('priority/reason');
   if (!Array.isArray(result.quotes) || result.quotes.length>3 || result.quotes.some(q=>typeof q!=='string'||!q.isWellFormed()||!q.trim()||!input.text.includes(q))) fail('unsupported quote');
   const existing = input.candidates.find(item=>item.id===result.record_id);
+  if (input.scripted.iddri && existing && !input.exact_ids.includes(existing.id) && !existing.registration_link && existing.event_url!==input.url) fail('IDDRI identity needs the same explicitly linked publication/session');
   if (input.scripted.side_event?.id && existing?.event_url?.match(/^https:\/\/www\.cbd\.int\/side-events\/(\d+)$/)?.[1] &&
       existing.event_url!==input.scripted.event_url) fail('distinct CBD session ID');
   if (result.record_id !== null && !existing) fail('identity outside shortlist');
@@ -54,6 +55,10 @@ export function validateDecision(result, input) {
   if (!Array.isArray(result.clear_fields) || result.clear_fields.some(f=>!CONTENT_FIELDS.includes(f)||['title','kind'].includes(f))) fail('clear fields');
   if (result.clear_fields.length && (!existing || !/withdraw|no longer|cancel|reschedul|incorrect|correction/i.test(result.quotes.join(' ')))) fail('withdrawal evidence');
   const c = result.candidate;
+  if (input.scripted.iddri?.translation_unconfirmed && result.action!=='uncertain') fail('IDDRI translation identity unconfirmed');
+  if (input.scripted.iddri?.translation_of && result.action==='new' && input.exact_ids.length) fail('IDDRI translation already has a finding');
+  if (input.scripted.iddri?.translation_of && existing && !['supporting_evidence','no_substantive_change','uncertain'].includes(result.action)) fail('IDDRI translation corroborates the existing publication/session');
+  if (input.scripted.iddri?.multiple && result.action!=='uncertain') fail('multiple IDDRI sessions need separate evidence');
   if (input.scripted.hsa_web?.multiple && result.action!=='uncertain') fail('multiple HSA sessions need separate evidence');
   if (input.scripted.hsa_web && result.clear_fields.includes('status')) fail('HSA status cannot be cleared from missing or unrelated text');
   if (c===null) {
@@ -87,6 +92,8 @@ export function validateDecision(result, input) {
   if (result.clear_fields.some(f=>c[f]!==null)) fail('clear field must be null');
   if (c.kind==='treaty_status' && !/(^|\.)un\.org$/.test(new URL(input.url).hostname)) fail('official treaty evidence required');
   if (input.scripted.treaty && (c.kind!=='treaty_status'||c.title!==input.scripted.title)) fail('official country/action/date representation required');
+  if (input.scripted.iddri && (c.kind!==input.scripted.kind||c.title!==input.scripted.title||
+      ['starts_at','ends_at','location','status','event_url','registration_url',...(c.kind==='event'?['organization']:[])].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.includes('status'))) fail('IDDRI publication/session facts unconfirmed');
   if (input.scripted.side_event && (c.kind!=='event'||c.title!==input.scripted.title ||
       ['starts_at','ends_at','location','status','event_url','registration_url'].some(f=>c[f]!==null&&c[f]!==input.scripted[f]))) fail('side-event identity or unconfirmed session facts');
   if (input.scripted.hsa_web && (input.scripted.hsa_web.session && (c.kind!=='event'||c.title!==input.scripted.title) ||
@@ -137,26 +144,26 @@ export async function assessmentInput(db, source, tracker) {
   const content=source.parsed.side_event?source.content:doalosArticle(dosiArticle(source.content,source.url),source.url);
   const scripted=Object.fromEntries(Object.entries(source.parsed).filter(([key])=>!['source','assessment'].includes(key)));
   const zoom=/^https:\/\/[^/]+\.zoom\.us\/webinar\/register\//.test(source.url) && scripted.local_schedule;
-  const conference=scripted.side_event || scripted.hsa_web?.session || source.url==='https://www.un.org/bbnjagreement/en' && scripted.kind==='event' && scripted.registration_deadline_on;
+  const conference=scripted.side_event || scripted.hsa_web?.session || scripted.iddri && scripted.kind==='event' || source.url==='https://www.un.org/bbnjagreement/en' && scripted.kind==='event' && scripted.registration_deadline_on;
   if (zoom && /co-organized by the High Seas Alliance\b/.test(scripted.description??'')) scripted.organization='High Seas Alliance';
   if (scripted.description) scripted.description=Array.from(scripted.description).slice(0,280).join('');
   if (scripted.title) scripted.title=Array.from(scripted.title).slice(0,400).join('');
   const words=normalize(scripted.title??visibleText(content)).toLowerCase().match(/[\p{L}\p{N}]{5,}/gu)?.slice(0,12)??[];
   const candidates=(await db.query(`select r.id,r.identity_key,r.kind,r.title,r.organization,r.event_url,r.starts_at,r.ends_at,r.status,r.priority,r.updated_at,
-    exists(select 1 from scout.current_evidence e where e.record_id=r.id and e.url=$1 and e.parsed#>>'{source,item_key}' is not distinct from $6) as exact,
+    exists(select 1 from scout.current_evidence e where e.record_id=r.id and (e.url=$1 or e.url=$10) and e.parsed#>>'{source,item_key}' is not distinct from $6) as exact,
     $7::boolean and exists(select 1 from scout.current_evidence e where e.record_id=r.id and
       case when e.parsed#>>'{source,identity}' like 'post:%' and e.parsed#>>'{source,rank}'='2'
-      then e.content::jsonb->'urls' ? $1 else false end) as registration_link,
+      then (e.content::jsonb->'urls' ? $1 or e.content::jsonb->'urls' ? $10) else false end) as registration_link,
     (select parsed->>'start_on' from scout.current_evidence where record_id=r.id and parsed->>'start_on' is not null
       order by authoritative desc,evidence_at desc nulls last,last_seen_at desc limit 1) as calendar_date,
     (select md5(string_agg(content_hash,',' order by url)) from scout.current_evidence where record_id=r.id) as evidence
-    from scout.records r where (not $9::boolean or r.kind='event') and
+    from scout.records r where ${scripted.iddri&&scripted.kind==='announcement'?"r.kind='announcement' and ":''}(not $9::boolean or r.kind='event') and
       (r.id=$2 or r.identity_key=$8 or r.event_url=$1 or r.event_url=$3 or r.organization=$4 or
-      exists(select 1 from unnest($5::text[]) word where lower(r.title) like '%'||word||'%'))
-    order by (r.id=$2) desc nulls last,(r.identity_key=$8) desc nulls last,(r.event_url=$3) desc nulls last,
+      exists(select 1 from scout.current_evidence e where e.record_id=r.id and e.url=$10) or exists(select 1 from unnest($5::text[]) word where lower(r.title) like '%'||word||'%'))
+    order by ${scripted.iddri?'exact desc,':''}(r.id=$2) desc nulls last,(r.identity_key=$8) desc nulls last,(r.event_url=$3) desc nulls last,
       (select count(*) from unnest($5::text[]) word where lower(r.title) like '%'||word||'%') desc,
       (r.organization=$4) desc nulls last,updated_at desc,id limit 3`,
-  [source.url,source.record_id,scripted.event_url??null,scripted.organization??null,words,source.parsed.source.item_key??null,Boolean(zoom),source.parsed.source.identity??null,Boolean(zoom||conference)])).rows;
+  [source.url,source.record_id,scripted.event_url??null,scripted.organization??null,words,source.parsed.source.item_key??null,Boolean(zoom||scripted.iddri),source.parsed.source.identity??null,Boolean(zoom||conference),scripted.iddri?.translation_of??null])).rows;
   // The fetched HTML remains evidence, but model context starts with useful text,
   // including parsed metadata whose source lives beyond a long HTML head.
   let text;
@@ -182,5 +189,5 @@ export async function assessmentInput(db, source, tracker) {
   }
   return {source_id:source.id,url:source.url,coverage:tracker.coverage?.slice(0,240),text:whole.slice(start,start+1400).join(''),
     context_truncated:whole.length>1400,links:zoom?[source.url]:source.parsed.source.links??[],scripted,
-    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id).map(r=>r.id)};
+    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id||scripted.iddri&&(r.identity_key===source.parsed.source.identity||scripted.iddri.translation_of&&r.registration_link)).map(r=>r.id)};
 }

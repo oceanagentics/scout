@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,IDDRI,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB]])).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI]])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -1095,4 +1095,162 @@ test('saved live model results remain complete and source-backed under the accep
    const actual=JSON.parse(JSON.stringify(stored).replaceAll('"$source_text"',JSON.stringify(c.text)));
    validateDecision(actual,c);assert.equal(actual.priority,c.expected.priority);assert.equal(actual.action,c.expected.action);assert.equal(actual.candidate?.kind??null,c.expected.kind);}
  assert.equal(results.accounting.model_attempts.length,2);
+});
+
+test('IDDRI recorded bilingual listings independently capture publications and event precision; repeat ignores chrome',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iddri-website.json.gz',import.meta.url))));let calls=0;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IDDRI])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;const r=Object.values(f).find(r=>r.url===u);if(!r||r.error)throw new Error(r?.error??'Missing recorded source');return r;},
+   model:async(_p,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,action:i.scripted.iddri.translation_of?'supporting_evidence':'new',record_id:i.scripted.iddri.translation_of?i.exact_ids[0]??null:null,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]))),priority:'normal',quotes:[i.scripted.title]}));}};
+  await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);
+  const first=await collectHSA(db,options);assert.equal(first.created,2,first.warnings.join('; '));assert.equal(first.articles_listed,24);assert.equal(first.articles_selected,4);assert.equal(first.requests,6);assert.equal(first.outcome,'partial');
+  const records=(await db.query('select * from scout.records order by id')).rows,sources=(await db.query('select * from scout.evidence')).rows;
+  const en=sources.find(s=>s.parsed.iddri.language==='en'&&s.parsed.kind==='announcement'),fr=sources.find(s=>s.parsed.iddri.language==='fr'),event=sources.find(s=>s.parsed.kind==='event');
+  assert.equal(en.published_at,null);assert.equal(en.parsed.iddri.publication,'2026-03');assert.equal(en.parsed.starts_at,null);assert.ok(en.parsed.source.links[0].endsWith('.pdf'));
+  assert.match(fr.parsed.title,/l'Accord/);assert.equal(en.record_id,fr.record_id);assert.equal(fr.parsed.iddri.node,en.parsed.iddri.node);
+  assert.equal(event.parsed.starts_at,'2026-02-26T17:00:00.000Z');assert.equal(event.parsed.ends_at,null);assert.equal(event.parsed.organization,null);assert.equal(event.parsed.location,'On Zoom');assert.equal(event.parsed.status,null);
+  assert.match(first.warnings.join(' '),/404/);assert.match(JSON.parse(event.content).support.error,/404/);
+  for(const name of ['brief','brief-fr','event'])f[name].body=f[name].body.replace('<body','<!-- unrelated navigation, old cancelled event, assets --> <body').replace('<p>','<p class="cosmetic">');
+  const count=calls,repeated=await collectHSA(db,options);assert.equal(repeated.candidates+repeated.created+repeated.changed,0);assert.equal(calls,count);assert.equal(repeated.skipped,3);
+  assert.deepEqual((await db.query('select * from scout.records order by id')).rows,records);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('IDDRI material article changes and a consistent session clock correction retain identity and history',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iddri-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IDDRI])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;const r=Object.values(f).find(r=>r.url===u);if(r.error)throw new Error(r.error);return r;},
+   model:async(_p,inputs)=>inputs.map(i=>({...result,source_id:i.source_id,action:i.scripted.iddri.translation_of?'supporting_evidence':i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]))),priority:'normal',quotes:[i.text.slice(0,100)]}))};
+  await collectHSA(db,options);const before=(await db.query("select * from scout.records where kind='event'")).rows[0];
+  f.event.body=f.event.body.replaceAll('12pm EST','1pm EST').replace('practical challenges ahead of PrepCom 3','revised practical challenges ahead of PrepCom 3');
+  const change=await collectHSA(db,options);assert.equal(change.created,0);assert.equal(change.changed,1,change.warnings.join('; '));
+  const after=(await db.query('select * from scout.records where id=$1',[before.id])).rows[0];assert.equal(after.starts_at.toISOString(),'2026-02-26T18:00:00.000Z');assert.equal(after.status,'rescheduled');assert.equal(after.identity_key,before.identity_key);
+  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,4);
+  // An inconsistent clock, invalid day or identity change must not overwrite accepted facts.
+  for(const alter of [s=>s.replace('On Zoom, 1pm EST','On Zoom, 2pm EST'),s=>s.replace('event-date__day">26','event-date__day">31'),s=>s.replace('rel="canonical" href="https://www.iddri.org/en/','rel="canonical" href="https://www.iddri.org/fr/')]){
+   const good=f.event.body;f.event.body=alter(good);const failed=await collectHSA(db,options);assert.equal(failed.changed+failed.created,0);assert.match(failed.warnings.join(' '),/clocks|date|identity/);assert.deepEqual((await db.query('select * from scout.records where id=$1',[before.id])).rows[0],after);f.event.body=good;
+  }
+ }finally{await db.close();}
+});
+
+test('IDDRI date-only windows and failures never invent UTC, assess stale detail or treat a failed list as unchanged',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iddri-website.json.gz',import.meta.url))));let calls=0,fail=null;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IDDRI])).rows[0];
+  f.event.body=f.event.body.replaceAll('12pm EST','12pm');
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;if(u===fail)throw new Error('Source returned HTTP 503');const r=Object.values(f).find(r=>r.url===u);if(r.error)throw new Error(r.error);return r;}};
+  await collectHSA(db,{...options,model:async()=>{throw new Error('Deliberately deferred');}});
+  const before=(await db.query('select * from scout.evidence')).rows,event=before.find(s=>s.parsed.kind==='event');
+  assert.equal(event.parsed.start_on,'2026-02-26');assert.equal(event.parsed.starts_at,null);
+  const guarded={...options,model:async()=>{calls++;throw new Error('Unexpected model call');}};
+  fail=f.event.url;const detail=await collectHSA(db,{...guarded,sourceId:event.id});assert.equal(calls,0);assert.equal(detail.assessed,0);assert.match(detail.warnings.join(' '),/503/);
+  fail=IDDRI;const listing=await collectHSA(db,guarded);assert.equal(listing.outcome,'failed');assert.equal(calls,0);assert.equal(listing.candidates,0);
+  fail=null;const later=await collectHSA(db,{...options,since:'2026-10-01',model:async()=>{throw new Error('Deferred');}});assert.equal(later.articles_selected,3);assert.equal(later.candidates,0);assert.equal(later.skipped,3); // Previously seen items remain eligible.
+  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,before.length);
+ }finally{await db.close();}
+});
+
+test('IDDRI same-month selection retains month precision and records valid Low noise without a finding',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iddri-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IDDRI])).rows[0];
+  const r=await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2026-03-30',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async(_p,inputs)=>inputs.map(i=>({...result,source_id:i.source_id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]))),priority:'low',reason:'Injected low-noise gating case',quotes:[i.scripted.title]}))});
+  assert.equal(r.articles_selected,2);assert.equal(r.assessed,2);assert.equal(r.created,0);
+  for(const source of(await db.query('select * from scout.evidence')).rows){assert.equal(source.published_at,null);assert.equal(source.parsed.iddri.publication,'2026-03');assert.equal(source.parsed.starts_at,null);assert.equal(source.parsed.assessment.state,'complete');}
+  const empty=await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2027-01-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Completed captures must not be reassessed');}});
+  assert.equal(empty.candidates+empty.assessed,0);
+ }finally{await db.close();}
+});
+
+test('IDDRI corroborates the same Bluesky-linked publication and reuses a verified translation and rejects uncorroborated article and annual/session merges',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iddri-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IDDRI])).rows[0];
+  await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;const r=Object.values(f).find(r=>r.url===u);if(r.error)throw new Error(r.error);return r;},model:async()=>{throw new Error('Deferred');}});
+  const sources=(await db.query('select * from scout.evidence')).rows,en=sources.find(s=>s.url===f.brief.url),fr=sources.find(s=>s.url===f['brief-fr'].url);
+  const old=(await db.query("insert into scout.records(kind,title,organization,identity_key,priority) values('announcement',$1,'IDDRI','post:iddri-brief','normal') returning *",[en.parsed.title])).rows[0];
+  const social=(await db.query("select id from scout.trackers where url='https://bsky.app/profile/iddri.bsky.social'")).rows[0];
+  await db.query("insert into scout.evidence(tracker_id,record_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,'https://bsky.app/profile/iddri.bsky.social/post/brief','iddri-social',$3,$4,clock_timestamp())",[social.id,old.id,JSON.stringify({text:en.parsed.title,urls:[en.url]}),JSON.stringify({source:{identity:'post:iddri-brief',rank:2}})]);
+  const input=await assessmentInput(db,en,tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,en.parsed[k]])));
+  const decision={...result,source_id:en.id,action:'supporting_evidence',record_id:old.id,candidate,priority:'normal',quotes:[en.parsed.title]};
+  validateDecision(decision,input);assert.equal(input.candidates.find(r=>r.id===old.id).registration_link,true);
+  const fi=await assessmentInput(db,fr,tracker);
+  const fd={...decision,source_id:fr.id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,fr.parsed[k]]))),quotes:[fr.parsed.title]};
+  validateDecision(fd,fi);assert.ok(fi.exact_ids.includes(old.id));
+  assert.throws(()=>validateDecision({...fd,action:'new',record_id:null},fi),/already has a finding/);
+  assert.throws(()=>validateDecision(fd,{...fi,exact_ids:[],scripted:{...fi.scripted,iddri:{...fi.scripted.iddri,translation_of:null}},candidates:fi.candidates.map(c=>({...c,registration_link:false}))}),/same explicitly linked/);
+  assert.throws(()=>validateDecision({...decision,candidate:{...candidate,kind:'event',starts_at:'2026-03-23T00:00:00Z'}},input),/unsupported|unconfirmed/);
+  const event=sources.find(s=>s.parsed.kind==='event'),ei=await assessmentInput(db,event,tracker);
+  const ec=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,event.parsed[k]])));
+  const prior={id:'annual',kind:'event',title:ec.title+' 2025',event_url:event.url,starts_at:'2025-02-26T17:00:00Z',organization:null};
+  assert.throws(()=>validateDecision({...result,source_id:event.id,action:'update',record_id:prior.id,candidate:ec,quotes:[ec.title]},{...ei,candidates:[prior]}),/recurring edition/);
+  const session={...prior,title:'Session 1 '+ec.title,starts_at:ec.starts_at};
+  assert.throws(()=>validateDecision({...result,source_id:event.id,action:'update',record_id:session.id,candidate:{...ec,title:'Session 2 '+ec.title},quotes:[ec.title]},{...ei,candidates:[session],scripted:{...ei.scripted,title:'Session 2 '+ec.title},text:'Session 2 '+ei.text}),/distinct session/);
+  const done=await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2026-01-01',sourceId:en.id,read:async(u,b)=>{b.requests++;const r=Object.values(f).find(r=>r.url===u);if(r.error)throw new Error(r.error);return r;},model:async()=>[decision]});
+  assert.equal(done.created,0);assert.equal(done.assessed,1,done.warnings.join('; '));assert.equal((await db.query('select record_id from scout.evidence where id=$1',[en.id])).rows[0].record_id,old.id);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[old]);
+ }finally{await db.close();}
+});
+
+test('IDDRI actual multi-session UNOC programme does not turn its conference range into an individual session',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iddri-website.json.gz',import.meta.url))));
+ const unoc=f.listing.body.match(/<article class="line-teaser">[\s\S]*?<\/article>/g).find(s=>s.includes('href="/en/publications-and-events/conference/iddri-unoc"'));
+ f.listing.body=f.listing.body.replace(/<article class="line-teaser">[\s\S]*?<\/article>/g,'').replace('87 results','87 results'+unoc);
+ f['listing-fr'].body=f['listing-fr'].body.replace(/<article class="line-teaser">[\s\S]*?<\/article>/g,s=>s.includes('troisieme-reunion-de-la-commission')?s:'');
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IDDRI])).rows[0];let checked=false;
+  const run=await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2025-06-01',read:async(u,b)=>{b.requests++;const r=Object.values(f).find(r=>r.url===u);if(!r)throw new Error('Programme support unavailable (injected)');return r;},
+   model:async(_p,inputs)=>inputs.map(i=>{if(i.scripted.iddri.multiple){checked=true;assert.equal(i.scripted.starts_at,null);assert.equal(i.scripted.start_on,null);assert.equal(i.scripted.organization,null);
+    assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]))),quotes:[i.scripted.title]},i),/multiple IDDRI/);}
+    return {...result,source_id:i.source_id,action:'uncertain',candidate:null,priority:null,reason:'Multiple sessions need separate evidence',quotes:[]};})});
+  assert.equal(checked,true,run.warnings.join('; '));assert.equal(run.created,0);assert.match(run.warnings.join(' '),/parent dates/);
+  const source=(await db.query('select * from scout.evidence where url=$1',[f.unoc.url])).rows[0];assert.match(JSON.parse(source.content).text,/Wednesday 11 June/);assert.match(JSON.parse(source.content).text,/Monitoring, control and surveillance/);
+ }finally{await db.close();}
+});
+
+test('IDDRI publication changes are material but broken translation corroboration cannot create a second finding',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iddri-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IDDRI])).rows[0];let calls=0;
+  const options={trackerId:tracker.id,validate:true,since:'2026-03-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},
+   model:async(_p,inputs)=>{calls++;return inputs.map(i=>{const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]])));
+    if(i.scripted.iddri.translation_unconfirmed){assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate,quotes:[i.text.slice(0,100)]},i),/translation identity/);return {...result,source_id:i.source_id,action:'uncertain',candidate:null,priority:null,reason:'Publisher translation corroboration changed',quotes:[]};}
+    return {...result,source_id:i.source_id,action:i.scripted.iddri.translation_of?'supporting_evidence':i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,candidate,priority:'normal',quotes:[i.text.slice(0,100)]};});}};
+  const initial=await collectHSA(db,options);assert.equal(initial.created,1);assert.equal(initial.assessed,2);
+  const original=(await db.query('select * from scout.records')).rows[0];
+  f.brief.body=f.brief.body.replaceAll('To prepare for this milestone','To prepare for the revised milestone');
+  const changed=await collectHSA(db,options);assert.equal(changed.changed,1);assert.equal(changed.created,0);
+  const updated=(await db.query('select * from scout.records')).rows[0];assert.equal(updated.id,original.id);assert.match(updated.description,/revised milestone/);
+  f['brief-fr'].body=f['brief-fr'].body.replaceAll('202603-PB0226-BBNJ%20COP1.pdf','202603-distinct-publication.pdf');
+  const disputed=await collectHSA(db,options);assert.equal(disputed.created+disputed.changed,0);assert.match(disputed.warnings.join(' '),/translation.*corroboration/);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[updated]);
+  const count=calls,repeated=await collectHSA(db,options);assert.equal(calls,count,JSON.stringify(repeated));
+  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,4);
+ }finally{await db.close();}
+});
+
+test('IDDRI reciprocal translated event and shared registration corroborate one session without changing its English facts',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iddri-website.json.gz',import.meta.url))));
+ for(const name of ['listing','listing-fr'])f[name].body=f[name].body.replace(/<article class="line-teaser">[\s\S]*?<\/article>/g,s=>s.includes(name==='listing'?'making-mpas-work-high-seas':'faire-fonctionner-les-amp-en-haute-mer')?s:'');
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IDDRI])).rows[0];
+  const r=await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;const r=Object.values(f).find(r=>r.url===u);if(r.error)throw new Error(r.error);return r;},
+   model:async(_p,inputs)=>inputs.map(i=>({...result,source_id:i.source_id,action:i.scripted.iddri.translation_of?'supporting_evidence':'new',record_id:i.exact_ids[0]??null,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]))),priority:'normal',quotes:[i.scripted.title]}))});
+  assert.equal(r.created,1,r.warnings.join('; '));assert.equal(r.assessed,2,r.warnings.join('; '));
+  const records=(await db.query('select * from scout.records')).rows,sources=(await db.query('select * from scout.evidence')).rows;
+  assert.equal(records.length,1);assert.match(records[0].title,/^Making MPAs/);assert.equal(records[0].starts_at.toISOString(),'2026-02-26T17:00:00.000Z');
+  assert.equal(sources.length,2);assert.equal(new Set(sources.map(s=>s.record_id)).size,1);assert.equal(sources.find(s=>s.parsed.iddri.language==='fr').parsed.iddri.translation_of,f.event.url);
+ }finally{await db.close();}
+});
+
+test('actual IDDRI policy-brief assessment is Normal, literal and not a scheduled event or technical High claim',async()=>{
+ const {live}=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iddri-website.json.gz',import.meta.url))));
+ validateDecision(Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]])),live.input);
+ assert.equal(live.decision.state,'complete');assert.equal(live.decision.priority,'normal');assert.equal(live.record.priority,'normal');
+ assert.equal(live.record.kind,'announcement');assert.equal(live.record.title,live.input.scripted.title);assert.equal(live.record.organization,'IDDRI');assert.equal(live.record.description,live.input.scripted.description);
+ assert.equal(live.input.scripted.iddri.publication,'2026-03');assert.equal(live.decision.model_decision,undefined);
+ assert.doesNotMatch(live.decision.reason,/architecture specifications|technical workshop/i);
+ for(const key of ['starts_at','ends_at','event_url','registration_url','location','status','last_communicated_at'])assert.equal(live.record[key],null);
 });
