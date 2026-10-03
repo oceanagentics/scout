@@ -177,6 +177,34 @@ function structuredEvents(html, pageURL) {
 }
 
 const fields = [...CONTENT_FIELDS, 'date_evidence', 'priority'];
+// Observed DOSI Mailchimp caption/button layout. The observed button URL keys
+// an item within its issue; it does not automatically identify an event page.
+function dosiNewsletter(html, url) {
+  if (!/^https:\/\/mailchi\.mp\/soton\.ac\.uk\/dosi-deep-sea-roundup-\d{2}-\d{2}-\d{4}$/.test(url)) throw new Error('Unsupported DOSI newsletter URL');
+  const blocks=[...html.matchAll(/<table\b[^>]*class="mcnCaptionBlock"[^>]*>/gi)].map(m=>m.index);
+  const items=[],seen=new Set();let unsupported=0;
+  for (let i=0;i<blocks.length;i++) {
+    const block=html.slice(blocks[i],blocks[i+1]??html.length);
+    const cell=block.match(/<td\b[^>]*class="mcnTextContent"[^>]*>([\s\S]*?)<\/td>/i);
+    const title=cell?.[1].match(/<h3\b[^>]*>([\s\S]*?)<\/h3>/i);
+    const button=block.match(/<a\b[^>]*class="mcnButton\s*"[^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/i);
+    if (!title || !button) continue;
+    let link;try{link=sourceURL(button[1].replaceAll('&amp;','&'));}catch{unsupported++;continue;}
+    if (seen.has(link)) throw new Error('Ambiguous DOSI newsletter item link; coverage incomplete');
+    seen.add(link);
+    const heading=visibleText(cell[1].match(/<h4\b[^>]*>([\s\S]*?)<\/h4>/i)?.[1]??'');
+    const date=heading.match(/^(\d{1,2}) (January|February|March|April|May|June|July|August|September|October|November|December) (\d{4})$/);
+    const event=Boolean(heading && /\b(?:event|webinar|symposium|conference|session|seminar)\b/i.test(visibleText(cell[1])) && !/deadline/i.test(heading));
+    const day=date && `${date[3]}-${String(['January','February','March','April','May','June','July','August','September','October','November','December'].indexOf(date[2])+1).padStart(2,'0')}-${date[1].padStart(2,'0')}`;
+    const eventLink=event && /\/webinar\/register|\/events?\/|\/webinars?\//i.test(new URL(link).pathname);
+    items.push({url,link,content:cell[0]+button[0],parsed:{kind:event?'event':'announcement',title:visibleText(title[1]),
+      description:visibleText(cell[1].replace(/<h[34]\b[^>]*>[\s\S]*?<\/h[34]>/gi,' ')),organization:null,location:null,
+      ...dates(event?day:null),event_url:eventLink?link:null,registration_url:eventLink&&/register/i.test(new URL(link).pathname)?link:null,status:null}});
+  }
+  if (!items.length) throw new Error('DOSI newsletter item layout unavailable; coverage incomplete');
+  return {items,unsupported};
+}
+
 function material(record) {
   const names = [...CONTENT_FIELDS, 'priority', 'start_on', 'end_on', 'time_zone'];
   const values = names.map(name => typeof record[name] === 'string' ? normalized(record[name]).toLowerCase() : record[name] ?? null);
@@ -218,7 +246,7 @@ async function save(db, identity, source, rank, observedAt, stats) {
   const established = existing?.date_evidence.schedule_source ? (await db.query('select url,parsed from scout.evidence where id=$1 and record_id=$2',
     [existing.date_evidence.schedule_source, existing.id])).rows[0] : null;
   const schedule = established?.parsed ??
-    references.find(item => item.authoritative && identity === `event:${item.url}`)?.parsed ??
+    references.find(item => item.authoritative && (identity === `event:${item.url}` || existing?.event_url === item.url || existing?.registration_url === item.url))?.parsed ??
     references.find(item => item.parsed?.starts_at && item.parsed.starts_at === existing?.starts_at)?.parsed;
   let calendarDay = existing?.status !== 'rescheduled' || existing?.starts_at ? schedule?.start_on : null;
   // First page snapshots have unknown chronology. Only a change in their facts
@@ -263,8 +291,18 @@ async function save(db, identity, source, rank, observedAt, stats) {
   }
   // Combine only the observed Zoom schedule and matching HSA-authored components.
   const evidence = [...references.filter(item => item.url !== source.url), { ...source, authoritative: rank === 2 }];
-  const page = evidence.find(item => item.parsed?.local_schedule && identity === `event:${item.url}`);
-  const post = evidence.filter(item => item.authoritative && item.published_at && item.parsed?.date_parts && item.parsed.event_url === page?.url)
+  const page = evidence.find(item => item.parsed?.local_schedule && (identity === `event:${item.url}` || merged.event_url === item.url || merged.registration_url === item.url));
+  let timing=[];
+  if (page) {
+    // A retained HSA post can supply compatible clock/zone facts without a
+    // second relevance call. Only the latest capture of each source may do so.
+    timing=(await db.query(`select * from (select distinct on(url) * from scout.evidence where tracker_id=$1
+      order by url,coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
+      where parsed->>'event_url'=$2 and parsed#>>'{source,rank}'='2' and parsed->'date_parts' <> 'null'::jsonb
+        and (record_id is null or record_id=$3)`,[source.tracker_id,page.url,existing?.id??null])).rows;
+  }
+  const post = timing.filter(item => item.published_at && item.parsed?.date_parts)
+    .filter(item => new Date(item.published_at).getUTCFullYear() === Number(page.parsed.local_schedule.date.slice(0,4)))
     .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))[0];
   let dateWarning = page ? page.parsed.limitation : null;
   if (page && post) {
@@ -299,6 +337,9 @@ async function save(db, identity, source, rank, observedAt, stats) {
   }
   await db.query('update scout.evidence set record_id=$2,last_seen_at=clock_timestamp(),authoritative=$3,evidence_at=$4 where id=$1',
     [source.id, existing.id, rank === 2, evidenceAt]);
+  if (post && merged.date_evidence.zone_source === post.id && !post.record_id) {
+    await db.query('update scout.evidence set record_id=$2,authoritative=true where id=$1 and record_id is null',[post.id,existing.id]);
+  }
   return {warning:dateWarning,recordId:existing.id,sourceId:source.id};
 }
 
@@ -392,7 +433,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
               stats.pages++;
               if (!/text\/html/i.test(fetched.headers['content-type'] ?? '')) throw new Error('Unsupported page format');
               const parsed = structuredEvents(fetched.body, fetched.url);
-              const authoritative = new URL(fetched.url).hostname.replace(/^www\./, '') === publisherHost || (post.author.handle === actor && url === doc.parsed.registration_url);
+              const authoritative = new URL(fetched.url).hostname.replace(/^www\./, '') === publisherHost || (post.author.handle === actor && url === scripted.registration_url);
               const article=dosiArticle(fetched.body,fetched.url);
               const text = visibleText(article);
               const pageLinks=[...new Set([...article.matchAll(/\bhref\s*=\s*["']([^"']+)["']/gi)].map(match=>{
@@ -404,6 +445,28 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
               stats[source.changed?'candidates':'skipped']++;
               pages.set(url, { source, authoritative, observedAt: now() });
               if (parsed?.limitation && !parsed.local_schedule) stats.warnings.push(parsed.limitation);
+              if (actor==='deepstewardship.bsky.social' && article!==fetched.body) {
+                const newsletters=pageLinks.filter(link=>/^https:\/\/mailchi\.mp\/soton\.ac\.uk\/dosi-deep-sea-roundup-\d{2}-\d{2}-\d{4}$/.test(link));
+                if (newsletters.length>1) stats.warnings.push('DOSI newsletter link limit reached');
+                for (const link of newsletters.slice(0,1)) {
+                  if (pages.has(link)) continue;
+                  if (pages.size>=LIMITS.pages) {stats.warnings.push('Page limit reached');break;}
+                  pages.set(link,null);
+                  try {
+                    const newsletter=await read(link,budget);stats.pages++;
+                    if (!/text\/html/i.test(newsletter.headers['content-type']??'')) throw new Error('Unsupported DOSI newsletter format');
+                    const {items,unsupported}=dosiNewsletter(newsletter.body,newsletter.url);
+                    if (unsupported) stats.warnings.push(`DOSI newsletter has ${unsupported} unsupported item links`);
+                    if (items.length>8) stats.warnings.push(`DOSI newsletter item limit reached: ${items.length-8} linked items not captured`);
+                    for (const item of items.slice(0,8)) {
+                      const captured=await observe(db,tracker.id,item.url,item.content,null,item.parsed,
+                        {text:visibleText(item.content),link:item.link,structured:item.parsed},
+                        {rank:2,identity:`newsletter:${item.url}:${item.link}`,item_key:item.link,parent_url:fetched.url,links:[item.link]},now());
+                      stats[captured.changed?'candidates':'skipped']++;
+                    }
+                  } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
+                }
+              }
             } catch (error) {
               quota ||= Boolean(error.quota);
               pages.set(url, null);
@@ -421,8 +484,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     stats.warnings.push(error.message);
   }
   if (!covered && !feedFailed && !hub) stats.warnings.push('Feed page limit reached before coverage boundary');
-  const pendingQuery=`select * from (select distinct on(url) * from scout.evidence where tracker_id=$1
-    order by url,coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
+  const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
+    order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
   const queued = (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows;
   const pending=[];
@@ -450,6 +513,17 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
       for (let i=0;i<batch.length;i++) {
         const source=batch[i], input=inputs[i];
         let decision=validateDecision(decisions.find(d=>d.source_id===source.id),input);
+        // A parsed registration page supplies its own URL. An explicit link in
+        // the retained post can resolve "new" only after the normal identity checks.
+        const modelDecision=decision;
+        if (source.parsed.local_schedule && decision.candidate?.kind==='event' && ['new','update'].includes(decision.action)) {
+          const linked=input.candidates.filter(candidate=>candidate.registration_link);
+          decision={...decision,candidate:{...decision.candidate,...Object.fromEntries(['event_url','registration_url']
+            .filter(field=>!decision.candidate[field]&&!decision.clear_fields.includes(field)).map(field=>[field,input.scripted[field]??null]))}};
+          if (decision.action==='new' && linked.length===1) decision={...decision,action:'update',record_id:linked[0].id};
+          if (decision.action==='new' && linked.length>1) throw new Error('Ambiguous registration identity; assessment remains pending');
+          validateDecision(decision,input);
+        }
         const evaluatedUncertainty=decision.action==='uncertain';
         if (decision.action==='new' && decision.candidate && decision.priority!=='low') {
           const fresh=await assessmentInput(db,source,tracker);
@@ -466,6 +540,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         }
         const assessment={...decision,state:decision.action==='uncertain'?'uncertain':'complete',version:ASSESSMENT_VERSION,
           fingerprint:source.content_hash,accepted_at:now()};
+        if (decision!==modelDecision) assessment.model_decision=modelDecision;
         if (evaluatedUncertainty) assessment.input_fingerprint=fingerprint({source:source.content_hash,coverage:input.coverage,candidates:JSON.stringify(input.candidates)});
         const parsed={...source.parsed,...(['supporting_evidence','no_substantive_change'].includes(decision.action)?{}:decision.candidate??{}),assessment};
         await db.transaction(async tx=>{

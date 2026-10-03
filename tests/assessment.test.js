@@ -295,10 +295,11 @@ test('configured Bluesky feeds retain separate health, skip repeats and recover 
  const model=async(_instruction,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,action:'no_substantive_change',candidate:null,priority:'low',quotes:[],reason:'Injected no-finding decision for transport verification'}));};
  try{
   for(const tracker of trackers){const first=await collectHSA(db,{trackerId:tracker.id,since:'2026-09-01',read,model});assert.ok(first.assessed>0);assert.equal(first.pending,0);
-   const before=calls;const repeat=await collectHSA(db,{trackerId:tracker.id,since:'2026-09-01',read,model});assert.equal(repeat.outcome,'no_change');assert.equal(calls,before);assert.equal(repeat.candidates,0);}
+   const before=calls;const repeat=await collectHSA(db,{trackerId:tracker.id,since:'2026-09-01',read,model});assert.equal(repeat.outcome,tracker.seed_key.endsWith(':18')?'partial':'no_change');assert.equal(calls,before);assert.equal(repeat.candidates,0);
+   if(tracker.seed_key.endsWith(':18'))assert.ok(repeat.warnings.some(w=>w.includes('newsletter item layout unavailable')));}
   fail='deepstewardship.bsky.social';assert.equal((await collectHSA(db,{trackerId:trackers[0].id,since:'2026-09-01',read,model})).outcome,'failed');
   assert.equal((await collectHSA(db,{trackerId:trackers[1].id,since:'2026-09-01',read,model})).outcome,'no_change');
-  fail=null;assert.equal((await collectHSA(db,{trackerId:trackers[0].id,since:'2026-09-01',read,model})).outcome,'no_change');
+  fail=null;assert.equal((await collectHSA(db,{trackerId:trackers[0].id,since:'2026-09-01',read,model})).outcome,'partial');
   assert.equal((await db.query('select count(distinct tracker_id)::int n from scout.collection_runs')).rows[0].n,3);
   for(const tracker of trackers)assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
  }finally{await db.close();}
@@ -326,6 +327,133 @@ test('actual DOSI captures gate rotating related posts while article, date and n
   assert.equal((await collectHSA(db,options)).candidates,1);assert.equal(calls,baseline+3);
   html=html.replace('id="trx_addons_emotions"','id="layout-changed"');
   const failed=await collectHSA(db,options);assert.equal(failed.outcome,'partial');assert.equal(failed.candidates,0);assert.equal(calls,baseline+3);assert.ok(failed.warnings.some(w=>w.includes('DOSI article layout unavailable')));
+ }finally{await db.close();}
+});
+
+test('recorded HSA registration resolves a retained post identity using compatible captured clock evidence',async()=>{
+ const f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/scout16-gaps.json.gz',import.meta.url))));
+ for(const year of [2026,2025]) {
+  const db=await database();let calls=0;
+  try {
+   const tracker=(await db.query("select id from scout.trackers where seed_key='bbnj-trackers-2026-10-01:17'")).rows[0].id;
+   for(const [table,rows] of [['records',[f.mgr]],['evidence',f.evidence.map(e=>({...e,tracker_id:tracker}))]])for(const row of rows){
+    const keys=Object.keys(row);await db.query(`insert into scout.${table} (${keys.join(',')}) values (${keys.map((_,i)=>'$'+(i+1)).join(',')})`,Object.values(row));
+   }
+   await db.exec("insert into scout.records(kind,title,organization,identity_key) values('announcement','Unrelated EOI','High Seas Alliance','eoi'),('announcement','Ocean Protection Gap','High Seas Alliance','gap')");
+   const earlier=structuredClone(f.hsaTime);earlier.record.createdAt=earlier.record.createdAt.replace('2026',String(year));
+   const read=async(url,budget)=>{budget.requests++;return url.includes('/xrpc/')?{url,body:JSON.stringify({feed:[{post:f.hsaPost},{post:earlier}]})}:f.zoom;};
+   const zoom=f.evidence.find(e=>e.url===f.zoom.url);
+   const options={trackerId:tracker,sourceId:zoom.id,since:'2026-09-01',read,model:async(_instruction,inputs)=>{
+    calls++;assert.equal(inputs.length,1);const i=inputs[0];assert.equal(i.source_id,zoom.id);
+    assert.deepEqual(i.candidates.map(c=>c.id),[f.mgr.id]);assert.equal(i.candidates[0].registration_link,true);assert.deepEqual(i.links,[f.zoom.url]);
+    await gemini({apiKey:'injected-only',ledger:{query:async()=>({rows:[]})},runId:f.mgr.id,fetch:async(_url,request)=>{
+     assert.ok(Buffer.byteLength(request.body)<=8000);
+     return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});
+    }})(INSTRUCTION,inputs,SCHEMA);
+    return [structuredClone(f.hsaDecision)];
+   }};
+   const first=await collectHSA(db,options);assert.equal(first.created,0);assert.equal(first.changed,1,first.warnings.join('; '));assert.equal(calls,1);
+   const record=(await db.query('select * from scout.records where id=$1',[f.mgr.id])).rows[0];
+   assert.equal(record.id,f.mgr.id);assert.equal(record.identity_key,f.mgr.identity_key);
+   assert.equal(record.registration_url,f.zoom.url);assert.equal(record.starts_at?.toISOString()??null,year===2026?'2026-09-29T11:30:00.000Z':null);
+   const resolved=(await db.query('select parsed from scout.evidence where id=$1',[zoom.id])).rows[0].parsed.assessment;
+   assert.equal(resolved.action,'update');assert.equal(resolved.model_decision.action,'new');
+   assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,3);
+   if(year===2026){const timing=(await db.query('select * from scout.evidence where id=$1',[record.date_evidence.zone_source])).rows[0];
+    assert.equal(timing.record_id,record.id);assert.equal(timing.parsed.assessment.state,'pending');assert.equal(timing.parsed.date_parts.zone,'EDT');
+    assert.equal(record.date_evidence.schedule_source,zoom.id);
+   } else assert.ok(first.warnings.some(w=>w.includes('without a time zone')));
+   const count=(await db.query('select count(*)::int n from scout.evidence')).rows[0].n;
+   const repeat=await collectHSA(db,options);assert.equal(repeat.created,0);assert.equal(repeat.changed,0);assert.equal(calls,1);
+   assert.deepEqual((await db.query('select * from scout.records where id=$1',[f.mgr.id])).rows[0],record);
+   assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,count);
+  }finally{await db.close();}
+ }
+});
+
+test('recorded DOSI newsletter keeps separate items, real URLs, changes and bounded failures',async()=>{
+ const db=await database();const f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/scout16-gaps.json.gz',import.meta.url))));
+ const feeds=JSON.parse(await readFile(new URL('./fixtures/expansion-feeds.json',import.meta.url),'utf8'));
+ const article=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/dosi-roundup-captures.json.gz',import.meta.url))))[1].content;
+ let html=f.newsletter.body,calls=0,issue=f.newsletter.url;
+ const read=async(url,budget)=>{budget.requests++;
+  if(url.includes('/xrpc/'))return{url,body:JSON.stringify({feed:[feeds['deepstewardship.bsky.social'].feed[0]]})};
+  if(url===issue)return{url,headers:{'content-type':'text/html'},body:html};
+  assert.match(url,/dosi-deep-sea-round-up/);
+  return{url,headers:{'content-type':'text/html'},body:article.replaceAll(f.newsletter.url,issue)};
+ };
+ const model=async(_instruction,inputs)=>{calls++;assert.equal(inputs.length,1);const i=inputs[0];
+  const candidate=Object.fromEntries(CONTENT_FIELDS.map(key=>[key,i.scripted[key]??null]));
+  const existing=i.candidates.find(c=>i.exact_ids.includes(c.id));
+  if(i.scripted.kind==='event'){
+   assert.equal(candidate.event_url,null);assert.equal(candidate.registration_url,null);assert.equal(candidate.starts_at,null);
+   assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,event_url:i.url+'#scout-item-fake'},quotes:[candidate.title]},i),/newsletter link|unsupported/);
+   assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,event_url:i.links[0]},quotes:[candidate.title]},i),/newsletter link/);
+  }
+  return[{...result,source_id:i.source_id,action:existing?'update':'new',record_id:existing?.id??null,candidate,priority:'normal',quotes:[candidate.title]}];
+ };
+ try{
+  const tracker=(await db.query("select id from scout.trackers where seed_key='bbnj-trackers-2026-10-01:18'")).rows[0].id;
+  const options={trackerId:tracker,since:'2026-09-24',read,makeModel:()=>async()=>{throw new Error('Observation-only fixture');}};
+  const observed=await collectHSA(db,options);assert.equal(observed.pages,2);assert.equal(observed.requests,3);assert.equal(observed.outcome,'partial');
+  assert.ok(observed.warnings.some(w=>w.includes('item limit')));
+  const items=(await db.query("select * from scout.evidence where parsed#>>'{source,item_key}' is not null")).rows;
+  assert.equal(items.length,8);assert.equal(new Set(items.map(e=>e.parsed.source.item_key)).size,8);
+  assert.ok(items.every(e=>e.url===f.newsletter.url&&!e.url.includes('#')));
+  const paper=items.find(e=>e.parsed.title.startsWith('Connecting international'));
+  const event=items.find(e=>e.parsed.title.startsWith('Science for BBNJ'));
+  assert.ok(paper&&event);assert.equal(event.parsed.start_on,'2026-10-06');assert.equal(event.parsed.starts_at,null);
+  assert.ok(!paper.content.includes(event.parsed.title));assert.ok(!event.content.includes(paper.parsed.title));
+  for(const item of [paper,event]){const run=await collectHSA(db,{...options,sourceId:item.id,model});assert.equal(run.created,1);assert.equal(run.assessed,1);}
+  const records=(await db.query('select * from scout.records order by id')).rows;assert.equal(records.length,2);assert.equal(calls,2);
+  const count=(await db.query('select count(*)::int n from scout.evidence')).rows[0].n;
+  html=html.replaceAll('padding: 0 9px 0 9px','padding: 1px')+'<footer>Rotating footer</footer><script>random()</script>';
+  for(const item of [paper,event]){const repeat=await collectHSA(db,{...options,sourceId:item.id,model});assert.equal(repeat.candidates,0);assert.equal(repeat.changed,0);}
+  assert.equal(calls,2);assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,count);
+  html=html.replaceAll('6 October 2026','7 October 2026');
+  const changed=await collectHSA(db,options);assert.equal(changed.candidates,2); // Two independently dated entries changed.
+  const latest=(await db.query("select * from scout.evidence where parsed->>'title'=$1 order by collected_at desc limit 1",[event.parsed.title])).rows[0];
+  assert.equal(latest.url,event.url);assert.equal(latest.parsed.source.item_key,event.parsed.source.item_key);assert.equal(latest.parsed.start_on,'2026-10-07');
+  const revised=await collectHSA(db,{...options,sourceId:latest.id,model});assert.equal(revised.created,0);assert.equal(calls,3);
+  html='Malformed newsletter';const failed=await collectHSA(db,{...options,sourceId:latest.id,model});
+  assert.equal(failed.outcome,'partial');assert.ok(failed.warnings.some(w=>w.includes('layout unavailable')));assert.equal(calls,3);
+  assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,2);
+  issue=issue.replace('01-10','08-10');html=f.newsletter.body;
+  await collectHSA(db,options);
+  const next=(await db.query("select * from scout.evidence where url=$1 and parsed->>'title'=$2",[issue,event.parsed.title])).rows[0];
+  assert.notEqual(next.parsed.source.identity,event.parsed.source.identity);
+ }finally{await db.close();}
+});
+
+test('recorded GFW partnership reassessment retains technical activity while generic noise stays excluded',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/scout16-gaps.json.gz',import.meta.url))));
+ const feeds=JSON.parse(await readFile(new URL('./fixtures/expansion-feeds.json',import.meta.url),'utf8'));
+ let calls=0;
+ try {
+  const tracker=(await db.query("select * from scout.trackers where seed_key='bbnj-trackers-2026-10-01:19'")).rows[0];
+  for(const source of [f.gfw,f.gfwNoise]){
+   const row={...source,tracker_id:tracker.id},keys=Object.keys(row);
+   await db.query(`insert into scout.evidence (${keys.join(',')}) values (${keys.map((_,i)=>'$'+(i+1)).join(',')})`,Object.values(row));
+  }
+  assert.equal(f.gfw.parsed.assessment.priority,'low');assert.equal(f.gfwDecision.priority,'high');
+  validateDecision(f.gfwDecision,f.gfwInput);
+  await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{assessment,state}','\"pending\"') where id=$1",[f.gfw.id]);
+  const options={trackerId:tracker.id,sourceId:f.gfw.id,since:'2026-09-24',read:async(url,budget)=>{
+   budget.requests++;return {url,headers:{'content-type':'text/html'},body:url.includes('/xrpc/')?JSON.stringify(feeds['globalfishingwatch.org']):'<p>Supporting fixture</p>'};
+  },model:async(instruction,inputs)=>{
+   calls++;assert.match(instruction,/concrete ocean-data\/monitoring tools, AI methods or implementation partnerships, even without treaty keywords/);
+   assert.match(instruction,/Low: generic advocacy, AI promotion or explainers without a concrete new technical activity/);
+   assert.deepEqual(inputs.map(i=>i.source_id),[f.gfw.id]);return [structuredClone(f.gfwDecision)];
+  }};
+  const first=await collectHSA(db,options);assert.equal(first.created,1,first.warnings.join('; '));assert.equal(calls,1);
+  const record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.priority,'high');assert.equal(record.kind,'announcement');
+  assert.equal(record.identity_key,f.gfw.parsed.source.identity);
+  const repeat=await collectHSA(db,options);assert.equal(repeat.candidates,0);assert.equal(repeat.changed,0);assert.equal(calls,1);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+  const noise=(await db.query('select * from scout.evidence where id=$1',[f.gfwNoise.id])).rows[0];
+  assert.equal(noise.record_id,null);assert.deepEqual(noise.parsed.assessment,f.gfwNoise.parsed.assessment);
+  const technical=(await db.query('select * from scout.evidence where id=$1',[f.gfw.id])).rows[0];
+  assert.equal(technical.content,f.gfw.content);assert.equal(technical.content_hash,f.gfw.content_hash);
  }finally{await db.close();}
 });
 
