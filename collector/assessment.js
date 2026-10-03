@@ -48,6 +48,8 @@ export function validateDecision(result, input) {
   const existing = input.candidates.find(item=>item.id===result.record_id);
   if (input.scripted.iddri && existing && !input.exact_ids.includes(existing.id) && !existing.registration_link && existing.event_url!==input.url) fail('IDDRI identity needs the same explicitly linked publication/session');
   if (input.scripted.gfw && existing && !input.exact_ids.includes(existing.id)) fail('GFW identity needs the same article or verified linked announcement');
+  if (input.scripted.iucn && existing && !input.exact_ids.includes(existing.id)) fail('IUCN identity needs the same source or verified node, not a shared topic/year');
+  if (input.scripted.iucn && existing?.identity_key?.startsWith('iucn:node:') && existing.identity_key!==`iucn:node:${input.scripted.iucn.id}`) fail('distinct IUCN source node');
   if (input.scripted.side_event?.id && existing?.event_url?.match(/^https:\/\/www\.cbd\.int\/side-events\/(\d+)$/)?.[1] &&
       existing.event_url!==input.scripted.event_url) fail('distinct CBD session ID');
   if (result.record_id !== null && !existing) fail('identity outside shortlist');
@@ -98,6 +100,7 @@ export function validateDecision(result, input) {
   if (input.scripted.treaty && (c.kind!=='treaty_status'||c.title!==input.scripted.title)) fail('official country/action/date representation required');
   if (input.scripted.dosi_web?.publication_on && (c.kind!=='announcement'||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description))) fail('DOSI guide requires its announcement identity and a complete source sentence');
   if (input.scripted.gfw && (c.kind!=='announcement'||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description))) fail('GFW news requires its announcement identity and a complete source sentence');
+  if (input.scripted.iucn && (c.kind!=='announcement'||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description))) fail('IUCN resource/news requires its announcement identity and a complete source sentence');
   if (input.scripted.iddri && (c.kind!==input.scripted.kind||c.title!==input.scripted.title||
       ['starts_at','ends_at','location','status','event_url','registration_url',...(c.kind==='event'?['organization']:[])].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.includes('status'))) fail('IDDRI publication/session facts unconfirmed');
   if (input.scripted.side_event && (c.kind!=='event'||c.title!==input.scripted.title ||
@@ -163,7 +166,7 @@ export async function assessmentInput(db, source, tracker) {
     (select parsed->>'start_on' from scout.current_evidence where record_id=r.id and parsed->>'start_on' is not null
       order by authoritative desc,evidence_at desc nulls last,last_seen_at desc limit 1) as calendar_date,
     (select md5(string_agg(content_hash,',' order by url)) from scout.current_evidence where record_id=r.id) as evidence
-    from scout.records r where ${(scripted.iddri||scripted.gfw)&&scripted.kind==='announcement'?"r.kind='announcement' and ":''}(not $9::boolean or r.kind='event') and
+    from scout.records r where ${(scripted.iddri||scripted.gfw||scripted.iucn)&&scripted.kind==='announcement'?"r.kind='announcement' and ":''}(not $9::boolean or r.kind='event') and
       (r.id=$2 or r.id=$11::uuid or r.identity_key=$8 or r.event_url=$1 or r.event_url=$3 or r.organization=$4 or
       exists(select 1 from scout.current_evidence e where e.record_id=r.id and e.url=$10) or exists(select 1 from unnest($5::text[]) word where lower(r.title) like '%'||word||'%'))
     order by (r.id=$11::uuid) desc nulls last,${scripted.iddri?'exact desc,':''}(r.id=$2) desc nulls last,(r.identity_key=$8) desc nulls last,(r.event_url=$3) desc nulls last,
@@ -192,8 +195,12 @@ export async function assessmentInput(db, source, tracker) {
   }
   for (const candidate of candidates) {
     candidate.title=Array.from(candidate.title).slice(0,240).join('');
+    // IUCN's announcement shortlist needs all three identities and the full technical text, not empty event fields.
+    if (scripted.iucn) for (const field of ['event_url','starts_at','ends_at','status','calendar_date','registration_link']) {
+      if (!candidate[field]) delete candidate[field];
+    }
   }
   return {source_id:source.id,url:source.url,coverage:tracker.coverage?.slice(0,240),text:whole.slice(start,start+1400).join(''),
     context_truncated:whole.length>1400,links:zoom?[source.url]:source.parsed.source.links??[],scripted,
-    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id||r.id===scripted.gfw?.corroborates||scripted.iddri&&(r.identity_key===source.parsed.source.identity||scripted.iddri.translation_of&&r.registration_link)).map(r=>r.id)};
+    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id||r.id===scripted.gfw?.corroborates||scripted.iucn&&r.identity_key===source.parsed.source.identity||scripted.iddri&&(r.identity_key===source.parsed.source.identity||scripted.iddri.translation_of&&r.registration_link)).map(r=>r.id)};
 }

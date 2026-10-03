@@ -11,6 +11,7 @@ export const HSA_WEB = 'https://highseasalliance.org/';
 export const IDDRI = 'https://www.iddri.org/en/publications-and-events/high-seas?page=0';
 export const DOSI_WEB = 'https://www.dosi-project.org/biodiversity-beyond-national-jurisdiction-bbnj/';
 export const GFW_WEB = 'https://globalfishingwatch.org/mediacenter/';
+export const IUCN = 'https://iucn.org/our-work/topic/high-seas';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -406,7 +407,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const iddri=tracker.collector==='web' && tracker.url===IDDRI;
   const dosiWeb=tracker.collector==='web' && tracker.url===DOSI_WEB;
   const gfw=tracker.collector==='web' && tracker.url===GFW_WEB;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const iucn=tracker.collector==='web' && tracker.url===IUCN;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -629,6 +631,62 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         stats[source.changed?'candidates':'skipped']++;pages.set(url,{source});
       }
       covered=selected.length<=3;
+    } else if (iucn) {
+      const home=await read(tracker.url,budget);stats.pages++;
+      if (home.url!==tracker.url || !/<\/html>\s*$/.test(home.body) || !home.body.includes(`rel="canonical" href="${tracker.url}"`) || !home.body.includes('Topic Search View')) throw new Error('IUCN High Seas discovery unavailable');
+      const text=html=>visibleText(html.replace(/&#(\d{1,7});/g,(_m,n)=>String.fromCodePoint(+n)).replace(/&#x([a-f0-9]{1,6});/gi,(_m,n)=>String.fromCodePoint(parseInt(n,16))));
+      const rows=[...home.body.matchAll(/<li>\s*<div class="wrapper-line">([\s\S]*?)<\/li>/g)].map(m=>{
+        const title=m[1].match(/<div class="wrapper-title">\s*<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+        return {url:title&&sourceURL(new URL(text(title[1]),tracker.url).href),title:text(title?.[2]??''),
+          type:text(m[1].match(/<span class="label">([^<]+)<\/span>/)?.[1]??''),
+          publication:text(m[1].match(/<span class="search-date">([\s\S]*?)<\/span>/)?.[1]??''),
+          instant:m[1].match(/<time datetime="([^"]+)"/)?.[1]??null,raw:m[0]};
+      });
+      if (!rows.length || rows.length>12 || rows.some(r=>!r.url||!r.title||!r.type||!r.publication) || new Set(rows.map(r=>r.url)).size!==rows.length) throw new Error('Invalid IUCN topic listing');
+      stats.articles_listed=rows.length;
+      const blog=home.body.match(/<span class="label">Blog<\/span>\s*<span class="date">([^<]+)<\/span>[\s\S]*?<a class="primary-link" href="(https:\/\/iucn\.org\/blog\/[^"?]+)"><span>([^<]+)<\/span><\/a>/);
+      const selected=[...rows,...(blog?[{url:blog[2],title:text(blog[3]),type:'Blog',publication:text(blog[1]),instant:null,raw:blog[0]}]:[])]
+        .sort((a,b)=>(({ 'Information brief':0,'Policy brief':1,Blog:2 }[a.type]??3)-({ 'Information brief':0,'Policy brief':1,Blog:2 }[b.type]??3)));
+      const seen=(await db.query('select distinct url from scout.evidence where tracker_id=$1',[tracker.id])).rows.map(r=>r.url);
+      stats.articles_selected=selected.length;
+      stats.warnings.push('IUCN covers five details from the current topic results/featured blog, prioritizing information and policy briefs; archives, dedicated events/registration, older featured stories, PDFs and other linked resources remain outside this slice. Resource years do not establish publication days');
+      if (selected.length>LIMITS.pages-1) stats.warnings.push(`IUCN page limit: ${selected.length-LIMITS.pages+1} listed items not followed`);
+      // Count detail attempts, including failures, within the existing page allowance.
+      for (const item of selected.slice(0,LIMITS.pages-1)) {
+        try {
+          const resource=/^https:\/\/iucn\.org\/(?:index%2Ephp\/)?resources\/(?:information-brief|policy-brief|dataset)\/[^/?]+$/.test(item.url);
+          if (!(resource&&['Information brief','Policy brief','Dataset'].includes(item.type)) && !(/^https:\/\/iucn\.org\/(?:index%2Ephp\/)?(?:news|blog)\/\d{6}\/[^/?]+$/.test(item.url)&&['News','Blog'].includes(item.type))) throw new Error('Unsupported IUCN detail type; session or resource needs separate proof');
+          const day=new Date(item.publication.replace(',','')+' 00:00:00 GMT');
+          const publication=resource?/^20\d{2}$/.test(item.publication)?item.publication:null:
+            /^\d{2} [A-Z][a-z]{2}, 20\d{2}$/.test(item.publication)&&Number.isFinite(+day)&&day.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'})===item.publication.replace(',','')?day.toISOString().slice(0,10):null;
+          const published=item.instant?dates(item.instant).starts_at:null;
+          if (!publication || item.instant&&(!published||item.instant.slice(0,10)!==publication)) throw new Error('IUCN publication precision/date unavailable');
+          if (publication<(resource?since.slice(0,4):since.slice(0,10))&&!seen.includes(item.url)) continue;
+          const response=await read(item.url,budget);stats.pages++;
+          if (response.url!==item.url || !/text\/html/i.test(response.headers['content-type']??'') || !/<\/html>\s*$/.test(response.body) || !response.body.includes(`rel="canonical" href="${item.url}"`)) throw new Error('Unexpected IUCN detail destination/format');
+          const article=response.body.match(/<article data-history-node-id="(\d+)" class="node node--type-(resource|article)\b[^>]*>([\s\S]*?)<\/article>/);
+          if (!article || (article[2]==='resource')!==resource || !response.body.includes(`rel="shortlink" href="https://iucn.org/${item.url.includes('/index%2Ephp/')?'index%2Ephp/':''}node/${article[1]}"`)) throw new Error('IUCN detail identity unavailable');
+          const title=text(article[3].match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/)?.[1]??'');
+          const detailDate=resource?response.body.match(/name="dcterms.date" content="([^"]+)"/)?.[1]:text(article[3].match(/<span class="date">([^<]+)<\/span>/)?.[1]??'');
+          if (!title || !title.startsWith(item.title.replace(/(?:…|\.\.\.)$/,'').trim()) || detailDate!==item.publication) throw new Error('IUCN listing/detail facts disagree');
+          const fields=[...article[3].matchAll(/<div class="clearfix text-formatted field field--name-field-(lead|body)\b[^>]*>/g)].map(m=>{
+            const rest=article[3].slice(m.index+m[0].length);let depth=1;
+            for (const tag of rest.matchAll(/<\/?div\b[^>]*>/g)) {depth+=tag[0].startsWith('</')?-1:1;if (!depth) return {name:m[1],html:rest.slice(0,tag.index)};}
+            throw new Error('IUCN detail body boundary unavailable');
+          });
+          if (fields.length!==2 || !fields.some(f=>f.name==='lead') || !fields.some(f=>f.name==='body') || fields.some(f=>!text(f.html))) throw new Error('IUCN detail body boundary unavailable');
+          const content=fields.map(f=>f.html).join(' '),paragraphs=[...content.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>text(m[1]));
+          const description=paragraphs.flatMap(p=>p.match(/[^.!?]+[.!?](?=\s|$)/g)?.map(s=>s.trim())??[]).find(s=>Array.from(s).length<=280)??null;
+          const scripted={kind:'announcement',title,description,organization:'IUCN',location:null,starts_at:null,ends_at:null,event_url:null,registration_url:null,status:null,
+            iucn:{id:article[1],type:item.type,publication,precision:resource?'year':published?'instant':'day'}};
+          const links=[...new Set([...content.matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(new URL(text(m[1]),item.url).href);}catch{return null;}}).filter(Boolean))].sort();
+          const source=await observe(db,tracker.id,item.url,JSON.stringify({text:[title,...paragraphs].join(' '),listing:item.raw,body:response.body}),published,scripted,
+            {text:text(content),links,publication,published_at:published,structured:scripted},
+            {rank:2,identity:`iucn:node:${article[1]}`,parent_url:tracker.url},now());
+          stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+        } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
+      }
+      covered=true;
     } else if (gfw) {
       const home=await read(tracker.url,budget);stats.pages++;
       if (home.url!==tracker.url || !/<\/html>\s*$/.test(home.body.replace(/<!--[\s\S]*?-->/g,'')) || !home.body.includes(`rel="canonical" href="${tracker.url}"`) ||
@@ -1090,11 +1148,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {

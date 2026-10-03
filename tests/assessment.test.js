@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB]])).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN]])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -533,6 +533,105 @@ test('actual DOSI guide assessment retains technical High relevance and a comple
  assert.match(live.input.text,/technical architecture.*centralised platform or a network of regional nodes/);assert.match(live.input.text,/who will undertake such development/);assert.equal(live.input.context_truncated,false);
  assert.equal(live.input.scripted.dosi_web.publication_on,'2026-04-02');assert.equal(live.decision.model_decision,undefined);assert.equal(live.accounting.model_attempts.length,1);assert.equal(live.accounting.model_attempts[0].input_bound,6000);
  for(const key of ['organization','starts_at','ends_at','event_url','registration_url','location','status','last_communicated_at'])assert.equal(live.record[key],null);
+});
+
+test('IUCN observed pages fit the six-page bound, retain complete technical context and distinguish existing ChM findings on repeat',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iucn-website.json.gz',import.meta.url))));let calls=0;const requested=[];
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IUCN])).rows[0];
+  for(const r of f.existing)await db.query('insert into scout.records select * from jsonb_populate_record(null::scout.records,$1::jsonb)',[r]);
+  const before=(await db.query('select * from scout.records order by id')).rows;
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;requested.push(u);return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);
+  const first=await collectHSA(db,options);assert.equal(first.candidates,5,first.warnings.join('; '));assert.equal(first.requests,6);assert.equal(first.pages,6);assert.equal(first.articles_selected,7);assert.match(first.warnings.join(' '),/2 listed items not followed/);
+  assert.deepEqual(requested,[f.home.url,f.brief.url,f.policy.url,f.blog.url,f.unguja.url,f.forum.url]);
+  const s=(await db.query('select * from scout.evidence where url=$1',[f.brief.url])).rows[0],i=await assessmentInput(db,s,tracker);
+  assert.equal(s.published_at,null);assert.deepEqual(i.scripted.iucn,{id:'45942',type:'Information brief',precision:'year',publication:'2026'});
+  assert.equal(i.context_truncated,false);assert.match(i.text,/two paths for marine-genetic resources notifications/);assert.match(i.text,/assign a standardized “BBNJ” batch identifier/);assert.match(i.text,/pre-collection, post-collection, and utilization stages of scientific research\./);
+  assert.equal(i.scripted.description,'This policy brief looks at two paths for marine-genetic resources notifications to the Clearing House Mechanism under Article 12 of the BBNJ Agreement.');assert.ok(i.scripted.description.length<=280);
+  assert.equal(i.candidates.length,3);assert.deepEqual(i.exact_ids,[]);assert.equal(JSON.parse(s.content).body,f.brief.body);
+  let bytes;await gemini({apiKey:'injected-only',runId:s.id,ledger:{query:async()=>({rows:[]})},fetch:async(_u,r)=>{bytes=Buffer.byteLength(r.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}})(INSTRUCTION,[i],SCHEMA);assert.ok(bytes<8000);
+  const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null])));
+  for(const c of i.candidates)assert.throws(()=>validateDecision({...result,source_id:s.id,action:'supporting_evidence',record_id:c.id,candidate,quotes:[candidate.title]},i),/same source or verified node/);
+  assert.throws(()=>validateDecision({...result,source_id:s.id,candidate:{...candidate,description:candidate.description.slice(0,-1)},quotes:[candidate.title]},i),/complete source sentence/);
+  const model=async(_p,[input])=>{calls++;return[{...result,source_id:input.source_id,candidate,quotes:[candidate.title]}];};
+  assert.equal((await collectHSA(db,{...options,sourceId:s.id,model})).created,1);const records=(await db.query('select * from scout.records order by id')).rows;
+  for(const r of before)assert.deepEqual(records.find(row=>row.id===r.id),r);
+  for(const r of Object.values(f).filter(r=>r.body))r.body=r.body.replace('<body','<!-- rotating news --> <body').replaceAll('<p>','<p data-cosmetic="1">').replace('Related content','Updated related content');
+  const repeat=await collectHSA(db,{...options,sourceId:s.id,model});assert.equal(repeat.skipped,5);assert.equal(repeat.requests,6);assert.equal(repeat.candidates+repeat.created+repeat.changed,0);assert.equal(calls,1);
+  assert.deepEqual((await db.query('select * from scout.records order by id')).rows,records);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('IUCN material revisions and publication changes preserve history while distinct source nodes stay separate',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iucn-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IUCN])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const old=(await db.query('select * from scout.evidence where url=$1',[f.brief.url])).rows[0];
+  f.brief.body=f.brief.body.replace('how CHM notifications will be executed','how CHM notifications will be submitted');assert.equal((await collectHSA(db,options)).candidates,1);
+  f.brief.body=f.brief.body.replace('name="dcterms.date" content="2026"','name="dcterms.date" content="2027"');f.home.body=f.home.body.replace(/(<span class="label">Information brief<\/span>[\s\S]*?<span class="search-date">\s*)2026/,'$12027');assert.equal((await collectHSA(db,options)).candidates,1);
+  const latest=(await db.query('select * from scout.evidence where url=$1 order by collected_at desc limit 1',[f.brief.url])).rows[0];assert.equal(latest.parsed.iucn.publication,'2027');assert.equal(latest.published_at,null);assert.equal(latest.parsed.source.identity,old.parsed.source.identity);
+  assert.deepEqual((await db.query('select content,content_hash from scout.evidence where id=$1',[old.id])).rows[0],{content:old.content,content_hash:old.content_hash});
+  const prior=(await db.query('insert into scout.records(kind,title,organization,identity_key) values($1,$2,$3,$4) returning *',['announcement',old.parsed.title,'IUCN',old.parsed.source.identity])).rows[0];
+  const next=f.brief.url+'-next-edition';f.home.body=f.home.body.replaceAll(new URL(f.brief.url).pathname,new URL(next).pathname);f.brief.body=f.brief.body.replaceAll(f.brief.url,next).replaceAll('45942','55942');f.brief.url=next;
+  assert.equal((await collectHSA(db,options)).candidates,1);const source=(await db.query('select * from scout.evidence where url=$1',[next])).rows[0],i=await assessmentInput(db,source,tracker);
+  assert.equal(source.parsed.source.identity,'iucn:node:55942');assert.deepEqual(i.exact_ids,[]);const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null])));
+  assert.throws(()=>validateDecision({...result,source_id:i.source_id,action:'update',record_id:prior.id,candidate,quotes:[candidate.title]},i),/same source or verified node/);
+  assert.throws(()=>validateDecision({...result,source_id:i.source_id,action:'update',record_id:prior.id,candidate,quotes:[candidate.title]},{...i,exact_ids:[prior.id]}),/distinct IUCN source node/);
+ }finally{await db.close();}
+});
+
+test('IUCN preserves publication precision without turning report dates, place names or recaps into event schedules',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iucn-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IUCN])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const sources=(await db.query('select * from scout.evidence')).rows,blog=sources.find(s=>s.url===f.blog.url),news=sources.find(s=>s.url===f.unguja.url);
+  assert.equal(blog.parsed.iucn.publication,'2026-03-24');assert.equal(blog.published_at,null);assert.equal(news.parsed.iucn.publication,'2026-07-21');assert.equal(news.published_at.toISOString(),'2026-07-21T05:15:19.000Z');assert.match(JSON.parse(news.content).text,/16 July 2026/);
+  for(const s of sources){for(const key of ['starts_at','ends_at','event_url','registration_url','location','status'])assert.equal(s.parsed[key],null);const i=await assessmentInput(db,s,tracker);assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:full({kind:'event',title:i.scripted.title}),quotes:[i.scripted.title]},i),/announcement identity/);}
+  f.home.body=f.home.body.replace('datetime="2026-07-21T07:15:19+02:00"','datetime="2026-02-30T07:15:19+02:00"');let calls=0;
+  const run=await collectHSA(db,{...options,sourceId:news.id,model:async()=>{calls++;throw new Error('Must not assess invalid dates');}});assert.match(run.warnings.join(' '),/precision\/date/);assert.equal(calls,0);
+ }finally{await db.close();}
+});
+
+test('IUCN failed/malformed reads consume bounded attempts, preserve evidence and prevent stale assessment',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iucn-website.json.gz',import.meta.url))));let fail,calls=0;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IUCN])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;if(u===fail||fail==='details'&&u!==IUCN)throw new Error('Injected HTTP 503');return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const before=(await db.query('select id,content_hash,content,parsed from scout.evidence order by id')).rows,source=before.find(s=>s.parsed.iucn.id==='45942');
+  const model=async()=>{calls++;throw new Error('Must not assess stale evidence');};fail=IUCN;assert.equal((await collectHSA(db,{...options,sourceId:source.id,model})).outcome,'failed');
+  fail='details';const failed=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(failed.requests,6);assert.equal(failed.pages,1);assert.equal(failed.candidates,0);fail=null;
+  const body=f.brief.body;for(const html of [body.replace('</html>',''),body.replace('node/45942','node/99999'),body.replace('field--name-field-body','field--name-unknown'),body.replace('name="dcterms.date" content="2026"','name="dcterms.date" content="2026-03-29"')]){f.brief.body=html;assert.equal((await collectHSA(db,{...options,sourceId:source.id,model})).candidates,0);}f.brief.body=body;
+  f.home.body=f.home.body.replace('Topic Search View','missing');assert.equal((await collectHSA(db,{...options,sourceId:source.id,model})).outcome,'failed');
+  assert.equal(calls,0);assert.deepEqual((await db.query('select id,content_hash,content,parsed from scout.evidence order by id')).rows,before);
+ }finally{await db.close();}
+});
+
+test('IUCN generic coastal news and policy advocacy stay distinct from the technical notification brief',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iucn-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[IUCN])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const sources=(await db.query('select * from scout.evidence')).rows;
+  for(const url of [f.unguja.url,f.blog.url,f.policy.url]){const s=sources.find(s=>s.url===url);const run=await collectHSA(db,{...options,sourceId:s.id,model:async(_p,[i])=>{
+   assert.doesNotMatch(i.text,/assign a standardized|two paths for marine-genetic resources/);assert.match(INSTRUCTION,/Low: generic advocacy, AI promotion or explainers without a concrete new technical activity/);
+   return[{...result,source_id:i.source_id,action:'no_substantive_change',candidate:null,priority:'low',quotes:[i.scripted.title],reason:'Injected exclusion of general coastal/policy advocacy, not live classification'}];}});assert.equal(run.assessed,1);assert.equal(run.created,0);}
+  assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+ }finally{await db.close();}
+});
+
+test('actual IUCN assessment retains technical High relevance, literal description and year-only publication without a topic merge',async()=>{
+ const {live}=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iucn-website.json.gz',import.meta.url))));
+ validateDecision(Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]])),live.input);
+ assert.equal(live.decision.state,'complete');assert.equal(live.decision.action,'new');assert.equal(live.decision.priority,'high');assert.equal(live.record.priority,'high');
+ assert.equal(live.record.identity_key,'iucn:node:45942');assert.equal(live.record.organization,'IUCN');assert.equal(live.record.kind,'announcement');assert.equal(live.record.title,live.input.scripted.title);
+ assert.equal(live.record.description,live.input.scripted.description);assert.equal(live.record.description.length,151);assert.ok(live.record.description.endsWith('.'));
+ assert.equal(live.input.context_truncated,false);assert.match(live.input.text,/assign a standardized “BBNJ” batch identifier/);assert.match(live.input.text,/pre-collection, post-collection, and utilization stages/);
+ assert.deepEqual(live.input.exact_ids,[]);assert.equal(live.input.candidates.length,3);assert.equal(live.input.scripted.iucn.publication,'2026');assert.equal(live.input.scripted.iucn.precision,'year');
+ for(const key of ['starts_at','ends_at','event_url','registration_url','location','status','last_communicated_at','evidence_at'])assert.equal(live.record[key],null);
+ assert.equal(live.accounting.model_attempts.length,1);assert.equal(live.accounting.model_attempts[0].input_bound,7878);assert.equal(live.accounting.model_usage[0].promptTokenCount,1555);assert.equal(live.accounting.model_usage[0].candidatesTokenCount,311);
 });
 
 test('GFW website independently captures recorded news and proves Ai2 identity without changing the retained finding, then gates cosmetic repeats',async()=>{
