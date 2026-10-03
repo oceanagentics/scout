@@ -46,6 +46,8 @@ export function validateDecision(result, input) {
   if (!['high','normal','low',null].includes(result.priority) || typeof result.reason!=='string' || !result.reason.trim() || result.reason.length>240) fail('priority/reason');
   if (!Array.isArray(result.quotes) || result.quotes.length>3 || result.quotes.some(q=>typeof q!=='string'||!q.isWellFormed()||!q.trim()||!input.text.includes(q))) fail('unsupported quote');
   const existing = input.candidates.find(item=>item.id===result.record_id);
+  if (input.scripted.octo && existing && (!input.exact_ids.includes(existing.id)||existing.kind!==input.scripted.kind||!input.scripted.octo.recording&&existing.event_url!==input.scripted.event_url||existing.starts_at&&new Date(existing.starts_at).getUTCFullYear()!==+input.scripted.octo.year)) fail('OCTO identity requires the corroborated session/edition or exact recording');
+  if (input.scripted.octo && !input.scripted.octo.recording && result.action!=='uncertain' && input.candidates.some(r=>r.exact&&r.event_url!==input.scripted.event_url||r.event_url===input.scripted.event_url&&!r.exact&&(!r.starts_at||new Date(r.starts_at).getUTCFullYear()===+input.scripted.octo.year&&Date.parse(r.starts_at)!==Date.parse(input.scripted.starts_at)))) fail('OCTO syndication schedule conflict; identity remains uncertain');
   if (input.scripted.cbd_registry && existing && (!input.exact_ids.includes(existing.id)||existing.event_url!==input.scripted.event_url)) fail('CBD identity requires the same official session ID and meeting');
   if (input.scripted.iddri && existing && !input.exact_ids.includes(existing.id) && !existing.registration_link && existing.event_url!==input.url) fail('IDDRI identity needs the same explicitly linked publication/session');
   if (input.scripted.gfw && existing && !input.exact_ids.includes(existing.id)) fail('GFW identity needs the same article or verified linked announcement');
@@ -125,6 +127,7 @@ export function validateDecision(result, input) {
   if (input.scripted.side_event && (c.kind!=='event'||c.title!==input.scripted.title ||
       ['starts_at','ends_at','location','status','event_url','registration_url'].some(f=>c[f]!==null&&c[f]!==input.scripted[f]))) fail('side-event identity or unconfirmed session facts');
   if (input.scripted.cbd_registry && (c.organization!==null&&c.organization!==input.scripted.organization||c.description&&!/[.!?]$/.test(c.description)||result.clear_fields.length)) fail('CBD host, complete description or publication change unconfirmed');
+  if (input.scripted.octo && (c.kind!==input.scripted.kind||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description)||['starts_at','ends_at','location','event_url','registration_url','status','organization'].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.length)) fail('OCTO session/recording facts or complete description unconfirmed');
   if (input.scripted.hsa_web && (input.scripted.hsa_web.session && (c.kind!=='event'||c.title!==input.scripted.title) ||
       input.scripted.hsa_web.recap && c.kind!=='announcement' ||
       ['starts_at','ends_at','location','status','event_url','registration_url',...(c.kind==='event'?['organization']:[])].some(f=>c[f]!==null&&c[f]!==input.scripted[f]))) fail('HSA article/session facts unconfirmed');
@@ -179,21 +182,22 @@ export async function assessmentInput(db, source, tracker) {
   if (scripted.description) scripted.description=Array.from(scripted.description).slice(0,280).join('');
   if (scripted.title) scripted.title=Array.from(scripted.title).slice(0,400).join('');
   const words=normalize(scripted.title??visibleText(content)).toLowerCase().match(/[\p{L}\p{N}]{5,}/gu)?.slice(0,12)??[];
+  const octoIdentity=scripted.octo?"exists(select 1 from scout.current_evidence e where e.record_id=r.id and e.parsed#>>'{source,identity}'=$8)":'false';
   const candidates=(await db.query(`select r.id,r.identity_key,r.kind,r.title,r.organization,r.event_url,r.starts_at,r.ends_at,r.status,r.priority,r.updated_at,
-    exists(select 1 from scout.current_evidence e where e.record_id=r.id and (e.url=$1 or e.url=$10) and e.parsed#>>'{source,item_key}' is not distinct from $6) as exact,
+    (exists(select 1 from scout.current_evidence e where e.record_id=r.id and (e.url=$1 or e.url=$10) and e.parsed#>>'{source,item_key}' is not distinct from $6) or ${octoIdentity}) as exact,
     $7::boolean and exists(select 1 from scout.current_evidence e where e.record_id=r.id and
       case when e.parsed#>>'{source,identity}' like 'post:%' and e.parsed#>>'{source,rank}'='2'
       then (e.content::jsonb->'urls' ? $1 or e.content::jsonb->'urls' ? $10) else false end) as registration_link,
     (select parsed->>'start_on' from scout.current_evidence where record_id=r.id and parsed->>'start_on' is not null
       order by authoritative desc,evidence_at desc nulls last,last_seen_at desc limit 1) as calendar_date,
     (select md5(string_agg(content_hash,',' order by url)) from scout.current_evidence where record_id=r.id) as evidence
-    from scout.records r where ${scripted.cbd_registry?"(r.identity_key=$8 or r.event_url=$3) and ":''}${(scripted.iddri||scripted.gfw||scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium)&&scripted.kind==='announcement'?"r.kind='announcement' and ":''}(not $9::boolean or r.kind='event') and
-      (r.id=$2 or r.id=$11::uuid or r.identity_key=$8 or r.event_url=$1 or r.event_url=$3 or r.organization=$4 or
+    from scout.records r where ${(scripted.cbd_registry||scripted.octo)?`(r.identity_key=$8 or r.event_url=$3 or ${octoIdentity}) and `:''}${(scripted.iddri||scripted.gfw||scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium||scripted.octo)&&scripted.kind==='announcement'?"r.kind='announcement' and ":''}(not $9::boolean or r.kind='event') and
+      (r.id=$2 or r.id=$11::uuid or r.identity_key=$8 or ${octoIdentity} or r.event_url=$1 or r.event_url=$3 or r.organization=$4 or
       exists(select 1 from scout.current_evidence e where e.record_id=r.id and e.url=$10) or exists(select 1 from unnest($5::text[]) word where lower(r.title) like '%'||word||'%'))
-    order by (r.id=$11::uuid) desc nulls last,${scripted.iddri?'exact desc,':''}(r.id=$2) desc nulls last,(r.identity_key=$8) desc nulls last,(r.event_url=$3) desc nulls last,
+    order by (r.id=$11::uuid) desc nulls last,${scripted.iddri||scripted.octo?'exact desc,':''}(r.id=$2) desc nulls last,(r.identity_key=$8) desc nulls last,(r.event_url=$3) desc nulls last,
       (select count(*) from unnest($5::text[]) word where lower(r.title) like '%'||word||'%') desc,
       (r.organization=$4) desc nulls last,updated_at desc,id limit ${scripted.gfw?.corroborates||scripted.riseup?.corroborates?1:3}`,
-  [source.url,source.record_id,scripted.event_url??null,scripted.organization??null,words,source.parsed.source.item_key??null,Boolean(zoom||scripted.iddri),source.parsed.source.identity??null,Boolean(zoom||conference||(scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium)&&scripted.kind==='event'),scripted.iddri?.translation_of??null,scripted.gfw?.corroborates??scripted.riseup?.corroborates??null])).rows;
+  [source.url,source.record_id,scripted.event_url??null,scripted.organization??null,words,source.parsed.source.item_key??null,Boolean(zoom||scripted.iddri),source.parsed.source.identity??null,Boolean(zoom||conference||(scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium||scripted.octo)&&scripted.kind==='event'),scripted.iddri?.translation_of??null,scripted.gfw?.corroborates??scripted.riseup?.corroborates??null])).rows;
   // The fetched HTML remains evidence, but model context starts with useful text,
   // including parsed metadata whose source lives beyond a long HTML head.
   let text;
@@ -205,11 +209,12 @@ export async function assessmentInput(db, source, tracker) {
     if (value && !text.includes(value)) text=normalize(text+'\n'+value);
   }
   const whole=Array.from(text);
-  if (scripted.oceancare||scripted.riseup||scripted.symposium) for (const field of ['event_url','starts_at','ends_at','status','registration_url','location',...(scripted.riseup||scripted.symposium?['start_on','end_on','time_zone']:[])]) {
+  const contextLimit=scripted.octo?1200:1400; // Leave room for an existing session within the unchanged request cap.
+  if (scripted.oceancare||scripted.riseup||scripted.symposium||scripted.octo) for (const field of ['event_url','starts_at','ends_at','status','registration_url','location',...(scripted.riseup||scripted.symposium||scripted.octo?['start_on','end_on','time_zone']:[])]) {
     if (scripted[field]===null) delete scripted[field];
   }
   let start=0;
-  if (source.parsed.source.previous_id && whole.length>1400) {
+  if (source.parsed.source.previous_id && whole.length>contextLimit) {
     const previous=(await db.query('select content from scout.evidence where id=$1',[source.parsed.source.previous_id])).rows[0];
     let before;
     try {before=JSON.parse(previous?.content??'{}').text;} catch {before=visibleText(previous?.content??'');}
@@ -220,11 +225,11 @@ export async function assessmentInput(db, source, tracker) {
   for (const candidate of candidates) {
     candidate.title=Array.from(candidate.title).slice(0,240).join('');
     // Keep identities and supported facts without redundant empty shortlist fields.
-    if (scripted.iucn||scripted.oceancare||scripted.harvest||scripted.riseup||scripted.blue_marine||scripted.symposium||scripted.gof&&scripted.kind==='announcement') for (const field of ['event_url','starts_at','ends_at','status','calendar_date','registration_link']) {
+    if (scripted.iucn||scripted.oceancare||scripted.harvest||scripted.riseup||scripted.blue_marine||scripted.symposium||scripted.octo||scripted.gof&&scripted.kind==='announcement') for (const field of ['event_url','starts_at','ends_at','status','calendar_date','registration_link']) {
       if (!candidate[field]) delete candidate[field];
     }
   }
-  return {source_id:source.id,url:source.url,coverage:tracker.coverage?.slice(0,240),text:whole.slice(start,start+1400).join(''),
-    context_truncated:whole.length>1400,links:zoom?[source.url]:source.parsed.source.links??[],scripted,
-    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id||r.id===scripted.gfw?.corroborates||(scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium||scripted.cbd_registry)&&r.identity_key===source.parsed.source.identity||(scripted.riseup||scripted.cbd_registry)&&scripted.event_url&&r.event_url===scripted.event_url||scripted.iddri&&(r.identity_key===source.parsed.source.identity||scripted.iddri.translation_of&&r.registration_link)).map(r=>r.id)};
+  return {source_id:source.id,url:source.url,coverage:tracker.coverage?.slice(0,240),text:whole.slice(start,start+contextLimit).join(''),
+    context_truncated:whole.length>contextLimit,links:zoom?[source.url]:source.parsed.source.links??[],scripted,
+    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id||r.id===scripted.gfw?.corroborates||(scripted.iucn||scripted.oceancare||scripted.gof||scripted.riseup||scripted.blue_marine||scripted.symposium||scripted.cbd_registry||scripted.octo)&&r.identity_key===source.parsed.source.identity||(scripted.riseup||scripted.cbd_registry)&&scripted.event_url&&r.event_url===scripted.event_url||scripted.octo&&scripted.event_url&&r.event_url===scripted.event_url&&r.starts_at&&Date.parse(r.starts_at)===Date.parse(scripted.starts_at)||scripted.iddri&&(r.identity_key===source.parsed.source.identity||scripted.iddri.translation_of&&r.registration_link)).map(r=>r.id)};
 }

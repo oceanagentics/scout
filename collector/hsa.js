@@ -19,6 +19,7 @@ export const RISE_UP = 'https://riseupfortheocean.org/latest/rise-up-navigator/'
 export const BLUE_MARINE = 'https://www.bluemarinefoundation.com/our-events/';
 export const SYMPOSIUM = 'https://bbnjsymposium.org/';
 export const CBD_REGISTRY = 'https://www.cbd.int/side-events/';
+export const OCTO = 'https://octogroup.org/webinars/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -422,7 +423,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const blueMarine=tracker.collector==='web' && tracker.url===BLUE_MARINE;
   const symposium=tracker.collector==='web' && tracker.url===SYMPOSIUM;
   const cbd=tracker.collector==='web' && tracker.url===CBD_REGISTRY;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const octo=tracker.collector==='web' && tracker.url===OCTO;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -564,6 +566,77 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
       }
       covered=selected.length<=detailLimit;
+    } else if (octo) {
+      const text=html=>visibleText(html.replace(/&#(x[\da-f]+|\d+);/gi,(_m,n)=>String.fromCodePoint(n[0].toLowerCase()==='x'?parseInt(n.slice(1),16):+n)));
+      const home=await read(tracker.url,budget);stats.pages++;
+      const feedURL='https://octogroup.org/feed/';
+      if(home.url!==tracker.url||!/<\/html>\s*$/.test(home.body)||!home.body.includes('href="'+feedURL+'"')||!home.body.includes('rel="canonical" href="'+tracker.url+'"'))throw new Error('OCTO feed discovery unavailable');
+      const feed=await read(feedURL,budget);stats.pages++;
+      if(feed.url!==feedURL||!/<\/rss>\s*$/.test(feed.body))throw new Error('OCTO feed incomplete');
+      const items=[...feed.body.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0,10).map(m=>{
+        const id=m[1].match(/<guid[^>]*>https:\/\/octogroup\.org\/\?p=(\d+)<\/guid>/)?.[1],url=m[1].match(/<link>([^<]+)<\/link>/)?.[1],title=text(m[1].match(/<title>([\s\S]*?)<\/title>/)?.[1]??''),date=m[1].match(/<pubDate>([^<]+)<\/pubDate>/)?.[1];
+        const categories=[...m[1].matchAll(/<category><!\[CDATA\[([^\]]+)\]\]><\/category>/g)].map(m=>m[1]);
+        if(!id||!url?.startsWith('https://octogroup.org/')||!title||!/[+-]\d{4}$/.test(date??'')||!Number.isFinite(Date.parse(date)))throw new Error('OCTO feed item identity/publication unavailable');
+        return{id,url:sourceURL(url),title,published:new Date(date).toISOString(),upcoming:categories.includes('Upcoming Webinars'),past:categories.includes('Past Webinars'),raw:m[0],categories};
+      });
+      if(!items.length||new Set(items.map(i=>i.id)).size!==items.length)throw new Error('OCTO feed item identities unavailable');
+      const eligible=items.filter(i=>i.categories.includes('Webinars')&&i.upcoming!==i.past);
+      const upcoming=eligible.filter(i=>i.upcoming).slice(0,3),past=eligible.filter(i=>i.past&&i.published>=new Date(since).toISOString()).slice(0,3);
+      const selected=items.filter(i=>upcoming.includes(i)||past.includes(i));
+      stats.items_listed=items.length;stats.items_selected=selected.length;
+      stats.warnings.push('OCTO coverage is the latest ten RSS posts, at most three upcoming webinars and three recordings within the publication window. Archive pagination, older editions, other formats and video contents remain unexamined; publication dates do not supply session years');
+      if(eligible.filter(i=>i.upcoming).length>3)stats.warnings.push('OCTO upcoming webinar limit reached');
+      if(!selected.length)covered=true;
+      else{
+        // The individual post advertises this public REST collection; one bounded batch leaves room for three Zoom reads.
+        const apiURL=sourceURL('https://octogroup.org/wp-json/wp/v2/posts?'+new URLSearchParams({include:selected.map(i=>i.id).join(','),per_page:String(selected.length),_fields:'id,date_gmt,link,title,content,categories,status'}));
+        const response=await read(apiURL,budget);stats.pages++;
+        if(sourceURL(response.url)!==apiURL||!/json/i.test(response.headers['content-type']??''))throw new Error('OCTO public post API destination/format unavailable');
+        const posts=JSON.parse(response.body);
+        if(!Array.isArray(posts)||posts.length!==selected.length||new Set(posts.map(p=>p.id)).size!==selected.length||posts.some(p=>!selected.some(i=>+i.id===p.id)))throw new Error('OCTO public post batch incomplete');
+        const months=['January','February','March','April','May','June','July','August','September','October','November','December'];
+        for(const item of selected)try{
+          const post=posts.find(p=>p.id===+item.id),html=post.content?.rendered;
+          if(post.status!=='publish'||sourceURL(post.link)!==item.url||text(post.title?.rendered??'')!==item.title||dates(post.date_gmt+'Z').starts_at!==item.published||typeof html!=='string'||post.content.protected||!post.categories?.includes(item.upcoming?594:595)||post.categories.includes(item.upcoming?595:594))throw new Error('OCTO post/feed identity, category or publication conflict');
+          const paragraphs=[...html.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>text(m[1])),body=text(html),descriptionText=paragraphs.find(p=>p.startsWith('Description:'))?.replace(/^Description:\s*/,'');
+          const description=descriptionText?.match(/[^.!?]+[.!?](?=\s|$)/g)?.map(s=>s.trim()).find(s=>s.length<=280)??null;
+          const host=paragraphs.find(p=>/^Hosted by\s*:/.test(p))?.replace(/^Hosted by\s*:\s*/,'').split(/Register\s*:/)[0].trim(),cancelled=paragraphs.some(p=>/^This webinar (?:has been|is) cancell?ed[.!]$/i.test(p));
+          if(!descriptionText||!description||!host||!/\b(?:ocean|marine|coastal|kelp|seagrass|MPA|conservation)\b/i.test(item.title+' '+descriptionText))throw new Error('OCTO webinar content/host or relevance unconfirmed');
+          const links=[...new Set([...html.matchAll(/(?:href|src)="([^"]+)"/g)].map(m=>{try{return sourceURL(m[1].replaceAll('&amp;','&'));}catch{return null;}}).filter(Boolean))].sort();
+          const scripted={kind:item.upcoming?'event':'announcement',title:item.title,description,organization:host,location:null,...dates(),event_url:null,registration_url:null,status:null,octo:{id:item.id,recording:item.past,year:null,aired_on:null}};
+          let support=null,year;
+          if(item.upcoming){
+            const registrations=links.filter(u=>/^https:\/\/[a-z0-9]+\.zoom\.us\/webinar\/register\/WN_[\w-]+$/.test(u));
+            const schedule=paragraphs.find(p=>p.startsWith('Date/Time:'))?.replace(/^Date\/Time:\s*/,'');
+            if(registrations.length!==1||!schedule)throw new Error('OCTO single session registration/date unavailable');
+            const r=await read(registrations[0],budget);stats.pages++;
+            const zoom=JSON.parse(r.body.match(/\bregisterVO:(\{[^\n]+\}),\s*\n/)?.[1]??'null'),url=zoom?.shareVO?.url,agenda=zoom?.meetingVO?.agenda,when=zoom?.viewerEmail?.match(/\nWhen: ([A-Z][a-z]{2}) (\d{1,2}), (20\d{2}) (0[1-9]|1[0-2]):([0-5]\d) (AM|PM) ([^\n]+)\n/);
+            if(url!==registrations[0]||sourceURL(r.url)!==url||!/<\/html>\s*$/.test(r.body)||zoom?.uuid!==url.split('/').pop()||zoom.recurringRegType!==null||text(zoom.meetingVO?.topic??'')!==item.title||typeof agenda!=='string'||!text(agenda).includes(description)||!agenda.includes('Hosted by: OCTO')||!when||(zoom.viewerEmail.match(/\nWhen:/g)??[]).length!==1||when[7]!==zoom.timezoneVO?.timezoneName)throw new Error('OCTO Zoom session identity or single schedule unconfirmed');
+            year=when[3];const month=months.findIndex(m=>m.startsWith(when[1]))+1,day=dates(year+'-'+String(month).padStart(2,'0')+'-'+when[2].padStart(2,'0')).start_on;
+            const line=schedule.match(/^([A-Z][a-z]+), ([A-Z][a-z]+) (\d{1,2})(?:, (20\d{2}))?, (.+)$/),clocks=line?.[5].split('/').map(c=>c.trim().match(/^(Noon|\d{1,2}(?::[0-5]\d)? (?:am|pm)) (?:US )?(EDT|PDT|UTC|BST|CEST|CET)$/i));
+            if(!day||!line||line[2]!==months[month-1]||+line[3]!==+when[2]||line[4]&&line[4]!==year||new Date(day+'T12:00:00Z').toLocaleDateString('en-US',{timeZone:'UTC',weekday:'long'})!==line[1]||!clocks?.length||clocks.some(c=>!c))throw new Error('OCTO page/Zoom calendar date conflict');
+            const instants=clocks.map(c=>{const clock=c[1].match(/^(\d{1,2})(?::([0-5]\d))? (am|pm)$/i);if(clock&&(+clock[1]<1||+clock[1]>12))throw new Error('OCTO invalid clock');const hour=clock?+clock[1]%12+(clock[3].toLowerCase()==='pm'?12:0):12;return Date.parse(day+'T00:00:00Z')+(hour*60+(+(clock?.[2]??0))-({EDT:-240,PDT:-420,UTC:0,BST:60,CEST:120,CET:60})[c[2].toUpperCase()])*60000;});
+            if(new Set(instants).size!==1)throw new Error('OCTO published clocks conflict');
+            const start=new Date(instants[0]).toISOString(),parts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:zoom.timezoneVO.timezoneId,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(start)).map(p=>[p.type,p.value]));
+            if(parts.year!==year||+parts.month!==month||+parts.day!==+when[2]||+parts.hour!==+when[4]%12+(when[6]==='PM'?12:0)||parts.minute!==when[5])throw new Error('OCTO public registration time zone conflicts with publisher clocks');
+            Object.assign(scripted,dates(start),{time_zone:zoom.timezoneVO.timezoneId,event_url:url,registration_url:url,status:cancelled?'cancelled':'scheduled'});
+            support={url,body:r.body,facts:{title:item.title,when:when[0].trim(),zone:zoom.timezoneVO.timezoneId,agenda}};
+            scripted.octo.schedule=schedule;
+          }else{
+            const aired=paragraphs.find(p=>p.startsWith('This webinar originally aired on '))?.match(/^This webinar originally aired on (?:(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), )?([A-Z][a-z]+) (\d{1,2}), (20\d{2})\.$/);
+            if(!aired||!links.some(u=>/^https:\/\/(?:player\.)?vimeo\.com\/|^https:\/\/(?:www\.)?youtube\.com\/|^https:\/\/youtu\.be\//.test(u)))throw new Error('OCTO recording/date identity unconfirmed');
+            year=aired[4];const day=dates(year+'-'+String(months.indexOf(aired[2])+1).padStart(2,'0')+'-'+aired[3].padStart(2,'0')).start_on;
+            if(day&&(!aired[1]||new Date(day+'T12:00:00Z').toLocaleDateString('en-US',{timeZone:'UTC',weekday:'long'})===aired[1]))scripted.octo.aired_on=day;
+            else stats.warnings.push('OCTO '+item.id+': recording date/weekday conflict; aired date remains unknown');
+          }
+          scripted.octo.year=year;const key=item.id+':'+year+':'+(item.past?'recording':'event');
+          const excerpt=[item.title,description,host,scripted.starts_at,scripted.status,support?.facts.when,body].filter(Boolean).join(' ');
+          const source=await observe(db,tracker.id,item.url,JSON.stringify({text:excerpt,feed_item:item.raw,post,support}),item.published,scripted,
+            {body,links,structured:scripted,registration:support?.facts??null},{rank:2,identity:'octo:'+key,item_key:key,feed_url:feedURL,api_url:apiURL,links:links.slice(0,10)},now());
+          stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+        }catch(error){quota ||= Boolean(error.quota);stats.warnings.push(item.url+': '+error.message+'; retained session facts require review');}
+        covered=true;
+      }
     } else if (cbd) {
       // Queries/joins follow the public registry's index.js and mongo-storage.js.
       // Two latest meetings and two ten-row phrase-search pages; never all history.
@@ -1581,11 +1654,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium || cbd) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium||cbd)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium || cbd || octo) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium||cbd||octo)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {

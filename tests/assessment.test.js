@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM,CBD_REGISTRY,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM,CBD_REGISTRY,OCTO,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM,CBD_REGISTRY]])).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM,CBD_REGISTRY,OCTO]])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -2386,5 +2386,85 @@ test('CBD bounded second page, body relevance and changed meeting identity canno
   const second=JSON.parse(f.reservations1.body);while(second.length<10){const r=structuredClone(second[0]);r._id='fixture-'+second.length;r.sideEvent.id=9000+second.length;r.sideEvent.title='Unrelated local workshop';r.sideEvent.description='<p>Local gardening event.</p>';r.sideEvent.publications=[{title:'BBNJ index-only match',url:'https://www.cbd.int/doc/test.pdf'}];second.push(r);}f.reservations1.body=JSON.stringify(second);
   const bounded=await collectHSA(db,options);assert.equal(bounded.requests,6);assert.equal(bounded.sessions_listed,20);assert.equal(bounded.irrelevant,7);assert.equal(bounded.candidates,0);assert.match(bounded.warnings.join(' '),/pagination limit/);assert.ok(!requested.some(u=>u.includes('sk=20')));
   const old=(await db.query("select * from scout.evidence where parsed#>>'{side_event,id}'='6915'")).rows;assert.equal(old.length,1);assert.equal(old[0].parsed.cbd_registry.meeting.code,'nairobi-2026');assert.equal(old[0].parsed.starts_at,null);
+ }finally{await db.close();}
+});
+
+test('OCTO actual RSS/post/Zoom path separates three sessions and three recordings with verified clocks and an explicit date conflict',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));
+ try{
+  await db.query('insert into scout.trackers select * from jsonb_populate_record(null::scout.trackers,$1::jsonb)',[f.tracker]);
+  const requested=[],options={trackerId:f.tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;requested.push(u);const r=Object.values(f).find(r=>r.url===u);assert.ok(r,u);return r;}};
+  const first=await collectHSA(db,options);assert.equal(first.candidates,6,first.warnings.join('; '));assert.equal(first.requests,6);assert.equal(first.pending,6);assert.equal(first.assessed+first.created+first.changed,0);assert.match(first.warnings.join(' '),/date\/weekday conflict/);
+  const sources=(await db.query('select * from scout.evidence')).rows,events=sources.filter(s=>!s.parsed.octo.recording),recordings=sources.filter(s=>s.parsed.octo.recording);assert.equal(events.length,3);assert.equal(recordings.length,3);
+  for(const [id,start]of [['16063','2026-10-08T16:00:00.000Z'],['16281','2026-10-20T16:00:00.000Z'],['16285','2026-10-28T17:00:00.000Z']]){
+   const s=events.find(s=>s.parsed.octo.id===id);assert.equal(s.parsed.starts_at,start);assert.equal(s.parsed.time_zone,'America/New_York');assert.equal(s.parsed.ends_at,null);assert.equal(s.parsed.organization,'OCTO');assert.equal(s.parsed.location,null);assert.equal(s.parsed.event_url,s.parsed.registration_url);assert.match(s.parsed.registration_url,/^https:\/\/us02web.zoom.us\/webinar\/register\/WN_/);assert.equal(s.parsed.octo.year,'2026');assert.equal(s.parsed.status,'scheduled');
+  }
+  for(const s of recordings){assert.equal(s.parsed.kind,'announcement');for(const k of ['starts_at','ends_at','start_on','end_on','time_zone','event_url','registration_url','status','location'])assert.equal(s.parsed[k],null,k);}
+  assert.equal(recordings.find(s=>s.parsed.octo.id==='16271').parsed.octo.aired_on,'2026-09-30');assert.equal(recordings.find(s=>s.parsed.octo.id==='16066').parsed.octo.aired_on,'2026-09-29');assert.equal(recordings.find(s=>s.parsed.octo.id==='16069').parsed.octo.aired_on,null);
+  for(const s of sources){assert.ok(s.parsed.description.length<=280);assert.match(s.parsed.description,/[.!?]$/);assert.equal(s.parsed.assessment.state,'pending');assert.equal(s.record_id,null);assert.match(s.parsed.source.item_key,/^\d+:2026:(event|recording)$/);}
+  const mcs=events.find(s=>s.parsed.octo.id==='16063'),i=await assessmentInput(db,mcs,f.tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),decision={...result,source_id:i.source_id,candidate,quotes:[i.scripted.description]};validateDecision(decision,i);
+  for(const change of [{organization:'IDDRI'},{location:'Seattle, WA'},{ends_at:'2026-10-08T17:00:00Z'},{registration_url:OCTO},{kind:'treaty_status'},{description:'Incomplete fragment'}])assert.throws(()=>validateDecision({...decision,candidate:{...candidate,...change}},i));
+  f.home.body=f.home.body.replace('Website Design','Site Design');for(const key of ['zoom','zoom-mpatlas','zoom-maskelp'])f[key].body=f[key].body.replace(/urlWithTimestamp[^,]+/,'urlWithTimestamp":"cosmetic"');
+  const repeat=await collectHSA(db,options);assert.equal(repeat.skipped,6);assert.equal(repeat.candidates+repeat.assessed+repeat.created+repeat.changed,0);assert.equal(repeat.requests,6);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[f.tracker.id])).rows[0],f.tracker);
+ }finally{await db.close();}
+});
+
+test('OCTO exact registration/date corroborates syndication without record changes and rejects topic, missing-date and other-edition matches',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));
+ try{
+  await db.query('insert into scout.trackers select * from jsonb_populate_record(null::scout.trackers,$1::jsonb)',[f.tracker]);
+  const options={trackerId:f.tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);}};
+  await collectHSA(db,options);const source=(await db.query("select * from scout.evidence where parsed#>>'{octo,id}'='16063'")).rows[0],i=await assessmentInput(db,source,f.tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null])));
+  const record=(await db.query("insert into scout.records(kind,title,organization,description,event_url,registration_url,starts_at,status,identity_key,evidence_rank,priority) values('event',$1,$2,$3,$4,$4,$5,'scheduled',$6,2,'high') returning *",[candidate.title,candidate.organization,candidate.description,candidate.event_url,candidate.starts_at,'event:'+candidate.event_url])).rows[0];
+  const matched=await assessmentInput(db,source,f.tracker);assert.deepEqual(matched.exact_ids,[record.id]);let requestBytes=0;await gemini({apiKey:'fixture-only',ledger:{query:async()=>({rows:[]})},runId:source.id,fetch:async(_u,r)=>{requestBytes=Buffer.byteLength(r.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}})(INSTRUCTION,[matched],SCHEMA);assert.ok(requestBytes>0&&requestBytes<=8000);assert.match(matched.text,/technological advances/);const decision={...result,source_id:source.id,action:'supporting_evidence',record_id:record.id,candidate,quotes:[candidate.description]};validateDecision(decision,matched);
+  const accepted=await collectHSA(db,{...options,sourceId:source.id,model:async()=>[decision]});assert.equal(accepted.assessed,1,accepted.warnings.join('; '));assert.equal(accepted.created+accepted.changed,0);assert.deepEqual((await db.query('select * from scout.records where id=$1',[record.id])).rows[0],record);
+  let calls=0;const repeat=await collectHSA(db,{...options,sourceId:source.id,model:async()=>{calls++;throw new Error('No repeat model');}});assert.equal(repeat.assessed,0);assert.equal(calls,0);
+  for(const existing of [{...matched.candidates[0],event_url:'https://example.org/other',starts_at:null},{...matched.candidates[0],starts_at:'2025-10-08T16:00:00Z'},{...matched.candidates[0],starts_at:null}]){
+   assert.throws(()=>validateDecision(decision,{...matched,candidates:[existing],exact_ids:existing.starts_at?[record.id]:[]}),/OCTO identity|syndication schedule/);
+  }
+  const ambiguous={...matched,candidates:[{...matched.candidates[0],exact:false,starts_at:'2026-10-09T16:00:00Z'}],exact_ids:[]};
+  assert.throws(()=>validateDecision({...decision,action:'new',record_id:null},ambiguous),/syndication schedule/);
+  const recording=(await db.query("select * from scout.evidence where parsed#>>'{octo,id}'='16271'")).rows[0],ri=await assessmentInput(db,recording,f.tracker),rc=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,ri.scripted[k]??null])));
+  assert.throws(()=>validateDecision({...result,source_id:recording.id,candidate:{...rc,kind:'event'},quotes:[rc.description]},ri),/OCTO/);
+ }finally{await db.close();}
+});
+
+test('OCTO title, material, date and cancellation revisions retain session identity; recurring registration and edition changes stay separate',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));
+ try{
+  await db.query('insert into scout.trackers select * from jsonb_populate_record(null::scout.trackers,$1::jsonb)',[f.tracker]);
+  const options={trackerId:f.tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);}};
+  await collectHSA(db,options);const initial=(await db.query("select * from scout.evidence where parsed#>>'{octo,id}'='16063'")).rows[0],base=structuredClone(f),oldTitle=initial.parsed.title,newTitle=oldTitle+' — revised';
+  const model=async(_p,inputs)=>inputs.map(x=>({...result,source_id:x.source_id,action:x.exact_ids.length?'update':'new',record_id:x.exact_ids[0]??null,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,x.scripted[k]??null]))),quotes:[x.text.slice(0,80)]}));
+  assert.equal((await collectHSA(db,{...options,sourceId:initial.id,model})).created,1);const originalRecord=(await db.query('select * from scout.records')).rows[0];
+  const oldRegistration='WN_tDF22rxnREG68eKGnhMsGw',newRegistration='WN_replacementRegistration';f.posts.body=f.posts.body.replaceAll(oldRegistration,newRegistration);f.zoom.body=f.zoom.body.replaceAll(oldRegistration,newRegistration);f.zoom.url=f.zoom.url.replace(oldRegistration,newRegistration);
+  assert.equal((await collectHSA(db,options)).candidates,1);const replacement=(await db.query("select * from scout.evidence where parsed#>>'{octo,id}'='16063' order by collected_at desc limit 1")).rows[0],replacementInput=await assessmentInput(db,replacement,f.tracker);assert.deepEqual(replacementInput.exact_ids,[originalRecord.id]);
+  const rejected=await collectHSA(db,{...options,sourceId:replacement.id,model:async(_p,inputs)=>(await model(_p,inputs)).map(d=>({...d,action:'new',record_id:null}))});assert.equal(rejected.created+rejected.changed+rejected.assessed,0);assert.match(rejected.warnings.join(' '),/syndication schedule conflict/);assert.deepEqual((await db.query('select * from scout.records')).rows,[originalRecord]);Object.assign(f,structuredClone(base));
+  f.feed.body=f.feed.body.replaceAll(oldTitle,newTitle);f.posts.body=f.posts.body.replaceAll(oldTitle,newTitle);f.zoom.body=f.zoom.body.replaceAll(oldTitle,newTitle);
+  assert.equal((await collectHSA(db,options)).candidates,1);
+  const titleSource=(await db.query("select * from scout.evidence where parsed#>>'{octo,id}'='16063' order by collected_at desc limit 1")).rows[0];const titleUpdate=await collectHSA(db,{...options,sourceId:titleSource.id,model});assert.equal(titleUpdate.changed,1,titleUpdate.warnings.join('; '));assert.equal((await db.query('select id from scout.records')).rows[0].id,originalRecord.id);
+  f.posts.body=f.posts.body.replace('decisive factor','critical factor');f.zoom.body=f.zoom.body.replace('decisive factor','critical factor');assert.equal((await collectHSA(db,options)).candidates,1);
+  f.posts.body=f.posts.body.replace('Thursday, October 8','Friday, October 9');f.zoom.body=f.zoom.body.replace('Oct 8, 2026','Oct 9, 2026');assert.equal((await collectHSA(db,options)).candidates,1);
+  let latest=(await db.query("select * from scout.evidence where parsed#>>'{octo,id}'='16063' order by collected_at desc limit 1")).rows[0];assert.equal(latest.parsed.source.item_key,initial.parsed.source.item_key);assert.equal(latest.parsed.source.identity,initial.parsed.source.identity);assert.equal(latest.parsed.starts_at,'2026-10-09T16:00:00.000Z');
+  const posts=JSON.parse(f.posts.body);posts.find(p=>p.id===16063).content.rendered+='<p>This webinar has been cancelled.</p>';f.posts.body=JSON.stringify(posts);assert.equal((await collectHSA(db,options)).candidates,1);latest=(await db.query("select * from scout.evidence where parsed#>>'{octo,id}'='16063' order by collected_at desc limit 1")).rows[0];assert.equal(latest.parsed.status,'cancelled');const cancellation=await collectHSA(db,{...options,sourceId:latest.id,model});assert.equal(cancellation.changed,1,cancellation.warnings.join('; '));assert.equal((await db.query('select status from scout.records where id=$1',[originalRecord.id])).rows[0].status,'cancelled');
+  f.zoom.body=f.zoom.body.replace('"recurringRegType":null','"recurringRegType":1');let calls=0;const uncertain=await collectHSA(db,{...options,sourceId:latest.id,model:async()=>{calls++;throw new Error('Recurring ambiguous source');}});assert.equal(uncertain.candidates,0);assert.equal(calls,0);assert.match(uncertain.warnings.join(' '),/single schedule unconfirmed/);
+  Object.assign(f,base);f.posts.body=f.posts.body.replace('Thursday, October 8','Friday, October 8');f.zoom.body=f.zoom.body.replace('Oct 8, 2026','Oct 8, 2027');const edition=await collectHSA(db,options);assert.equal(edition.candidates,1,edition.warnings.join('; '));const next=(await db.query("select * from scout.evidence where parsed#>>'{octo,id}'='16063' and parsed#>>'{octo,year}'='2027'")).rows[0];assert.ok(next);assert.notEqual(next.parsed.source.item_key,initial.parsed.source.item_key);assert.equal(next.parsed.source.previous_id,null);const newEdition=await collectHSA(db,{...options,sourceId:next.id,model});assert.equal(newEdition.created,1,newEdition.warnings.join('; '));assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,2);assert.equal((await db.query('select status from scout.records where id=$1',[originalRecord.id])).rows[0].status,'cancelled');
+ }finally{await db.close();}
+});
+
+test('OCTO failed sources, malformed clocks/identity, irrelevant categories and listing bounds never assess stale evidence',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));let failed='',calls=0;
+ try{
+  await db.query('insert into scout.trackers select * from jsonb_populate_record(null::scout.trackers,$1::jsonb)',[f.tracker]);
+  const options={trackerId:f.tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;if(failed&&u.includes(failed))throw new Error('Injected OCTO HTTP 403');if(u.startsWith('https://octogroup.org/wp-json/wp/v2/posts?')){const ids=new URL(u).searchParams.get('include').split(',').map(Number);return{...f.posts,url:u,body:JSON.stringify(JSON.parse(f.posts.body).filter(p=>ids.includes(p.id)))};}return Object.values(f).find(r=>r.url===u);}};
+  await collectHSA(db,options);const source=(await db.query("select * from scout.evidence where parsed#>>'{octo,id}'='16063'")).rows[0],scoped={...options,sourceId:source.id,model:async()=>{calls++;throw new Error('No stale assessment');}},base=structuredClone(f);
+  for(const path of ['/webinars/','/feed/','/wp-json/','WN_tDF']){failed=path;const r=await collectHSA(db,scoped);assert.equal(r.candidates+r.assessed+r.created+r.changed,0);assert.equal(calls,0);}failed='';
+  for(const [key,from,to]of [['posts','4 pm UTC','5 pm UTC'],['posts','Thursday, October 8','Wednesday, October 8'],['zoom','Eastern Time (US and Canada)','Unconfirmed zone'],['zoom','When: Oct 8, 2026','When: Oct 8, 2025'],['posts','"id":16063','"id":1']]){
+   Object.assign(f,structuredClone(base));f[key].body=f[key].body.replace(from,to);const r=await collectHSA(db,scoped);assert.equal(r.candidates+r.assessed+r.created+r.changed,0);assert.equal(calls,0);
+  }
+  Object.assign(f,structuredClone(base));f.feed.body=f.feed.body.replace('<category><![CDATA[Upcoming Webinars]]></category>','<category><![CDATA[Other News]]></category>');
+  const ignored=await collectHSA(db,scoped);assert.equal(ignored.assessed,0);assert.equal(ignored.skipped,5);assert.equal(ignored.requests,5);assert.equal(calls,0);
+  Object.assign(f,structuredClone(base));const item=[...f.feed.body.matchAll(/<item>[\s\S]*?<\/item>/g)][4][0];f.feed.body=f.feed.body.replace(item,item+item.replaceAll('16285','99999').replaceAll('maskelp-protecting-kelp-ecosystems-through-science-capacity-building-and-communication','additional-future-webinar'));
+  const bounded=await collectHSA(db,options);assert.equal(bounded.items_listed,10);assert.equal(bounded.items_selected,6);assert.equal(bounded.requests,6);assert.equal(bounded.skipped,6);assert.match(bounded.warnings.join(' '),/upcoming webinar limit/);assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
  }finally{await db.close();}
 });
