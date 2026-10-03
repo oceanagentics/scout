@@ -658,7 +658,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
       const destination=new URL(issue.url),html=clean(issue.body),months=['January','February','March','April','May','June','July','August','September','October','November','December'];
       if (!(destination.hostname==='us11.campaign-archive.com' && destination.searchParams.get('u')==='740487e7a7306085143176166' && /^[a-f0-9]{10}$/.test(destination.searchParams.get('id')??'') || destination.hostname==='mailchi.mp'&&destination.pathname.startsWith('/riseupfortheocean.org/')) ||
           !/text\/html/i.test(issue.headers['content-type']??'') || !/<\/html>\s*$/.test(html) || !text(html).includes(`| ${months[+latest.month.slice(5)-1].toUpperCase()} ${latest.month.slice(0,4)}`)) throw new Error('RISE UP issue destination/publication month disagreement');
-      const headings=[...html.matchAll(/<h([12])\b[^>]*>([\s\S]*?)<\/h\1>/gi)];
+      const headings=[...html.matchAll(/<h([123])\b[^>]*>([\s\S]*?)<\/h\1>/gi)];
       const begin=headings.findIndex(m=>m[1]==='1'&&text(m[2])==='Updates'),end=headings.findIndex((m,i)=>i>begin&&m[1]==='1');
       if (begin<0 || end<0 || !headings.slice(begin+1,end).length || headings.slice(begin+1,end).some(m=>m[1]!=='2')) throw new Error('RISE UP Updates item layout unavailable');
       const items=headings.slice(begin+1,end).map((heading,index)=>{
@@ -679,14 +679,56 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
           ...schedule,event_url:event?eventURL:null,registration_url:null,status:null,
           riseup:{publication_on:latest.day,recording,multiple:/Save the Date/i.test(paragraphs.join(' '))||!event&&!recording&&/\bwill (?:host|bring together)\b/i.test(paragraphs.join(' '))}}};
       });
+      const action=headings.findIndex(m=>m[1]==='1'&&text(m[2])==='Take Action'),actionEnd=headings.findIndex((m,i)=>i>action&&m[1]==='1');
+      const workshops=action<0||actionEnd<0?[]:headings.slice(action+1,actionEnd).filter(m=>m[1]==='3'&&text(m[2])==='BBNJ Webinar: Designing the BBNJ Clearing-House Mechanism');
+      if (workshops.length>1) throw new Error('RISE UP technical workshop item identity ambiguous');
+      const selected=items.slice(0,5);
+      for (const heading of workshops) {
+        const block=html.slice(heading.index,headings[headings.indexOf(heading)+1].index),buttons=[...block.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/g)].filter(m=>text(m[0])==='Register Here'),button=buttons.length===1?buttons[0]:null;
+        const body=button&&block.slice(0,button.index+button[0].length),paragraphs=[...(body??'').matchAll(/<p\b[^>]*>[\s\S]*?<\/p>/g)].map(m=>text(m[0])).filter(Boolean);
+        const link=button&&sourceURL(text(button[1]));
+        if (!link || !/^https:\/\/[a-z0-9]+\.zoom\.us\/meeting\/register\/[\w-]+$/.test(link) || paragraphs.length!==1 || !paragraphs[0].includes('High Seas Alliance and partners will host the first in a series of virtual technical workshops')) throw new Error('RISE UP technical workshop body/registration unavailable');
+        const description=paragraphs[0].match(/The session will focus [^.]+\./)?.[0];
+        if (!description || Array.from(description).length>280) throw new Error('RISE UP technical workshop description unavailable');
+        selected.push({body,link,links:[link],paragraphs,scripted:{kind:'event',title:text(heading[2]),description,organization:'High Seas Alliance and partners',location:null,
+          ...dates(),event_url:null,registration_url:null,status:null,riseup:{publication_on:latest.day,recording:false,multiple:false,workshop:true}}});
+      }
       if (new Set(items.map(i=>i.link)).size!==items.length) throw new Error('RISE UP issue has ambiguous repeated item links');
-      stats.issues_listed=rows.length;stats.items_listed=items.length;
-      stats.warnings.push('RISE UP uses the observed public Mailchimp archive because the configured website returns hosted HTTP 403 and its listing is stale. Up to five Updates items in the latest listed issue and one linked FAO summit detail are covered; other issues, Member Spotlight, Take Action, papers, calendar, PDFs/video and multiple-event items remain outside proven coverage. Publication is date-only; NGO treaty claims are not official actions');
+      stats.issues_listed=rows.length;stats.items_listed=items.length+workshops.length;
+      stats.warnings.push('RISE UP uses the observed public Mailchimp archive because the configured website returns hosted HTTP 403 and its listing is stale. Up to five Updates items, one Take Action CHM workshop and their bounded FAO/Zoom details are covered; other issues, Member Spotlight, other advocacy calls, papers, calendar, PDFs/video and multiple-event items remain outside proven coverage. Publication is date-only; NGO treaty claims are not official actions');
       let details=0;
-      for (const item of items.slice(0,5)) {
+      for (const item of selected) {
         try {
           let detail=null;
-          if (item.scripted.kind==='event') {
+          if (item.scripted.riseup.workshop) {
+            try {
+            detail=await read(item.link,budget);stats.pages++;
+            const zoom=JSON.parse(detail.body.match(/\nregisterVO:(\{[^\n]+\}),?\s*\n/)?.[1]??'null'),canonical=zoom?.shareVO?.url;
+            const final=new URL(detail.url),title=zoom?.meetingVO?.topic,agenda=zoom?.meetingVO?.agenda;
+            const local=zoom?.viewerEmail?.match(/\nWhen: ([A-Z][a-z]{2}) (\d{1,2}), (20\d{2}) (0[1-9]|1[0-2]):([0-5]\d) (AM|PM) ([^\n]+)\n/);
+            const newsletter=item.paragraphs[0].match(/^On (\d{1,2}) (\w+) at ([01]?\d|2[0-3]):([0-5]\d) Paris time\s*,/);
+            if (!canonical || !/^https:\/\/[a-z0-9]+\.zoom\.us\/webinar\/register\/WN_[\w-]+$/.test(canonical) || final.origin+final.pathname!==canonical ||
+                !/<\/html>\s*$/.test(detail.body) || !detail.body.includes(`property="og:url" content="${canonical}"`) || zoom.uuid!==canonical.split('/').pop() || zoom.recurringRegType!==null ||
+                !title?.startsWith('Session 1 - Designing the BBNJ Clearing-House Mechanism:') || !agenda?.includes('The first session will focus on basic functions across the Agreement.') ||
+                !agenda.includes(item.scripted.organization) || !local || !newsletter || (zoom.viewerEmail.match(/\nWhen:/g)??[]).length!==1 || local[7]!==zoom.timezoneVO?.timezoneName || !zoom.viewerEmail.includes(`Topic:  ${title}\n`)) throw new Error('RISE UP Zoom workshop identity/schedule unconfirmed');
+            const month=months.findIndex(m=>m.startsWith(local[1]))+1,day=dates(`${local[3]}-${String(month).padStart(2,'0')}-${local[2].padStart(2,'0')}`).start_on;
+            if (!day) throw new Error('RISE UP Zoom workshop date invalid');
+            const localHour=+local[4]%12+(local[6]==='PM'?12:0),guess=Date.parse(`${day}T${String(localHour).padStart(2,'0')}:${local[5]}:00Z`);
+            const clock=new Intl.DateTimeFormat('en-GB',{timeZone:zoom.timezoneVO.timezoneId,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+            const parts=Object.fromEntries(clock.formatToParts(new Date(guess)).map(p=>[p.type,p.value]));
+            const start=2*guess-Date.parse(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:00Z`);
+            const verified=Object.fromEntries(clock.formatToParts(new Date(start)).map(p=>[p.type,p.value])),paris=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Paris',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(start)).map(p=>[p.type,p.value]));
+            if (`${verified.year}-${verified.month}-${verified.day}`!==day || +verified.hour!==localHour || verified.minute!==local[5] || +paris.day!==+newsletter[1] || paris.month!==newsletter[2] || +paris.hour!==+newsletter[3] || paris.minute!==newsletter[4]) throw new Error('RISE UP newsletter/Zoom workshop clocks conflict');
+            Object.assign(item.scripted,{title,...dates(new Date(start).toISOString()),event_url:canonical,registration_url:canonical});
+            item.links.push(canonical);
+            item.paragraphs.push(`Zoom registration: ${title}. ${zoom.viewerEmail.split('\nTopic:')[0].trim()} ${agenda}`);
+            const existing=(await db.query("select id,title,organization,starts_at,event_url from scout.records where event_url=$1 or (kind='event' and title=$2 and organization=$3 and starts_at=$4)",[canonical,title,item.scripted.organization,new Date(start).toISOString()])).rows;
+            if (existing.length) {
+              if (existing.length!==1 || existing[0].event_url!==canonical || existing[0].title!==title || existing[0].organization!==item.scripted.organization || Date.parse(existing[0].starts_at)!==start) throw new Error('RISE UP retained registration facts conflict; session identity needs review');
+              item.scripted.riseup.corroborates=existing[0].id;
+            }
+            } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);item.scripted.riseup.identity_unconfirmed=true;}
+          } else if (item.scripted.kind==='event') {
             if (++details>1) throw new Error('RISE UP linked summit detail limit reached');
             detail=await read(item.scripted.event_url,budget);stats.pages++;
             const block=detail.body.match(/<div class="sfContentBlock sf-Long-text"[^>]*>([\s\S]*?The 3rd Small-Scale Fisheries Summit[\s\S]*?)<\/div>/)?.[1];
@@ -694,7 +736,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
             if (detail.url!==item.scripted.event_url || !/<\/html>\s*$/.test(detail.body) || !proof.includes(`SSF Summit ${when[4]}`) || !proof.includes(`held from ${when[1]} to ${when[2]} ${when[3]}, at the FAO Headquarters in Rome, Italy`)) throw new Error('RISE UP newsletter/FAO summit schedule disagreement');
             item.scripted.location='FAO Headquarters in Rome';
           }
-          const key=`${destination.searchParams.get('id')??destination.pathname}:${latest.month}:${item.link}`,scripted=item.scripted;
+          const scripted=item.scripted,key=`${destination.searchParams.get('id')??destination.pathname}:${latest.month}:${item.link}${scripted.riseup.workshop?':workshop':''}`;
           const source=await observe(db,tracker.id,issue.url,JSON.stringify({text:[scripted.title,scripted.description,...item.paragraphs].filter(Boolean).join(' '),body:issue.body,archive:latest.raw,item:item.body,detail}),null,scripted,
             {text:[scripted.title,...item.paragraphs].join(' '),links:item.links,structured:scripted},
             {rank:2,identity:`riseup:${key}`,item_key:key,parent_url:tracker.url,links:item.links},now());

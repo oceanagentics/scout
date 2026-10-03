@@ -2019,13 +2019,13 @@ test('RISE UP current public archive discovers September beyond the stale websit
   const tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01',
    read:async(u,b)=>{const r=Object.values(f).find(r=>r.url===u||r.requested_url===u);assert.ok(r);b.requests+=r.requests??1;requested.push(u);return r;},
    model:async(_p,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),priority:i.scripted.title.startsWith('September in Rome')?'normal':'low',quotes:[i.scripted.description]}));}};
-  const first=await collectHSA(db,options);assert.equal(first.created,1,first.warnings.join('; '));assert.equal(first.candidates,4);assert.equal(first.assessed,4);assert.equal(first.requests,3);assert.equal(first.pages,2);assert.equal(first.issues_listed,20);
-  assert.deepEqual(requested,[f.archive.url,f.september.requested_url]);assert.ok(!requested.includes(RISE_UP));
+  const first=await collectHSA(db,options);assert.equal(first.created,1,first.warnings.join('; '));assert.equal(first.candidates,5);assert.equal(first.assessed,5);assert.equal(first.requests,5);assert.equal(first.pages,3);assert.equal(first.issues_listed,20);
+  assert.deepEqual(requested,[f.archive.url,f.september.requested_url,f.registration.requested_url]);assert.ok(!requested.includes(RISE_UP));
   const source=(await db.query("select * from scout.evidence where record_id is not null")).rows[0],record=(await db.query('select * from scout.records')).rows[0],i=await assessmentInput(db,source,tracker);
   assert.equal(record.kind,'announcement');assert.equal(record.description.length,200);assert.match(record.description,/Preferential Access Areas and co-management/);assert.ok(i.text.includes(record.description));assert.equal(i.context_truncated,true);
   assert.equal(source.parsed.riseup.publication_on,'2026-09-30');assert.equal(source.published_at,null);assert.equal(source.parsed.start_on,null);assert.equal(record.starts_at,null);assert.equal(record.organization,null);
   assert.equal(JSON.parse(source.content).body,f.september.body);assert.match(JSON.parse(source.content).text,/From Rome, the conversation moved to Geneva/);assert.doesNotMatch(i.text,/15 October|15:00|NFDS Africa/);
-  const count=calls,repeat=await collectHSA(db,options);assert.equal(repeat.candidates+repeat.assessed+repeat.created+repeat.changed,0);assert.equal(repeat.skipped,4);assert.equal(calls,count);
+  const count=calls,repeat=await collectHSA(db,options);assert.equal(repeat.candidates+repeat.assessed+repeat.created+repeat.changed,0);assert.equal(repeat.skipped,5);assert.equal(calls,count);
   assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
   f.archive.body=f.archive.body.replace('09/30/2026','10/01/2026');const failed=await collectHSA(db,options);assert.equal(failed.outcome,'failed');assert.equal(calls,count);
  }finally{await db.close();}
@@ -2043,7 +2043,7 @@ test('actual RISE UP uncertainty stays unaccepted and repeats without a new call
   assert.equal(source.content_hash,live.receipt_hash);
   const decision=Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]]));validateDecision(decision,live.input);
   const scoped={...options,sourceId:source.id,model:async()=>{calls++;return[{...decision,source_id:source.id}];}};
-  const initial=await collectHSA(db,scoped);assert.equal(initial.assessed,1);assert.equal(initial.created+initial.changed,0);assert.equal(initial.pending,4);
+  const initial=await collectHSA(db,scoped);assert.equal(initial.assessed,1);assert.equal(initial.created+initial.changed,0);assert.equal(initial.pending,5);
   const row=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];
   assert.equal(row.record_id,null);assert.equal(row.parsed.assessment.state,'uncertain');assert.equal(row.parsed.assessment.priority,null);assert.equal(row.parsed.assessment.candidate,null);assert.equal(row.parsed.assessment.reason,live.decision.reason);
   assert.equal(row.parsed.description.length,200);assert.equal(row.parsed.riseup.publication_on,'2026-09-30');assert.equal(row.published_at,null);
@@ -2052,5 +2052,95 @@ test('actual RISE UP uncertainty stays unaccepted and repeats without a new call
   assert.equal(live.ledger.attempts,18);assert.equal(live.run.stats.model_attempts.length,1);assert.equal(live.run.stats.model_attempts[0].input_bound,7949);
   assert.equal(live.run.stats.model_usage[0].promptTokenCount,1450);assert.equal(live.run.stats.model_usage[0].candidatesTokenCount,167);
   assert.equal(live.repeat.stats.requests,3);assert.equal(live.repeat.stats.reused_uncertain,1);assert.equal(live.repeat.stats.model_attempts,undefined);
+ }finally{await db.close();}
+});
+
+
+test('RISE UP Take Action follows the actual meeting redirect, verifies both clocks and corroborates the retained first session',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/riseup-website.json.gz',import.meta.url))));let calls=0;const requested=[];
+ try{
+  const {evidence,...retained}=f.retained;await db.query('insert into scout.records select * from jsonb_populate_record(null::scout.records,$1::jsonb)',[retained]);
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01',
+   read:async(u,b)=>{const r=Object.values(f).find(r=>r.url===u||r.requested_url===u);assert.ok(r,u);b.requests+=r.requests??1;requested.push(u);return r;},model:async()=>{throw new Error('Observation-only fixture');}};
+  const first=await collectHSA(db,options);assert.equal(first.candidates,5,first.warnings.join('; '));assert.equal(first.requests,5);assert.equal(first.pages,3);
+  assert.deepEqual(requested,[f.archive.url,f.september.requested_url,f.registration.requested_url]);
+  const source=(await db.query("select * from scout.evidence where parsed#>>'{riseup,workshop}'='true'")).rows[0],i=await assessmentInput(db,source,tracker),record=(await db.query('select * from scout.records')).rows[0];
+  assert.equal(source.parsed.title,record.title);assert.equal(source.parsed.starts_at,'2026-10-15T13:00:00.000Z');assert.equal(source.parsed.time_zone,'UTC');
+  assert.equal(source.parsed.registration_url,retained.registration_url);assert.equal(source.parsed.organization,retained.organization);assert.equal(source.parsed.description.length,141);
+  assert.equal(source.parsed.riseup.corroborates,record.id);assert.deepEqual(i.exact_ids,[record.id]);assert.equal(i.candidates.length,1);assert.equal(i.context_truncated,false);
+  assert.ok(i.text.includes('15 October at 15:00 Paris time'));assert.ok(i.text.includes('Oct 15, 2026 09:00 PM Singapore'));assert.ok(i.text.includes('first session'));assert.ok(i.links.includes(f.registration.requested_url));
+  assert.equal(JSON.parse(source.content).detail.body,f.registration.body);assert.ok(JSON.parse(source.content).detail.url.includes(retained.registration_url));assert.equal(source.published_at,null);
+  for(const k of ['location','ends_at','status'])assert.equal(source.parsed[k],null);
+  const model=async(_p,inputs)=>{calls++;return inputs.map(x=>({...result,source_id:x.source_id,action:'supporting_evidence',record_id:x.scripted.riseup.corroborates,
+   candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,x.scripted[k]??null]))),priority:'high',quotes:[x.scripted.description]}));};
+  const initial=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(initial.assessed,1,initial.warnings.join('; '));assert.equal(initial.created+initial.changed,0);assert.equal(initial.pending,4);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+  const accepted=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];assert.equal(accepted.record_id,record.id);assert.equal(accepted.parsed.assessment.priority,'high');
+  f.registration.url=f.registration.url.replace(/_x_zm_rhtaid=\d+/,'_x_zm_rhtaid=999');f.registration.body=f.registration.body.replaceAll('R4O6zqjuSHyoAXFsUoCPSA','cosmeticNonce');
+  const repeat=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(repeat.requests,5);assert.equal(repeat.skipped,5);assert.equal(repeat.created+repeat.changed+repeat.assessed+repeat.candidates,0);assert.equal(calls,1);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+  assert.doesNotMatch(i.text,/krill|1\.5|new digital home|September in Rome/);
+ }finally{await db.close();}
+});
+
+test('RISE UP workshop failures and clock, year, session or redirect conflicts retain pending evidence and protect the existing finding',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/riseup-website.json.gz',import.meta.url))));let unavailable=false;
+ try{
+  const {evidence,...retained}=f.retained;await db.query('insert into scout.records select * from jsonb_populate_record(null::scout.records,$1::jsonb)',[retained]);
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01',
+   read:async(u,b)=>{b.requests++;if(unavailable&&u===f.registration.requested_url)throw new Error('Injected HTTP 503');return Object.values(f).find(r=>r.url===u||r.requested_url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  const before=(await db.query('select * from scout.records')).rows,base=f.registration.body;
+  for(const [from,to]of [['Oct 15, 2026 09:00 PM','Oct 15, 2026 10:00 PM'],['Oct 15, 2026','Oct 15, 2027'],['Session 1 - Designing','Session 2 - Designing'],['"timezoneId":"Asia/Singapore"','"timezoneId":"America/New_York"'],['\nregisterVO:','\nunknownVO:'],['</html>','']]){
+   assert.ok(base.includes(from));f.registration.body=base.replaceAll(from,to);await collectHSA(db,options);
+   const source=(await db.query("select * from scout.current_evidence where parsed#>>'{riseup,workshop}'='true'")).rows[0]??(await db.query("select * from scout.evidence where parsed#>>'{riseup,workshop}'='true' order by collected_at desc limit 1")).rows[0];
+   assert.equal(source.parsed.riseup.identity_unconfirmed,true,from);assert.equal(source.parsed.assessment.state,'pending');assert.equal(source.record_id,null);
+   const i=await assessmentInput(db,source,tracker);assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:full({kind:'event',title:i.scripted.title}),quotes:[i.scripted.title]},i),/identity unconfirmed/);
+  }
+  f.registration.body=base;unavailable=true;const outage=await collectHSA(db,options);let source=(await db.query("select * from scout.evidence where parsed#>>'{riseup,workshop}'='true' order by (parsed#>>'{source,observed_at}') desc limit 1")).rows[0];
+  assert.equal(source.parsed.riseup.identity_unconfirmed,true);assert.match(outage.warnings.join(' '),/Injected HTTP 503/);assert.match(JSON.parse(source.content).item,/Register Here/);unavailable=false;
+  // A different canonical registration with the same title/organizer/date is unresolved, not a duplicate finding.
+  const goodURL=f.registration.url;f.registration.url=goodURL.replace('WN_NvlqQrDmR8WISTqMw-vSeg','WN_DifferentSession');f.registration.body=base.replaceAll('WN_NvlqQrDmR8WISTqMw-vSeg','WN_DifferentSession');
+  await collectHSA(db,options);source=(await db.query("select * from scout.evidence where parsed#>>'{riseup,workshop}'='true' order by (parsed#>>'{source,observed_at}') desc limit 1")).rows[0];assert.equal(source.parsed.riseup.identity_unconfirmed,true);
+  f.registration.url=goodURL;f.registration.body=base;await collectHSA(db,options);source=(await db.query("select * from scout.evidence where parsed#>>'{riseup,workshop}'='true' order by (parsed#>>'{source,observed_at}') desc limit 1")).rows[0];assert.equal(source.parsed.riseup.identity_unconfirmed,undefined);assert.equal(source.parsed.riseup.corroborates,retained.id);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,before);
+ }finally{await db.close();}
+});
+
+test('RISE UP workshop revisions require complete source facts and cannot turn corroboration into a new event or overwrite known facts',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/riseup-website.json.gz',import.meta.url))));
+ try{
+  const {evidence,...retained}=f.retained;await db.query('insert into scout.records select * from jsonb_populate_record(null::scout.records,$1::jsonb)',[retained]);
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u||r.requested_url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const original=(await db.query("select * from scout.evidence where parsed#>>'{riseup,workshop}'='true'")).rows[0],i=await assessmentInput(db,original,tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),decision={...result,source_id:i.source_id,action:'supporting_evidence',record_id:retained.id,candidate,quotes:[candidate.description]};
+  validateDecision(decision,i);for(const action of ['new','update'])assert.throws(()=>validateDecision({...decision,action,record_id:action==='new'?null:retained.id},i),/corroborates/);
+  for(const change of [{starts_at:'2026-10-15T14:00:00Z'},{registration_url:f.registration.requested_url},{kind:'announcement'},{title:'BBNJ Webinar: Designing the BBNJ Clearing-House Mechanism'},{description:'An incomplete fragment'}])assert.throws(()=>validateDecision({...decision,candidate:{...candidate,...change}},i));
+  f.september.body=f.september.body.replace('help inform the development of its official prototype.','help inform the testing of its official prototype.');
+  const changed=await collectHSA(db,options);assert.equal(changed.candidates,1);const updated=(await db.query("select * from scout.evidence where parsed#>>'{riseup,workshop}'='true' order by collected_at desc limit 1")).rows[0];
+  assert.equal(updated.parsed.source.item_key,original.parsed.source.item_key);assert.equal(updated.parsed.source.previous_id,original.id);assert.match(updated.parsed.description,/testing/);assert.equal(updated.parsed.riseup.corroborates,retained.id);
+  // Newsletter clock change without a corresponding registration change stays unconfirmed.
+  f.september.body=f.september.body.replace('15 October at 15:00 Paris time','16 October at 15:00 Paris time');
+  await collectHSA(db,options);const conflict=(await db.query("select * from scout.evidence where parsed#>>'{riseup,workshop}'='true' order by collected_at desc limit 1")).rows[0];assert.equal(conflict.parsed.riseup.identity_unconfirmed,true);
+ }finally{await db.close();}
+});
+
+
+test('actual RISE UP Take Action assessment completes High corroboration, preserves the reviewed event and repeats without calls',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/riseup-website.json.gz',import.meta.url)))),live=f.workshop_live;let calls=0;
+ try{
+  for(const r of f.live.prior_records)await db.query('insert into scout.records select * from jsonb_populate_record(null::scout.records,$1::jsonb)',[r]);
+  const before=(await db.query('select * from scout.records order by id')).rows,tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-01',read:async(u,b)=>{const r=Object.values(f).find(r=>r.url===u||r.requested_url===u);b.requests+=r.requests??1;return r;},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const source=(await db.query("select * from scout.evidence where parsed#>>'{riseup,workshop}'='true'")).rows[0];
+  assert.equal(source.content_hash,live.receipt_hash);assert.equal(source.parsed.riseup.corroborates,live.record.id);
+  const decision=Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]]));validateDecision(decision,live.input);
+  const targeted={...options,sourceId:source.id,model:async()=>{calls++;return[{...decision,source_id:source.id}];}};
+  const first=await collectHSA(db,targeted);assert.equal(first.assessed,1,first.warnings.join('; '));assert.equal(first.created+first.changed,0);
+  const accepted=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];assert.equal(accepted.record_id,live.record.id);assert.equal(accepted.parsed.assessment.state,'complete');assert.equal(accepted.parsed.assessment.priority,'high');assert.equal(accepted.parsed.assessment.action,'supporting_evidence');assert.equal(accepted.parsed.assessment.model_decision,undefined);
+  assert.equal(accepted.parsed.description.length,141);assert.equal(accepted.parsed.starts_at,'2026-10-15T13:00:00.000Z');assert.equal(accepted.parsed.registration_url,live.record.registration_url);assert.equal(accepted.parsed.riseup.publication_on,'2026-09-30');
+  const repeat=await collectHSA(db,targeted);assert.equal(repeat.requests,5);assert.equal(repeat.skipped,5);assert.equal(repeat.created+repeat.changed+repeat.assessed+repeat.candidates,0);assert.equal(calls,1);
+  assert.deepEqual((await db.query('select * from scout.records order by id')).rows,before);
+  assert.equal(live.ledger.attempts,19);assert.equal(live.run.stats.model_attempts.length,1);assert.equal(live.run.stats.model_attempts[0].input_bound,7957);
+  assert.equal(live.run.stats.model_usage[0].promptTokenCount,1636);assert.equal(live.run.stats.model_usage[0].candidatesTokenCount,435);assert.equal(live.repeat.stats.model_attempts,undefined);
+  assert.equal(f.live.decision.state,'uncertain');assert.equal(f.live.decision.candidate,null);assert.equal(f.live.ledger.attempts,18);
  }finally{await db.close();}
 });
