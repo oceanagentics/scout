@@ -37,6 +37,8 @@ test('invalid authenticated requests do no database work', async () => {
     request(undefined, '?validate=false&tracker_id=00000000-0000-0000-0000-000000000001'),
     request(undefined, '?validate=true&tracker_id=all'),
     request(undefined, '?validate=true&validate=true&tracker_id=00000000-0000-0000-0000-000000000001'),
+    ...['true','false','','true&assess_only=true'].map(value=>request(undefined, `?assess_only=${value}`)),
+    request(undefined, '?assess_only=true&validate=true&tracker_id=00000000-0000-0000-0000-000000000001'),
     ...['-1','11','1.2','','2&max_attempts=3'].map(value=>request(undefined, `?max_attempts=${value}`)),
     new Request('https://example.test', { method: 'POST', headers: { apikey: secret }, body: '{}' })]) {
     const response = await hostedHSA(req, { env, databaseURL: 'unused', connect: () => { connects++; } });
@@ -51,7 +53,7 @@ test('overlap skips collection; authorized work uses parameters/transactions and
     let collected = 0, closed = 0, transactions = 0;
     const tx = { unsafe: async (query, params) => { queries.push({ query, params }); if(query==='begin') transactions++; return [{ acquired }]; },
       release() {} };
-    const req = new Request('https://example.test/collect?validate=true&since=2026-09-01&max_attempts=0&source_id=00000000-0000-0000-0000-000000000001&tracker_id=00000000-0000-0000-0000-000000000002', {
+    const req = new Request('https://example.test/collect?assess_only=true&validate=true&since=2026-09-01&max_attempts=0&source_id=00000000-0000-0000-0000-000000000001&tracker_id=00000000-0000-0000-0000-000000000002', {
       method: 'POST', headers: { apikey: secret }, body: new ReadableStream({ start(controller) { controller.close(); } }), duplex: 'half' });
     const response = await hostedHSA(req, { env, databaseURL: 'unused',
       connect: (_url, options) => {
@@ -65,6 +67,7 @@ test('overlap skips collection; authorized work uses parameters/transactions and
         assert.equal(options.sourceId, '00000000-0000-0000-0000-000000000001');
         assert.equal(options.trackerId, '00000000-0000-0000-0000-000000000002');
         assert.equal(options.validate, true);
+        assert.equal(options.assessOnly, true);
         await assert.rejects(options.makeModel('unused')(), /Observation-only run/);
         assert.ok(options.deadline <= Date.now() + 100000);
         await db.transaction(inner => inner.query('select $1::jsonb, $2::text', [{ proof: true }, "quote'; --"]));

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
+import postgres from 'postgres';
 import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,HARVEST,RISE_UP,BLUE_MARINE,SYMPOSIUM,CBD_REGISTRY,OCTO,EXPLORERS,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
@@ -23,7 +24,7 @@ test('recorded discovery interleaves four bounded queries, preserves URI/CID and
   const recap=sources.find(s=>s.url.endsWith('3mwvgavy4nc2p')),ri=await assessmentInput(db,recap,tracker),rc=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,ri.scripted[k]??null])));assert.equal(rc.kind,'announcement');assert.throws(()=>validateDecision({...result,source_id:ri.source_id,candidate:{...rc,kind:'event'},quotes:[ri.text.slice(0,80)]},ri),/Discovery facts/);
   const treaty=sources.find(s=>s.url.endsWith('3mwtg3dq5222r')),ti=await assessmentInput(db,treaty,tracker);assert.equal(ti.scripted.discovery.treaty_unverified,true);assert.throws(()=>validateDecision({...result,source_id:ti.source_id,candidate:full({title:ti.scripted.title}),quotes:[ti.text.slice(0,80)]},ti),/official verification/);
   const article=sources.find(s=>s.url.endsWith('3mwvqlg37oy2c')),ai=await assessmentInput(db,article,tracker);assert.equal(ai.scripted.discovery.treaty_unverified,true);assert.ok(JSON.parse(article.content).support.text.includes('101 parties'));assert.throws(()=>validateDecision({...result,source_id:ai.source_id,candidate:full({title:ai.scripted.title}),quotes:[ai.text.slice(0,80)]},ai),/official verification/);
-  const invitation=sources.find(s=>s.url.endsWith('3mwvcxiobyt26')),ii=await assessmentInput(db,invitation,tracker);assert.equal(ii.scripted.kind,'event');assert.equal(ii.scripted.discovery.event_verified,false);assert.equal(ii.scripted.organization,null);assert.equal(invitation.parsed.starts_at,null);for(const kind of ['announcement','event'])assert.throws(()=>validateDecision({...result,source_id:ii.source_id,candidate:full({kind,title:ii.scripted.title}),quotes:[ii.text.slice(0,80)]},ii),/verified supporting page/);
+  const invitation=sources.find(s=>s.url.endsWith('3mwvcxiobyt26')),ii=await assessmentInput(db,invitation,tracker);assert.equal(ii.scripted.kind,'event');assert.equal(ii.scripted.discovery.event_verified,false);assert.equal(ii.scripted.organization,null);assert.equal(invitation.parsed.starts_at,null);const exact={...ii,candidates:[{id:result.source_id,kind:'event',title:ii.scripted.title}],exact_ids:[result.source_id]},corroboration={...result,source_id:ii.source_id,action:'supporting_evidence',record_id:result.source_id,candidate:full({kind:'event',title:ii.scripted.title}),quotes:[ii.text.slice(0,80)]};validateDecision(corroboration,exact);assert.throws(()=>validateDecision({...corroboration,action:'new',record_id:null},exact),/existing finding/);assert.throws(()=>validateDecision({...corroboration,action:'update'},exact),/existing finding/);assert.match(INSTRUCTION,/Unverified discovery events require uncertain unless exact_ids corroborates an existing event/);for(const kind of ['announcement','event'])assert.throws(()=>validateDecision({...result,source_id:ii.source_id,candidate:full({kind,title:ii.scripted.title}),quotes:[ii.text.slice(0,80)]},ii),/verified supporting page/);
   for(const s of sources){const i=await assessmentInput(db,s,tracker);let bytes=0;await gemini({apiKey:'fixture-only',ledger:{query:async()=>({rows:[]})},runId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',fetch:async(_u,o)=>{bytes=Buffer.byteLength(o.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}})(INSTRUCTION,[i],SCHEMA);assert.ok(bytes<=8000,bytes);}
   const repeat=await collectHSA(db,options);assert.equal(repeat.skipped,18);assert.equal(repeat.candidates+repeat.assessed+repeat.created+repeat.changed,0);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
   await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);await assert.rejects(collectHSA(db,{...options,since:'2026-08-01'}),/35 days/);
@@ -140,14 +141,95 @@ test('actual hosted database adapter commits reservations before rollback and re
     await db.exec('begin;delete from scout.evidence;delete from scout.records;commit;');
     assert.equal((await db.query("select jsonb_array_length(stats->'model_attempts') n from scout.collection_runs where id=$1",[run])).rows[0].n,2);
     await assert.rejects(model('test','x'.repeat(8001),{}),/input limit/);assert.equal(calls,2);
-    // Age attempts within today to exercise independent run and daily ceilings.
+    // Earlier same-day work no longer blocks another run; rate/run caps remain.
     const seed={at:new Date(Date.now()-120000).toISOString()};
     await db.query("update scout.collection_runs set stats=jsonb_build_object('model_attempts',$1::jsonb) where id=$2",[JSON.stringify(Array(10).fill(seed)),run]);
     await assert.rejects(hosted.query(reservationSQL(run,50)),/quota/);
     const other=(await db.query("insert into scout.collection_runs(tracker_id,stats) select tracker_id,$2::jsonb from scout.collection_runs where id=$1 returning id",[run,JSON.stringify({model_attempts:Array(10).fill(seed)})])).rows[0].id;
+    await db.query("insert into scout.collection_runs(tracker_id,stats) select tracker_id,$2::jsonb from scout.collection_runs where id=$1",[run,JSON.stringify({model_attempts:Array(5).fill(seed)})]);
     const fresh=(await db.query('insert into scout.collection_runs(tracker_id) select tracker_id from scout.collection_runs where id=$1 returning id',[other])).rows[0].id;
+    await hosted.query(reservationSQL(fresh,50));
+    await hosted.query(reservationSQL(fresh,50));
+    assert.equal((await db.query("select jsonb_array_length(stats->'model_attempts') n from scout.collection_runs where id=$1",[fresh])).rows[0].n,2);
     await assert.rejects(hosted.query(reservationSQL(fresh,50)),/quota/);
   }finally{await db.close();}
+});
+
+test('stored-source assessment is explicit, preserves provenance and uncertainty history, and cannot replay complete or superseded evidence',async()=>{
+ const db=await database(),sql=postgres({host:'127.0.0.1',port:1});let calls=0,uncertain=true;
+ // Postgres.js serializes a timestamptz parameter through Date, losing microseconds.
+ const hosted=adapter({unsafe:async(q,p=[])=>{if(q.includes('last_seen_at=$2::timestamptz'))p=[p[0],sql.options.serializers[1184](p[1])];return(await db.query(q,p)).rows;}});
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[HSA_WEB])).rows[0];
+  const source=await observe(db,tracker.id,input.url,JSON.stringify({text:input.text}),null,{description:input.text,organization:null}, {text:input.text},{rank:2,identity:'stored:consultation'},'2026-10-01T00:00:00Z');
+  await db.query("update scout.evidence set last_seen_at='2026-10-01T00:00:00.123456Z' where id=$1",[source.id]);
+  Object.assign(source,(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0]);
+  const observed=(await db.query('select last_seen_at::text as seen from scout.evidence where id=$1',[source.id])).rows[0].seen;
+  const options={assessOnly:true,validate:true,trackerId:tracker.id,sourceId:source.id,read:async()=>{throw new Error('Stored assessment must not fetch');},
+   model:async(_p,inputs)=>{calls++;for(const i of inputs){assert.ok(i.text.includes(input.text));assert.ok(!Object.hasOwn(i.scripted,'description'));assert.ok(!Object.hasOwn(i.scripted,'organization'));}return inputs.map(i=>({...result,source_id:i.source_id,...(uncertain?{action:'uncertain',candidate:null,priority:null,reason:'Identity requires review'}:{})}));}};
+  for(const invalid of [{validate:false},{trackerId:null},{sourceId:null},{sourceId:'all'},{assessOnly:'true'}])await assert.rejects(collectHSA(db,{...options,...invalid}),e=>e.status===400);
+  const first=await collectHSA(hosted,options);assert.equal(first.assessed,1);assert.equal(first.requests,0);assert.equal(first.outcome,'partial');
+  const previous=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];assert.ok(previous.parsed.assessment.input_fingerprint);
+  uncertain=false;const next=await collectHSA(hosted,options);assert.equal(next.assessed,1);assert.equal(next.created,1);assert.equal(next.outcome,'partial');assert.equal(calls,2);
+  const accepted=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];assert.deepEqual(accepted.parsed.assessment.previous,previous.parsed.assessment);
+  for(const k of ['content','content_hash','url','tracker_id','published_at','collected_at','last_seen_at'])assert.deepEqual(accepted[k],source[k],k);
+  assert.equal((await db.query('select last_seen_at::text as seen from scout.evidence where id=$1',[source.id])).rows[0].seen,observed);
+  assert.deepEqual(accepted.parsed.source,source.parsed.source);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+  const record=(await db.query('select * from scout.records')).rows[0];const repeat=await collectHSA(db,options);assert.equal(repeat.assessed+repeat.created+repeat.changed,0);assert.equal(calls,2);assert.deepEqual((await db.query('select * from scout.records')).rows[0],record);
+  assert.equal((await db.query('select last_success_at from scout.tracker_status where id=$1',[tracker.id])).rows[0].last_success_at,null);
+  const run=(await db.query('select stats from scout.collection_runs where id=$1',[next.run_id])).rows[0].stats;assert.equal(run.assessment_only,true);assert.equal(run.source_id,source.id);assert.equal(run.assessment_results[0].decisions[0].source_id,source.id);
+  const older=await observe(db,tracker.id,input.url+'/changed','Old capture',null,{}, {text:'Old capture'},{rank:2,identity:'stored:changed'},'2026-10-01T00:00:00Z');
+  await observe(db,tracker.id,input.url+'/changed','New capture',null,{}, {text:'New capture'},{rank:2,identity:'stored:changed'},'2026-10-02T00:00:00Z');
+  assert.equal((await collectHSA(db,{...options,sourceId:older.id})).assessed,0);
+  const other=(await db.query('select id from scout.trackers where url=$1',[DOALOS])).rows[0].id;assert.equal((await collectHSA(db,{...options,trackerId:other,sourceId:older.id})).assessed,0);assert.equal(calls,2);
+ }finally{await sql.end();await db.close();}
+});
+
+test('recorded backlog Low, translation and date-only failures keep strict validation; recap repair uses literal finding context',async()=>{
+ const f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/assessment-backlog.json.gz',import.meta.url))));
+ const [recap,low,translation]=f.samples;
+ assert.throws(()=>validateDecision(low.decision,low.input),/candidate required/);
+ const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,low.input.scripted[k]??null])));
+ assert.equal(validateDecision({...low.decision,candidate},low.input).priority,'low');
+ assert.throws(()=>validateDecision(translation.decision,translation.input),/translation already has a finding/);
+  validateDecision({...translation.decision,action:'supporting_evidence',record_id:translation.input.exact_ids[0]},translation.input);
+ const date=f.samples[3];assert.throws(()=>validateDecision(date.decision,date.input),/timestamp/);
+ validateDecision({...date.decision,candidate:{...date.decision.candidate,starts_at:null,ends_at:null}},date.input);
+ for(const key of ['starts_at','ends_at'])assert.deepEqual(SCHEMA.items.properties.candidate.properties[key],{type:['string','null'],format:'date-time'});
+ const advocacy=f.samples[4];assert.equal(advocacy.decision.action,'uncertain');assert.ok(!advocacy.input.scripted.discovery?.treaty_unverified);
+ const advocacyCandidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,advocacy.input.scripted[k]??null])));
+ assert.equal(validateDecision({...advocacy.decision,action:'new',candidate:advocacyCandidate},advocacy.input).priority,'low');
+ validateDecision(f.recap_repair,recap.input);assert.ok(recap.input.text.includes(f.recap_repair.candidate.description));
+ assert.match(f.recap_repair.candidate.description,/Marine Genetic Resources.*Digital Sequence Information/);
+ assert.doesNotMatch(f.recap_repair.candidate.description,/100 parties/);assert.match(recap.decision.candidate.description,/100 parties/);
+ assert.ok(f.oversized.bytes>8000);
+ for(const {input}of [...f.samples,f.oversized]){
+  const original=structuredClone(input),{changes,candidates,scripted,...rest}=input,compact={...rest,scripted:Object.fromEntries(Object.entries(scripted).filter(([key,value])=>value!=null&&(key!=='description'||!normalize(input.text).includes(normalize(value))))),candidates:candidates.map(({identity_key,updated_at,evidence,exact,...c})=>Object.fromEntries(Object.entries(c).filter(([,v])=>v!=null&&v!==false)))};
+  let calls=0;await gemini({apiKey:'fixture-only',ledger:{query:async()=>({rows:[]})},runId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',fetch:async(_u,r)=>{calls++;assert.ok(Buffer.byteLength(r.body)<=8000);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}})(INSTRUCTION,[compact],SCHEMA);assert.equal(calls,1);
+  assert.equal(compact.text,input.text);assert.deepEqual(compact.exact_ids,input.exact_ids);assert.deepEqual(input,original);
+  for(const [key,value]of Object.entries(scripted))if(value!=null){if(key==='description'&&!Object.hasOwn(compact.scripted,key))assert.ok(normalize(input.text).includes(normalize(value)));else assert.deepEqual(compact.scripted[key],value);}
+ }
+});
+
+test('recorded notification and DOSI summaries exclude unrelated events but preserve identities and source context',async()=>{
+ const fixtures=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/assessment-backlog.json.gz',import.meta.url))));
+ for(const f of [fixtures.notificationOversized,...fixtures.newsletterOversized]){
+ const db=await database();
+ try{
+  assert.ok(f.bytes>8000);const tracker=(await db.query('select * from scout.trackers where url=$1',[f.source.url.includes('mailchi.mp')?DOSI_WEB:DOALOS])).rows[0];
+  for(const c of f.input.candidates)await db.query('insert into scout.records(id,identity_key,kind,title,organization,event_url,starts_at,ends_at,status,priority) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[c.id,c.identity_key,c.kind,c.title,c.organization,c.event_url,c.starts_at,c.ends_at,c.status,c.priority]);
+  const {source:context,assessment,...scripted}=f.source.parsed;
+  const source=await observe(db,tracker.id,f.source.url,f.source.content,null,scripted,{text:f.source.content},context,'2026-10-03T12:00:00Z');
+  const i=await assessmentInput(db,source,tracker);assert.deepEqual(i.candidates,[]);assert.equal(i.text,f.input.text);assert.deepEqual(i.scripted,f.input.scripted);
+  let calls=0;const run=await collectHSA(db,{trackerId:tracker.id,sourceId:source.id,assessOnly:true,validate:true,
+   makeModel:runId=>gemini({apiKey:'fixture-only',runId,ledger:db,fetch:async(_u,request)=>{calls++;assert.ok(Buffer.byteLength(request.body)<=8000);const [item]=JSON.parse(JSON.parse(request.body).contents[0].parts[0].text);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify([{...result,source_id:item.source_id,action:'uncertain',candidate:null,priority:null,reason:'Injected boundary check',quotes:[]}])}]}}]});}})});
+  assert.equal(calls,1);assert.equal(run.assessed,1);
+  await db.query('update scout.records set event_url=$2 where id=$1',[f.input.candidates[0].id,source.url]);
+  const linked=await assessmentInput(db,{...source,record_id:f.input.candidates[1].id},tracker);
+  assert.deepEqual(new Set(linked.candidates.map(c=>c.id)),new Set(f.input.candidates.slice(0,2).map(c=>c.id)));
+  assert.throws(()=>validateDecision({...result,source_id:source.id,action:'update',record_id:linked.candidates[0].id,candidate:full({kind:'announcement',title:scripted.title}),quotes:[scripted.title]},linked),/different finding kind/);
+ }finally{await db.close();}
+ }
 });
 
 test('source A→B→A reuses content and preserves added, removed and changed fields',async()=>{
@@ -968,7 +1050,7 @@ test('GFW rejected null-candidate corroboration preserves the live pending bound
   const tracker=(await db.query('select * from scout.trackers where url=$1',[GFW_WEB])).rows[0],feed=(await db.query("select id from scout.trackers where url='https://bsky.app/profile/globalfishingwatch.org'")).rows[0];
   await db.query('insert into scout.records select * from jsonb_populate_record(null::scout.records,$1::jsonb)',[f.retained.record]);await db.query('insert into scout.evidence select * from jsonb_populate_record(null::scout.evidence,$1::jsonb)',[{...f.retained.evidence,tracker_id:feed.id}]);
   const original=(await db.query('select * from scout.records')).rows[0];
-  const options={trackerId:tracker.id,validate:true,since:'2026-09-20',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u||r.requested_url===u);},model:async(instruction,[i])=>{assert.match(instruction,/Supporting_evidence still requires a complete candidate/);return[{...result,source_id:i.source_id,action:'supporting_evidence',record_id:i.exact_ids[0],candidate:complete?full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))):null,quotes:[i.scripted.title]}];}};
+  const options={trackerId:tracker.id,validate:true,since:'2026-09-20',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u||r.requested_url===u);},model:async(instruction,[i])=>{assert.match(instruction,/supporting_evidence[^.;]*complete candidate/i);return[{...result,source_id:i.source_id,action:'supporting_evidence',record_id:i.exact_ids[0],candidate:complete?full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))):null,quotes:[i.scripted.title]}];}};
   const rejected=await collectHSA(db,options);assert.equal(rejected.assessed,0);assert.equal(rejected.pending,1);assert.match(rejected.warnings.join(' '),/candidate required/);assert.deepEqual((await db.query('select * from scout.records')).rows,[original]);
   complete=true;const resumed=await collectHSA(db,options);assert.equal(resumed.assessed,1);assert.equal(resumed.created+resumed.changed,0);assert.deepEqual((await db.query('select * from scout.records')).rows,[original]);
   assert.equal(f.live_failure.assessment.state,'pending');assert.equal(f.live_failure.accounting.assessed,0);assert.equal(f.live_failure.accounting.model_attempts.length,1);assert.equal(f.live_failure.accounting.model_attempts[0].input_bound,7086);assert.match(f.live_failure.accounting.warnings.join(' '),/candidate required/);assert.deepEqual(f.live_failure.record,f.retained.record);assert.equal(f.live_failure.raw_decision_persisted,false);

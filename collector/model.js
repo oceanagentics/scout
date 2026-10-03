@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 
 export const MODEL = 'gemini-3.5-flash-lite';
-export const MODEL_LIMITS = { minute: 2, run: 10, day: 20, input: 8000, output: 1024, retries: 1 };
+export const MODEL_LIMITS = { minute: 2, run: 10, input: 8000, output: 1024, retries: 1 };
 
 // One autocommitted statement. Never call this inside a collection transaction.
 // The same hosted collection_runs ledger is required for local and hosted calls.
@@ -18,11 +18,7 @@ export function reservationSQL(runId, inputBytes, runLimit = MODEL_LIMITS.run) {
     if jsonb_array_length(attempts) >= ${runLimit} or
       (select count(*) from scout.collection_runs r cross join lateral
         jsonb_array_elements(coalesce(r.stats->'model_attempts','[]'::jsonb)) a
-        where (a->>'at')::timestamptz > moment-interval '60 seconds') >= 2 or
-      (select count(*) from scout.collection_runs r cross join lateral
-        jsonb_array_elements(coalesce(r.stats->'model_attempts','[]'::jsonb)) a
-        where ((a->>'at')::timestamptz at time zone 'America/Los_Angeles')::date =
-          (moment at time zone 'America/Los_Angeles')::date) >= 20
+        where (a->>'at')::timestamptz > moment-interval '60 seconds') >= ${MODEL_LIMITS.minute}
     then raise exception 'Model quota reached'; end if;
     update scout.collection_runs set stats=jsonb_set(stats,'{model_attempts}',attempts ||
       jsonb_build_array(jsonb_build_object('at',moment,'input_bound',${inputBytes},'output_bound',1024,'model','${MODEL}')))

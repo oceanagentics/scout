@@ -34,15 +34,17 @@ export async function hostedHSA(request, { databaseURL, apiKey, env, connect = p
   const sourceId = params.get('source_id');
   const trackerId = params.get('tracker_id');
   const validate = params.get('validate') === 'true';
+  const assessOnly = params.get('assess_only') === 'true';
   const body = request.body?.getReader();
   const empty = !body || (await body.read()).done;
   await body?.cancel();
-  if (!empty || [...params.keys()].some(key => !['since','max_attempts','source_id','tracker_id','validate'].includes(key)) || params.getAll('since').length > 1 ||
+  if (!empty || [...params.keys()].some(key => !['since','max_attempts','source_id','tracker_id','validate','assess_only'].includes(key)) || params.getAll('since').length > 1 ||
+      params.getAll('assess_only').length > 1 || (params.has('assess_only') && (!assessOnly || !validate || !sourceId || !trackerId)) ||
       params.getAll('validate').length > 1 || (params.has('validate') && (!validate || !trackerId)) ||
       ['source_id','tracker_id'].some(key=>params.getAll(key).length>1 || (params.has(key) && !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(params.get(key)))) ||
       params.getAll('max_attempts').length > 1 || !/^(?:[0-9]|10)$/.test(attempts) ||
       !/^\d{4}-\d{2}-\d{2}$/.test(since) || !Number.isFinite(Date.parse(since)) || new Date(since).toISOString().slice(0, 10) !== since) {
-    return Response.json({ error: 'Use an empty POST with optional since=YYYY-MM-DD, max_attempts=0..10, tracker_id=UUID and source_id=UUID; validate=true requires an explicit tracker_id' }, { status: 400 });
+    return Response.json({ error: 'Use an empty POST with optional since=YYYY-MM-DD, max_attempts=0..10, tracker_id=UUID and source_id=UUID; validate=true requires tracker_id; assess_only=true also requires validate=true and source_id' }, { status: 400 });
   }
   if (!databaseURL) return Response.json({ error: 'Collector database unavailable' }, { status: 503 });
   const deadline = Date.now() + 100000;
@@ -57,7 +59,7 @@ export async function hostedHSA(request, { databaseURL, apiKey, env, connect = p
     acquired=lock.acquired;
     if (!acquired) return Response.json({ error: 'Scout collection already running' }, { status: 409 });
     const db=database(session);
-    const result=await collect(db,{since:`${since}T00:00:00Z`,deadline,sourceId,trackerId,validate,
+    const result=await collect(db,{since:`${since}T00:00:00Z`,deadline,sourceId,trackerId,validate,assessOnly,
       makeModel: Number(attempts) ? runId => gemini({apiKey,ledger:db,runId,deadline,runLimit:Number(attempts)})
         : () => async () => { throw new Error('Observation-only run: assessments deferred (max_attempts=0)'); }});
     return Response.json(result);

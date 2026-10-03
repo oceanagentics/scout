@@ -400,10 +400,13 @@ async function save(db, identity, source, rank, observedAt, stats) {
   return {warning:dateWarning,recordId:existing.id,sourceId:source.id};
 }
 
-export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000, model, makeModel, sourceId = null, trackerId = null, validate = false } = {}) {
+export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000, model, makeModel, sourceId = null, trackerId = null, validate = false, assessOnly = false } = {}) {
   if (!Number.isFinite(Date.parse(since))) throw new Error('A valid coverage start is required');
   if (validate !== false && (validate !== true || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(trackerId ?? ''))) {
     throw Object.assign(new Error('Validation requires an explicit tracker UUID'), { status: 400 });
+  }
+  if (assessOnly !== false && (assessOnly !== true || !validate || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(sourceId ?? ''))) {
+    throw Object.assign(new Error('Stored assessment requires validation and an explicit source UUID'), { status: 400 });
   }
   const tracker = (await db.query("select * from scout.trackers where id=$1 or ($1::uuid is null and seed_key='bbnj-trackers-2026-10-01:17')",[trackerId])).rows[0];
   if (!tracker || (!validate && !tracker.enabled)) throw Object.assign(new Error('Tracker is missing or its collector is not yet proven'), { status: 400 });
@@ -430,8 +433,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo && !explorers && !discovery) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
-  if (discovery && (Date.parse(since)>=Date.parse(started)||Date.parse(started)-Date.parse(since)>35*86400000)) throw Object.assign(new Error('Discovery requires a publication window of at most 35 days'),{status:400});
-  const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
+  if (!assessOnly && discovery && (Date.parse(since)>=Date.parse(started)||Date.parse(started)-Date.parse(since)>35*86400000)) throw Object.assign(new Error('Discovery requires a publication window of at most 35 days'),{status:400});
+  const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, {...(validate ? { validation: true } : {}),...(assessOnly ? { assessment_only: true, source_id: sourceId } : {})}])).rows[0];
   const stats = { created: 0, changed: 0, posts: 0, pages: 0, candidates: 0, skipped: 0, assessed: 0, reused_uncertain: 0, warnings: [] };
   const budget = { requests: 0, deadline: Math.min(deadline, Date.now() + LIMITS.seconds * 1000) };
   model ??= makeModel?.(run.id,budget.deadline);
@@ -439,7 +442,9 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const dateWarnings = new Map();
   let cursor, covered = false, quota = false, feedFailed = false;
   try {
-    if (discovery) {
+    if (assessOnly) {
+      stats.warnings.push('Stored evidence assessment only; source freshness and collection coverage were not checked');
+    } else if (discovery) {
       const queries=['BBNJ','"High Seas Treaty"','"traité sur la haute mer"','BBNJCOP1'];
       const results=[],posts=new Map(),supports=new Map();
       // The public AppView is documented; the caching host denies search. Cursor
@@ -1784,14 +1789,15 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo && !explorers) stats.warnings.push('Feed page limit reached before coverage boundary');
-  const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
+  if (!assessOnly && !covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo && !explorers) stats.warnings.push('Feed page limit reached before coverage boundary');
+  const pendingQuery=`select *,last_seen_at::text as observed_last_seen_at from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium || cbd || octo || explorers || discovery) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium||cbd||octo||explorers||discovery)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium || cbd || octo || explorers || discovery) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>assessOnly||(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium||cbd||octo||explorers||discovery)||pages.has(source.id)));
+  if (assessOnly && !queued.length) stats.warnings.push('Selected source is not latest pending/uncertain evidence for this tracker');
   const pending=[];
   for (const source of queued) {
-    if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
+    if (!assessOnly && source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
       const input=await assessmentInput(db,source,tracker);
       const context=fingerprint({source:source.content_hash,coverage:input.coverage,candidates:JSON.stringify(input.candidates)});
       if (source.parsed.assessment.input_fingerprint===context) { stats.reused_uncertain++; stats.warnings.push(source.parsed.assessment.reason); continue; }
@@ -1810,7 +1816,13 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
       if (!model) throw new Error('Assessment pending: configure model and shared hosted quota accounting');
       const inputs=await Promise.all(batch.map(source=>assessmentInput(db,source,tracker)));
       if (batch.length===2 && Buffer.byteLength(JSON.stringify([INSTRUCTION,inputs,SCHEMA]))>7400) {batch.pop();inputs.pop();index--;}
-      const decisions=await model(INSTRUCTION,inputs,SCHEMA);
+      // Keep provenance/version bookkeeping for validation and uncertainty reuse,
+      // but spend model context on the finding facts and exact IDs.
+      const decisions=await model(INSTRUCTION,inputs.map(({changes,candidates,scripted,...input})=>({...input,
+        scripted:assessOnly?Object.fromEntries(Object.entries(scripted).filter(([key,value])=>value!=null&&(key!=='description'||!normalize(input.text).includes(normalize(value))))):scripted,
+        candidates:candidates.map(({identity_key,updated_at,evidence,exact,...candidate})=>
+        Object.fromEntries(Object.entries(candidate).filter(([,value])=>value!=null&&value!==false)))})),SCHEMA);
+      (stats.assessment_results??=[]).push({source_ids:batch.map(source=>source.id),decisions});
       if (!Array.isArray(decisions)||decisions.length!==batch.length||new Set(decisions.map(d=>d.source_id)).size!==batch.length) throw new Error('Incomplete assessment batch');
       for (let i=0;i<batch.length;i++) {
         const source=batch[i], input=inputs[i];
@@ -1848,6 +1860,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         }
         const assessment={...decision,state:decision.action==='uncertain'?'uncertain':'complete',version:ASSESSMENT_VERSION,
           fingerprint:source.content_hash,accepted_at:now()};
+        if (assessOnly) assessment.previous=source.parsed.assessment;
         if (decision!==modelDecision) assessment.model_decision=modelDecision;
         if (evaluatedUncertainty) assessment.input_fingerprint=fingerprint({source:source.content_hash,coverage:input.coverage,candidates:JSON.stringify(input.candidates)});
         const parsed={...source.parsed,...(['supporting_evidence','no_substantive_change'].includes(decision.action)?{}:decision.candidate??{}),assessment};
@@ -1878,6 +1891,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
             if (changed.rows.length && stats.created===before.created && stats.changed===before.changed) stats.changed++;
             await tx.query("update scout.evidence set parsed=jsonb_set(parsed,'{assessment,priority_accepted}','true') where id=$1 and record_id is not null",[target.sourceId]);
           }
+          if (assessOnly) await tx.query('update scout.evidence set last_seen_at=$2::text::timestamptz where id=$1',[source.id,source.observed_last_seen_at]);
         });
         stats.assessed++;
       }
