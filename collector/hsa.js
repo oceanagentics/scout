@@ -13,6 +13,7 @@ export const DOSI_WEB = 'https://www.dosi-project.org/biodiversity-beyond-nation
 export const GFW_WEB = 'https://globalfishingwatch.org/mediacenter/';
 export const IUCN = 'https://iucn.org/our-work/topic/high-seas';
 export const GOF = 'https://globaloceanforum.com/';
+export const OCEANCARE = 'https://www.oceancare.org/en/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
@@ -410,7 +411,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const gfw=tracker.collector==='web' && tracker.url===GFW_WEB;
   const iucn=tracker.collector==='web' && tracker.url===IUCN;
   const gof=tracker.collector==='web' && tracker.url===GOF;
-  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const oceancare=tracker.collector==='web' && tracker.url===OCEANCARE;
+  if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -633,6 +635,46 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         stats[source.changed?'candidates':'skipped']++;pages.set(url,{source});
       }
       covered=selected.length<=3;
+    } else if (oceancare) {
+      const home=await read(tracker.url,budget);stats.pages++;
+      const listing=OCEANCARE+'stories-and-news/';
+      if (home.url!==tracker.url || !/<\/html>\s*$/.test(home.body.replace(/<!--[\s\S]*?-->/g,'')) || !home.body.includes(`rel="canonical" href="${tracker.url}"`) || !home.body.includes(`href="${listing}"`)) throw new Error('OceanCare listing discovery unavailable');
+      const index=await read(listing,budget);stats.pages++;
+      const main=index.body.match(/<main\b[^>]*>([\s\S]*?)<\/main>/)?.[1];
+      if (index.url!==listing || !main || !/<\/html>\s*$/.test(index.body.replace(/<!--[\s\S]*?-->/g,'')) || !index.body.includes(`rel="canonical" href="${listing}"`)) throw new Error('OceanCare listing unavailable');
+      const text=html=>visibleText(html.replace(/&#(\d{1,7});/g,(_m,n)=>String.fromCodePoint(+n)).replace(/&#x([a-f0-9]{1,6});/gi,(_m,n)=>String.fromCodePoint(parseInt(n,16))));
+      const rows=[...main.matchAll(/<a href="(https:\/\/www\.oceancare\.org\/en\/stories_and_news\/[^"?#]+\/)">([\s\S]*?)<\/a>/g)].map(m=>({url:m[1],card:m[0],title:text(m[2].match(/<div class="headline">([\s\S]*?)<\/div>/)?.[1]??''),date:m[2].match(/<span class="date">([^<]+)<\/span>/)?.[1]}));
+      if (!rows.length || rows.some(r=>!r.title) || new Set(rows.map(r=>r.url)).size!==rows.length) throw new Error('OceanCare listing cards unavailable/ambiguous');
+      const relevant=rows.filter(r=>/\bbbnj\b|high[ -]seas|clearing.house/i.test(r.title+' '+r.url)),selected=relevant.slice(0,LIMITS.pages-2);
+      stats.articles_listed=rows.length;stats.articles_selected=selected.length;
+      stats.warnings.push(`OceanCare title/URL filter selected ${selected.length} of ${relevant.length} matching articles; other ${rows.length-relevant.length} articles, remaining matches, PDFs, translations and dedicated event/session schedules remain outside this slice`);
+      for (const row of selected) try {
+        const page=await read(row.url,budget);stats.pages++;
+        const id=page.body.match(/<body\b[^>]*class="[^"]*\bpostid-(\d+)\b/)?.[1];
+        const article=page.body.match(/<h1>([\s\S]*?)<\/h1><div class="by"><span class="date">([^<]+)<\/span><\/div>([\s\S]*?)<div class="oc-share-wrapper">/);
+        const publishedRaw=page.body.match(/<meta property="article:published_time" content="([^"]+)"/)?.[1],published=dates(publishedRaw).starts_at;
+        const graph=JSON.parse(page.body.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/)?.[1]??'null')?.['@graph'];
+        const metadata=graph?.find(n=>n['@type']==='Article'&&n['@id']===row.url+'#richSnippet');
+        const title=article&&text(article[1]),date=new Date(publishedRaw?.slice(0,10)+'T00:00:00Z');
+        if (page.url!==row.url || !id || !article || !published || !metadata || metadata.datePublished!==publishedRaw || metadata.publisher?.['@id']!==OCEANCARE+'#organization/' ||
+            !/<\/html>\s*$/.test(page.body.replace(/<!--[\s\S]*?-->/g,'')) || !page.body.includes(`rel="canonical" href="${row.url}"`) || !page.body.includes('single-storeisnews') ||
+            !page.body.includes(`data-title="${article[1]}"`) || !/\bbbnj\b|high[ -]seas|clearing.house/i.test(title) ||
+            article[2]!==date.toLocaleDateString('en-US',{timeZone:'UTC',month:'long',day:'numeric',year:'numeric'}) ||
+            row.date&&Date.parse(row.date+' UTC')!==Date.parse(publishedRaw.slice(0,10)+'T00:00:00Z')) throw new Error('OceanCare article identity/content/publication disagreement');
+        const blocks=[...article[3].matchAll(/<(p|h[2-6]|li)\b[^>]*>[\s\S]*?<\/\1>/g)].map(m=>m[0]),content=blocks.join('\n');
+        const paragraphs=blocks.filter(b=>/^<p\b/.test(b)).map(text),context=paragraphs.find(p=>/Clearing-House Mechanism/.test(p)&&/prototype/.test(p))??paragraphs.find(p=>/Clearing-House Mechanism/.test(p))??paragraphs[0];
+        if (!context || paragraphs.length<2) throw new Error('OceanCare article paragraphs unavailable');
+        const seen=(await db.query('select 1 from scout.evidence where tracker_id=$1 and url=$2 limit 1',[tracker.id,row.url])).rows.length;
+        if (published<new Date(since).toISOString()&&!seen) continue;
+        const sentences=context.match(/[^.!?]+[.!?](?=\s|$)/g)?.map(s=>s.trim()).filter(s=>Array.from(s).length<=280)??[];
+        const description=sentences.find(s=>/Clearing-House Mechanism/.test(s))??sentences[0]??null;
+        const scripted={kind:'announcement',title,organization:'OceanCare',description,location:null,starts_at:null,ends_at:null,event_url:null,registration_url:null,status:null,oceancare:{id}};
+        const links=[...new Set([...content.matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(new URL(text(m[1]),row.url).href);}catch{return null;}}).filter(Boolean))].sort();
+        const source=await observe(db,tracker.id,row.url,JSON.stringify({text:title+' '+context,body:page.body,card:row.card}),published,scripted,{text:text(article[3]),links,published_at:published,structured:scripted},
+          {rank:2,identity:`oceancare:post:${id}`,item_key:id,parent_url:listing},now());
+        stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
+      } catch(error) {stats.warnings.push(`${row.url}: ${error.message}`);}
+      covered=true;
     } else if (gof) {
       const home=await read(tracker.url,budget);stats.pages++;
       const projectURL=GOF+'8624-2/',apiURL=GOF+'wp-json/wp/v2/pages/8624';
@@ -1190,11 +1232,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof)||pages.has(source.id)));
+  const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare)||pages.has(source.id)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {

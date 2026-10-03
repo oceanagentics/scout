@@ -50,6 +50,7 @@ export function validateDecision(result, input) {
   if (input.scripted.gfw && existing && !input.exact_ids.includes(existing.id)) fail('GFW identity needs the same article or verified linked announcement');
   if (input.scripted.iucn && existing && !input.exact_ids.includes(existing.id)) fail('IUCN identity needs the same source or verified node, not a shared topic/year');
   if (input.scripted.iucn && existing?.identity_key?.startsWith('iucn:node:') && existing.identity_key!==`iucn:node:${input.scripted.iucn.id}`) fail('distinct IUCN source node');
+  if (input.scripted.oceancare && existing && (!input.exact_ids.includes(existing.id)||existing.identity_key?.startsWith('oceancare:post:')&&existing.identity_key!==`oceancare:post:${input.scripted.oceancare.id}`)) fail('OceanCare identity needs the same publication, not a shared topic/year');
   if (input.scripted.gof && existing && !input.exact_ids.includes(existing.id)) fail('GOF identity needs the same project or exact conference edition/session');
   if (input.scripted.side_event?.id && existing?.event_url?.match(/^https:\/\/www\.cbd\.int\/side-events\/(\d+)$/)?.[1] &&
       existing.event_url!==input.scripted.event_url) fail('distinct CBD session ID');
@@ -102,6 +103,7 @@ export function validateDecision(result, input) {
   if (input.scripted.dosi_web?.publication_on && (c.kind!=='announcement'||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description))) fail('DOSI guide requires its announcement identity and a complete source sentence');
   if (input.scripted.gfw && (c.kind!=='announcement'||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description))) fail('GFW news requires its announcement identity and a complete source sentence');
   if (input.scripted.iucn && (c.kind!=='announcement'||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description))) fail('IUCN resource/news requires its announcement identity and a complete source sentence');
+  if (input.scripted.oceancare && (c.kind!=='announcement'||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description)||['starts_at','ends_at','location','event_url','registration_url','status'].some(f=>c[f]!==null)||result.clear_fields.length)) fail('OceanCare requires complete announcement facts, not inferred event or official treaty facts');
   if (input.scripted.gof && (c.kind!==input.scripted.kind||c.title!==input.scripted.title||c.description&&!/[.!?]$/.test(c.description)||
       ['starts_at','ends_at','location','event_url','registration_url','status',...(c.kind==='event'?['organization']:[])].some(f=>c[f]!==null&&c[f]!==input.scripted[f])||result.clear_fields.length)) fail('GOF project/session facts or complete source sentence unconfirmed');
   if (input.scripted.iddri && (c.kind!==input.scripted.kind||c.title!==input.scripted.title||
@@ -169,7 +171,7 @@ export async function assessmentInput(db, source, tracker) {
     (select parsed->>'start_on' from scout.current_evidence where record_id=r.id and parsed->>'start_on' is not null
       order by authoritative desc,evidence_at desc nulls last,last_seen_at desc limit 1) as calendar_date,
     (select md5(string_agg(content_hash,',' order by url)) from scout.current_evidence where record_id=r.id) as evidence
-    from scout.records r where ${(scripted.iddri||scripted.gfw||scripted.iucn||scripted.gof)&&scripted.kind==='announcement'?"r.kind='announcement' and ":''}(not $9::boolean or r.kind='event') and
+    from scout.records r where ${(scripted.iddri||scripted.gfw||scripted.iucn||scripted.oceancare||scripted.gof)&&scripted.kind==='announcement'?"r.kind='announcement' and ":''}(not $9::boolean or r.kind='event') and
       (r.id=$2 or r.id=$11::uuid or r.identity_key=$8 or r.event_url=$1 or r.event_url=$3 or r.organization=$4 or
       exists(select 1 from scout.current_evidence e where e.record_id=r.id and e.url=$10) or exists(select 1 from unnest($5::text[]) word where lower(r.title) like '%'||word||'%'))
     order by (r.id=$11::uuid) desc nulls last,${scripted.iddri?'exact desc,':''}(r.id=$2) desc nulls last,(r.identity_key=$8) desc nulls last,(r.event_url=$3) desc nulls last,
@@ -187,6 +189,9 @@ export async function assessmentInput(db, source, tracker) {
     if (value && !text.includes(value)) text=normalize(text+'\n'+value);
   }
   const whole=Array.from(text);
+  if (scripted.oceancare) for (const field of ['event_url','starts_at','ends_at','status','registration_url','location']) {
+    if (scripted[field]===null) delete scripted[field];
+  }
   let start=0;
   if (source.parsed.source.previous_id && whole.length>1400) {
     const previous=(await db.query('select content from scout.evidence where id=$1',[source.parsed.source.previous_id])).rows[0];
@@ -199,11 +204,11 @@ export async function assessmentInput(db, source, tracker) {
   for (const candidate of candidates) {
     candidate.title=Array.from(candidate.title).slice(0,240).join('');
     // These announcement shortlists retain all three identities and full source context without empty event fields.
-    if (scripted.iucn||scripted.gof&&scripted.kind==='announcement') for (const field of ['event_url','starts_at','ends_at','status','calendar_date','registration_link']) {
+    if (scripted.iucn||scripted.oceancare||scripted.gof&&scripted.kind==='announcement') for (const field of ['event_url','starts_at','ends_at','status','calendar_date','registration_link']) {
       if (!candidate[field]) delete candidate[field];
     }
   }
   return {source_id:source.id,url:source.url,coverage:tracker.coverage?.slice(0,240),text:whole.slice(start,start+1400).join(''),
     context_truncated:whole.length>1400,links:zoom?[source.url]:source.parsed.source.links??[],scripted,
-    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id||r.id===scripted.gfw?.corroborates||(scripted.iucn||scripted.gof)&&r.identity_key===source.parsed.source.identity||scripted.iddri&&(r.identity_key===source.parsed.source.identity||scripted.iddri.translation_of&&r.registration_link)).map(r=>r.id)};
+    changes:source.parsed.source.changed,candidates,exact_ids:candidates.filter(r=>r.exact||r.id===source.record_id||r.id===scripted.gfw?.corroborates||(scripted.iucn||scripted.oceancare||scripted.gof)&&r.identity_key===source.parsed.source.identity||scripted.iddri&&(r.identity_key===source.parsed.source.identity||scripted.iddri.translation_of&&r.registration_link)).map(r=>r.id)};
 }

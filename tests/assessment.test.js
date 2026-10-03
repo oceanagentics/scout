@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF]])).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>all($1::text[]) and url<>'https://www.hubocean.earth/events-calendar' limit 1",[[UNTC,DOALOS,UN_SIDE_EVENTS,HSA_WEB,IDDRI,DOSI_WEB,GFW_WEB,IUCN,GOF,OCEANCARE]])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -632,6 +632,80 @@ test('actual IUCN assessment retains technical High relevance, literal descripti
  assert.deepEqual(live.input.exact_ids,[]);assert.equal(live.input.candidates.length,3);assert.equal(live.input.scripted.iucn.publication,'2026');assert.equal(live.input.scripted.iucn.precision,'year');
  for(const key of ['starts_at','ends_at','event_url','registration_url','location','status','last_communicated_at','evidence_at'])assert.equal(live.record[key],null);
  assert.equal(live.accounting.model_attempts.length,1);assert.equal(live.accounting.model_attempts[0].input_bound,7878);assert.equal(live.accounting.model_usage[0].promptTokenCount,1555);assert.equal(live.accounting.model_usage[0].candidatesTokenCount,311);
+});
+
+test('OceanCare discovers four distinct articles within six reads, excludes unrelated cards, and repeats without changes',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/oceancare-website.json.gz',import.meta.url))));let calls=0;const requested=[];
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[OCEANCARE])).rows[0];for(const r of f.existing)await db.query('insert into scout.records select * from jsonb_populate_record(null::scout.records,$1::jsonb)',[r]);
+  const before=(await db.query('select * from scout.records order by id')).rows;
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;requested.push(u);return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);const first=await collectHSA(db,options);assert.equal(first.candidates,4,first.warnings.join('; '));assert.equal(first.requests,6);assert.equal(first.articles_listed,387);assert.equal(first.articles_selected,4);assert.match(first.warnings.join(' '),/other 364 articles/);assert.deepEqual(requested,[f.home.url,f.list.url,f.detail0.url,f.detail1.url,f.detail2.url,f.detail3.url]);
+  const sources=(await db.query('select * from scout.evidence')).rows,source=sources.find(s=>s.parsed.oceancare.id==='222568'),i=await assessmentInput(db,source,tracker);
+  assert.equal(new Set(sources.map(s=>s.parsed.source.identity)).size,4);assert.equal(JSON.parse(source.content).body,f.detail1.body);assert.equal(source.published_at.toISOString(),'2026-04-03T18:00:27.000Z');
+  assert.equal(i.context_truncated,false);assert.match(i.text,/subject to formal adoption by the Conference of the Parties/);assert.match(i.text,/advancing a prototype for the Clearing-House Mechanism/);assert.match(i.text,/ultimately support the protection of marine life\./);assert.equal(i.scripted.description.length,257);assert.ok(i.scripted.description.endsWith('.'));
+  assert.equal(i.candidates.length,3);assert.deepEqual(i.exact_ids,[]);const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null])));
+  for(const c of i.candidates)assert.throws(()=>validateDecision({...result,source_id:i.source_id,action:'supporting_evidence',record_id:c.id,candidate,quotes:[candidate.title]},i),/same publication/);
+  let bytes;await gemini({apiKey:'injected-only',runId:source.id,ledger:{query:async()=>({rows:[]})},fetch:async(_u,r)=>{bytes=Buffer.byteLength(r.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}})(INSTRUCTION,[i],SCHEMA);assert.ok(bytes<8000);
+  const model=async(_p,[input])=>{calls++;return[{...result,source_id:input.source_id,candidate,quotes:[candidate.title]}];};assert.equal((await collectHSA(db,{...options,sourceId:source.id,model})).created,1);const records=(await db.query('select * from scout.records order by id')).rows;for(const r of before)assert.deepEqual(records.find(x=>x.id===r.id),r);
+  f.detail1.body=f.detail1.body.replaceAll('<p>','<p class="cosmetic">').replaceAll('dateModified','unusedModified').replace('src="https://www.oceancare.org/wp-content/uploads/2026/04/','src="https://www.oceancare.org/wp-content/uploads/cosmetic/');f.home.body=f.home.body.replace('OceanCare has been active','OceanCare has long been active');
+  const repeat=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(repeat.skipped,4);assert.equal(repeat.requests,6);assert.equal(repeat.candidates+repeat.created+repeat.changed,0);assert.equal(calls,1);assert.deepEqual((await db.query('select * from scout.records order by id')).rows,records);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('OceanCare material and publication corrections retain history and identity while different source posts cannot merge',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/oceancare-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[OCEANCARE])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const original=(await db.query('select * from scout.evidence order by id')).rows,source=original.find(s=>s.parsed.oceancare.id==='222568');
+  const model=async(_p,[i])=>[{...result,source_id:i.source_id,action:i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),quotes:[i.scripted.title]}];
+  await collectHSA(db,{...options,sourceId:source.id,model});const record=(await db.query('select * from scout.records')).rows[0];
+  f.detail1.body=f.detail1.body.replace('the essential platform','a shared platform');assert.equal((await collectHSA(db,options)).candidates,1);let changed=(await db.query("select * from scout.evidence where url=$1 order by collected_at desc limit 1",[source.url])).rows[0];assert.equal(changed.parsed.source.identity,source.parsed.source.identity);assert.equal((await collectHSA(db,{...options,sourceId:changed.id,model})).changed,1);assert.match((await db.query('select description from scout.records')).rows[0].description,/a shared platform/);
+  f.detail1.body=f.detail1.body.replaceAll('2026-04-03T20:00:27+02:00','2026-04-04T20:00:27+02:00').replace('April 3, 2026','April 4, 2026');f.list.body=f.list.body.replace('Apr 03, 2026','Apr 04, 2026');assert.equal((await collectHSA(db,options)).candidates,1);changed=(await db.query("select * from scout.evidence where url=$1 order by collected_at desc limit 1",[source.url])).rows[0];assert.equal(changed.published_at.toISOString(),'2026-04-04T18:00:27.000Z');assert.equal(changed.parsed.starts_at,null);assert.deepEqual((await assessmentInput(db,changed,tracker)).exact_ids,[record.id]);
+  f.detail1.body=f.detail1.body.replace('postid-222568','postid-222569').replaceAll('2026-04-04T20:00:27+02:00','2027-04-04T20:00:27+02:00').replace('April 4, 2026','April 4, 2027');f.list.body=f.list.body.replace('Apr 04, 2026','Apr 04, 2027');assert.equal((await collectHSA(db,options)).candidates,1);const distinct=(await db.query("select * from scout.evidence where parsed#>>'{oceancare,id}'='222569'")).rows[0],i=await assessmentInput(db,distinct,tracker);assert.deepEqual(i.exact_ids,[]);assert.throws(()=>validateDecision({...result,source_id:i.source_id,action:'update',record_id:record.id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null]))),quotes:[i.scripted.title]},i),/same publication/);
+  for(const old of original)assert.deepEqual((await db.query('select content,content_hash from scout.evidence where id=$1',[old.id])).rows[0],{content:old.content,content_hash:old.content_hash});
+ }finally{await db.close();}
+});
+
+test('OceanCare NGO treaty claims, publication dates, meeting ranges and office location cannot become official actions or events',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/oceancare-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[OCEANCARE])).rows[0];await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}});
+  const sources=(await db.query('select * from scout.evidence')).rows;for(const source of sources){const i=await assessmentInput(db,source,tracker),candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]??null])));assert.equal(candidate.kind,'announcement');for(const k of ['starts_at','ends_at','event_url','registration_url','location','status'])assert.equal(candidate[k],null);assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,kind:'treaty_status'},quotes:[i.scripted.title]},i),/official/);assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,kind:'event'},quotes:[i.scripted.title]},i),/announcement/);}
+  assert.equal(sources.find(s=>s.parsed.oceancare.id==='220850').published_at.toISOString(),'2026-01-14T06:30:57.000Z');assert.match(f.detail3.body,/83 states/);assert.match(f.detail2.body,/23 March to 2 April 2026/);assert.match(f.detail1.body,/January 2027/);assert.ok(sources.every(s=>s.parsed.start_on===undefined));
+ }finally{await db.close();}
+});
+
+test('OceanCare failed and malformed pages preserve captures, prevent stale assessment, and retain the six-request failure bound',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/oceancare-website.json.gz',import.meta.url))));let fail,calls=0;
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[OCEANCARE])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;if(u===fail||fail==='details'&&u.includes('/stories_and_news/'))throw new Error('Injected HTTP 503');return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};
+  await collectHSA(db,options);const before=(await db.query('select id,content,content_hash,parsed from scout.evidence order by id')).rows,source=before.find(s=>s.parsed.oceancare.id==='222568'),model=async()=>{calls++;throw new Error('Must not assess stale captures');};
+  for(const u of [f.home.url,f.list.url]){fail=u;assert.equal((await collectHSA(db,{...options,sourceId:source.id,model})).outcome,'failed');}fail='details';assert.equal((await collectHSA(db,{...options,sourceId:source.id,model})).requests,6);fail=null;
+  const body=f.detail1.body;for(const html of [body.replace('</html>',''),body.replace('oc-share-wrapper','missing-boundary'),body.replaceAll('2026-04-03T20:00:27+02:00','2026-02-30T20:00:27+02:00'),body.replace('April 3, 2026','April 4, 2026'),body.replace('single-storeisnews','unknown-layout'),body.replace('{"@context":','{"@context";'),body.replace('rel="canonical" href="'+f.detail1.url,'rel="canonical" href="https://example.org/')]){f.detail1.body=html;const run=await collectHSA(db,{...options,sourceId:source.id,model});assert.equal(run.candidates,0);assert.equal(run.assessed,0);}f.detail1.body=body;f.list.body=f.list.body.replaceAll('<div class="headline">','<div class="unknown">');assert.equal((await collectHSA(db,{...options,sourceId:source.id,model})).outcome,'failed');
+  assert.equal(calls,0);assert.deepEqual((await db.query('select id,content,content_hash,parsed from scout.evidence order by id')).rows,before);
+ }finally{await db.close();}
+});
+
+test('OceanCare generic politics and unrelated whaling do not inherit the prototype announcement relevance',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/oceancare-website.json.gz',import.meta.url))));
+ try{
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[OCEANCARE])).rows[0],options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(u,b)=>{b.requests++;assert.ok(!u.includes('iwc70-ban-commercial-whaling'));return Object.values(f).find(r=>r.url===u);},model:async()=>{throw new Error('Observation-only fixture');}};await collectHSA(db,options);
+  const source=(await db.query("select * from scout.evidence where parsed#>>'{oceancare,id}'='225194'")).rows[0],i=await assessmentInput(db,source,tracker);assert.doesNotMatch(i.text,/advancing a prototype/);assert.match(INSTRUCTION,/Low: generic advocacy/);
+  const run=await collectHSA(db,{...options,sourceId:source.id,model:async()=>[{...result,source_id:i.source_id,action:'no_substantive_change',candidate:null,priority:'low',quotes:[i.scripted.title],reason:'Injected generic politics exclusion, not live classification'}]});assert.equal(run.assessed,1);assert.equal(run.created,0);assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+ }finally{await db.close();}
+});
+
+test('actual OceanCare assessment preserves Normal prototype reporting, complete description and publication without invented events or identity merges',async()=>{
+ const {live}=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/oceancare-website.json.gz',import.meta.url))));
+ validateDecision(Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]])),live.input);
+ assert.equal(live.decision.state,'complete');assert.equal(live.decision.action,'new');assert.equal(live.decision.priority,'normal');assert.equal(live.record.priority,'normal');
+ assert.equal(live.record.identity_key,'oceancare:post:222568');assert.equal(live.record.organization,'OceanCare');assert.equal(live.record.kind,'announcement');assert.equal(live.record.title,live.input.scripted.title);
+ assert.equal(live.record.description,live.input.scripted.description);assert.equal(live.record.description.length,257);assert.ok(live.record.description.endsWith('.'));
+ assert.equal(live.input.context_truncated,false);assert.match(live.input.text,/subject to formal adoption by the Conference of the Parties/);assert.match(live.input.text,/advancing a prototype for the Clearing-House Mechanism/);assert.match(live.input.text,/ultimately support the protection of marine life\./);
+ assert.deepEqual(live.input.exact_ids,[]);assert.equal(live.input.candidates.length,3);assert.equal(new Date(live.record.evidence_at).toISOString(),'2026-04-03T18:00:27.000Z');
+ for(const key of ['starts_at','ends_at','event_url','registration_url','location','status','last_communicated_at'])assert.equal(live.record[key],null);
+ assert.equal(live.accounting.model_attempts.length,1);assert.equal(live.accounting.model_attempts[0].input_bound,7925);assert.equal(live.accounting.model_usage[0].promptTokenCount,1527);assert.equal(live.accounting.model_usage[0].candidatesTokenCount,304);
 });
 
 test('GOF independently discovers its current project and workshop in three reads, retaining complete context and unchanged repeats',async()=>{
