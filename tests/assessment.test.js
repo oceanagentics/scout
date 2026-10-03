@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,UNTC,DOALOS} from '../collector/hsa.js';
+import {collectHSA,HSA,UNTC,DOALOS,UN_SIDE_EVENTS,sourceURL} from '../collector/hsa.js';
 import {CONTENT_FIELDS,validateDecision,observe,assessmentInput,INSTRUCTION,SCHEMA,normalize} from '../collector/assessment.js';
 import {database as adapter} from '../collector/hosted-hsa.js';
 import {gemini,reservationSQL} from '../collector/model.js';
@@ -247,7 +247,7 @@ test('explicit validation persists disabled source receipt and quota evidence wi
  }});};
  try{
   const tracker=(await db.query("update scout.trackers set enabled=false where seed_key='bbnj-trackers-2026-10-01:17' returning *")).rows[0];
-  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>$1 and url<>$2 limit 1",[UNTC,DOALOS])).rows[0].id;
+  const unsupported=(await db.query("select id from scout.trackers where collector='web' and url<>$1 and url<>$2 and url<>$3 limit 1",[UNTC,DOALOS,UN_SIDE_EVENTS])).rows[0].id;
   const options={since:'2026-09-01',read,makeModel};
   for(const selection of [{},{trackerId:tracker.id},{validate:true},{validate:true,trackerId:'all'},
    {validate:true,trackerId:'00000000-0000-0000-0000-000000000000'},{validate:true,trackerId:unsupported}]) {
@@ -423,6 +423,134 @@ test('recorded DOSI newsletter keeps separate items, real URLs, changes and boun
   const next=(await db.query("select * from scout.evidence where url=$1 and parsed->>'title'=$2",[issue,event.parsed.title])).rows[0];
   assert.notEqual(next.parsed.source.identity,event.parsed.source.identity);
  }finally{await db.close();}
+});
+
+test('recorded UN side event keeps unpublished reservation and parent dates unknown, retaining hosts, identity and repeat gating',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/un-side-events.json.gz',import.meta.url))));let calls=0;
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[UN_SIDE_EVENTS])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(url,budget)=>{
+   budget.requests++;if(url.endsWith('.pdf'))throw new Error('Response content exceeded max size');assert.ok(f[sourceURL(url)],url);return f[sourceURL(url)];
+  },model:async(_instruction,inputs)=>{calls++;return inputs.map(i=>{
+   assert.equal(i.scripted.side_event.id,'6915');assert.equal(i.scripted.side_event.schedule_published,false);
+   assert.equal(i.scripted.starts_at,null);assert.equal(i.scripted.ends_at,null);assert.equal(i.scripted.location,null);assert.equal(i.scripted.status,null);
+   assert.match(i.scripted.organization,/UN Division.*Secretariat of the Convention/);assert.match(i.text,/outcomes of the BBNJ Preparatory Commission/);
+   assert.ok(i.links.some(u=>u.endsWith('Programme.pdf')));assert.doesNotMatch(i.text,/2026-07-29T|27 July/);
+   const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]])));
+   assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,starts_at:'2026-07-27T00:00:00Z'},quotes:[candidate.title]},i),/unsupported/);
+   assert.throws(()=>validateDecision({...result,source_id:i.source_id,candidate:{...candidate,event_url:i.links[1]},quotes:[candidate.title]},i),/session facts/);
+   return {...result,source_id:i.source_id,priority:'normal',candidate:{...candidate,event_url:null},quotes:[candidate.title]};
+  });}};
+  await assert.rejects(collectHSA(db,{...options,validate:false}),/not yet proven/);
+  const first=await collectHSA(db,options);assert.equal(first.created,1,first.warnings.join('; '));assert.equal(first.assessed,1);assert.equal(first.outcome,'partial');assert.equal(first.sessions_listed,13);assert.equal(first.sessions_selected,1);assert.equal(first.requests,5);
+  const record=(await db.query('select * from scout.records')).rows[0],source=(await db.query('select * from scout.evidence')).rows[0];
+  assert.equal(record.event_url,'https://www.cbd.int/side-events/6915');assert.equal(record.starts_at,null);assert.equal(record.registration_url,null);assert.equal(source.published_at,null);
+  assert.equal(source.parsed.source.item_key,record.event_url);assert.equal(source.parsed.assessment.model_decision.candidate.event_url,null);
+  assert.equal(JSON.parse(source.content).responses.length,3);assert.match(source.content,/2026-07-29T10:15/);assert.ok(record.description.endsWith('.'));
+  const reservation=Object.values(f).find(r=>r.url?.includes('/reservations/')&&JSON.parse(r.body)[0].sideEvent.id===6915);
+  reservation.body=reservation.body.replace('2026-07-29T10:15:00.000Z','2026-07-30T10:15:00.000Z'); // Unpublished clock is not a material fact.
+  f[UN_SIDE_EVENTS].body=f[UN_SIDE_EVENTS].body.replace('</body>','<nav>Rotating banner</nav></body>');
+  const repeat=await collectHSA(db,options);assert.equal(repeat.candidates,0);assert.equal(repeat.created+repeat.changed,0);assert.equal(calls,1);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,1);
+  const context=await assessmentInput(db,source,tracker);let bytes=0;
+  await gemini({apiKey:'injected',runId:first.run_id,ledger:{query:async()=>({rows:[]})},fetch:async(_url,r)=>{bytes=Buffer.byteLength(r.body);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}})(INSTRUCTION,[context],SCHEMA);assert.ok(bytes<8000);
+  assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ }finally{await db.close();}
+});
+
+test('UN side-event published schedule updates same identity; status conflicts and reversed clocks preserve evidence with visible review warning',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/un-side-events.json.gz',import.meta.url))));let calls=0;
+ const reservation=Object.values(f).find(r=>r.url?.includes('/reservations/')&&JSON.parse(r.body)[0].sideEvent.id===6915);
+ const conference=Object.values(f).find(r=>r.url?.includes('/conferences?')&&r.body.includes('690223bab532af1ed6303146'));
+ conference.body=conference.body.replace('false','true');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[UN_SIDE_EVENTS])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(url,budget)=>{
+   budget.requests++;if(url.endsWith('.pdf'))throw new Error('Response content exceeded max size');
+   if(url.includes('/venue-rooms?'))return {url,headers:{'content-type':'application/json'},body:JSON.stringify([{_id:'5d37431d867afd0001bfe57b',title:'Injected Room',location:'Injected Venue'}])};
+   return f[sourceURL(url)];
+  },model:async(_instruction,inputs)=>{calls++;return inputs.map(i=>({...result,source_id:i.source_id,action:i.exact_ids.length?'update':'new',record_id:i.exact_ids[0]??null,
+   candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]))),quotes:[i.scripted.title]}));}};
+  const first=await collectHSA(db,options);assert.equal(first.created,1,first.warnings.join('; '));assert.equal(first.requests,6);
+  const original=(await db.query('select * from scout.records')).rows[0];assert.equal(original.starts_at.toISOString(),'2026-07-29T10:15:00.000Z');assert.equal(original.ends_at.toISOString(),'2026-07-29T11:35:00.000Z');assert.equal(original.status,'scheduled');assert.equal(original.location,'Injected Room, Injected Venue');
+  reservation.body=reservation.body.replaceAll('2026-07-29T','2026-07-30T');
+  const update=await collectHSA(db,options);assert.equal(update.changed,1);assert.equal(update.created,0);assert.equal(calls,2);
+  const revised=(await db.query('select * from scout.records')).rows[0];assert.equal(revised.id,original.id);assert.equal(revised.identity_key,original.identity_key);assert.equal(revised.starts_at.toISOString(),'2026-07-30T10:15:00.000Z');
+  const sources=(await db.query('select * from scout.evidence order by id')).rows,good=reservation.body;
+  for(const body of [good.replace(/"status":\s*"scheduled"/,'"status":"rejected"'),good.replace(/"status":\s*"scheduled"/,'"status":"withdrawn"'),good.replace(/"status":\s*"scheduled"/,'"status":"unknown"'),good.replace('2026-07-30T11:35:00.000Z','2026-07-30T09:00:00.000Z')]) {
+   assert.notEqual(body,good);reservation.body=body;
+   const conflict=await collectHSA(db,options);assert.equal(conflict.outcome,'partial');assert.ok(conflict.warnings.some(w=>w.includes('schedule conflict')&&w.includes('requires review')),conflict.warnings.join('; '));assert.equal(conflict.candidates+conflict.assessed+conflict.changed,0);assert.equal(calls,2);
+   assert.deepEqual((await db.query('select * from scout.records')).rows,[revised]);assert.deepEqual((await db.query('select * from scout.evidence order by id')).rows,sources);
+  }
+ }finally{await db.close();}
+});
+
+test('UN identical-title CBD sessions remain distinct and an existing DOALOS event with the exact URL is reused',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/un-side-events.json.gz',import.meta.url))));
+ f[UN_SIDE_EVENTS].body=f[UN_SIDE_EVENTS].body.replace(/<li\b[^>]*>[\s\S]*?<\/li>/g,item=>/cbd.int\/side-events\/(5838|5378)/.test(item)?item:'');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[UN_SIDE_EVENTS])).rows[0];
+  const title='Towards living in harmony with the ocean from coasts to areas beyond national jurisdiction: Synergies between the BBNJ Agreement and the work under the CBD';
+  const existing=(await db.query("insert into scout.records(kind,title,event_url,identity_key,priority) values('event',$1,'https://www.cbd.int/side-events/5838','event:https://www.cbd.int/side-events/5838','normal') returning *",[title])).rows[0];
+  const doalos=(await db.query('select id from scout.trackers where url=$1',[DOALOS])).rows[0];
+  await db.query("insert into scout.evidence(tracker_id,record_id,url,content_hash,content,parsed) values($1,$2,$3,'prior','Existing DOALOS session evidence','{}')",[doalos.id,existing.id,DOALOS]);
+  const run=await collectHSA(db,{trackerId:tracker.id,validate:true,since:'2024-01-01',read:async(url,budget)=>{budget.requests++;assert.ok(f[sourceURL(url)],url);return f[sourceURL(url)];},model:async(_instruction,inputs)=>inputs.map(i=>{
+   const candidate=full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]])));
+   if(i.scripted.side_event.id==='5378') for(const [action,value] of [['update',candidate],['no_substantive_change',null]])
+    assert.throws(()=>validateDecision({...result,source_id:i.source_id,action,record_id:existing.id,candidate:value,quotes:[candidate.title]},i),/distinct CBD session/);
+   return {...result,source_id:i.source_id,action:i.scripted.side_event.id==='5838'?'update':'new',record_id:i.scripted.side_event.id==='5838'?existing.id:null,candidate,quotes:[candidate.title]};
+  })});
+  assert.equal(run.assessed,2,run.warnings.join('; '));assert.equal(run.created,1);assert.equal(run.pending,0);
+  const records=(await db.query('select * from scout.records')).rows;assert.equal(records.length,2);assert.ok(records.some(r=>r.id===existing.id));assert.equal(new Set(records.map(r=>r.title)).size,1);assert.equal(new Set(records.map(r=>r.event_url)).size,2);
+  assert.ok(records.every(r=>r.starts_at===null));assert.equal((await db.query('select count(*)::int n from scout.evidence where tracker_id=$1',[tracker.id])).rows[0].n,2);
+ }finally{await db.close();}
+});
+
+test('UN malformed listing/API or detail outage cannot overwrite known items or assess stale pending evidence',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/un-side-events.json.gz',import.meta.url))));let fail=null,calls=0;
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[UN_SIDE_EVENTS])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2026-01-01',read:async(url,budget)=>{
+   budget.requests++;if(url.endsWith('.pdf'))throw new Error('Response content exceeded max size');
+   if(fail==='outage'&&url.includes('reservations'))throw new Error('HTTP 403');
+   const response=f[sourceURL(url)];return fail&&url===fail.url?{...response,body:fail.body}:response;
+  }};
+  await collectHSA(db,options);const sources=(await db.query('select * from scout.evidence')).rows;assert.equal(sources.length,1);
+  const reservation=Object.values(f).find(r=>r.url?.includes('/reservations/')&&JSON.parse(r.body)[0].sideEvent.id===6915);
+  for(const bad of ['outage',{url:UN_SIDE_EVENTS,body:'<html>Challenge</html>'},{url:UN_SIDE_EVENTS,body:f[UN_SIDE_EVENTS].body.replace('</html>','')},
+   {url:reservation.url,body:'{}'},{url:reservation.url,body:reservation.body.replace(/"id":\s*6915/,'"id":6916')}]) {
+   fail=bad;const run=await collectHSA(db,{...options,model:async()=>{calls++;throw new Error('Must not assess stale content');}});
+   assert.equal(run.assessed+run.candidates,0);assert.equal(calls,0);assert.deepEqual((await db.query('select * from scout.evidence')).rows,sources);
+  }
+ }finally{await db.close();}
+});
+
+test('UN PDF-only items keep unknown facts and low noise creates no record; listing and supporting requests stay bounded',async()=>{
+ const db=await database(),f=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/un-side-events.json.gz',import.meta.url))));
+ const original=f[UN_SIDE_EVENTS].body;
+ f[UN_SIDE_EVENTS].body=original.replace(/<li\b[^>]*>[\s\S]*?<\/li>/g,item=>item.includes('BBNJCITES_SECOP20_flyer.pdf')?item.replace(/(<a\b[^>]*>)[\s\S]*?(<\/a>)/,'$1Generic ocean advocacy$2'):'');
+ try {
+  const tracker=(await db.query('select * from scout.trackers where url=$1',[UN_SIDE_EVENTS])).rows[0];
+  const options={trackerId:tracker.id,validate:true,since:'2025-01-01',read:async(url,budget)=>{budget.requests++;if(url.endsWith('.pdf'))throw new Error('Unsupported PDF');return f[sourceURL(url)];}};
+  const low=await collectHSA(db,{...options,model:async(_instruction,inputs)=>inputs.map(i=>{
+   assert.equal(i.scripted.title,'Generic ocean advocacy');
+   for(const k of ['organization','event_url','registration_url','starts_at','ends_at','location','status'])assert.equal(i.scripted[k],null);
+   return {...result,source_id:i.source_id,candidate:full(Object.fromEntries(CONTENT_FIELDS.map(k=>[k,i.scripted[k]]))),priority:'low',quotes:[i.scripted.title]};
+  })});assert.equal(low.assessed,1,low.warnings.join('; '));assert.equal(low.created,0);
+  f[UN_SIDE_EVENTS].body=original;const bounded=await collectHSA(db,{...options,since:'2024-01-01'});
+  assert.ok(bounded.warnings.includes('UN side-event item limit reached'));assert.ok(bounded.warnings.some(w=>w.includes('supporting-page limit')));assert.ok(bounded.requests<=6);assert.ok(bounded.candidates<=3);
+ }finally{await db.close();}
+});
+
+test('actual UN side-event assessment retains Normal relevance, unknown dates and source-backed event URL completion',async()=>{
+ const {live}=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/un-side-events.json.gz',import.meta.url))));
+ validateDecision(live.decision.model_decision,live.input);
+ validateDecision(Object.fromEntries(SCHEMA.items.required.map(k=>[k,live.decision[k]])),live.input);
+ assert.equal(live.decision.state,'complete');assert.equal(live.record.priority,'normal');assert.equal(live.decision.model_decision.candidate.event_url,null);
+ assert.equal(live.record.event_url,'https://www.cbd.int/side-events/6915');assert.equal(live.record.identity_key,'event:'+live.record.event_url);
+ assert.equal(live.record.title,live.input.scripted.title);assert.equal(live.record.organization,live.input.scripted.organization);assert.ok(live.record.description.endsWith('.'));
+ for(const key of ['starts_at','ends_at','location','registration_url','status','last_communicated_at'])assert.equal(live.record[key],null);
+ assert.equal(live.input.scripted.side_event.schedule_published,false);assert.doesNotMatch(live.decision.reason,/architecture|interoperability|scheduled/i);
 });
 
 test('recorded DOALOS notices retain official facts, date-only metadata, stable updates and cosmetic repeat gating while disabled',async()=>{

@@ -18,7 +18,7 @@ export function dosiArticle(html, url) {
 }
 
 export function doalosArticle(html, url) {
-  if (!/^https:\/\/www\.un\.org\/bbnjagreement\/en\/(?:notifications|notification-\d{4}-\d{3})$/.test(url)) return html;
+  if (!/^https:\/\/www\.un\.org\/bbnjagreement\/en\/(?:notifications|notification-\d{4}-\d{3}|capacity-building-and-technical-assistance\/side-events)$/.test(url)) return html;
   const article=html.match(/<article\b[^>]*\babout="([^"]+)"[^>]*>([\s\S]*?)<\/article>\s*<\/div>\s*<\/div>\s*<\/section>/);
   if (!article || article[1]!==new URL(url).pathname || !/<\/html>\s*$/.test(html)) throw new Error('DOALOS article layout unavailable; coverage incomplete');
   return article[2];
@@ -46,6 +46,8 @@ export function validateDecision(result, input) {
   if (!['high','normal','low',null].includes(result.priority) || typeof result.reason!=='string' || !result.reason.trim() || result.reason.length>240) fail('priority/reason');
   if (!Array.isArray(result.quotes) || result.quotes.length>3 || result.quotes.some(q=>typeof q!=='string'||!q.isWellFormed()||!q.trim()||!input.text.includes(q))) fail('unsupported quote');
   const existing = input.candidates.find(item=>item.id===result.record_id);
+  if (input.scripted.side_event?.id && existing?.event_url?.match(/^https:\/\/www\.cbd\.int\/side-events\/(\d+)$/)?.[1] &&
+      existing.event_url!==input.scripted.event_url) fail('distinct CBD session ID');
   if (result.record_id !== null && !existing) fail('identity outside shortlist');
   if (['update','supporting_evidence'].includes(result.action) && !existing) fail('existing identity required');
   if (result.action==='new' && result.record_id!==null) fail('new identity');
@@ -83,6 +85,8 @@ export function validateDecision(result, input) {
   if (result.clear_fields.some(f=>c[f]!==null)) fail('clear field must be null');
   if (c.kind==='treaty_status' && !/(^|\.)un\.org$/.test(new URL(input.url).hostname)) fail('official treaty evidence required');
   if (input.scripted.treaty && (c.kind!=='treaty_status'||c.title!==input.scripted.title)) fail('official country/action/date representation required');
+  if (input.scripted.side_event && (c.kind!=='event'||c.title!==input.scripted.title ||
+      ['starts_at','ends_at','location','status','event_url','registration_url'].some(f=>c[f]!==null&&c[f]!==input.scripted[f]))) fail('side-event identity or unconfirmed session facts');
   if (existing && c.kind!==existing.kind) fail('different finding kind');
   if (existing) {
     const session=title=>title?.match(/\b(?:session|edition|part)\s+([\w-]+)/i)?.[0].toLowerCase();
@@ -125,10 +129,10 @@ export async function observe(db, tracker, url, content, publishedAt, scripted, 
 }
 
 export async function assessmentInput(db, source, tracker) {
-  const content=doalosArticle(dosiArticle(source.content,source.url),source.url);
+  const content=source.parsed.side_event?source.content:doalosArticle(dosiArticle(source.content,source.url),source.url);
   const scripted=Object.fromEntries(Object.entries(source.parsed).filter(([key])=>!['source','assessment'].includes(key)));
   const zoom=/^https:\/\/[^/]+\.zoom\.us\/webinar\/register\//.test(source.url) && scripted.local_schedule;
-  const conference=source.url==='https://www.un.org/bbnjagreement/en' && scripted.kind==='event' && scripted.registration_deadline_on;
+  const conference=scripted.side_event || source.url==='https://www.un.org/bbnjagreement/en' && scripted.kind==='event' && scripted.registration_deadline_on;
   if (zoom && /co-organized by the High Seas Alliance\b/.test(scripted.description??'')) scripted.organization='High Seas Alliance';
   if (scripted.description) scripted.description=Array.from(scripted.description).slice(0,280).join('');
   if (scripted.title) scripted.title=Array.from(scripted.title).slice(0,400).join('');

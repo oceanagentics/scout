@@ -9,6 +9,7 @@ import { observe, assessmentInput, validateDecision, INSTRUCTION, SCHEMA, CONTEN
 export const HSA = 'highseasalliance.bsky.social';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
+export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
 export const USER_AGENT = 'BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)';
 export const LIMITS = { feedPages: 2, postsPerPage: 25, pages: 6, redirects: 3, requests: 24, bytes: 524288, seconds: 120 };
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -396,7 +397,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const hub=tracker.collector==='web' && tracker.url==='https://www.hubocean.earth/events-calendar';
   const untc=tracker.collector==='web' && tracker.url===UNTC;
   const doalos=tracker.collector==='web' && tracker.url===DOALOS;
-  if (!actor && !hub && !untc && !doalos) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
+  const sideEvents=tracker.collector==='web' && tracker.url===UN_SIDE_EVENTS;
+  if (!actor && !hub && !untc && !doalos && !sideEvents) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, validate ? { validation: true } : {}])).rows[0];
@@ -538,6 +540,87 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         } catch(error) {quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
       }
       covered=selected.length<=detailLimit;
+    } else if (sideEvents) {
+      const listing=await read(tracker.url,budget);stats.pages++;
+      if (listing.url!==tracker.url || !/text\/html/i.test(listing.headers['content-type']??'')) throw new Error('Unexpected UN side-event listing destination/format');
+      const article=doalosArticle(listing.body,listing.url),cache=new Map();
+      const items=[...article.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/g)].map(m=>{
+        const anchors=[...m[1].matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)];
+        const text=visibleText(m[1]),year=text.match(/\b(20\d{2})$/)?.[1];
+        if (!anchors.length || !year) throw new Error('UN side-event item identity/meeting year unavailable');
+        const links=anchors.map(a=>sourceURL(new URL(a[1].replaceAll('&amp;','&'),tracker.url).href));
+        if (links.length>10) throw new Error('UN side-event link limit reached');
+        return {content:m[1],title:visibleText(anchors[0][2]),links,year,document:links[anchors.findIndex(a=>/^(Programme|Concept note)$/.test(visibleText(a[2])))]??links.find(u=>/\.pdf$/i.test(u))};
+      });
+      if (!items.length || items.length>50 || new Set(items.map(i=>i.links[0])).size!==items.length) throw new Error('Invalid UN side-event listing');
+      const seen=(await db.query("select parsed#>>'{source,item_key}' as key from scout.evidence where tracker_id=$1",[tracker.id])).rows.map(r=>r.key);
+      const selected=items.filter(i=>i.year>=since.slice(0,4)||seen.includes(i.links[0]));
+      stats.sessions_listed=items.length;stats.sessions_selected=selected.length;
+      stats.warnings.push('Side-event coverage uses meeting years only for discovery; parent meeting ranges are not session dates. PDFs/images and unexamined programmes remain unsupported');
+      if (selected.length>3) stats.warnings.push('UN side-event item limit reached');
+      const fetchDetail=async url=>{
+        url=sourceURL(url);
+        if (cache.has(url)) {if(!cache.get(url))throw new Error('Side-event detail unavailable');return cache.get(url);}
+        if (cache.size>=LIMITS.pages-1) throw new Error('Side-event supporting-page limit reached');
+        cache.set(url,null);const r=await read(url,budget);stats.pages++;cache.set(url,r);return r;
+      };
+      const api=async(path,q,f)=>{
+        const r=await fetchDetail('https://api.cbd.int/api/v2016/'+path+'?'+new URLSearchParams({q:JSON.stringify(q),f:JSON.stringify(f)}));
+        const rows=JSON.parse(r.body);if(!Array.isArray(rows))throw new Error('Invalid CBD public API response');return {response:{url:r.url,body:r.body},rows};
+      };
+      for (const item of selected.slice(0,3)) {
+        const url=item.links[0],id=url.match(/^https:\/\/www\.cbd\.int\/side-events\/(\d+)$/)?.[1],raw=[];
+        const scripted={kind:'event',title:item.title,description:null,organization:null,location:null,...dates(),event_url:id?url:null,registration_url:null,status:null,
+          side_event:{id:id??null,parent_meeting_year:item.year,schedule_published:false}};
+        let description='';
+        try {
+          if (id) {
+            const result=await api('reservations/',{'sideEvent.id':+id},{start:1,end:1,'location.room':1,open:1,'sideEvent.id':1,'sideEvent.title':1,'sideEvent.description':1,'sideEvent.hostOrgs':1,'sideEvent.conference':1,'sideEvent.publications':1,'sideEvent.links':1,'sideEvent.meta.status':1});
+            const reservation=result.rows[0],event=reservation?.sideEvent;
+            if (result.rows.length!==1 || event?.id!==+id || normalize(event.title)!==normalize(item.title) || !/^[a-f0-9]{24}$/.test(event.conference) || typeof event.description!=='string') throw new Error('CBD reservation identity/content unavailable');
+            raw.push(result.response);description=visibleText(event.description);
+            const purpose=[...event.description.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map(m=>visibleText(m[1])).find(p=>/^Against this background/.test(p));
+            scripted.description=purpose?Array.from(purpose.match(/^.*?\.(?:\s|$)/)?.[0].trim()??purpose).slice(0,280).join(''):null;
+            const conference=await api('conferences',{_id:{$oid:event.conference}},{Title:1,timezone:1,'schedule.sideEvents.sideEventsPublished':1});raw.push(conference.response);
+            if (conference.rows.length!==1 || conference.rows[0]._id!==event.conference) throw new Error('CBD conference identity unavailable');
+            scripted.side_event.schedule_published=conference.rows[0].schedule?.sideEvents?.sideEventsPublished===true;
+            if (!['scheduled','published'].includes(event.meta?.status)) throw new Error('CBD schedule conflict: publisher status does not confirm a session; any retained schedule requires review, cancellation is unconfirmed');
+            if (scripted.side_event.schedule_published && reservation.open===true) {
+              const schedule=dates(reservation.start,reservation.end);
+              if (!schedule.starts_at || !schedule.ends_at || Date.parse(schedule.ends_at)<Date.parse(schedule.starts_at)) throw new Error('CBD schedule conflict: session timestamps missing or reversed; any retained schedule requires review');
+              Object.assign(scripted,schedule);scripted.status='scheduled';
+              if (/^[a-f0-9]{24}$/.test(reservation.location?.room)) {
+                const room=await api('venue-rooms',{_id:{$oid:reservation.location.room}},{title:1,location:1});raw.push(room.response);
+                if (room.rows.length!==1 || room.rows[0]._id!==reservation.location.room) throw new Error('CBD room identity unavailable');
+                scripted.location=[room.rows[0].title,room.rows[0].location].filter(v=>typeof v==='string'&&v).join(', ')||null;
+              }
+            } else stats.warnings.push('CBD schedule is unpublished or reservation is not open; session timestamps and room are withheld, any retained schedule requires review');
+            if (!Array.isArray(event.hostOrgs)||event.hostOrgs.length>4||event.hostOrgs.some(v=>!/^[a-f0-9]{24}$/.test(v))) throw new Error('Unsupported CBD hosts');
+            if (event.hostOrgs.length) {
+              const hosts=await api('inde-orgs',{_id:{$in:event.hostOrgs.map(v=>({$oid:v}))}},{title:1,acronym:1});raw.push(hosts.response);
+              if (hosts.rows.length!==event.hostOrgs.length || event.hostOrgs.some(v=>!hosts.rows.some(h=>h._id===v&&typeof h.title==='string'))) throw new Error('CBD host identity unavailable');
+              scripted.organization=event.hostOrgs.map(v=>hosts.rows.find(h=>h._id===v).title).join('; ');
+            }
+          } else stats.warnings.push('Side-event detail is not a supported CBD public record; listing facts only');
+        } catch(error) {
+          quota ||= Boolean(error.quota);stats.warnings.push(error.message);
+          // Do not replace a known item with a less complete snapshot during outages/layout changes.
+          if (seen.includes(url)) continue;
+          description='';Object.assign(scripted,{description:null,organization:null,location:null,...dates(),status:null});scripted.side_event.schedule_published=false;raw.length=0;
+        }
+        if (item.document) {
+          try {const doc=await fetchDetail(item.document);stats.warnings.push(`Linked side-event document is not parsed (${doc.headers['content-type']??'unknown format'})`);}
+          catch(error){quota ||= Boolean(error.quota);stats.warnings.push('Linked side-event programme: '+error.message);}
+        }
+        scripted.limitation=scripted.starts_at?'Only the explicit session reservation supplies timestamps; programme/PDF coverage remains limited':'Exact session schedule/room unconfirmed; parent meeting ranges and tentative reservations must not supply event timestamps';
+        const purpose=description.match(/Against this background[\s\S]*?(?=Programme|$)/)?.[0]??'';
+        const text=[item.title,purpose,scripted.organization,scripted.location].filter(Boolean).join(' ');
+        const source=await observe(db,tracker.id,tracker.url,JSON.stringify({text,listing:item.content,responses:raw}),null,scripted,
+          {listing:visibleText(item.content),description,structured:scripted,links:item.links},
+          {rank:2,identity:id?`event:${url}`:`side-event:${tracker.url}:${url}`,item_key:url,links:item.links.slice(0,10)},now());
+        stats[source.changed?'candidates':'skipped']++;pages.set(url,{source});
+      }
+      covered=selected.length<=3;
     } else if (hub) {
       const feedURL=tracker.url+'?format=json';
       const response=await read(feedURL,budget);stats.pages++;
@@ -658,11 +741,11 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     feedFailed = true;
     stats.warnings.push(error.message);
   }
-  if (!covered && !feedFailed && !hub && !untc && !doalos) stats.warnings.push('Feed page limit reached before coverage boundary');
+  if (!covered && !feedFailed && !hub && !untc && !doalos && !sideEvents) stats.warnings.push('Feed page limit reached before coverage boundary');
   const pendingQuery=`select * from (select distinct on(url,parsed#>>'{source,item_key}') * from scout.evidence where tracker_id=$1
     order by url,parsed#>>'{source,item_key}',coalesce((parsed#>>'{source,observed_at}')::timestamptz,collected_at) desc,last_seen_at desc nulls last,id) latest
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
-  const queued = (untc || doalos) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>!doalos||pages.has(source.url));
+  const queued = (untc || doalos || sideEvents) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>(!doalos||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key)));
   const pending=[];
   for (const source of queued) {
     if (source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
@@ -691,7 +774,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         // A parsed registration page supplies its own URL. An explicit link in
         // the retained post can resolve "new" only after the normal identity checks.
         const modelDecision=decision;
-        if ((source.parsed.local_schedule || doalos && source.parsed.source.item_key) && decision.candidate?.kind==='event' && ['new','update'].includes(decision.action)) {
+        if ((source.parsed.local_schedule || (doalos || sideEvents) && source.parsed.source.item_key) && decision.candidate?.kind==='event' && ['new','update'].includes(decision.action)) {
           const linked=input.candidates.filter(candidate=>candidate.registration_link);
           decision={...decision,candidate:{...decision.candidate,...Object.fromEntries(['event_url','registration_url']
             .filter(field=>!decision.candidate[field]&&!decision.clear_fields.includes(field)).map(field=>[field,input.scripted[field]??null]))}};
