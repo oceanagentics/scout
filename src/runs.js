@@ -6,11 +6,14 @@ const states = { pass:'Pass',fail:'Fail',skipped:'Skipped',running:'Running' };
 
 export function stepState(report, step) {
   if (report?.version!==1) return 'Unavailable';
-  const operations=Object.values(report.operations).filter(o=>o.step===step);
-  if (!operations.length) return 'Not reached';
+  // Attempts are diagnostic history; their enclosing generation owns the result.
+  // Checkpoints can block work, but passing one is not a successful work outcome.
+  const operations=Object.values(report.operations).filter(o=>o.step===step&&!o.attempt);
+  const work=operations.filter(o=>!o.checkpoint);
   if (operations.some(o=>o.state==='running')) return 'Running';
-  if (operations.some(o=>o.state==='fail')) return operations.some(o=>o.state==='pass')?'Fail · mixed outcomes':'Fail';
-  return operations.every(o=>o.state==='skipped')?'Skipped':'Pass';
+  if (operations.some(o=>o.state==='fail')) return work.some(o=>o.state==='pass')?'Fail · mixed outcomes':'Fail';
+  if (!work.length) return 'Not reached';
+  return work.every(o=>o.state==='skipped')?'Skipped':'Pass';
 }
 
 export function runAPI(client) {
@@ -79,12 +82,13 @@ export function mountRunDetail(root, api, tracker, back) {
             panel.append(open);return panel;
       }
       for(const [step,label]of RUN_STEPS){
-        const section=node('section',null,'run-step');section.append(node('h4',label+' · '+stepState(report,step)));
+        const section=node('section',null,'run-step'),state=stepState(report,step);section.append(node('h4',label+' · '+state));
         const operations=Object.values(report?.operations??{}).filter(o=>o.step===step);
+        if(state==='Pass'&&operations.some(o=>o.attempt&&o.state==='fail'))section.append(node('p','Generation succeeded after retry. Earlier failed attempts remain below.','hint'));
         if(!operations.length)section.append(node('p',report?'No checkpoint for this step.':'Step details unavailable for this historical run.','hint'));
         for(const op of operations){
           const entry=node('details'),title=(op.source_ids?.join(', ')||op.url||'Run boundary');
-          entry.append(node('summary',(states[op.state]??'Unavailable')+' · '+title));
+          entry.append(node('summary',(states[op.state]??'Unavailable')+(op.attempt?' · Attempt '+op.attempt:op.checkpoint?' · Checkpoint':'')+' · '+title));
           entry.append(node('p',op.note??'No additional note recorded.'),node('p','Started '+stamp(op.started_at)+' · Finished '+stamp(op.finished_at),'meta'));
           if(op.http_status!=null)entry.append(node('p','HTTP '+op.http_status));
           if(op.bytes!=null)entry.append(node('p',op.bytes+' response bytes'));

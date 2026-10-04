@@ -1823,7 +1823,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium || cbd || octo || explorers || discovery) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>assessOnly||(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium||cbd||octo||explorers||discovery)||pages.has(source.id)));
   if (assessOnly && !queued.length) stats.warnings.push('Selected source is not latest pending/uncertain evidence for this tracker');
   if(!feedFailed||queued.length){
-    const selection=await trace.start('prepare');
+    const selection=await trace.start('prepare',{checkpoint:true});
     await trace.finish(selection,queued.length?'pass':'skipped',{source_ids:queued.map(s=>s.id),note:queued.length?'Selected latest pending/uncertain captures under legacy rules; discarded items and full cleaned documents are unavailable.':'No eligible pending capture selected by the legacy path.'});
   }
   const pending=[];
@@ -1862,7 +1862,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
       const decisions=await model(INSTRUCTION,prepared,SCHEMA);
       const response=await trace.artifact('decisions','Returned parsed decisions',decisions);
       await trace.finish(op,'pass',{artifacts:[response]});
-      op=await trace.start('validate',{source_ids:batch.map(s=>s.id),artifacts:[response],note:'Legacy validation and deterministic adjustments; no model repair loop.'});
+      op=await trace.start('validate',{checkpoint:true,source_ids:batch.map(s=>s.id),artifacts:[response],note:'Legacy validation and deterministic adjustments; no model repair loop.'});
       (stats.assessment_results??=[]).push({source_ids:batch.map(source=>source.id),decisions});
       if (!Array.isArray(decisions)||decisions.length!==batch.length||new Set(decisions.map(d=>d.source_id)).size!==batch.length) throw new Error('Incomplete assessment batch');
       await trace.finish(op,'pass',{note:'Batch shape accepted; individual decisions are validated below.'});
@@ -1951,7 +1951,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     }
   }
   if(!feedFailed)await trace.skip('detect','Legacy path selected no capture for comparison.');
-  if(!pending.length&&!feedFailed)for(const step of ['generate','validate','save'])await trace.skip(step,'No changed/eligible assessment (or unchanged uncertainty reused).');
+  if(!pending.length&&!feedFailed)for(const step of ['prepare','generate','validate','save'])await trace.skip(step,'No changed/eligible assessment (or unchanged uncertainty reused).');
   stats.pending=(await db.query(`select count(*)::int n from (${pendingQuery}) pending`,[tracker.id])).rows[0].n;
   if (stats.pending) stats.warnings.push(`${stats.pending} source assessments pending`);
   stats.warnings = [...new Set([...stats.warnings, ...dateWarnings.values()].filter(Boolean))];

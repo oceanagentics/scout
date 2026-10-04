@@ -65,7 +65,45 @@ test('successful run persists progress, exact model bodies and capture/record li
     assert.ok(!JSON.stringify(row.report).includes('response-secret'));
     const repeat=await collectHSA(db,{...options,read:read(),makeModel});assert.equal(repeat.assessed,0);assert.equal(calls,1);
     const report=(await db.query('select report from scout.collection_runs where id=$1',[repeat.run_id])).rows[0].report;
-    for(const step of ['detect','generate','validate','save'])assert.equal(stepState(report,step),'Skipped',step);
+    for(const step of ['detect','prepare','generate','validate','save'])assert.equal(stepState(report,step),'Skipped',step);
+  }finally{await db.close();}
+});
+
+test('recovered provider retry summarizes successful generation while retaining both attempts and the error',async()=>{
+  const db=await database();let calls=0;
+  try{
+    const run=await collectHSA(db,{...options,read:read(),makeModel:(runId,_d,trace)=>gemini({apiKey:'private-retry-key',ledger:db,runId,trace,fetch:async(_url,request)=>{
+      calls++;
+      const row=(await db.query('select * from scout.collection_runs where id=$1',[runId])).rows[0];
+      assert.equal(stepState(row.report,'generate'),'Running');assert.equal(row.stats.model_attempts.length,calls);
+      if(calls===1)return new Response('Temporary provider error for private-retry-key',{status:503});
+      const inputs=JSON.parse(JSON.parse(request.body).contents[0].parts[0].text);
+      return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(inputs.map(decision))}]}}]});
+    }})});
+    assert.equal(calls,2);assert.equal(run.outcome,'success');assert.equal(run.created,1);
+    const row=(await db.query('select * from scout.collection_runs where id=$1',[run.run_id])).rows[0];
+    assert.equal(stepState(row.report,'generate'),'Pass');assert.equal(row.stats.model_attempts.length,2);
+    const attempts=Object.values(row.report.operations).filter(o=>o.attempt);
+    assert.deepEqual(attempts.map(o=>o.state),['fail','pass']);assert.ok(attempts.every(o=>o.artifacts.length===2));
+    assert.equal(attempts[0].artifacts[0],attempts[1].artifacts[0]);
+    assert.equal(row.report.artifacts[attempts[0].artifacts[1]].data.body,'Temporary provider error for [REDACTED]');
+    assert.equal(row.report.artifacts[attempts[1].artifacts[1]].data.http_status,200);
+  }finally{await db.close();}
+});
+
+for(const [name,step,model]of [
+  ['queue selection cannot make failed input preparation mixed','prepare',undefined],
+  ['accepted batch shape cannot make a single rejected proposal mixed','validate',async(_p,inputs)=>inputs.map(i=>({...decision(i),quotes:['invented quotation']}))],
+  ['failed batch-shape checkpoint still fails validation','validate',async()=>[]],
+])test(name,async()=>{
+  const db=await database();
+  try{
+    const run=await collectHSA(db,{...options,read:read(),model});
+    const report=(await db.query('select report from scout.collection_runs where id=$1',[run.run_id])).rows[0].report;
+    assert.equal(stepState(report,step),'Fail');assert.equal(run.created,0);assert.equal(run.pending,1);
+    assert.ok(Object.values(report.operations).some(o=>o.step===step&&o.checkpoint));
+    assert.ok(!Object.values(report.operations).some(o=>o.step===step&&!o.checkpoint&&o.state==='pass'));
+    assert.equal(stepState(report,'save'),'Not reached');
   }finally{await db.close();}
 });
 
@@ -135,7 +173,7 @@ test('provider errors and unreadable bodies retain request references and counte
       return new Response(new ReadableStream({start(c){c.error(new Error('broken stream'));}}),{status:503});
     }})});
     assert.equal(calls,2);
-    const row=(await db.query('select * from scout.collection_runs where id=$1',[run.run_id])).rows[0];assert.equal(row.stats.model_attempts.length,2);
+    const row=(await db.query('select * from scout.collection_runs where id=$1',[run.run_id])).rows[0];assert.equal(row.stats.model_attempts.length,2);assert.equal(stepState(row.report,'generate'),'Fail');
     const artifacts=Object.values(row.report.artifacts),outputs=artifacts.filter(a=>a.kind==='model_response');assert.equal(outputs.length,2);
     assert.equal(outputs[0].data.body,'Temporary provider error for [REDACTED]');assert.equal(outputs[0].data.credential_redacted,true);
     assert.equal(outputs[1].data.unavailable,'Response body could not be read.');assert.ok(!Object.hasOwn(outputs[1].data,'body'));
@@ -196,13 +234,13 @@ test('run view navigates on demand, renders artifacts as text, and discards late
   let finishLate,signalSeen;
   const api={
     async history(id,before,signal){calls.push('history');signalSeen=signal;assert.equal(id,'tracker');return before?[]:Array.from({length:20},(_,i)=>({id:String(i),started_at:'2026-10-04T12:00:00Z',outcome:i?'partial':'success',report_available:i===0}));},
-    async detail(id){calls.push('detail:'+id);return {id,outcome:'partial',started_at:'2026-10-04T12:00:00Z',finished_at:id==='0'?null:'2026-10-04T12:01:00Z',counts:{created:1},report:id==='0'?{version:1,operations:{o1:{step:'prepare',state:'pass',source_ids:['source'],url:'javascript:bad()',artifacts:['a1']},o2:{step:'save',state:'running',record_ids:[member]}},artifacts:{a1:{title:'captured text'},a2:{title:'unlinked request'}}}:null};},
+    async detail(id){calls.push('detail:'+id);return {id,outcome:'partial',started_at:'2026-10-04T12:00:00Z',finished_at:id==='0'?null:'2026-10-04T12:01:00Z',counts:{created:1},report:id==='0'?{version:1,operations:{o1:{step:'prepare',state:'pass',source_ids:['source'],url:'javascript:bad()',artifacts:['a1']},o2:{step:'save',state:'running',record_ids:[member]},o3:{step:'generate',state:'pass'},o4:{step:'generate',state:'fail',attempt:1},o5:{step:'generate',state:'pass',attempt:2}},artifacts:{a1:{title:'captured text'},a2:{title:'unlinked request'}}}:null};},
     async artifact(_id,key){calls.push('artifact:'+key);return key==='a1'?'<img src=x onerror=attack()><script>attack()</script>':new Promise(r=>{finishLate=r;});},
   };
   globalThis.document={createElement:tag=>new Element(tag)};
   try{
     const close=mountRunDetail(root,api,{id:'tracker',name:'<b>Untrusted source</b>'},()=>{});
-    await tick();assert.deepEqual(calls,['history','detail:0']);assert.match(root.textContent,/Generate records · Not reached/);assert.match(root.textContent,/Save records · Running/);assert.match(root.textContent,/may have been interrupted/);
+    await tick();assert.deepEqual(calls,['history','detail:0']);assert.match(root.textContent,/Generate records · Pass/);assert.match(root.textContent,/Generation succeeded after retry/);assert.match(root.textContent,/Fail · Attempt 1/);assert.match(root.textContent,/Pass · Attempt 2/);assert.match(root.textContent,/Validate and repair · Not reached/);assert.match(root.textContent,/Save records · Running/);assert.match(root.textContent,/may have been interrupted/);
     assert.equal(walk(root).filter(e=>e.tag==='a'&&e.href?.startsWith('javascript:')).length,0);
     assert.ok(walk(root).some(e=>e.tag==='a'&&e.href==='/?record='+member));
     await click('Inspect captured text');assert.equal(walk(root).find(e=>e.tag==='pre').textContent,'<img src=x onerror=attack()><script>attack()</script>');

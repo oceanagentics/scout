@@ -25,7 +25,7 @@ export async function startReport(db, runId) {
       await write('operations', id, report.operations[id]);
     },
     async skip(step, note) {
-      if (Object.values(report.operations).some(o => o.step === step)) return;
+      if (Object.values(report.operations).some(o => o.step === step && !o.checkpoint && !o.attempt)) return;
       const id = await this.start(step, { note });
       await this.finish(id, 'skipped');
     },
