@@ -1591,11 +1591,20 @@ Stop for manager review. No active follow-on assignment or automatic retry remai
 
 ## SCOUT-17 — Simplify ingestion and make every tracker run inspectable
 
-Status: in-progress — first local reporting slice authorized 2026-10-04 by the user via the manager. No live collection/model calls, hosted migration/deployment, priority/Low-retention changes or heartbeat restart in this slice.
+Status: in-progress — the user authorized the full pipeline task via the manager on 2026-10-04 and explicitly clarified that rebuilding the trackers is part of this scope. The completed local reporting slice is partial delivery, not the task's implementation boundary or completion. Heartbeat restart, data reset, unrelated tracker promotion and Slack sends remain outside this authorization.
 
-Depends on: existing SCOUT-15 collection/assessment storage and tracker UI. This task replaces the scripted interpretation approach for migrated collectors; historical SCOUT-15/16 acceptance remains evidence of the earlier implementation, not acceptance of this design.
+Depends on: existing SCOUT-15 collection/assessment storage and tracker UI. This task replaces the scripted interpretation approach across every applicable collector path in the current tracker inventory; historical SCOUT-15/16 acceptance remains evidence of the earlier implementation, not acceptance of this design.
 
 Outcome: verify that trackers preserve source content and form correct records, then use traceable examples to validate relevance/importance rubrics. Separate ingestion/extraction correctness, schema acceptance and human-reviewed rating accuracy.
+
+### Full tracker scope and completion gate — clarified 2026-10-04
+
+- [ ] Audit all 25 current tracker configurations, grouping shared collector paths. Under this task, record each configuration's retrieval/coverage boundaries, structural extraction, semantic filters/preclassification, prompt clipping and record assumptions, together with its migration and verification state. Do not create a separate coordination document.
+- [ ] Rebuild every applicable collector path to satisfy the pipeline contract below, and connect every usable tracker configuration to that path. Remove semantic eligibility gates and parser-generated record interpretation; preserve source-specific structural retrieval where needed. A reporting wrapper, one pilot collector or passing legacy tests does not satisfy this criterion.
+- [ ] Verify each tracker against real source documents, with retained document-to-input-to-proposal-to-record evidence and repeat/change behavior. Shared code tests may cover common behavior but cannot establish source-specific correctness or live access. Account individually for inaccessible or unconfigured trackers with the missing behavior, evidence/reason, user impact and revisit condition; do not silently exclude them or enable them without proof.
+- [ ] Deliver run reporting, bounded model validation repair and the human-reviewed rubric example system across the migrated pipeline. Complete SCOUT-17 only after the audit, all applicable migrations and verification are reviewed and any genuinely blocked configurations are explicitly accounted for. Unresolved applicable behavior remains unchecked and is reported as partial delivery, not full completion.
+
+Focused implementation slices are manager review checkpoints within this full authorized scope. After each review, the manager assigns the next ready slice; the first-slice stop is not a requirement to seek renewed authorization for the remaining tracker migration. Necessary source/model proof and scoped migration/deployment belong to implementation, subject to existing access, quota, cost and shared-service safeguards. Resolve material rating/retention choices before affected changes while advancing independent work. No blanket reset or new scope is implied.
 
 ### Pipeline contract
 
@@ -1617,7 +1626,7 @@ Outcome: verify that trackers preserve source content and form correct records, 
 - [x] First inspect a small real sample: MPAtlas clipped content, the HSA Nairobi post's different feed/discovery classifications, and one clean example. Compare captured document → cleaned/model input → proposals → saved records/rating. Use this evidence to confirm migration scope and long-content/link policies before implementation; avoid a new coordination framework. **Saved evidence reviewed below; OCTO/context-preserving migration remains a proposal.**
 - [ ] Prove identical skip, minor-change reprocessing, a changed article behind an unchanged listing, failed-assessment recovery, multiple findings in one document, zero findings, bounded validation repair/exhaustion, new/update deduplication and inspectable failure artifacts. Verify parser output has no semantic eligibility gate and model input preserves the sample's substantive content. Keep live verification bounded and separately authorized.
 - [ ] Establish a small human-reviewed rubric example set with expected records and relevance/importance ratings plus reasons. Compare model results against those judgments while distinguishing missing-input/extraction defects from rating errors. Record rubric version and review outcomes; successful schema validation alone is not rubric accuracy.
-- [ ] Record migrated trackers, remaining old-path limitations, verification and deviations under this task. Preserve existing records/user edits and the $0 service-fee constraint; do not reset records or enable unproven trackers as part of this proposal. Stop for review after the first focused implementation slice before broad collector migration.
+- [ ] Record every tracker's migration state, remaining old-path limitations, verification and deviations under this task. Preserve existing records/user edits and the $0 service-fee constraint; do not reset records or enable unproven trackers. Review the first focused slice, then proceed through the remaining tracker migrations with manager checkpoints until the full completion gate is met or concrete blockers are reported.
 
 ### SCOUT-17 first slice — sample review and implementation boundary (2026-10-04)
 
