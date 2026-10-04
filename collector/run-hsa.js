@@ -35,13 +35,13 @@ try {
   if (args.includes('--assess')) {
     process.loadEnvFile(new URL('.env.local',root));
     ledger=managementDatabase(process.env.SUPABASE_ACCESS_TOKEN);
-    makeModel=(runId,deadline)=>async (...input)=>{
+    makeModel=(runId,deadline,trace)=>async (...input)=>{
       if (!ledgerRun) {
         await ledger.query(`insert into scout.collection_runs(id,tracker_id,stats)
           select $1,id,'{"purpose":"local_assessment"}'::jsonb from scout.trackers where seed_key='bbnj-trackers-2026-10-01:17'`,[runId]);
         ledgerRun=runId;
       }
-      return gemini({apiKey:process.env.GEMINI_API_KEY,ledger,runId,deadline})(...input);
+      return gemini({apiKey:process.env.GEMINI_API_KEY,ledger,runId,deadline,trace})(...input);
     };
   }
   const result = await collectHSA(db, { since: args.find(arg=>arg.startsWith('--since='))?.slice('--since='.length), makeModel });

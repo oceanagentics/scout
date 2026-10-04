@@ -1,4 +1,5 @@
 import { KINDS, sourceLink, stamp, eventLabel, eventTiming, filterRecords, trackerState,fieldLabel,orderRecords } from './records.js';
+import { mountRunDetail } from './runs.js';
 
 const RECORD_FIELDS = [
   ['title', 'Title'], ['kind', 'Type'], ['organization', 'Organization'], ['description', 'Description'],
@@ -55,7 +56,7 @@ function link(text, url) {
   return element;
 }
 
-export function mountDashboard(root, load) {
+export function mountDashboard(root, load, runs) {
   // Static markup only; every source-supplied value is rendered with textContent.
   root.innerHTML = `<div class="workspace-heading"><nav aria-label="Scout views"><button type="button" data-view="findings" aria-pressed="true">Records</button><button type="button" data-view="trackers" aria-pressed="false">Trackers</button></nav><button type="button" id="refresh" class="secondary">Refresh data</button></div>
     <p id="load-status" role="status"></p>
@@ -76,7 +77,8 @@ export function mountDashboard(root, load) {
       <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>`;
   const status = root.querySelector('#load-status'), refresh = root.querySelector('#refresh');
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
-  let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table';
+  let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table', closeRun;
+  const runDetail=node('section');runDetail.hidden=true;runDetail.setAttribute('aria-label','Run detail');root.append(runDetail);
   const sorts = { records: null, trackers: { field: 'name', direction: 'ascending' } };
 
   function renderRecords() {
@@ -182,6 +184,9 @@ export function mountDashboard(root, load) {
           const text = node('div', cell.textContent, 'field-value'); text.tabIndex = 0; cell.replaceChildren(text);
         }
         row.append(cell);
+        if(field==='name'){
+          const view=node('button','View latest run','secondary');view.type='button';view.dataset.runTracker=tracker.id;cell.append(node('br'),view);
+        }
       }
       body.append(row);
     }
@@ -204,7 +209,14 @@ export function mountDashboard(root, load) {
     } finally { if (active) { refresh.disabled = false; root.removeAttribute('aria-busy'); } }
   }
   for (const button of root.querySelectorAll('[data-view]')) button.addEventListener('click', () => {
+    closeRun?.();closeRun=null;
     for (const other of root.querySelectorAll('[data-view]')) { const selected = other === button; other.setAttribute('aria-pressed', String(selected)); root.querySelector(`#${other.dataset.view}`).hidden = !selected; }
+  });
+  root.querySelector('#tracker-list').addEventListener('click',event=>{
+    const id=event.target.closest('button[data-run-tracker]')?.dataset.runTracker;
+    const tracker=data?.trackers.find(t=>t.id===id);if(!tracker)return;
+    closeRun?.();root.querySelector('#trackers').hidden=true;
+    closeRun=mountRunDetail(runDetail,runs,tracker,()=>{closeRun?.();closeRun=null;root.querySelector('#trackers').hidden=false;});
   });
   for (const button of root.querySelectorAll('[data-layout]')) button.addEventListener('click', () => {
     layout = button.dataset.layout;
@@ -238,5 +250,5 @@ export function mountDashboard(root, load) {
   const timer = setInterval(tick, 30000);
   document.addEventListener('visibilitychange', tick);
   root.hidden = false; void reload();
-  return () => { active = false; clearInterval(timer); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
+  return () => { active = false; closeRun?.();clearInterval(timer); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
 }

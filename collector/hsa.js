@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { startReport } from './report.js';
 import { Buffer } from 'node:buffer';
 import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
@@ -435,14 +436,40 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const started = now();
   if (!assessOnly && discovery && (Date.parse(since)>=Date.parse(started)||Date.parse(started)-Date.parse(since)>35*86400000)) throw Object.assign(new Error('Discovery requires a publication window of at most 35 days'),{status:400});
   const run = (await db.query('insert into scout.collection_runs (tracker_id,coverage_since,started_at,stats) values ($1,$2,$3,$4) returning id', [tracker.id, since, started, {...(validate ? { validation: true } : {}),...(assessOnly ? { assessment_only: true, source_id: sourceId } : {})}])).rows[0];
+  const trace = await startReport(db,run.id);
+  try {
   const stats = { created: 0, changed: 0, posts: 0, pages: 0, candidates: 0, skipped: 0, assessed: 0, reused_uncertain: 0, warnings: [] };
   const budget = { requests: 0, deadline: Math.min(deadline, Date.now() + LIMITS.seconds * 1000) };
-  model ??= makeModel?.(run.id,budget.deadline);
+  model ??= makeModel?.(run.id,budget.deadline,trace);
+  const fetchSource=read;
+  read=async (url,...args)=>{
+    const op=await trace.start('fetch',{url,note:'Legacy retrieval. Raw response/redirect hops are not separately archived; retained captures are linked under Detect changes.'});
+    try {
+      const response=await fetchSource(url,...args);
+      await trace.finish(op,'pass',{final_url:response.url,bytes:Buffer.byteLength(response.body),http_status:response.status??null});
+      return response;
+    } catch(error) {
+      await trace.finish(op,'fail',{note:'Source retrieval failed; no response payload was retained.'});
+      throw error;
+    }
+  };
+  const capture=async (...args)=>{
+    const op=await trace.start('detect',{url:args[1],note:'Legacy semantic fingerprint comparison after scripted selection/extraction; not a raw-document hash.'});
+    try {
+    const source=await observe(db,...args),artifacts=[await trace.capture(source)];
+    const previous=source.parsed.source.previous_id;
+    if(previous){const row=(await db.query('select id,url,content_hash from scout.evidence where id=$1',[previous])).rows[0];if(row)artifacts.push(await trace.capture(row));}
+    await trace.finish(op,source.changed?'pass':'skipped',{source_ids:[source.id],artifacts,note:source.changed?'Legacy fingerprint changed; capture retained.':'Legacy fingerprint unchanged; existing capture reused.'});
+    return source;
+    } catch(error) { await trace.finish(op,'fail',{note:'Legacy comparison/capture failed.'}); throw error; }
+  };
   const pages = new Map();
   const dateWarnings = new Map();
   let cursor, covered = false, quota = false, feedFailed = false;
   try {
     if (assessOnly) {
+      await trace.skip('fetch','Stored assessment; no source retrieval requested.');
+      await trace.skip('detect','Stored assessment; no new change detection requested.');
       stats.warnings.push('Stored evidence assessment only; source freshness and collection coverage were not checked');
     } else if (discovery) {
       const queries=['BBNJ','"High Seas Treaty"','"traité sur la haute mer"','BBNJCOP1'];
@@ -504,7 +531,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         scripted.discovery={event_verified:Boolean(verified),support:item.link?(support?'fetched':'unavailable_or_bounded'):'no_link',
           treaty_unverified:/ratif|accession|\b\d+\s+(?:parties|parti[es])\b|entr[ée]e? en vigueur/i.test([post.record.text,support?.text].filter(Boolean).join(' '))};
         const text=[post.record.text,support?.text,verified?extracted.description:null].filter(Boolean).join('\n');
-        const source=await observe(db,tracker.id,url,JSON.stringify({text,post,urls,search:{queries:item.queries,since,until:started},support:support??null}),post.record.createdAt,scripted,
+        const source=await capture(tracker.id,url,JSON.stringify({text,post,urls,search:{queries:item.queries,since,until:started},support:support??null}),post.record.createdAt,scripted,
           {uri:post.uri,cid:post.cid,record:post.record,author:{did:post.author.did,handle:post.author.handle,displayName:post.author.displayName??null},urls,
             support:support?{url:support.url,text:support.text,structured:extracted}:null},
           {rank:0,identity:`post:${post.uri}`,uri:post.uri,cid:post.cid,queries:item.queries,links:urls.slice(0,10)},now());
@@ -602,7 +629,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         }
         const text=[visibleText(item[1]),scripted.organization,scripted.location,technicalText||scripted.description,
           detailText.match(/Roundtable Discussion: The Clearing-House Mechanism \(CHM\) and Data Sharing/)?.[0]].filter(Boolean).join(' ');
-        const source=await observe(db,tracker.id,DOALOS,JSON.stringify({text,listing:item[1],detail}),null,scripted,
+        const source=await capture(tracker.id,DOALOS,JSON.stringify({text,listing:item[1],detail}),null,scripted,
           {listing:visibleText(item[1]),detail:detailText,structured:scripted},
           {rank:2,identity:`event:${url}`,item_key:url,links:[url,scripted.registration_url].filter(Boolean)},now());
         stats[source.changed?'candidates':'skipped']++;pages.set(DOALOS,{source});
@@ -639,7 +666,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
           const scripted={kind:'announcement',title:headings[0],organization:text.includes('Division for Ocean Affairs and the Law of the Sea')?'Division for Ocean Affairs and the Law of the Sea':null,
             description:Array.from(description).slice(0,280).join(''),...Object.fromEntries(['location','event_url','registration_url','starts_at','ends_at','status'].map(f=>[f,null])),
             notification:{number:item.number,issued_on:item.issued_on,action_required_by:required?day(required[1]):null}};
-          const source=await observe(db,tracker.id,item.url,response.body,null,scripted,{text,links,notification:scripted.notification},
+          const source=await capture(tracker.id,item.url,response.body,null,scripted,{text,links,notification:scripted.notification},
             {rank:2,identity:`page:${item.url}`,listing_url:listingURL,links},now());
           stats[source.changed?'candidates':'skipped']++;
           pages.set(item.url,{source});
@@ -695,7 +722,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
             ...schedule,time_zone:e.timezone,location:icons.location||null,event_url:e.url,registration_url:registrations[0]??null,status:event.status,
             explorers:{id:String(e.id),year,scope:programme?'programme':'event'}};
           const links=[e.url,...registrations],context=[title,description,...paragraphs.filter(p=>marine.test(p)),text(own)].join(' ');
-          const source=await observe(db,tracker.id,e.url,JSON.stringify({text:context,api:e,detail:{url:r.url,body:r.body}}),dates(e.date_utc?.replace(' ','T')+'Z').starts_at,scripted,
+          const source=await capture(tracker.id,e.url,JSON.stringify({text:context,api:e,detail:{url:r.url,body:r.body}}),dates(e.date_utc?.replace(' ','T')+'Z').starts_at,scripted,
             {text:text(own),structured:scripted,links},{rank:2,identity:'explorers:'+itemKey,item_key:itemKey,listing_url:tracker.url,links},now());
           stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
         }catch(error){quota ||= Boolean(error.quota);stats.warnings.push('Explorers '+e.id+': '+error.message);}
@@ -766,7 +793,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
           }
           scripted.octo.year=year;const key=item.id+':'+year+':'+(item.past?'recording':'event');
           const excerpt=[item.title,description,host,scripted.starts_at,scripted.status,support?.facts.when,body].filter(Boolean).join(' ');
-          const source=await observe(db,tracker.id,item.url,JSON.stringify({text:excerpt,feed_item:item.raw,post,support}),item.published,scripted,
+          const source=await capture(tracker.id,item.url,JSON.stringify({text:excerpt,feed_item:item.raw,post,support}),item.published,scripted,
             {body,links,structured:scripted,registration:support?.facts??null},{rank:2,identity:'octo:'+key,item_key:key,feed_url:feedURL,api_url:apiURL,links:links.slice(0,10)},now());
           stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
         }catch(error){quota ||= Boolean(error.quota);stats.warnings.push(item.url+': '+error.message+'; retained session facts require review');}
@@ -833,7 +860,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
           const materials=[...(event.links??[]),...(event.publications??[])].map(m=>({url:sourceURL(m.uri),title:m.title??null,description:m.description?visibleText(m.description):null}));
           if(materials.length>10)throw new Error('CBD material link bound exceeded');
           const text=[scripted.title,description,scripted.organization,scripted.location,scripted.starts_at,scripted.ends_at,scripted.status,meeting.Title.en,body].filter(Boolean).join(' ');
-          const source=await observe(db,tracker.id,url,JSON.stringify({text,reservation:r,conference:meeting,responses,hosts:event.hostOrgs.map((id,i)=>({id,title:orgs[i][0]})),room:scripted.location}),null,scripted,
+          const source=await capture(tracker.id,url,JSON.stringify({text,reservation:r,conference:meeting,responses,hosts:event.hostOrgs.map((id,i)=>({id,title:orgs[i][0]})),room:scripted.location}),null,scripted,
             {body,structured:scripted,materials},{rank:2,identity:'event:'+url,item_key:meeting._id+':'+event.id,listing_url:tracker.url,links:[url,...materials.map(m=>m.url)]},now());
           stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
         }catch(error){quota ||= Boolean(error.quota);stats.warnings.push(error.message);}
@@ -914,7 +941,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         scripted.limitation=scripted.starts_at?'Only the explicit session reservation supplies timestamps; programme/PDF coverage remains limited':'Exact session schedule/room unconfirmed; parent meeting ranges and tentative reservations must not supply event timestamps';
         const purpose=description.match(/Against this background[\s\S]*?(?=Programme|$)/)?.[0]??'';
         const text=[item.title,purpose,scripted.organization,scripted.location].filter(Boolean).join(' ');
-        const source=await observe(db,tracker.id,tracker.url,JSON.stringify({text,listing:item.content,responses:raw}),null,scripted,
+        const source=await capture(tracker.id,tracker.url,JSON.stringify({text,listing:item.content,responses:raw}),null,scripted,
           {listing:visibleText(item.content),description,structured:scripted,links:item.links},
           {rank:2,identity:id?`event:${url}`:`side-event:${tracker.url}:${url}`,item_key:url,links:item.links.slice(0,10)},now());
         stats[source.changed?'candidates':'skipped']++;pages.set(url,{source});
@@ -1018,7 +1045,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
             item.scripted.location='FAO Headquarters in Rome';
           }
           const scripted=item.scripted,key=`${destination.searchParams.get('id')??destination.pathname}:${latest.month}:${item.link}${scripted.riseup.workshop?':workshop':''}`;
-          const source=await observe(db,tracker.id,issue.url,JSON.stringify({text:[scripted.title,scripted.description,...item.paragraphs].filter(Boolean).join(' '),body:issue.body,archive:latest.raw,item:item.body,detail}),null,scripted,
+          const source=await capture(tracker.id,issue.url,JSON.stringify({text:[scripted.title,scripted.description,...item.paragraphs].filter(Boolean).join(' '),body:issue.body,archive:latest.raw,item:item.body,detail}),null,scripted,
             {text:[scripted.title,...item.paragraphs].join(' '),links:item.links,structured:scripted},
             {rank:2,identity:`riseup:${key}`,item_key:key,parent_url:tracker.url,links:item.links},now());
           stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
@@ -1075,7 +1102,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         Object.assign(scripted,dates(),{description:null});detail='';agenda='';
       }
       stats.warnings.push('Harvest covers the one named current webinar in at most three reads; archived recordings, ABNJ resource cards, factsheets, tools, PDFs, videos, translations and other sessions remain outside this slice');
-      const source=await observe(db,tracker.id,tracker.url,JSON.stringify({text:[title,heading,paragraphs[1],agenda].filter(Boolean).join(' '),responses:raw}),null,scripted,
+      const source=await capture(tracker.id,tracker.url,JSON.stringify({text:[title,heading,paragraphs[1],agenda].filter(Boolean).join(' '),responses:raw}),null,scripted,
         {listing:text(block),detail,agenda,structured:scripted},
         {rank:2,identity:`harvest:meeting:${key}`,item_key:key,links:[listing,registration]},now());
       stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});covered=true;
@@ -1134,7 +1161,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         }
       } catch(error) {stats.warnings.push(`${kind}: ${error.message}`);}
       for (const item of items) {
-        const scripted={...item.scripted,symposium:{edition:year,key:item.key}},source=await observe(db,tracker.id,item.page.url,JSON.stringify({text:scripted.title+' '+item.text,body:item.page.body,item:item.html}),null,scripted,{text:item.text,structured:scripted,links:item.links},
+        const scripted={...item.scripted,symposium:{edition:year,key:item.key}},source=await capture(tracker.id,item.page.url,JSON.stringify({text:scripted.title+' '+item.text,body:item.page.body,item:item.html}),null,scripted,{text:item.text,structured:scripted,links:item.links},
           {rank:2,identity:`symposium:${year}:${item.key}`,item_key:`${year}:${item.key}`,parent_url:editionURL,links:item.links},now());
         stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
       }
@@ -1186,7 +1213,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         }
         for (const item of items) {
           const key=`${id}:${years[0]}:${item.key}`,scripted={...item.scripted,blue_marine:{id,edition:years[0],recap:item.key!=='event'}};
-          const source=await observe(db,tracker.id,row.url,JSON.stringify({text:scripted.title+' '+item.text+(scripted.kind==='event'?' '+dateText+' '+location:''),body:page.body,card:row.card}),null,scripted,{text:item.text,structured:scripted,links},
+          const source=await capture(tracker.id,row.url,JSON.stringify({text:scripted.title+' '+item.text+(scripted.kind==='event'?' '+dateText+' '+location:''),body:page.body,card:row.card}),null,scripted,{text:item.text,structured:scripted,links},
             {rank:2,identity:`bluemarine:${key}`,item_key:key,parent_url:tracker.url,links},now());
           stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
         }
@@ -1227,7 +1254,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         const description=sentences.find(s=>/Clearing-House Mechanism/.test(s))??sentences[0]??null;
         const scripted={kind:'announcement',title,organization:'OceanCare',description,location:null,starts_at:null,ends_at:null,event_url:null,registration_url:null,status:null,oceancare:{id}};
         const links=[...new Set([...content.matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(new URL(text(m[1]),row.url).href);}catch{return null;}}).filter(Boolean))].sort();
-        const source=await observe(db,tracker.id,row.url,JSON.stringify({text:title+' '+context,body:page.body,card:row.card}),published,scripted,{text:text(article[3]),links,published_at:published,structured:scripted},
+        const source=await capture(tracker.id,row.url,JSON.stringify({text:title+' '+context,body:page.body,card:row.card}),published,scripted,{text:text(article[3]),links,published_at:published,structured:scripted},
           {rank:2,identity:`oceancare:post:${id}`,item_key:id,parent_url:listing},now());
         stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
       } catch(error) {stats.warnings.push(`${row.url}: ${error.message}`);}
@@ -1266,7 +1293,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         const scripted={kind:item.kind,title:item.title,description,organization:item.organization,location:null,starts_at:null,ends_at:null,event_url:null,registration_url:null,status:null,
           gof:{id:8624,item:item.key,...(item.parent?{parent_conference:item.parent,edition:item.edition,year:item.year,session:item.session,schedule_unconfirmed:true}:{})}};
         const links=[...new Set([...item.content.matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(new URL(text(m[1]),projectURL).href);}catch{return null;}}).filter(Boolean))].sort();
-        const source=await observe(db,tracker.id,projectURL,JSON.stringify({text:item.title+' '+item.context,body:page.body,api:response,item:item.content}),published,scripted,
+        const source=await capture(tracker.id,projectURL,JSON.stringify({text:item.title+' '+item.context,body:page.body,api:response,item:item.content}),published,scripted,
           {text:text(item.content),links,published_at:published,structured:scripted},
           {rank:2,identity:`gof:8624:${item.key}`,item_key:item.key,parent_url:tracker.url},now());
         stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
@@ -1321,7 +1348,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
           const scripted={kind:'announcement',title,description,organization:'IUCN',location:null,starts_at:null,ends_at:null,event_url:null,registration_url:null,status:null,
             iucn:{id:article[1],type:item.type,publication,precision:resource?'year':published?'instant':'day'}};
           const links=[...new Set([...content.matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(new URL(text(m[1]),item.url).href);}catch{return null;}}).filter(Boolean))].sort();
-          const source=await observe(db,tracker.id,item.url,JSON.stringify({text:[title,...paragraphs].join(' '),listing:item.raw,body:response.body}),published,scripted,
+          const source=await capture(tracker.id,item.url,JSON.stringify({text:[title,...paragraphs].join(' '),listing:item.raw,body:response.body}),published,scripted,
             {text:text(content),links,publication,published_at:published,structured:scripted},
             {rank:2,identity:`iucn:node:${article[1]}`,parent_url:tracker.url},now());
           stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
@@ -1403,7 +1430,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
               scripted.gfw.revision_unconfirmed=true;stats.warnings.push('GFW materially revised corroborating article requires review; retained facts preserved');
             }
           }
-          const source=await observe(db,tracker.id,item.url,JSON.stringify({text:context,listing:item.raw,api:response,support}),published,scripted,
+          const source=await capture(tracker.id,item.url,JSON.stringify({text:context,listing:item.raw,api:response,support}),published,scripted,
             meaningful,
             {rank:2,identity:`page:${item.url}`,links:[item.url],parent_url:tracker.url},now());
           stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
@@ -1442,7 +1469,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
               ...dates(),event_url:null,registration_url:null,status:null,dosi_web:{publication_on:publishedOn}};
             const context=[title,publication,technical??paragraphs[0]].filter(Boolean).join(' ');
             const links=[...new Set([...article.matchAll(/href="([^"]+)"/g)].map(m=>{try{return sourceURL(new URL(text(m[1]),response.url).href);}catch{return null;}}).filter(Boolean))].sort();
-            const source=await observe(db,tracker.id,response.url,JSON.stringify({text:context,body:response.body,discovered_from:tracker.url}),null,scripted,
+            const source=await capture(tracker.id,response.url,JSON.stringify({text:context,body:response.body,discovered_from:tracker.url}),null,scripted,
               {text:text(article),links,publication_on:publishedOn,structured:scripted},
               {rank:2,identity:`page:${response.url}`,links:[response.url],parent_url:tracker.url},now());
             stats[source.changed?'candidates':'skipped']++;pages.set(source.id,{source});
@@ -1476,7 +1503,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
           if (items.length>8) stats.warnings.push(`DOSI newsletter item limit reached: ${items.length-8} linked items not captured`);
           for (const item of items.slice(0,8)) {
             const scripted={...item.parsed,dosi_web:{issue_published_at:issue.published}};
-            const source=await observe(db,tracker.id,item.url,JSON.stringify({text:visibleText(item.content),item:item.content,
+            const source=await capture(tracker.id,item.url,JSON.stringify({text:visibleText(item.content),item:item.content,
               discovery:{page:tracker.url,feed:feedURL,rss:issue.raw,roundup:{url:roundup.url,body:article}}}),null,scripted,
               {text:visibleText(item.content),link:item.link,structured:scripted},
               {rank:2,identity:`newsletter:${item.url}:${item.link}`,item_key:item.link,parent_url:roundup.url,links:[item.link]},now());
@@ -1568,7 +1595,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
           }
           if (links.length>10) stats.warnings.push('HSA article model-link limit reached');
           const context=[scripted.title,scripted.description,body,scripted.organization,support?.facts?.agenda].filter(Boolean).join(' ');
-          const source=await observe(db,tracker.id,item.url,JSON.stringify({text:context,feed_item:item.raw,api:{url:response.url,body:response.body},support}),item.published,scripted,
+          const source=await capture(tracker.id,item.url,JSON.stringify({text:context,feed_item:item.raw,api:{url:response.url,body:response.body},support}),item.published,scripted,
             {title:item.title,text:body,links,structured:scripted,registration:support?.facts??null},
             {rank:2,identity:session?`event:${scripted.event_url}`:`page:${item.url}`,feed_url:feedURL,links:links.slice(0,10)},now());
           stats[source.changed?'candidates':'skipped']++;pages.set(item.url,{source});
@@ -1661,7 +1688,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
             catch(error) {quota ||= Boolean(error.quota);support={url:buttons[0],error:error.message};stats.warnings.push('IDDRI programme/registration: '+error.message);}
           } else if (buttons.length) stats.warnings.push('IDDRI supporting-page limit reached');
           stats.warnings.push('IDDRI PDFs, images and embedded media are not parsed; HTML evidence only');
-          const source=await observe(db,tracker.id,item.url,JSON.stringify({text:[title,intro,body].filter(Boolean).join(' '),listing:item.raw,detail:r,support}),null,scripted,
+          const source=await capture(tracker.id,item.url,JSON.stringify({text:[title,intro,body].filter(Boolean).join(' '),listing:item.raw,detail:r,support}),null,scripted,
             {title,intro,text:body,links,structured:scripted},
             {rank:2,identity:'page:'+(scripted.iddri.translation_of??item.url),listing_url:item.listing,links:links.slice(0,6)},now());
           details.set(item.url,{body:r.body,links,scripted,days});
@@ -1695,7 +1722,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
           const scripted={kind:'event',title:event.title,organization:feed.website?.siteTitle?.includes('HUB Ocean')?'HUB Ocean':null,
             description:visibleText(event.excerpt||event.body),...schedule,location:event.location?.addressTitle??null,event_url:url,registration_url:registration,status:null};
           const meaningful={title:event.title,body:visibleText(event.body),...schedule,location:scripted.location,registration_url:registration};
-          const source=await observe(db,tracker.id,url,JSON.stringify({...event,calendar:calendar.body}),Number.isFinite(event.publishOn)?new Date(event.publishOn).toISOString():null,
+          const source=await capture(tracker.id,url,JSON.stringify({...event,calendar:calendar.body}),Number.isFinite(event.publishOn)?new Date(event.publishOn).toISOString():null,
             scripted,meaningful,{rank:2,identity:`event:${url}`,feed_url:feedURL,links:[url+'?format=ical',registration].filter(Boolean)},now());
           stats[source.changed?'candidates':'skipped']++;
         } catch(error) { quota ||= Boolean(error.quota);stats.warnings.push(error.message); }
@@ -1723,7 +1750,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         const postURL = `https://bsky.app/profile/${uri[1]}/post/${uri[2]}`;
         const content = JSON.stringify({ text: post.record.text, author: { handle: post.author.handle, displayName: post.author.displayName ?? null }, createdAt: post.record.createdAt, urls });
         const scripted = postRecord(post, urls);
-        const doc = await observe(db, tracker.id, postURL, content, post.record.createdAt, scripted,
+        const doc = await capture(tracker.id, postURL, content, post.record.createdAt, scripted,
           { text:post.record.text.replace(/https:\/\/[^\s]+/g,value=>{try{return sourceURL(value);}catch{return value;}}), author:post.author.handle, organizer:post.author.displayName??null, urls, createdAt:post.record.createdAt },
           {rank:post.author.handle === actor ? 2 : 0, identity:`post:${post.uri}`}, now());
         stats[doc.changed ? 'candidates' : 'skipped']++;
@@ -1746,7 +1773,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
                 try{return sourceURL(new URL(match[1].replaceAll('&amp;','&'),fetched.url).href);}catch{return null;}
               }).filter(Boolean))].sort();
               const meaningful = {text:normalized(text), structured:parsed, links:pageLinks};
-              const source = await observe(db, tracker.id, fetched.url, fetched.body, null, parsed, meaningful,
+              const source = await capture(tracker.id, fetched.url, fetched.body, null, parsed, meaningful,
                 {rank:authoritative?2:0, identity:`page:${fetched.url}`,links:pageLinks.slice(0,10)}, now());
               stats[source.changed?'candidates':'skipped']++;
               pages.set(url, { source, authoritative, observedAt: now() });
@@ -1765,7 +1792,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
                     if (unsupported) stats.warnings.push(`DOSI newsletter has ${unsupported} unsupported item links`);
                     if (items.length>8) stats.warnings.push(`DOSI newsletter item limit reached: ${items.length-8} linked items not captured`);
                     for (const item of items.slice(0,8)) {
-                      const captured=await observe(db,tracker.id,item.url,item.content,null,item.parsed,
+                      const captured=await capture(tracker.id,item.url,item.content,null,item.parsed,
                         {text:visibleText(item.content),link:item.link,structured:item.parsed},
                         {rank:2,identity:`newsletter:${item.url}:${item.link}`,item_key:item.link,parent_url:fetched.url,links:[item.link]},now());
                       stats[captured.changed?'candidates':'skipped']++;
@@ -1795,6 +1822,10 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
     where parsed#>>'{assessment,state}' in ('pending','uncertain')`;
   const queued = (untc || doalos || sideEvents || hsaWeb || iddri || dosiWeb || gfw || iucn || gof || oceancare || harvest || riseup || blueMarine || symposium || cbd || octo || explorers || discovery) && feedFailed ? [] : (await db.query(`${pendingQuery} and ($2::uuid is null or id=$2) order by (parsed#>>'{assessment,state}'='uncertain'),collected_at,id limit 20`,[tracker.id,sourceId])).rows.filter(source=>assessOnly||(!(doalos||hsaWeb||iddri)||pages.has(source.url))&&(!sideEvents||pages.has(source.parsed.source.item_key))&&(!(dosiWeb||gfw||iucn||gof||oceancare||harvest||riseup||blueMarine||symposium||cbd||octo||explorers||discovery)||pages.has(source.id)));
   if (assessOnly && !queued.length) stats.warnings.push('Selected source is not latest pending/uncertain evidence for this tracker');
+  if(!feedFailed||queued.length){
+    const selection=await trace.start('prepare');
+    await trace.finish(selection,queued.length?'pass':'skipped',{source_ids:queued.map(s=>s.id),note:queued.length?'Selected latest pending/uncertain captures under legacy rules; discarded items and full cleaned documents are unavailable.':'No eligible pending capture selected by the legacy path.'});
+  }
   const pending=[];
   for (const source of queued) {
     if (!assessOnly && source.parsed.assessment.state==='uncertain' && source.parsed.assessment.input_fingerprint) {
@@ -1811,6 +1842,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
       pending[index].parsed.iddri && pending[index].parsed.source.identity===pending[index+1]?.parsed.source.identity;
     const batch=pending.slice(index,index+(sameEvent?1:2));
     index+=batch.length;
+    let op=await trace.start('prepare',{source_ids:batch.map(s=>s.id)});
     try {
       if (Date.now()>=budget.deadline) throw new Error('Assessment time limit reached');
       if (!model) throw new Error('Assessment pending: configure model and shared hosted quota accounting');
@@ -1818,14 +1850,25 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
       if (batch.length===2 && Buffer.byteLength(JSON.stringify([INSTRUCTION,inputs,SCHEMA]))>7400) {batch.pop();inputs.pop();index--;}
       // Keep provenance/version bookkeeping for validation and uncertainty reuse,
       // but spend model context on the finding facts and exact IDs.
-      const decisions=await model(INSTRUCTION,inputs.map(({changes,candidates,scripted,...input})=>({...input,
+      const prepared=inputs.map(({changes,candidates,scripted,...input})=>({...input,
         scripted:assessOnly?Object.fromEntries(Object.entries(scripted).filter(([key,value])=>value!=null&&(key!=='description'||!normalize(input.text).includes(normalize(value))))):scripted,
         candidates:candidates.map(({identity_key,updated_at,evidence,exact,...candidate})=>
-        Object.fromEntries(Object.entries(candidate).filter(([,value])=>value!=null&&value!==false)))})),SCHEMA);
+        Object.fromEntries(Object.entries(candidate).filter(([,value])=>value!=null&&value!==false)))}));
+      const artifacts=[];
+      for(const source of batch)artifacts.push(await trace.capture(source));
+      artifacts.push(await trace.artifact('preparation','Saved validation inputs and model input projection',{validation_inputs:inputs,model_inputs:prepared}));
+      await trace.finish(op,'pass',{source_ids:batch.map(s=>s.id),artifacts,note:inputs.some(i=>i.context_truncated)?'Legacy input is clipped (context_truncated); full capture remains linked.':'Legacy prepared input; schema validity is not rubric accuracy.'});
+      op=await trace.start('generate',{source_ids:batch.map(s=>s.id),note:'Exact provider request/response available only when the instrumented Gemini transport is used.'});
+      const decisions=await model(INSTRUCTION,prepared,SCHEMA);
+      const response=await trace.artifact('decisions','Returned parsed decisions',decisions);
+      await trace.finish(op,'pass',{artifacts:[response]});
+      op=await trace.start('validate',{source_ids:batch.map(s=>s.id),artifacts:[response],note:'Legacy validation and deterministic adjustments; no model repair loop.'});
       (stats.assessment_results??=[]).push({source_ids:batch.map(source=>source.id),decisions});
       if (!Array.isArray(decisions)||decisions.length!==batch.length||new Set(decisions.map(d=>d.source_id)).size!==batch.length) throw new Error('Incomplete assessment batch');
+      await trace.finish(op,'pass',{note:'Batch shape accepted; individual decisions are validated below.'});
       for (let i=0;i<batch.length;i++) {
         const source=batch[i], input=inputs[i];
+        op=await trace.start('validate',{source_ids:[source.id],artifacts:[response],note:'Legacy validation; no model repair loop.'});
         let decision=validateDecision(decisions.find(d=>d.source_id===source.id),input);
         // A parsed registration page supplies its own URL. An explicit link in
         // the retained post can resolve "new" only after the normal identity checks.
@@ -1864,6 +1907,10 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
         if (decision!==modelDecision) assessment.model_decision=modelDecision;
         if (evaluatedUncertainty) assessment.input_fingerprint=fingerprint({source:source.content_hash,coverage:input.coverage,candidates:JSON.stringify(input.candidates)});
         const parsed={...source.parsed,...(['supporting_evidence','no_substantive_change'].includes(decision.action)?{}:decision.candidate??{}),assessment};
+        const validated=await trace.artifact('validated','Accepted decision after legacy safeguards',{decision,legacy_adjusted:decision!==modelDecision});
+        await trace.finish(op,'pass',{artifacts:[response,validated],note:decision.action==='uncertain'?'Valid unresolved assessment; no finding accepted.':'Schema/source/identity checks accepted; priority accuracy is not verified.'});
+        op=await trace.start('save',{source_ids:[source.id],artifacts:[validated]});
+        let saved;
         await db.transaction(async tx=>{
           const before={created:stats.created,changed:stats.changed};
           let target;
@@ -1891,12 +1938,20 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
             if (changed.rows.length && stats.created===before.created && stats.changed===before.changed) stats.changed++;
             await tx.query("update scout.evidence set parsed=jsonb_set(parsed,'{assessment,priority_accepted}','true') where id=$1 and record_id is not null",[target.sourceId]);
           }
+          saved=target;
           if (assessOnly) await tx.query('update scout.evidence set last_seen_at=$2::text::timestamptz where id=$1',[source.id,source.observed_last_seen_at]);
         });
+        await trace.finish(op,'pass',{record_ids:saved?[saved.recordId]:[],note:saved?'Committed assessment and record/evidence link. Record link opens its current version.':'Committed assessment only; no record written ('+decision.action+', '+decision.priority+').'});
         stats.assessed++;
       }
-    } catch (error) { stats.warnings.push(error.message); quota ||= /quota|limit|429/.test(error.message); break; }
+    } catch (error) {
+      const evidence=await trace.artifact('error','Assessment failure',{message:error.message.startsWith('Assessment rejected:')?error.message:'Legacy assessment did not finish; inspect available inputs/responses and run warnings.',repair:'No model repair loop in legacy path'});
+      await trace.finish(op,'fail',{artifacts:[...(trace.report.operations[op].artifacts??[]),evidence]});
+      stats.warnings.push(error.message); quota ||= /quota|limit|429/.test(error.message); break;
+    }
   }
+  if(!feedFailed)await trace.skip('detect','Legacy path selected no capture for comparison.');
+  if(!pending.length&&!feedFailed)for(const step of ['generate','validate','save'])await trace.skip(step,'No changed/eligible assessment (or unchanged uncertainty reused).');
   stats.pending=(await db.query(`select count(*)::int n from (${pendingQuery}) pending`,[tracker.id])).rows[0].n;
   if (stats.pending) stats.warnings.push(`${stats.pending} source assessments pending`);
   stats.warnings = [...new Set([...stats.warnings, ...dateWarnings.values()].filter(Boolean))];
@@ -1905,4 +1960,9 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const finished = now();
   await db.query('update scout.collection_runs set finished_at=$1,outcome=$2,stats=stats || $3::jsonb where id=$4', [finished, outcome, JSON.stringify(stats), run.id]);
   return { run_id: run.id, outcome, coverage_since: since, ...stats };
+  } catch(error) {
+    for(const [id,op]of Object.entries(trace.report.operations))if(op.state==='running')await trace.finish(id,'fail',{note:'Collector interrupted before this operation completed.'}).catch(()=>{});
+    await db.query("update scout.collection_runs set finished_at=clock_timestamp(),outcome='failed',stats=stats||$2::jsonb where id=$1 and outcome='running'",[run.id,JSON.stringify({warnings:['Collector interrupted; inspect persisted checkpoints.']})]).catch(()=>{});
+    throw error;
+  }
 }

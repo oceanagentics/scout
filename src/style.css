@@ -78,6 +78,12 @@ td a { font-weight: 600; }
 .data-table details { margin: 0; padding: 0; border: 0; }
 .record details > a { display: block; margin-top: 8px; }
 .error, .overdue { color: #98432f; }
+.run-history { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+.run-step { border-top: 1px solid #d5ddd6; margin-top: 24px; }
+.run-step details { margin: 12px 0; padding: 12px; background: #fff; }
+.run-step a { display: block; margin: 8px 0; overflow-wrap: anywhere; }
+.run-artifact { margin: 12px 0; }
+.run-artifact pre { max-height: 32rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: #edf3ed; font-size: .8rem; }
 .overdue { font-weight: 600; }
 .empty { grid-column: 1 / -1; padding: 36px; text-align: center; background: #fff; border: 1px solid #d5ddd6; border-radius: 12px; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

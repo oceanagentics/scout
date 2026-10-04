@@ -60,7 +60,7 @@ export async function hostedHSA(request, { databaseURL, apiKey, env, connect = p
     if (!acquired) return Response.json({ error: 'Scout collection already running' }, { status: 409 });
     const db=database(session);
     const result=await collect(db,{since:`${since}T00:00:00Z`,deadline,sourceId,trackerId,validate,assessOnly,
-      makeModel: Number(attempts) ? runId => gemini({apiKey,ledger:db,runId,deadline,runLimit:Number(attempts)})
+      makeModel: Number(attempts) ? (runId,_deadline,trace) => gemini({apiKey,ledger:db,runId,deadline,runLimit:Number(attempts),trace})
         : () => async () => { throw new Error('Observation-only run: assessments deferred (max_attempts=0)'); }});
     return Response.json(result);
   } catch (error) {
