@@ -36,6 +36,7 @@ test('invalid authenticated requests do no database work', async () => {
     ...['true','false','','all','true&validate=true'].map(value=>request(undefined, `?validate=${value}`)),
     request(undefined, '?validate=false&tracker_id=00000000-0000-0000-0000-000000000001'),
     request(undefined, '?validate=true&tracker_id=all'),
+    request(undefined, '?documents=true&validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d'),
     request(undefined, '?validate=true&validate=true&tracker_id=00000000-0000-0000-0000-000000000001'),
     ...['true','false','','true&assess_only=true'].map(value=>request(undefined, `?assess_only=${value}`)),
     request(undefined, '?assess_only=true&validate=true&tracker_id=00000000-0000-0000-0000-000000000001'),

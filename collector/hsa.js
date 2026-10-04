@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { startReport } from './report.js';
+import { collectOCTODocuments } from './octo-documents.js';
 import { Buffer } from 'node:buffer';
 import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
@@ -401,7 +402,7 @@ async function save(db, identity, source, rank, observedAt, stats) {
   return {warning:dateWarning,recordId:existing.id,sourceId:source.id};
 }
 
-export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000, model, makeModel, sourceId = null, trackerId = null, validate = false, assessOnly = false } = {}) {
+export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000, model, makeModel, sourceId = null, trackerId = null, validate = false, assessOnly = false, documents = false } = {}) {
   if (!Number.isFinite(Date.parse(since))) throw new Error('A valid coverage start is required');
   if (validate !== false && (validate !== true || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(trackerId ?? ''))) {
     throw Object.assign(new Error('Validation requires an explicit tracker UUID'), { status: 400 });
@@ -429,6 +430,10 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const symposium=tracker.collector==='web' && tracker.url===SYMPOSIUM;
   const cbd=tracker.collector==='web' && tracker.url===CBD_REGISTRY;
   const octo=tracker.collector==='web' && tracker.url===OCTO;
+  if(documents!==false){
+    if(documents!==true||!octo||!validate||assessOnly||sourceId)throw Object.assign(new Error('Document preparation requires explicit OCTO validation without assessment/source selection'),{status:400});
+    return collectOCTODocuments(db,{tracker,read,now,deadline,limits:LIMITS});
+  }
   const explorers=tracker.collector==='web' && tracker.url===EXPLORERS;
   const discovery=tracker.collector==='bluesky_search' && tracker.url==='https://bsky.app/search?q=BBNJ';
   if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo && !explorers && !discovery) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });

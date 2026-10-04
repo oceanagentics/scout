@@ -252,5 +252,8 @@ test('run view navigates on demand, renders artifacts as text, and discards late
     await click('Older runs');await tick();assert.equal(calls.filter(x=>x==='history').length,2);assert.match(root.textContent,/No runs on this page/);
     await click('Newer runs');await tick();const waiting=click('Inspect unlinked request');await tick();close();finishLate('signed-out source');await waiting;
     assert.equal(root.textContent,'');assert.equal(root.hidden,true);assert.equal(signalSeen.aborted,true);
+    const closeDocument=mountRunDetail(root,{...api,detail:async()=>({id:'0',outcome:'partial',report:{version:1,path:'octo-documents',operations:{},artifacts:{}}})},{id:'tracker',name:'OCTO'},()=>{});
+    await tick();assert.match(root.textContent,/OCTO document fetch\/prepare only/);assert.match(root.textContent,/Generate records · Not reached/);assert.match(root.textContent,/Save records · Not reached/);
+    assert.ok(!root.textContent.includes('Legacy scripted collector'));closeDocument();
   }finally{if(old===undefined)delete globalThis.document;else globalThis.document=old;}
 });

@@ -1,7 +1,7 @@
 // Run-local checkpoints. Bodies live once in report.artifacts; source payloads
 // remain in evidence. Never pass transport options, headers or environment here.
-export async function startReport(db, runId) {
-  const report = { version: 1, path: 'legacy-scripted', operations: {}, artifacts: {} };
+export async function startReport(db, runId, path = 'legacy-scripted') {
+  const report = { version: 1, path, operations: {}, artifacts: {} };
   await db.query('update scout.collection_runs set report=$2::jsonb where id=$1', [runId, JSON.stringify(report)]);
   let operation = 0, artifact = 0;
   const write = (group, id, value) => db.query(

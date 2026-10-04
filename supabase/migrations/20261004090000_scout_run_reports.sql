@@ -23,7 +23,9 @@ language sql stable security definer set search_path='' as $$
     'finished_at',r.finished_at,'outcome',r.outcome,'coverage_since',r.coverage_since,
     'counts',jsonb_build_object('requests',r.stats->'requests','posts',r.stats->'posts',
       'pages',r.stats->'pages','candidates',r.stats->'candidates','skipped',r.stats->'skipped',
-      'assessed',r.stats->'assessed','created',r.stats->'created','changed',r.stats->'changed','pending',r.stats->'pending'),
+      'assessed',r.stats->'assessed','created',r.stats->'created','changed',r.stats->'changed','pending',r.stats->'pending',
+      'documents',r.stats->'documents','prepared',r.stats->'prepared','reused',r.stats->'reused',
+      'feed_only',r.stats->'feed_only','failed',r.stats->'failed','unfetched',r.stats->'unfetched'),
     'warnings',r.stats->'warnings',
     'report',case when r.report is null then null else r.report-'artifacts' || jsonb_build_object('artifacts',
       coalesce((select jsonb_object_agg(a.key,a.value-'data') from jsonb_each(r.report->'artifacts') a),'{}'::jsonb)) end)
@@ -35,9 +37,10 @@ $$;
 -- No arbitrary evidence lookup and no grant on raw evidence or the report column.
 create function scout.run_artifact(p_run_id uuid, p_artifact_id text) returns jsonb
 language sql stable security definer set search_path='' as $$
-  select case when a->>'kind'='capture' then (
+  select case when a->>'kind'='capture' or a->>'kind'='preparation' and a ? 'source_id' then (
     select case when e.content ~* '"(headers|authorization|cookie|set-cookie|access_token|refresh_token|api_key|apikey|env)"[[:space:]]*:'
       then jsonb_build_object('unavailable','Capture contains transport/credential metadata; raw payload remains backend-only.')
+      when a->>'kind'='preparation' then e.parsed#>'{document,prepared}'
       else jsonb_build_object('url',e.url,'content_hash',e.content_hash,'content',e.content,
         'collected_at',e.collected_at,'published_at',e.published_at) end
     from scout.evidence e where e.id::text=a->>'source_id' and e.tracker_id=r.tracker_id
