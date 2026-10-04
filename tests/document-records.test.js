@@ -7,15 +7,15 @@ import {collectHSA} from '../collector/hsa.js';
 import {gemini,MODEL_LIMITS} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {prepareDocument,PREPARATION_VERSION} from '../collector/octo-documents.js';
-import {packDocument,validateProposal,DOCUMENT_VERSION} from '../collector/document-records.js';
+import {packDocument,validateFinding,candidatesFor,DOCUMENT_VERSION} from '../collector/document-records.js';
 import {stepState} from '../src/runs.js';
 
 const fixture=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));
 const mp=JSON.parse(fixture.posts.body).find(p=>p.id===16281);
 const feedURL='https://octogroup.org/feed/';
 const article={...mp,id:99,link:'https://octogroup.org/two-sessions/',title:{rendered:'Data workshops'},content:{rendered:'<h1>Data workshops</h1><p>First session</p><p>2026-10-21T10:00:00Z</p><p>Ocean Institute</p><p>Second session</p><p>2026-10-22T10:00:00Z</p><p>Marine data standards workshop.</p>'}};
-const answer=proposals=>({complete:true,reason:'All supplied finding evidence considered.',proposals});
-const proposal=(title='First session',date='2026-10-21T10:00:00Z')=>({action:'new',record_id:null,anchor:title,
+const answer=findings=>({complete:true,reason:'All supplied finding evidence considered.',findings});
+const proposal=(title='First session',date='2026-10-21T10:00:00Z')=>({anchor:title,urls:[],
   candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'event',title,organization:'Ocean Institute',description:'Marine data standards workshop.',event_url:article.link,starts_at:date},
   priority:'high',reason:'Concrete marine data standards workshop.',evidence:{kind:title,title,organization:'Ocean Institute',description:'Marine data standards workshop.',event_url:article.link,starts_at:date,priority:'Marine data standards workshop.'}});
 async function setup(){
@@ -30,7 +30,12 @@ async function setup(){
 function runner(db,respond,{post=article,advance=true,runLimit=10}={}){
   const requests=[];let calls=0;
   const options={trackerId:fixture.tracker.id,validate:true,documents:'process',read:async(url,budget)=>{
-    budget.requests++;return {url,status:200,body:url===feedURL?'<rss><channel><item><guid>https://octogroup.org/?p='+post.id+'</guid><link>'+post.link+'</link><title>'+post.title.rendered+'</title><description>Feed excerpt.</description></item></channel></rss>':JSON.stringify(post)};
+    budget.requests++;
+    if(url!==feedURL&&!url.endsWith('/'+post.id)){
+      const known=(await db.query("select content::jsonb->'article' article from scout.evidence where record_id is null and parsed#>>'{document,id}'=$1 order by last_seen_at desc limit 1",[url.split('/').at(-1)])).rows[0];
+      if(known)return known.article;
+    }
+    return {url,status:200,body:url===feedURL?'<rss><channel><item><guid>https://octogroup.org/?p='+post.id+'</guid><link>'+post.link+'</link><title>'+post.title.rendered+'</title><description>Feed excerpt.</description></item></channel></rss>':JSON.stringify(post)};
   },makeModel:(runId,deadline,trace)=>{
     const actual=gemini({apiKey:'test-key',ledger:db,runId,deadline,trace,runLimit,fetch:async(_url,request)=>{
       requests.push(request.body);assert.ok(Buffer.byteLength(request.body)<=MODEL_LIMITS.input);
@@ -48,183 +53,365 @@ function runner(db,respond,{post=article,advance=true,runLimit=10}={}){
 }
 const report=async(db,id)=>(await db.query('select report,stats from scout.collection_runs where id=$1',[id])).rows[0];
 
-test('two same-URL events commit separately, exact repeat skips, changed content and deliberate versions reassess without duplicates',async()=>{
-  const db=await setup();const post=structuredClone(article);
-  const source=runner(db,input=>answer([proposal(),proposal('Second session','2026-10-22T10:00:00Z')].map(p=>{
-    const r=input.existing.find(r=>r.title===p.candidate.title);return r?{...p,action:'update',record_id:r.id}:p;
-  })),{post});
-  try{
-    const first=await source.run();assert.equal(first.processed,1,first.warnings.join(';'));assert.equal(first.created,2);
-    const records=(await db.query('select * from scout.records order by title')).rows;assert.equal(records.length,2);assert.equal(records[0].event_url,records[1].event_url);
-    assert.equal((await db.query('select count(*)::int n from scout.evidence where record_id is not null')).rows[0].n,2);
-    const repeat=await source.run();assert.equal(source.requests.length,1);assert.equal(repeat.processed,1,repeat.warnings.join(';'));
-    assert.equal((await db.query("select count(*)::int n from scout.evidence e join scout.evidence s on e.parsed#>>'{document,capture_id}'=s.id::text where e.last_seen_at=s.last_seen_at")).rows[0].n,2);
-    assert.equal(stepState((await report(db,repeat.run_id)).report,'generate'),'Skipped');
-    post.content.rendered+='<p>Minor punctuation correction.</p>';const changed=await source.run();assert.equal(changed.processed,1,changed.warnings.join(';'));
-    const revised=await source.run({documentVersion:'document-prompt-1/rubric-2'});assert.equal(revised.processed,1,revised.warnings.join(';'));
-    assert.equal(source.requests.length,3);assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,2);
-    const detail=await report(db,first.run_id);assert.equal(detail.stats.model_attempts.length,1);
-    for(const step of ['generate','validate','save'])assert.equal(stepState(detail.report,step),'Pass');
-    assert.ok(Object.values(detail.report.operations).filter(o=>o.record_ids?.length).length===2);
-  }finally{await db.close();}
-});
 
-test('zero findings and new Low are completed assessments without records',async()=>{
-  const db=await setup();let low=false;
-  const source=runner(db,()=>answer(low?[{...proposal(),priority:'low'}]:[]));
-  try{
-    const zero=await source.run();assert.equal(zero.processed,1,zero.warnings.join(';'));
-    low=true;const assessment=await source.run({documentVersion:'low-review'});assert.equal(assessment.processed,1,assessment.warnings.join(';'));
-    assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
-    const evidence=(await db.query('select parsed from scout.evidence where record_id is null')).rows[0];
-    assert.equal(evidence.parsed.document.processing.state,'complete');
-    assert.ok(Object.values(evidence.parsed.document.processing_versions).some(v=>v.accepted.some(a=>a.proposal.priority==='low')));
-  }finally{await db.close();}
-});
+const resolution=(input,outcome='new',record_id=null)=>({outcome,record_id,reason:'Supported finding identity considered against supplied records.',evidence:{identity:input.finding.anchor,distinction:input.finding.anchor}});
+const stages=(findings,resolve=input=>resolution(input))=>input=>{
+  if(input.stage==='extract'){assert.equal(input.candidates,undefined);assert.equal(input.existing,undefined);return answer(typeof findings==='function'?findings(input):findings);}
+  assert.equal(input.stage,'resolve');return resolve(input);
+};
+const current=async db=>(await db.query('select * from scout.records order by title')).rows;
+const progress=async(db,id)=>(await db.query("select parsed from scout.evidence where record_id is null and ($1::text is null or parsed#>>'{document,id}'=$1) order by last_seen_at desc limit 1",[id==null?null:String(id)])).rows[0].parsed.document;
+const release={...proposal(),anchor:'Ocean Data Release',candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'announcement',title:'Ocean Data Release',organization:'Ocean Institute',description:'A new ocean data portal was released.'},
+  evidence:{kind:'Ocean Data Release',title:'Ocean Data Release',organization:'Ocean Institute',description:'A new ocean data portal was released.',priority:'A new ocean data portal was released.'}};
+const digest={...article,title:{rendered:'Weekly digest'},content:{rendered:'<h2>Ocean Data Release</h2><p>Ocean Institute</p><p>A new ocean data portal was released.</p>'}};
+const bulletin={...digest,id:100,link:'https://octogroup.org/research-bulletin/',title:{rendered:'Research bulletin'}};
+const seed=async(db,p=release,key='fixture')=>(await db.query('insert into scout.records('+CONTENT_FIELDS.join(',')+',priority,identity_key) values('+CONTENT_FIELDS.map((_,i)=>'$'+(i+1)).join(',')+',$11,$12) returning *',[...CONTENT_FIELDS.map(k=>p.candidate[k]),p.priority,key])).rows[0];
 
-test('rejected field repairs retain accepted proposals, exact requests/errors and counted attempts',async()=>{
-  const db=await setup();const bad={...proposal('Second session','2026-10-22T10:00:00Z'),candidate:{...proposal('Second session','2026-10-22T10:00:00Z').candidate,location:'Invented room'}};
-  const source=runner(db,(input,n)=>{
-    if(n===1)return answer([proposal(),bad]);
-    assert.ok(input.repair.errors.some(e=>e.includes('location')));assert.deepEqual(input.repair.rejected.proposals[1],bad);
-    assert.ok(input.accepted[0].record_id);return answer([proposal(),proposal('Second session','2026-10-22T10:00:00Z')]);
-  });
-  try{
-    const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));assert.equal(run.created,2);
+test('generic enclosing titles retrieve the same finding BEFORE resolution; corroboration associates both sources without overwriting',async()=>{
+  const db=await setup();try{
+    const first=runner(db,stages([release]),{post:digest});assert.equal((await first.run()).created,1);
+    const old=(await current(db))[0];
+    const second=runner(db,stages([{...release,priority:'normal'}],input=>{
+      assert.equal(input.candidates.length,1);assert.equal(input.candidates[0].id,old.id);
+      assert.equal(input.candidates[0].description,release.candidate.description);assert.equal(input.repair,undefined);
+      assert.equal(input.coverage.complete,true);assert.ok(input.coverage.terms.includes('release'));
+      return resolution(input,'evidence',old.id);
+    }),{post:bulletin});
+    const run=await second.run();assert.equal(run.processed,2,run.warnings.join(';'));assert.equal(run.created,0);
+    assert.equal(second.requests.length,2);assert.deepEqual(await current(db),[old]);
+    const linked=(await db.query('select record_id,url,parsed from scout.evidence where record_id is not null')).rows;
+    assert.deepEqual(new Set(linked.map(e=>e.url)),new Set([digest.link,bulletin.link]));assert.ok(linked.every(e=>e.record_id===old.id&&e.parsed.document.capture_id));
+    assert.equal(linked.find(e=>e.url===bulletin.link).parsed.assessment.priority,'normal');
+    assert.equal(linked.find(e=>e.url===bulletin.link).parsed.assessment.priority_accepted,false);
     const detail=await report(db,run.run_id);assert.equal(detail.stats.model_attempts.length,2);
-    assert.equal(stepState(detail.report,'validate'),'Pass');
-    assert.ok(Object.values(detail.report.operations).some(o=>o.state==='fail'&&o.recovered_by));
-    assert.equal(Object.values(detail.report.artifacts).filter(a=>a.kind==='model_request').length,2);
-    assert.ok(Object.values(detail.report.artifacts).some(a=>a.kind==='validation_errors'&&a.data.errors.some(e=>e.includes('location'))));
-    assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,2);
+    for(const kind of ['extract_input','extract_response','retrieval','resolve_input','resolve_response'])assert.ok(Object.values(detail.report.artifacts).some(a=>a.kind===kind));
+    assert.equal((await second.run()).processed,2);assert.equal(second.requests.length,2);
+    const reconsider=runner(db,stages([{...release,priority:'normal'}],input=>resolution(input,'evidence',old.id)),{post:digest});
+    await reconsider.run({documentVersion:'rating-review'});
+    const original=(await db.query('select parsed from scout.evidence where record_id=$1 and url=$2',[old.id,digest.link])).rows[0].parsed;
+    assert.equal(original.authority,true);assert.equal(original.assessment.priority,'high');assert.equal(original.finding.priority,'normal');
   }finally{await db.close();}
 });
 
-test('repair exhaustion stays failed with accepted saves; next invocation recovers without duplicate creation',async()=>{
-  const db=await setup();let recover=false;
+test('finding search uses independent supported facts across changed titles/URLs and missing fields, while disclosing lexical misses',async()=>{
+  const db=await setup();try{
+    const old=await seed(db);
+    const source={url:'https://octogroup.org/unrelated/',parsed:{document:{identity:'new-document'}}};
+    for(const candidate of [
+      {...release.candidate,organization:null,description:null},
+      {...release.candidate,title:'Portal availability',description:null},
+      {...release.candidate,title:'Portal availability',organization:null},
+    ]){
+      const found=await candidatesFor(db,source,{...release,anchor:candidate.title,candidate});
+      assert.deepEqual(found.rows.map(r=>r.id),[old.id]);assert.equal(found.coverage.complete,true);
+    }
+    const absent={...release,anchor:'Unrelated subject',candidate:{...release.candidate,title:'Unrelated subject',organization:null,description:null}};
+    const missed=await candidatesFor(db,source,absent);assert.equal(missed.rows.length,0);assert.match(missed.coverage.weakness,/miss paraphrases/);assert.ok(missed.coverage.missing.includes('organization'));
+    const event=proposal();const saved=await seed(db,event,'event');
+    for(const candidate of [
+      {...event.candidate,title:'Different title',organization:null,description:null,event_url:null},
+      {...event.candidate,title:'Different title',organization:null,description:null,starts_at:null},
+    ])assert.ok((await candidatesFor(db,source,{...event,anchor:'Different title',candidate})).rows.some(r=>r.id===saved.id));
+    const changed={...release,anchor:'Ocean Portal Launch',candidate:{...release.candidate,title:'Ocean Portal Launch'},evidence:{...release.evidence,title:'Ocean Portal Launch',kind:'Ocean Portal Launch'}};
+    const post={...bulletin,content:{rendered:bulletin.content.rendered.replaceAll('Ocean Data Release','Ocean Portal Launch')}};
+    const run=await runner(db,stages([changed],input=>{
+      assert.ok(input.candidates.some(r=>r.id===old.id));return resolution(input,'evidence',old.id);
+    }),{post}).run();
+    assert.equal(run.processed,1,run.warnings.join(';'));assert.equal((await current(db)).length,2);
+    assert.equal((await db.query('select title from scout.records where id=$1',[old.id])).rows[0].title,old.title);
+  }finally{await db.close();}
+});
+
+test('distinct sessions and explicit annual editions sharing titles/URLs remain separate; repeat/version/changed text reuse identities',async()=>{
+  const db=await setup(),post=structuredClone(article);
+  const source=runner(db,stages([proposal(),proposal('Second session','2026-10-22T10:00:00Z')],input=>{
+    const old=input.candidates.find(r=>r.title===input.finding.candidate.title);
+    return resolution(input,old?'evidence':'new',old?.id??null);
+  }),{post});
+  try{
+    const first=await source.run();assert.equal(first.created,2,first.warnings.join(';'));assert.equal(source.requests.length,3);
+    const old=await current(db);assert.equal(old[0].event_url,old[1].event_url);
+    assert.equal((await source.run()).processed,1);assert.equal(source.requests.length,3);
+    post.content.rendered+='<p>Minor punctuation change.</p>';
+    assert.equal((await source.run()).processed,1);assert.equal((await source.run({documentVersion:'explicit-review'})).processed,1);
+    assert.equal((await current(db)).length,2);assert.equal(source.requests.length,9);
+    const p={...proposal('First session','2027-10-21T10:00:00Z'),anchor:'First session 2027 edition'};
+    const next={...article,content:{rendered:article.content.rendered.replaceAll('2026','2027').replace('First session','First session 2027 edition')}};
+    const edition=await runner(db,stages([p],input=>{
+      assert.equal(input.candidates.length,2);return resolution(input);
+    }),{post:next}).run();
+    assert.equal(edition.created,1,edition.warnings.join(';'));assert.equal((await current(db)).length,3);
+  }finally{await db.close();}
+});
+
+test('announcement identity URLs and quoted aliases retrieve renamed findings with otherwise missing facts',async()=>{
+  const db=await setup();try{
+    const url='https://data.example/ocean-release';
+    await runner(db,stages([{...release,urls:[url]}]),{post:{...digest,content:{rendered:digest.content.rendered+'<a href="'+url+'">Release</a>'}}}).run();const old=(await current(db))[0];
+    const alias='Portal launch, previously called Ocean Data Release.';
+    const p={...release,anchor:'Portal launch',urls:[url],
+      candidate:{...release.candidate,title:'Portal launch',organization:null,description:null},
+      evidence:{kind:'Portal launch',title:'Portal launch',identity:alias,priority:'A new ocean data portal was released.'}};
+    const post={...bulletin,content:{rendered:'<p>'+alias+'</p><a href="'+url+'">Original announcement</a><p>A new ocean data portal was released.</p>'}};
+    // URL alone retrieves before resolution; alias terms independently retrieve too.
+    const source={url:post.link,parsed:{document:{identity:'octo:post:100'}}};
+    assert.deepEqual((await candidatesFor(db,source,{...p,evidence:{...p.evidence,identity:undefined}})).rows.map(r=>r.id),[old.id]);
+    assert.deepEqual((await candidatesFor(db,source,{...p,urls:[]})).rows.map(r=>r.id),[old.id]);
+    const run=await runner(db,stages([p],input=>{
+      assert.equal(input.candidates[0].id,old.id);assert.deepEqual(input.coverage.urls,[url]);assert.deepEqual(input.candidates[0].identity_urls,[url]);
+      return {...resolution(input,'evidence',old.id),evidence:{identity:alias}};
+    }),{post}).run();
+    assert.equal(run.processed,2,run.warnings.join(';'));assert.deepEqual(await current(db),[old]);
+  }finally{await db.close();}
+});
+
+test('disputed dates/organizers cannot create duplicates or false merges; uncertainty is valid and inspectable',async()=>{
+  for(const conflict of ['starts_at','organization']){
+    const db=await setup();try{
+      await runner(db,stages([proposal()])).run();const old=(await current(db))[0];
+      const value=conflict==='starts_at'?'2027-10-21T10:00:00Z':'Other Institute';
+      const p={...proposal(),candidate:{...proposal().candidate,[conflict]:value},evidence:{...proposal().evidence,[conflict]:value}};
+      const post={...article,id:100,content:{rendered:article.content.rendered+'<p>'+value+'</p>'}};
+      let attempts=0;
+      const source=runner(db,stages([p],input=>{
+        assert.equal(input.candidates[0].id,old.id);
+        if(++attempts===1)return resolution(input,'new');
+        if(attempts===2){assert.match(input.repair.errors.join(),/disputed/);return resolution(input,'evidence',old.id);}
+        assert.match(input.repair.errors.join(),/Disputed/);return resolution(input,'uncertain');
+      }),{post});
+      const run=await source.run();assert.equal(run.processed,1);assert.equal(run.uncertain,1);assert.equal(run.failed,0);assert.equal(source.requests.length,4);
+      assert.deepEqual(await current(db),[old]);assert.equal((await progress(db,100)).processing.state,'uncertain');
+      const detail=await report(db,run.run_id);assert.match(stepState(detail.report,'validate'),/^Uncertain/);
+      assert.ok(Object.values(detail.report.artifacts).some(a=>a.kind==='uncertain_findings'));
+      assert.equal((await source.run()).processed,1);assert.equal(source.requests.length,4);
+    }finally{await db.close();}
+  }
+});
+
+test('evidenced corrections update only authoritative findings, preserve unknowns and reject source authority laundering',async()=>{
+  const db=await setup();try{
+    await runner(db,stages([proposal()])).run();const old=(await current(db))[0];
+    const date='2026-11-21T10:00:00Z',change='First session rescheduled to '+date,authority='Ocean Institute announces this correction.';
+    const p={...proposal('First session',date),candidate:{...proposal('First session',date).candidate,description:null,organization:null},evidence:{...proposal('First session',date).evidence,change,authority}};
+    const post={...article,content:{rendered:article.content.rendered+'<p>'+change+'</p><p>'+authority+'</p>'}};
+    const corrected=await runner(db,stages([p],input=>{
+      assert.equal(input.candidates[0].authoritative_source,true);
+      return {...resolution(input,'update',old.id),evidence:{identity:p.anchor,change,authority}};
+    }),{post}).run();
+    assert.equal(corrected.processed,1,corrected.warnings.join(';'));assert.equal(corrected.changed,1);
+    const updated=(await current(db))[0];assert.equal(new Date(updated.starts_at).toISOString(),new Date(date).toISOString());
+    assert.equal(updated.organization,old.organization);assert.equal(updated.description,old.description);
+    const other={...post,id:100,link:'https://octogroup.org/support/',content:{rendered:post.content.rendered+'<p>'+article.link+'</p>'}};
+    assert.equal((await runner(db,stages([p],input=>resolution(input,'evidence',old.id)),{post:other}).run()).processed,2);
+    const disputed={...p,candidate:{...p.candidate,starts_at:'2026-12-21T10:00:00Z'},evidence:{...p.evidence,starts_at:'2026-12-21T10:00:00Z',change:'First session rescheduled to 2026-12-21T10:00:00Z'}};
+    other.content.rendered+='<p>'+disputed.evidence.change+'</p>';
+    const blocked=await runner(db,stages([disputed],input=>{
+      assert.equal(input.candidates[0].same_source,true);assert.equal(input.candidates[0].authoritative_source,false);
+      return input.repair?resolution(input,'uncertain'):{...resolution(input,'update',old.id),evidence:{identity:p.anchor,change:disputed.evidence.change,authority}};
+    }),{post:other}).run();
+    assert.equal(blocked.processed,1);assert.deepEqual(await current(db),[updated]);
+  }finally{await db.close();}
+});
+
+test('ambiguous candidates stay uncertain; nine compact candidates are allowed; byte and database bounds defer intact sets',async()=>{
+  for(const count of [2,9,20,101]){
+    const db=await setup();try{
+      for(let i=0;i<count;i++)await seed(db,{...release,candidate:{...release.candidate,description:count===20?'Long description '.repeat(15):null,organization:null}},'candidate-'+i);
+      const source=runner(db,stages([release],input=>{
+        assert.equal(input.candidates.length,count);assert.equal(input.coverage.matching_count,count);
+        if(count===2&&!input.repair)return resolution(input,'evidence',input.candidates[0].id);
+        if(count===2)assert.match(input.repair.errors.join(),/Ambiguous/);
+        return resolution(input,'uncertain');
+      }),{post:digest});
+      const run=await source.run();assert.equal(run.processed,0);assert.equal((await current(db)).length,count);
+      assert.equal((await db.query('select count(*)::int n from scout.evidence where record_id is not null')).rows[0].n,0);
+      assert.equal(source.requests.length,count===2?3:count===9?2:1);
+      if(count>=20)assert.ok(run.warnings.some(w=>/8000 bytes|retrieval incomplete/.test(w)));
+      const retrieval=Object.values((await report(db,run.run_id)).report.artifacts).find(a=>a.kind==='retrieval').data;
+      assert.equal(retrieval.coverage.matching_count,count);assert.equal(retrieval.coverage.complete,count<=100);
+    }finally{await db.close();}
+  }
+});
+
+test('extraction repair persists valid findings, exhausts independently, and resumes without losing evidence',async()=>{
+  const db=await setup();let fixed=false;
   const bad={...proposal('Second session','2026-10-22T10:00:00Z'),priority:'urgent'};
-  const source=runner(db,()=>answer([proposal(),recover?proposal('Second session','2026-10-22T10:00:00Z'):bad]));
+  const source=runner(db,input=>input.stage==='extract'?answer(fixed?[{...bad,priority:'high'}]:[proposal(),bad]):resolution(input));
   try{
-    const failed=await source.run();assert.equal(failed.processed,0);assert.equal(failed.created,1);
-    assert.equal(source.requests.length,3);assert.ok(failed.warnings.some(w=>w.includes('Two repair attempts exhausted')));
-    assert.equal((await report(db,failed.run_id)).stats.model_attempts.length,3);
-    recover=true;const fixed=await source.run();assert.equal(fixed.processed,1,fixed.warnings.join(';'));assert.equal(fixed.created,1);
-    assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,2);
+    const failed=await source.run();assert.equal(failed.processed,0);assert.equal(failed.created,0);assert.equal(source.requests.length,3);
+    const state=Object.values((await progress(db)).processing_versions)[0];assert.equal(state.findings.length,1);assert.equal(state.findings[0].resolution,undefined);
+    fixed=true;const recovery=await source.run();assert.equal(recovery.processed,1,recovery.warnings.join(';'));assert.equal(recovery.created,2);
+    assert.equal(source.requests.length,6);assert.equal((await current(db)).length,2);
+    assert.ok(Object.values((await report(db,failed.run_id)).report.artifacts).some(a=>a.kind==='validation_errors'&&a.data.stage==='extract'));
   }finally{await db.close();}
 });
 
-test('real minute/run guards count transient retry and repair reservations without marking processing complete',async()=>{
-  const db=await setup();
-  const source=runner(db,(_input,n)=>n===1?new Response('temporary',{status:503}):answer([{...proposal(),priority:'urgent'}]),{advance:false});
+test('resolution repair and exhaustion retain prior saves; partial work resumes without extraction or duplicate writes',async()=>{
+  const db=await setup();let fixed=false;
+  const source=runner(db,stages([proposal(),proposal('Second session','2026-10-22T10:00:00Z')],input=>{
+    if(input.finding.anchor==='Second session'&&!fixed)return {...resolution(input,'evidence','not-supplied')};
+    return resolution(input);
+  }));
   try{
+    const failed=await source.run();assert.equal(failed.processed,0);assert.equal(failed.created,1);assert.equal(source.requests.length,5);
+    assert.ok(failed.warnings.some(w=>w.includes('Two resolve repair attempts exhausted')));
+    fixed=true;const recovered=await source.run();assert.equal(recovered.processed,1,recovered.warnings.join(';'));assert.equal(recovered.created,1);
+    assert.equal(source.requests.length,6);assert.equal((await current(db)).length,2);
+    assert.equal(JSON.parse(JSON.parse(source.requests.at(-1)).contents[0].parts[0].text)[0].stage,'resolve');
+  }finally{await db.close();}
+});
+
+test('both stages share durable minute/run limits, counted transient retry and resumable repair state',async()=>{
+  const db=await setup();try{
+    const source=runner(db,(input,n)=>n===1?new Response('temporary',{status:503}):answer([proposal()]),{advance:false});
     const run=await source.run();assert.equal(run.processed,0);assert.equal(source.requests.length,2);
-    const detail=await report(db,run.run_id);assert.equal(detail.stats.model_attempts.length,2);assert.ok(run.warnings.some(w=>w.includes('quota')));
-    assert.ok(Object.values(detail.report.artifacts).some(a=>a.kind==='model_response'&&a.data.http_status===503));
-    const next=runner(db,()=>answer([{...proposal(),priority:'urgent'}]),{runLimit:1});
-    const bounded=await next.run();assert.equal(next.requests.length,1);assert.equal(bounded.processed,0);
-    const recovery=runner(db,input=>{assert.ok(input.repair.errors.some(e=>e.includes('priority')));return answer([]);});
+    assert.equal((await report(db,run.run_id)).stats.model_attempts.length,2);assert.ok(run.warnings.some(w=>w.includes('quota')));
+    const bounded=runner(db,input=>{assert.equal(input.stage,'resolve');return {...resolution(input),record_id:'bad'};},{runLimit:1});
+    const next=await bounded.run();assert.equal(next.processed,0);assert.equal(bounded.requests.length,1);
+    const recovery=runner(db,input=>{assert.equal(input.stage,'resolve');assert.ok(input.repair.errors.length);return resolution(input);});
     const recovered=await recovery.run();assert.equal(recovered.processed,1,recovered.warnings.join(';'));assert.equal(recovery.requests.length,1);
+    assert.equal((await current(db)).length,1);
   }finally{await db.close();}
 });
 
-test('MPAtlas substantive text reaches measured model requests with no omitted document ranges',async()=>{
-  const db=await setup(),inputs=[];
-  const source=runner(db,input=>{inputs.push(input);return answer([]);},{post:mp});
-  try{
-    const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));
-    const prepared=(await db.query('select parsed from scout.evidence where record_id is null')).rows[0].parsed.document.prepared_versions[PREPARATION_VERSION];
-    assert.equal(inputs.map(i=>prepared.text.slice(...i.range)).join(''),prepared.text);
-    assert.match(inputs.map(i=>i.segments.map(s=>s.text).join('\n')).join('\n'),/allows users to complete MPA Guide assessments and submit additional data/);
-    assert.equal(inputs.length,1);assert.deepEqual(inputs[0].omitted_ranges,[]);
-    assert.ok(source.requests.every(r=>Buffer.byteLength(r)<=8000));
-  }finally{await db.close();}
-});
-
-test('long table ranges carry headings, headers and schedule/link context while overlapping proposals deduplicate',async()=>{
-  const db=await setup(),inputs=[];
-  const row='<tr><td>First session</td><td>2026-10-21T10:00:00Z</td><td>Ocean Institute</td><td>Marine data standards workshop.</td></tr>';
-  const post={...article,content:{rendered:'<h1>Data workshops</h1><h2>First session</h2><table><caption>Schedule</caption><tr><th>Session</th><th>UTC date</th><th>Organizer</th><th>Context</th></tr>'+row.repeat(25)+'</table><p><a href="/register">Register</a></p>'}};
-  const source=runner(db,input=>{inputs.push(input);return answer(input.segments.some(s=>s.text.includes('Marine data standards workshop.'))?[proposal()]:[]);},{post});
-  try{
-    const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));assert.equal(run.created,1);assert.ok(source.requests.length>1);
-    const prepared=(await db.query('select parsed from scout.evidence where record_id is null')).rows[0].parsed.document.prepared_versions[PREPARATION_VERSION];
-    assert.equal(inputs.map(i=>prepared.text.slice(...i.range)).join(''),prepared.text);
-    assert.ok(inputs.filter(i=>i.table_headers.length).every(i=>i.table_headers.join('').includes('Session\tUTC date')));
-    assert.ok(inputs.slice(1).every(i=>i.segments.some(s=>s.text.includes('Data workshops'))));
-    assert.ok(inputs.some(i=>i.segments.some(s=>s.text.includes('https://octogroup.org/register'))));
-    assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,1);
-    assert.ok(Object.values((await report(db,run.run_id)).report.operations).some(o=>o.step==='save'&&o.state==='skipped'));
-  }finally{await db.close();}
-});
-
-test('unknown update values preserve facts; unsupported identities, fields, date precision and edition changes are rejected',async()=>{
-  const db=await setup(),post=structuredClone(article);let unknown=false;
-  const source=runner(db,input=>{
-    let p=proposal();if(unknown){p={...p,action:'update',record_id:input.existing[0].id,candidate:{...p.candidate,organization:null,description:null,starts_at:null}};}
-    return answer([p]);
-  },{post});
-  try{
-    assert.equal((await source.run()).processed,1);unknown=true;post.content.rendered+='<p>Unchanged finding.</p>';
-    const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));
-    const old=(await db.query('select * from scout.records')).rows[0];assert.equal(old.organization,'Ocean Institute');assert.equal(old.description,'Marine data standards workshop.');assert.ok(old.starts_at);
-    const prepared=prepareDocument({title:article.title.rendered,html:article.content.rendered,url:article.link});
-    const input=packDocument({id:'source'},prepared,[],0,DOCUMENT_VERSION);
-    const p=proposal();assert.throws(()=>validateProposal({...p,action:'update',record_id:'unknown'},input,[]),/supplied existing ID/);
-    assert.throws(()=>validateProposal({...p,candidate:{...p.candidate,location:'Invented room'}},input,[]),/location/);
-    assert.throws(()=>validateProposal({...p,candidate:{...p.candidate,starts_at:'2026-10-21T00:00:00Z'},evidence:{...p.evidence,starts_at:'2026-10-21'}},input,[]),/date, clock and zone/);
-    const dated={...input,segments:[{text:'2026-02-30T10:00:00Z '+input.segments[0].text}]};
-    assert.throws(()=>validateProposal({...p,candidate:{...p.candidate,starts_at:'2026-02-30T10:00:00Z'},evidence:{...p.evidence,starts_at:'2026-02-30T10:00:00Z'}},dated,[]),/date, clock and zone/);
-    const other={...old,starts_at:'2027-10-21T10:00:00Z',anchor:p.anchor};
-    assert.throws(()=>validateProposal({...p,action:'update',record_id:old.id},input,[other]),/same-finding correction/);
-    const correction='First session rescheduled to 2026-10-21T10:00:00Z';
-    assert.ok(validateProposal({...p,action:'update',record_id:old.id,evidence:{...p.evidence,change:correction}},{...input,segments:[...input.segments,{text:correction}]},[other]));
-  }finally{await db.close();}
-});
-
-test('a record changed after request cannot be overwritten; refreshed repair can defer explicitly',async()=>{
+test('malformed outputs in either stage repair with redacted text; intact oversized repair defers',async()=>{
   const db=await setup();try{
-    await runner(db,()=>answer([proposal()])).run();
-    const post={...article,content:{rendered:article.content.rendered+'<p>Corrected description.</p>'}};
-    const source=runner(db,async(input,n)=>{
-      if(n===1){await db.query("update scout.records set description='Concurrent review'");return answer([{...proposal(),action:'update',record_id:input.existing[0].id,
-        candidate:{...proposal().candidate,description:'Corrected description.'},evidence:{...proposal().evidence,description:'Corrected description.'}}]);}
-      assert.ok(input.repair.errors.some(e=>e.includes('changed after input')));assert.equal(input.existing[0].description,'Concurrent review');
-      return {complete:false,reason:'Reconcile the concurrent review before changing it.',proposals:[]};
-    },{post});
-    const run=await source.run();assert.equal(run.processed,0);assert.equal((await db.query('select description from scout.records')).rows[0].description,'Concurrent review');
-    assert.ok(run.warnings.some(w=>w.includes('Unresolved source context')));
-  }finally{await db.close();}
-});
-
-test('malformed returned JSON repairs with the exact rejected text, while oversized repair context defers intact',async()=>{
-  const db=await setup();try{
-    const source=runner(db,(input,n)=>{
+    let extract=0,resolve=0;
+    const source=runner(db,input=>{
+      const n=input.stage==='extract'?++extract:++resolve;
       if(n===1)return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'not JSON test-key'}]}}]});
-      assert.equal(input.repair.rejected,'not JSON [REDACTED]');return answer([]);
+      assert.equal(input.repair.rejected,'not JSON [REDACTED]');
+      return input.stage==='extract'?answer([proposal()]):resolution(input);
     });
-    const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));assert.equal(source.requests.length,2);
-    assert.ok(!JSON.stringify((await report(db,run.run_id)).report).includes('test-key'));
+    const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));assert.equal(source.requests.length,4);
+    const detail=await report(db,run.run_id);assert.equal(detail.stats.model_attempts.length,4);assert.ok(!JSON.stringify(detail).includes('test-key'));
+    assert.equal(stepState(detail.report,'validate'),'Pass');assert.ok(Object.values(detail.report.operations).some(o=>o.recovered_by));
     const huge=runner(db,()=>({bad:'X'.repeat(9000)}));const failed=await huge.run({documentVersion:'oversized-output'});
     assert.equal(huge.requests.length,1);assert.equal(failed.processed,0);assert.ok(failed.warnings.some(w=>w.includes('Repair request exceeds')));
-    const artifacts=Object.values((await report(db,failed.run_id)).report.artifacts);assert.ok(artifacts.some(a=>a.kind==='validation_errors'&&a.data.response.bad.length===9000));
+    assert.ok(Object.values((await report(db,failed.run_id)).report.artifacts).some(a=>a.kind==='validation_errors'&&a.data.response.bad.length===9000));
   }finally{await db.close();}
 });
 
-test('record and accepted-proposal state roll back together on interrupted save, then recover',async()=>{
+test('concurrent matching insert refreshes actual candidates before resolution; no duplicate is created',async()=>{
+  const db=await setup();let old;
+  const source=runner(db,stages([release],async input=>{
+    if(!input.repair){assert.equal(input.candidates.length,0);old=await seed(db);return resolution(input);}
+    assert.match(input.repair.errors.join(),/changed after input/);assert.equal(input.candidates[0].id,old.id);
+    return resolution(input,'evidence',old.id);
+  }),{post:digest});
+  try{
+    const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));assert.equal(run.created,0);
+    assert.equal(source.requests.length,3);assert.equal((await current(db)).length,1);
+  }finally{await db.close();}
+});
+
+test('concurrent record changes prevent stale updates; refreshed resolution can remain uncertain',async()=>{
+  const db=await setup();try{
+    await runner(db,stages([proposal()])).run();const old=(await current(db))[0];
+    const source=runner(db,stages([proposal()],async input=>{
+      if(!input.repair){await db.query("update scout.records set description='Concurrent review' where id=$1",[old.id]);return resolution(input,'update',old.id);}
+      assert.equal(input.candidates[0].description,'Concurrent review');assert.match(input.repair.errors.join(),/changed after input/);
+      return resolution(input,'uncertain');
+    }));
+    const run=await source.run({documentVersion:'concurrent-review'});assert.equal(run.processed,0);assert.equal(source.requests.length,3);
+    assert.equal((await current(db))[0].description,'Concurrent review');
+  }finally{await db.close();}
+});
+
+test('different session/edition labels cannot merge through a shared URL when dates are missing',async()=>{
+  for(const edition of [false,true]){
+    const db=await setup();try{
+      const first={...proposal(),anchor:edition?'First session 2026 edition':'First session'};
+      const post={...article,content:{rendered:article.content.rendered+'<p>'+first.anchor+'</p>'}};
+      await runner(db,stages([first]),{post}).run();const old=(await current(db))[0];
+      const p={...proposal(edition?'First session':'Second session'),anchor:edition?'First session 2027 edition':'Second session'};
+      p.candidate.starts_at=null;
+      const next={...post,content:{rendered:post.content.rendered+'<p>'+p.anchor+'</p>'}};
+      const source=runner(db,stages([p],input=>{
+        assert.equal(input.candidates[0].id,old.id);
+        if(input.repair){assert.match(input.repair.errors.join(),/Distinct/);return resolution(input,'uncertain');}
+        return resolution(input,'evidence',old.id);
+      }),{post:next});
+      const run=await source.run();assert.equal(run.uncertain,1,run.warnings.join(';'));assert.equal(source.requests.length,3);
+      assert.deepEqual(await current(db),[old]);
+    }finally{await db.close();}
+  }
+});
+
+test('concurrent document progress cannot be overwritten and its speculative record save rolls back',async()=>{
+  const db=await setup();try{
+    const source=runner(db,stages([proposal()],async input=>{
+      const key=input.version;
+      await db.query("update scout.evidence set parsed=jsonb_set(parsed,array['document','processing_versions',$2],(parsed#>array['document','processing_versions',$2])||jsonb_build_object('revision',(parsed#>>array['document','processing_versions',$2,'revision'])::int+1,'external_progress',true)) where id=$1",[input.source_id,key]);
+      return resolution(input);
+    }));
+    const run=await source.run();assert.equal(run.processed,0);assert.equal(run.created,0);assert.equal(source.requests.length,2);
+    assert.ok(run.warnings.some(w=>w.includes('progress changed concurrently')));assert.equal((await current(db)).length,0);
+    const state=Object.values((await progress(db)).processing_versions)[0];assert.equal(state.external_progress,true);assert.equal(state.findings[0].resolution,undefined);
+  }finally{await db.close();}
+});
+
+test('interrupted transactional save rolls back record and resolution together, then repairs without re-extraction',async()=>{
   const db=await setup();let interrupted=false;
   const adapter={query:db.query.bind(db),transaction:work=>db.transaction(tx=>work({query:async(sql,args)=>{
-    if(!interrupted&&sql.startsWith("update scout.evidence set parsed=jsonb_set(parsed,'{document}',")&&JSON.parse(args[2]).accepted?.length===2){interrupted=true;throw new Error('Injected interrupted second save');}
+    if(!interrupted&&sql.startsWith("update scout.evidence set parsed=jsonb_set")&&JSON.parse(args[2]).findings?.some(f=>f.resolution)){interrupted=true;throw new Error('Interrupted save');}
     return tx.query(sql,args);
   }}))};
-  const source=runner(adapter,()=>answer([proposal(),proposal('Second session','2026-10-22T10:00:00Z')]));
+  const source=runner(adapter,stages([proposal()]));
   try{
-    const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));assert.equal(run.created,2);assert.ok(interrupted);assert.equal(source.requests.length,2);
-    assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,2);
-    const state=(await db.query('select parsed from scout.evidence where record_id is null')).rows[0].parsed.document;
-    assert.equal(Object.values(state.processing_versions)[0].accepted.length,2);
+    const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));assert.equal(run.created,1);assert.ok(interrupted);
+    assert.equal(source.requests.length,3);assert.equal((await current(db)).length,1);
+    assert.equal(Object.values((await progress(db)).processing_versions)[0].findings.filter(f=>f.record_id).length,1);
   }finally{await db.close();}
 });
 
+test('zero and Low findings retain extraction/resolution evidence without inserting records',async()=>{
+  const db=await setup();try{
+    const zero=runner(db,stages([]));assert.equal((await zero.run()).processed,1);assert.equal(zero.requests.length,1);
+    const low=runner(db,stages([{...proposal(),priority:'low'}]));const run=await low.run({documentVersion:'low-review'});
+    assert.equal(run.processed,1,run.warnings.join(';'));assert.equal(low.requests.length,2);assert.equal((await current(db)).length,0);
+    assert.ok(Object.values((await progress(db)).processing_versions).some(s=>s.findings.some(f=>f.finding.priority==='low'&&f.resolution.outcome==='new'&&f.record_id===null)));
+  }finally{await db.close();}
+});
+
+test('MPAtlas complete text and long table context reach extraction; lookup never enters extraction input',async()=>{
+  for(const long of [false,true]){
+    const db=await setup(),inputs=[];
+    const row='<tr><td>First session</td><td>2026-10-21T10:00:00Z</td><td>Ocean Institute</td><td>Marine data standards workshop.</td></tr>';
+    const post=long?{...article,content:{rendered:'<h1>Data workshops</h1><h2>First session</h2><table><caption>Schedule</caption><tr><th>Session</th><th>UTC date</th><th>Organizer</th><th>Context</th></tr>'+row.repeat(25)+'</table><p><a href="/register">Register</a></p>'}}:mp;
+    const source=runner(db,stages(input=>{inputs.push(input);return long?[proposal()]:[];}),{post});
+    try{
+      const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));
+      const prepared=(await progress(db)).prepared_versions[PREPARATION_VERSION];
+      assert.equal(inputs.map(i=>prepared.text.slice(...i.range)).join(''),prepared.text);
+      if(long){
+        assert.equal((await current(db)).length,1);assert.ok(inputs.length>1);
+        assert.ok(inputs.filter(i=>i.table_headers.length).every(i=>i.table_headers.join('').includes('Session\tUTC date')));
+        assert.ok(inputs.slice(1).every(i=>i.segments.some(s=>s.text.includes('Data workshops'))));
+        assert.ok(inputs.some(i=>i.segments.some(s=>s.text.includes('https://octogroup.org/register'))));
+      }else{
+        assert.equal(inputs.length,1);assert.deepEqual(inputs[0].omitted_ranges,[]);
+        assert.match(inputs[0].segments.map(s=>s.text).join('\n'),/allows users to complete MPA Guide assessments and submit additional data/);
+      }
+      assert.ok(source.requests.every(r=>Buffer.byteLength(r)<=8000));
+    }finally{await db.close();}
+  }
+});
+
+test('grounding rejects invented values and imprecise/invalid dates; time deferral dispatches no model work',async()=>{
+  const prepared=prepareDocument({title:article.title.rendered,html:article.content.rendered,url:article.link});
+  const input=packDocument({id:'source'},prepared,0,DOCUMENT_VERSION),p=proposal();
+  assert.throws(()=>validateFinding({...p,candidate:{...p.candidate,location:'Invented room'}},input),/location/);
+  assert.throws(()=>validateFinding({...p,urls:['https://invented.example/']},input),/finding URLs/);
+  assert.throws(()=>validateFinding({...p,candidate:{...p.candidate,starts_at:'2026-10-21T00:00:00Z'},evidence:{...p.evidence,starts_at:'2026-10-21'}},input),/date, clock and zone/);
+  const dated={...input,segments:[{text:'2026-02-30T10:00:00Z '+input.segments[0].text}]};
+  assert.throws(()=>validateFinding({...p,candidate:{...p.candidate,starts_at:'2026-02-30T10:00:00Z'},evidence:{...p.evidence,starts_at:'2026-02-30T10:00:00Z'}},dated),/date, clock and zone/);
+  const db=await setup(),source=runner(db,stages([]));try{
+    const run=await source.run({deadline:Date.now()+900});assert.equal(run.processed,0);assert.equal(source.requests.length,0);
+    assert.equal(stepState((await report(db,run.run_id)).report,'validate'),'Not reached');
+    assert.equal((await source.run()).processed,1);assert.equal(source.requests.length,1);
+  }finally{await db.close();}
+});
 test('older preparation artifacts keep their captured version after newer preparation is stored',async()=>{
   const db=await setup(),source=runner(db,()=>answer([]));try{
     const first=await source.run({documents:true});const row=(await db.query('select * from scout.evidence')).rows[0];
@@ -239,14 +426,5 @@ test('older preparation artifacts keep their captured version after newer prepar
     assert.deepEqual((await db.query('select scout.run_artifact($1,$2) a',[first.run_id,key])).rows[0].a,old);
     const latest=(await db.query('select scout.run_artifact($1,$2) a',[current.run_id,currentKey])).rows[0].a;
     assert.equal(latest.version,PREPARATION_VERSION);assert.match(latest.text,/First session/);assert.notEqual(latest.text,old.text);
-  }finally{await db.close();}
-});
-
-test('time-bounded processing remains recoverable without dispatching a model request',async()=>{
-  const db=await setup(),source=runner(db,()=>answer([]));try{
-    const deferred=await source.run({deadline:Date.now()+900});assert.equal(deferred.processed,0);assert.equal(source.requests.length,0);
-    assert.ok(deferred.warnings.some(w=>w.includes('time bound')));
-    assert.equal(stepState((await report(db,deferred.run_id)).report,'validate'),'Not reached');
-    const recovered=await source.run();assert.equal(recovered.processed,1,recovered.warnings.join(';'));assert.equal(source.requests.length,1);
   }finally{await db.close();}
 });

@@ -25,7 +25,7 @@ language sql stable security definer set search_path='' as $$
       'pages',r.stats->'pages','candidates',r.stats->'candidates','skipped',r.stats->'skipped',
       'assessed',r.stats->'assessed','created',r.stats->'created','changed',r.stats->'changed','pending',r.stats->'pending',
       'documents',r.stats->'documents','prepared',r.stats->'prepared','reused',r.stats->'reused','processed',r.stats->'processed',
-      'feed_only',r.stats->'feed_only','failed',r.stats->'failed','unfetched',r.stats->'unfetched'),
+      'feed_only',r.stats->'feed_only','failed',r.stats->'failed','uncertain',r.stats->'uncertain','unfetched',r.stats->'unfetched'),
     'warnings',r.stats->'warnings',
     'report',case when r.report is null then null else r.report-'artifacts' || jsonb_build_object('artifacts',
       coalesce((select jsonb_object_agg(a.key,a.value-'data') from jsonb_each(r.report->'artifacts') a),'{}'::jsonb)) end)

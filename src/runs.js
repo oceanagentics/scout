@@ -2,7 +2,7 @@ import { sourceLink, stamp } from './records.js';
 
 export const RUN_STEPS = [['fetch','Fetch'],['detect','Detect changes'],['prepare','Extract and prepare'],
   ['generate','Generate records'],['validate','Validate and repair'],['save','Save records']];
-const states = { pass:'Pass',fail:'Fail',skipped:'Skipped',running:'Running' };
+const states = { pass:'Pass',fail:'Fail',skipped:'Skipped',running:'Running',uncertain:'Uncertain' };
 
 export function stepState(report, step) {
   if (report?.version!==1) return 'Unavailable';
@@ -12,6 +12,7 @@ export function stepState(report, step) {
   const work=operations.filter(o=>!o.checkpoint);
   if (operations.some(o=>o.state==='running')) return 'Running';
   if (operations.some(o=>o.state==='fail')) return work.some(o=>o.state==='pass')?'Fail · mixed outcomes':'Fail';
+  if (operations.some(o=>o.state==='uncertain')) return work.some(o=>o.state==='pass')?'Uncertain · mixed outcomes':'Uncertain';
   if (!work.length) return 'Not reached';
   return work.every(o=>o.state==='skipped')?'Skipped':'Pass';
 }
@@ -61,7 +62,7 @@ export function mountRunDetail(root, api, tracker, back) {
       detail.append(node('p',counts||'Final counts unavailable; inspect checkpoints below.'));
       for(const warning of run.warnings??[])detail.append(node('p',warning,'warning'));
       const report=run.report?.version===1?run.report:null;
-      detail.append(node('p',report?.path==='octo-records'?'OCTO document processing. Source ranges, proposals, bounded repairs and saved records are inspectable. Supporting links remain unfetched; accepted schema and quotes do not establish rating accuracy.':report?.path==='octo-documents'?'OCTO document fetch/prepare only. Generation, proposal validation and record saving are not implemented. Prepared and reused inputs remain available for the forthcoming model stage.':report?'Legacy scripted collector. Selection, semantic preclassification and clipping remain; this is not the document-first pipeline. Pass means the reported boundary completed, not that the importance rating is correct.':'Legacy run: step outcomes, source associations and exact request artifacts were not instrumented. Unavailable details are not reconstructed from current code.','hint'));
+      detail.append(node('p',report?.path==='octo-records'?'OCTO document processing. Extraction, finding retrieval, identity resolution, repairs and saved associations are inspectable. Uncertain identities remain unresolved. Supporting links remain unfetched; accepted schema and quotes do not establish rating accuracy.':report?.path==='octo-documents'?'OCTO document fetch/prepare only. Generation, proposal validation and record saving are not implemented. Prepared and reused inputs remain available for the forthcoming model stage.':report?'Legacy scripted collector. Selection, semantic preclassification and clipping remain; this is not the document-first pipeline. Pass means the reported boundary completed, not that the importance rating is correct.':'Legacy run: step outcomes, source associations and exact request artifacts were not instrumented. Unavailable details are not reconstructed from current code.','hint'));
       if(!run.finished_at)detail.append(node('p','No completion marker. Running checkpoints may still be active or may have been interrupted; refresh to check.','warning'));
       const bodies=new Map();
       function artifactPanel(key){

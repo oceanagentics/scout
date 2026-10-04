@@ -93,7 +93,7 @@ export async function collectOCTODocuments(db,{tracker,read,now,deadline,limits,
   const run=(await db.query('insert into scout.collection_runs(tracker_id,started_at,stats) values($1,$2,$3::jsonb) returning id',[tracker.id,now(),JSON.stringify({validation:true,documents_only:!process})])).rows[0];
   const trace=await startReport(db,run.id,process?'octo-records':'octo-documents');
   const budget={requests:0,deadline:Math.min(deadline,Date.now()+limits.seconds*1000)};
-  const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,unfetched:0,processed:0,created:0,changed:0,warnings:[...process?[]:['Fetch/prepare only: generation, validation/repair and record saving are not implemented.'],'One RSS page; archive pages and all supporting links/media remain unfetched.']};
+  const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,uncertain:0,unfetched:0,processed:0,created:0,changed:0,warnings:[...process?[]:['Fetch/prepare only: generation, validation/repair and record saving are not implemented.'],'One RSS page; archive pages and all supporting links/media remain unfetched.']};
   const ready=[],inventory=[];
   async function fetchDocument(url){
     const op=await trace.start('fetch',{url});
@@ -177,7 +177,7 @@ export async function collectOCTODocuments(db,{tracker,read,now,deadline,limits,
           const result=await processDocument(db,{source,prepared,trace,model,deadline:budget.deadline,version:documentVersion,
             changed:Boolean(previous&&previous.content_hash!==hash)});
           stats.created+=result.created;stats.changed+=result.changed;
-          if(result.state==='complete')stats.processed++;else{stats.failed++;stats.warnings.push(result.error);}
+          if(result.state==='complete')stats.processed++;else{stats[result.state==='uncertain'?'uncertain':'failed']++;stats.warnings.push(result.error);}
           inventory.at(-1).processing=result.state;
         }
       }catch{

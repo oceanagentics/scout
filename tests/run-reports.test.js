@@ -190,8 +190,10 @@ test('report RPCs restrict member access, page metadata only, and keep unreferen
     const [key,ref]=Object.entries(row.report.artifacts).find(([,a])=>a.kind==='capture');
     const legacy=(await db.query("insert into scout.collection_runs(tracker_id,stats) values($1,'{\"assessment_results\":[\"historical only\"]}') returning id",[row.tracker_id])).rows[0].id;
     await db.query("insert into scout.collection_runs(tracker_id) select $1 from generate_series(1,21)",[row.tracker_id]);
+    await db.query("update scout.collection_runs set stats=stats||'{\"uncertain\":1}'::jsonb where id=$1",[run.run_id]);
     await db.exec('set role authenticated');await db.query("select set_config('request.jwt.claim.sub',$1,false)",[member]);
     const detail=(await db.query('select scout.run_detail($1) d',[run.run_id])).rows[0].d;
+    assert.equal(detail.counts.uncertain,1);
     assert.ok(Object.values(detail.report.artifacts).every(a=>!Object.hasOwn(a,'data')));
     assert.equal((await db.query('select scout.run_detail($1) d',[legacy])).rows[0].d.report,null);
     assert.equal(stepState(null,'fetch'),'Unavailable');
@@ -257,5 +259,7 @@ test('run view navigates on demand, renders artifacts as text, and discards late
     assert.ok(!root.textContent.includes('Legacy scripted collector'));closeDocument();
     const closeRecords=mountRunDetail(root,{...api,detail:async()=>({id:'0',outcome:'partial',report:{version:1,path:'octo-records',operations:{v1:{step:'validate',state:'fail',recovered_by:'v2'},v2:{step:'validate',state:'pass'}},artifacts:{}}})},{id:'tracker',name:'OCTO'},()=>{});
     await tick();assert.match(root.textContent,/OCTO document processing/);assert.match(root.textContent,/Validate and repair · Pass/);assert.match(root.textContent,/Recovered by later operation v2/);closeRecords();
+    const closeUncertain=mountRunDetail(root,{...api,detail:async()=>({id:'0',outcome:'partial',counts:{uncertain:1},report:{version:1,path:'octo-records',operations:{v1:{step:'validate',state:'uncertain',note:'Identity remains unresolved.'}},artifacts:{}}})},{id:'tracker',name:'OCTO'},()=>{});
+    await tick();assert.match(root.textContent,/Validate and repair · Uncertain/);assert.match(root.textContent,/uncertain: 1/);assert.match(root.textContent,/Identity remains unresolved/);closeUncertain();
   }finally{if(old===undefined)delete globalThis.document;else globalThis.document=old;}
 });
