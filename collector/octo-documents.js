@@ -2,10 +2,11 @@ import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { startReport } from './report.js';
+import { processDocument } from './document-records.js';
 
 const digest = text => createHash('sha256').update(text).digest('hex');
 const FEED = 'https://octogroup.org/feed/';
-export const PREPARATION_VERSION = 'octo-documents-v1';
+export const PREPARATION_VERSION = 'octo-documents-v2';
 export const CHUNK_BYTES = 4000; // Source text only; the future model stage must bound its entire request.
 const framing = new Set(['head','script','style','nav','noscript','template']);
 const blocks = new Set(['p','h1','h2','h3','h4','h5','h6','li','blockquote','pre','table','figcaption']);
@@ -41,6 +42,8 @@ export function prepareDocument({title,html,url}) {
       if(level)headings.splice(level-1);
       const id=result.blocks.length;
       result.blocks.push({id,tag:node.name??'text',html_start:node.startIndex,html_end:node.endIndex+1,headings:headings.filter(x=>x!=null),text});
+      if(node.name==='table')result.blocks.at(-1).table_context=DomUtils.findAll(n=>n.name==='caption'||n.name==='tr'&&DomUtils.getElementsByTagName('th',n.children).length,node.children)
+        .map(n=>(n.name==='caption'?[n]:DomUtils.getElementsByTagName('th',n.children)).map(cell=>DomUtils.textContent(cell).replace(/\s+/g,' ').trim()).join('\t')).join('\n');
       if(level)headings[level-1]=id;
     }else for(const child of node.children??[])walk(child);
   }
@@ -86,11 +89,11 @@ function feedItems(body) {
 
 // Opt-in fetch/prepare route. No call into the legacy scripted assessment/save
 // path: every ready document, including unchanged pending work, is returned.
-export async function collectOCTODocuments(db,{tracker,read,now,deadline,limits}) {
-  const run=(await db.query("insert into scout.collection_runs(tracker_id,started_at,stats) values($1,$2,'{\"validation\":true,\"documents_only\":true}') returning id",[tracker.id,now()])).rows[0];
-  const trace=await startReport(db,run.id,'octo-documents');
+export async function collectOCTODocuments(db,{tracker,read,now,deadline,limits,process=false,model,makeModel,documentVersion}) {
+  const run=(await db.query('insert into scout.collection_runs(tracker_id,started_at,stats) values($1,$2,$3::jsonb) returning id',[tracker.id,now(),JSON.stringify({validation:true,documents_only:!process})])).rows[0];
+  const trace=await startReport(db,run.id,process?'octo-records':'octo-documents');
   const budget={requests:0,deadline:Math.min(deadline,Date.now()+limits.seconds*1000)};
-  const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,unfetched:0,warnings:['Fetch/prepare only: generation, validation/repair and record saving are not implemented.','One RSS page; archive pages and all supporting links/media remain unfetched.']};
+  const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,unfetched:0,processed:0,created:0,changed:0,warnings:[...process?[]:['Fetch/prepare only: generation, validation/repair and record saving are not implemented.'],'One RSS page; archive pages and all supporting links/media remain unfetched.']};
   const ready=[],inventory=[];
   async function fetchDocument(url){
     const op=await trace.start('fetch',{url});
@@ -105,8 +108,8 @@ export async function collectOCTODocuments(db,{tracker,read,now,deadline,limits}
   }
   try{
     const known=(await db.query(`select distinct on(parsed#>>'{document,id}') content::jsonb->'feed' as feed,last_seen_at
-      from scout.evidence where tracker_id=$1 and parsed#>>'{document,version}'=$2
-      order by parsed#>>'{document,id}',last_seen_at desc,id`,[tracker.id,PREPARATION_VERSION])).rows;
+      from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like 'octo:post:%'
+      order by parsed#>>'{document,id}',last_seen_at desc,id`,[tracker.id])).rows;
     const feed=await fetchDocument(FEED);let items=[];
     if(feed.response){
       const artifact=await trace.artifact('fetch_response','RSS source document',feed.response);
@@ -137,7 +140,7 @@ export async function collectOCTODocuments(db,{tracker,read,now,deadline,limits}
       const {offsets,...payload}=item; // Enclosing-feed location is provenance, not document content.
       const hash=digest(JSON.stringify({feed:payload,article:fetched.response??null}));
       const detect=await trace.start('detect',{url:item.url});
-      const previous=(await db.query("select id,url,content_hash from scout.evidence where tracker_id=$1 and parsed#>>'{document,id}'=$2 order by last_seen_at desc,id limit 1",[tracker.id,item.id])).rows[0];
+      const previous=(await db.query("select id,url,content_hash from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,id}'=$2 order by last_seen_at desc,id limit 1",[tracker.id,item.id])).rows[0];
       const source=(await db.query(`insert into scout.evidence(tracker_id,url,content_hash,content,parsed,last_seen_at)
         values($1,$2,$3,$4,$5,clock_timestamp()) on conflict(record_id,tracker_id,url,content_hash) do update set last_seen_at=excluded.last_seen_at returning *`,
       [tracker.id,item.url,hash,content,JSON.stringify({document:{version:PREPARATION_VERSION,id:item.id,identity:'octo:post:'+item.id,preparation:{state:'pending'},processing:{state:'pending'}}})])).rows[0];
@@ -146,7 +149,7 @@ export async function collectOCTODocuments(db,{tracker,read,now,deadline,limits}
       await trace.finish(detect,previous?.content_hash===hash?'skipped':'pass',{source_ids:[source.id],artifacts:refs,note:'SHA-256 of exact article response plus retained feed item, excluding enclosing-feed offsets; observation does not mark processing complete.'});
       const op=await trace.start('prepare',{source_ids:[source.id],artifacts:[capture]});stats.documents++;
       try{
-        let prepared=source.parsed.document.prepared,feedOnly=source.parsed.document.feed_only;
+        let prepared=source.parsed.document.prepared_versions?.[PREPARATION_VERSION]??source.parsed.document.prepared,feedOnly=source.parsed.document.feed_only;
         const reused=source.parsed.document.preparation.state==='complete'&&prepared?.version===PREPARATION_VERSION;
         if(!reused){
           if(Date.now()>=budget.deadline)throw new Error('Preparation time bound');
@@ -160,13 +163,23 @@ export async function collectOCTODocuments(db,{tracker,read,now,deadline,limits}
           prepared=prepareDocument({url:post?.link??item.url,title:post?.title.rendered??item.title,html:post?.content.rendered??item.description});
           prepared.input=feedOnly?'feed-only':'linked-article';prepared.feed_metadata={title:item.title,published:item.published,url:item.url,offsets:item.offsets,
             offset_basis:'Original RSS response where this retained item was observed; metadata may precede this article check.'};
-          const document={...source.parsed.document,prepared,feed_only:feedOnly,preparation:{state:'complete',version:PREPARATION_VERSION}};
+          const document={...source.parsed.document,
+            prepared_versions:{...source.parsed.document.prepared_versions,[PREPARATION_VERSION]:prepared},feed_only:feedOnly,preparation:{state:'complete',version:PREPARATION_VERSION}};
           await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document}',$2::jsonb) where id=$1",[source.id,JSON.stringify(document)]);
+          source.parsed.document=document;
         }
-        const artifact=await trace.artifact('preparation','Prepared document, chunks and unfetched links',undefined,{source_id:source.id,content_hash:hash,url:item.url});
+        const artifact=await trace.artifact('preparation','Prepared document, chunks and unfetched links',undefined,{source_id:source.id,content_hash:hash,url:item.url,preparation_version:prepared.version});
         await trace.finish(op,reused?'skipped':'pass',{artifacts:[capture,artifact],note:(reused?'Identical successfully prepared input reused. ':'Full document prepared. ')+(feedOnly?'Feed-only: linked article unavailable or invalid. ':'')+'Downstream processing remains separate; ready inputs are returned even when unchanged.'});
         stats[reused?'reused':'prepared']++;if(feedOnly)stats.feed_only++;
         ready.push(source.id);inventory.push({id:item.id,url:item.url,source_id:source.id,state:feedOnly?'feed-only':'prepared',reused});
+        if(process){
+          model??=makeModel?.(run.id,budget.deadline,trace);
+          const result=await processDocument(db,{source,prepared,trace,model,deadline:budget.deadline,version:documentVersion,
+            changed:Boolean(previous&&previous.content_hash!==hash)});
+          stats.created+=result.created;stats.changed+=result.changed;
+          if(result.state==='complete')stats.processed++;else{stats.failed++;stats.warnings.push(result.error);}
+          inventory.at(-1).processing=result.state;
+        }
       }catch{
         stats.failed++;await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,preparation}','{\"state\":\"failed\"}') where id=$1",[source.id]);
         await trace.finish(op,'fail',{note:'Preparation failed or exceeded a bound. Capture retained; identical input remains eligible for retry.'});
@@ -176,7 +189,7 @@ export async function collectOCTODocuments(db,{tracker,read,now,deadline,limits}
     if(!selected.length)await trace.skip('prepare','No structurally usable document identities found.');
     const coverage=await trace.artifact('coverage','Document outcomes',{documents:inventory,unvisited:'RSS archive pages and supporting links/media'});
     await trace.finish(selection,'pass',{artifacts:[plan,coverage],note:'Document identities selected without topic, category, date or finding filters; inspect bounded retrieval outcomes.'});
-    stats.requests=budget.requests;stats.pending=ready.length;
+    stats.requests=budget.requests;stats.pending=ready.length-stats.processed;
     // A successful preparation is not an end-to-end successful collection.
     const outcome=ready.length||!stats.failed?'partial':'failed';
     await db.query('update scout.collection_runs set finished_at=$2,outcome=$3,stats=stats||$4::jsonb where id=$1',[run.id,now(),outcome,JSON.stringify(stats)]);

@@ -255,5 +255,7 @@ test('run view navigates on demand, renders artifacts as text, and discards late
     const closeDocument=mountRunDetail(root,{...api,detail:async()=>({id:'0',outcome:'partial',report:{version:1,path:'octo-documents',operations:{},artifacts:{}}})},{id:'tracker',name:'OCTO'},()=>{});
     await tick();assert.match(root.textContent,/OCTO document fetch\/prepare only/);assert.match(root.textContent,/Generate records · Not reached/);assert.match(root.textContent,/Save records · Not reached/);
     assert.ok(!root.textContent.includes('Legacy scripted collector'));closeDocument();
+    const closeRecords=mountRunDetail(root,{...api,detail:async()=>({id:'0',outcome:'partial',report:{version:1,path:'octo-records',operations:{v1:{step:'validate',state:'fail',recovered_by:'v2'},v2:{step:'validate',state:'pass'}},artifacts:{}}})},{id:'tracker',name:'OCTO'},()=>{});
+    await tick();assert.match(root.textContent,/OCTO document processing/);assert.match(root.textContent,/Validate and repair · Pass/);assert.match(root.textContent,/Recovered by later operation v2/);closeRecords();
   }finally{if(old===undefined)delete globalThis.document;else globalThis.document=old;}
 });

@@ -4,7 +4,7 @@ import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
 import {collectHSA,LIMITS} from '../collector/hsa.js';
-import {prepareDocument,CHUNK_BYTES} from '../collector/octo-documents.js';
+import {prepareDocument,CHUNK_BYTES,PREPARATION_VERSION} from '../collector/octo-documents.js';
 import {stepState} from '../src/runs.js';
 
 const fixture=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));
@@ -31,11 +31,11 @@ test('actual MPAtlas document retains substantive context and exposes preparatio
   const db=await database(),source=transport();
   try{
     const run=await collectHSA(db,{...options,read:source.read});assert.equal(run.prepared,1);assert.equal(run.outcome,'partial');
-    const row=(await db.query('select * from scout.evidence')).rows[0],doc=row.parsed.document;
-    assert.match(doc.prepared.text,/allows users to complete MPA Guide assessments and submit additional data/);
-    assert.match(doc.prepared.text,/brief tour of the portal and tips on how to register and get started/);
-    assert.ok(doc.prepared.text.length>1200);assert.equal(doc.processing.state,'pending');assert.ok(!row.parsed.kind);
-    assert.equal(doc.prepared.chunks.map(c=>doc.prepared.text.slice(c.start,c.end)).join(''),doc.prepared.text);
+    const row=(await db.query('select * from scout.evidence')).rows[0],doc=row.parsed.document,prepared=doc.prepared_versions[PREPARATION_VERSION];
+    assert.match(prepared.text,/allows users to complete MPA Guide assessments and submit additional data/);
+    assert.match(prepared.text,/brief tour of the portal and tips on how to register and get started/);
+    assert.ok(prepared.text.length>1200);assert.equal(doc.processing.state,'pending');assert.ok(!row.parsed.kind);
+    assert.equal(prepared.chunks.map(c=>prepared.text.slice(c.start,c.end)).join(''),prepared.text);
     assert.equal(source.requests.length,2);assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
     const report=(await db.query('select report from scout.collection_runs where id=$1',[run.run_id])).rows[0].report;
     assert.equal(report.path,'octo-documents');for(const s of ['generate','validate','save'])assert.equal(stepState(report,s),'Not reached');
@@ -45,7 +45,7 @@ test('actual MPAtlas document retains substantive context and exposes preparatio
     await db.query('insert into auth.users(id) values($1)',[member]);
     await db.query("insert into auth.identities values($1,'google',$2)",[member,{iss:'https://accounts.google.com',email_verified:true,custom_claims:{hd:'oceanagentics.com'}}]);
     await db.exec('set role authenticated');await db.query("select set_config('request.jwt.claim.sub',$1,false)",[member]);
-    assert.deepEqual((await db.query('select scout.run_artifact($1,$2) a',[run.run_id,key])).rows[0].a,doc.prepared);
+    assert.deepEqual((await db.query('select scout.run_artifact($1,$2) a',[run.run_id,key])).rows[0].a,prepared);
     assert.equal((await db.query('select scout.run_detail($1) d',[run.run_id])).rows[0].d.counts.prepared,1);
     await assert.rejects(db.query('select * from scout.evidence'),{code:'42501'});
     await db.query("select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000002',false)");
@@ -61,8 +61,8 @@ test('non-webinar/no-keyword articles and multiple-event articles remain intact 
     const feed=rss(posts.map(p=>`<item><guid>https://octogroup.org/?p=${p.id}</guid><link>${p.link}</link><title>${p.title.rendered}</title><category>Uncategorized</category><description>Short feed excerpt</description></item>`));
     const run=await collectHSA(db,{...options,read:transport(posts,feed).read});assert.equal(run.prepared,2);
     const rows=(await db.query('select parsed from scout.evidence order by url')).rows;
-    assert.ok(rows.some(r=>r.parsed.document.prepared.text.includes('Office furniture')));
-    const both=rows.find(r=>r.parsed.document.id==='100').parsed.document.prepared.text;assert.match(both,/First meeting/);assert.match(both,/Second meeting/);
+    assert.ok(rows.some(r=>r.parsed.document.prepared_versions[PREPARATION_VERSION].text.includes('Office furniture')));
+    const both=rows.find(r=>r.parsed.document.id==='100').parsed.document.prepared_versions[PREPARATION_VERSION].text;assert.match(both,/First meeting/);assert.match(both,/Second meeting/);
     for(const row of rows)for(const field of ['kind','priority','organization','starts_at','event_url'])assert.ok(!Object.hasOwn(row.parsed,field));
   }finally{await db.close();}
 });
@@ -101,7 +101,7 @@ for(const mode of ['failed','limited','invalid','oversized'])test('linked articl
     const read=async(url,budget)=>{budget.requests++;if(url===feedURL){if(mode==='limited')budget.requests=LIMITS.requests;return{url,status:200,body:rss([rawMP])};}
       if(mode==='failed')throw new Error('Injected failure');return{url,status:200,body:mode==='oversized'?'X'.repeat(LIMITS.bytes+1):'Invalid article JSON'};};
     const run=await collectHSA(db,{...options,read});assert.equal(run.feed_only,1);assert.equal(run.document_ids.length,1);
-    const row=(await db.query('select * from scout.evidence')).rows[0];assert.equal(row.parsed.document.prepared.input,'feed-only');assert.match(row.parsed.document.prepared.text,/MPAtlas Assessment Portal/);
+    const row=(await db.query('select * from scout.evidence')).rows[0],prepared=row.parsed.document.prepared_versions[PREPARATION_VERSION];assert.equal(prepared.input,'feed-only');assert.match(prepared.text,/MPAtlas Assessment Portal/);
     const report=(await db.query('select report from scout.collection_runs where id=$1',[run.run_id])).rows[0].report;
     assert.ok(Object.values(report.operations).some(o=>o.step==='prepare'&&/Feed-only/.test(o.note)));
     if(mode==='invalid')assert.ok(row.content.includes('Invalid article JSON'));

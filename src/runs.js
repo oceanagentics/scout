@@ -8,7 +8,7 @@ export function stepState(report, step) {
   if (report?.version!==1) return 'Unavailable';
   // Attempts are diagnostic history; their enclosing generation owns the result.
   // Checkpoints can block work, but passing one is not a successful work outcome.
-  const operations=Object.values(report.operations).filter(o=>o.step===step&&!o.attempt);
+  const operations=Object.values(report.operations).filter(o=>o.step===step&&!o.attempt&&!o.recovered_by);
   const work=operations.filter(o=>!o.checkpoint);
   if (operations.some(o=>o.state==='running')) return 'Running';
   if (operations.some(o=>o.state==='fail')) return work.some(o=>o.state==='pass')?'Fail · mixed outcomes':'Fail';
@@ -61,7 +61,7 @@ export function mountRunDetail(root, api, tracker, back) {
       detail.append(node('p',counts||'Final counts unavailable; inspect checkpoints below.'));
       for(const warning of run.warnings??[])detail.append(node('p',warning,'warning'));
       const report=run.report?.version===1?run.report:null;
-      detail.append(node('p',report?.path==='octo-documents'?'OCTO document fetch/prepare only. Generation, proposal validation and record saving are not implemented. Prepared and reused inputs remain available for the forthcoming model stage.':report?'Legacy scripted collector. Selection, semantic preclassification and clipping remain; this is not the document-first pipeline. Pass means the reported boundary completed, not that the importance rating is correct.':'Legacy run: step outcomes, source associations and exact request artifacts were not instrumented. Unavailable details are not reconstructed from current code.','hint'));
+      detail.append(node('p',report?.path==='octo-records'?'OCTO document processing. Source ranges, proposals, bounded repairs and saved records are inspectable. Supporting links remain unfetched; accepted schema and quotes do not establish rating accuracy.':report?.path==='octo-documents'?'OCTO document fetch/prepare only. Generation, proposal validation and record saving are not implemented. Prepared and reused inputs remain available for the forthcoming model stage.':report?'Legacy scripted collector. Selection, semantic preclassification and clipping remain; this is not the document-first pipeline. Pass means the reported boundary completed, not that the importance rating is correct.':'Legacy run: step outcomes, source associations and exact request artifacts were not instrumented. Unavailable details are not reconstructed from current code.','hint'));
       if(!run.finished_at)detail.append(node('p','No completion marker. Running checkpoints may still be active or may have been interrupted; refresh to check.','warning'));
       const bodies=new Map();
       function artifactPanel(key){
@@ -89,6 +89,7 @@ export function mountRunDetail(root, api, tracker, back) {
         for(const op of operations){
           const entry=node('details'),title=(op.source_ids?.join(', ')||op.url||'Run boundary');
           entry.append(node('summary',(states[op.state]??'Unavailable')+(op.attempt?' · Attempt '+op.attempt:op.checkpoint?' · Checkpoint':'')+' · '+title));
+          if(op.recovered_by)entry.append(node('p','Recovered by later operation '+op.recovered_by+'. Original failure retained.','hint'));
           entry.append(node('p',op.note??'No additional note recorded.'),node('p','Started '+stamp(op.started_at)+' · Finished '+stamp(op.finished_at),'meta'));
           if(op.http_status!=null)entry.append(node('p','HTTP '+op.http_status));
           if(op.bytes!=null)entry.append(node('p',op.bytes+' response bytes'));

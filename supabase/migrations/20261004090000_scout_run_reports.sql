@@ -24,7 +24,7 @@ language sql stable security definer set search_path='' as $$
     'counts',jsonb_build_object('requests',r.stats->'requests','posts',r.stats->'posts',
       'pages',r.stats->'pages','candidates',r.stats->'candidates','skipped',r.stats->'skipped',
       'assessed',r.stats->'assessed','created',r.stats->'created','changed',r.stats->'changed','pending',r.stats->'pending',
-      'documents',r.stats->'documents','prepared',r.stats->'prepared','reused',r.stats->'reused',
+      'documents',r.stats->'documents','prepared',r.stats->'prepared','reused',r.stats->'reused','processed',r.stats->'processed',
       'feed_only',r.stats->'feed_only','failed',r.stats->'failed','unfetched',r.stats->'unfetched'),
     'warnings',r.stats->'warnings',
     'report',case when r.report is null then null else r.report-'artifacts' || jsonb_build_object('artifacts',
@@ -40,7 +40,9 @@ language sql stable security definer set search_path='' as $$
   select case when a->>'kind'='capture' or a->>'kind'='preparation' and a ? 'source_id' then (
     select case when e.content ~* '"(headers|authorization|cookie|set-cookie|access_token|refresh_token|api_key|apikey|env)"[[:space:]]*:'
       then jsonb_build_object('unavailable','Capture contains transport/credential metadata; raw payload remains backend-only.')
-      when a->>'kind'='preparation' then e.parsed#>'{document,prepared}'
+      when a->>'kind'='preparation' then case when a ? 'preparation_version'
+        then e.parsed#>array['document','prepared_versions',a->>'preparation_version']
+        else e.parsed#>'{document,prepared}' end
       else jsonb_build_object('url',e.url,'content_hash',e.content_hash,'content',e.content,
         'collected_at',e.collected_at,'published_at',e.published_at) end
     from scout.evidence e where e.id::text=a->>'source_id' and e.tracker_id=r.tracker_id

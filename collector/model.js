@@ -3,6 +3,10 @@ import { Buffer } from 'node:buffer';
 export const MODEL = 'gemini-3.5-flash-lite';
 export const MODEL_LIMITS = { minute: 2, run: 10, input: 8000, output: 1024, retries: 1 };
 
+export const requestBody = (instruction,input,schema) => JSON.stringify({systemInstruction:{parts:[{text:instruction}]},
+  contents:[{role:'user',parts:[{text:JSON.stringify(input)}]}],generationConfig:{maxOutputTokens:MODEL_LIMITS.output,
+    thinkingConfig:{thinkingLevel:'minimal'},responseMimeType:'application/json',responseJsonSchema:schema}});
+
 // One autocommitted statement. Never call this inside a collection transaction.
 // The same hosted collection_runs ledger is required for local and hosted calls.
 export function reservationSQL(runId, inputBytes, runLimit = MODEL_LIMITS.run) {
@@ -29,10 +33,7 @@ export function reservationSQL(runId, inputBytes, runLimit = MODEL_LIMITS.run) {
 export function gemini({ apiKey, ledger, runId, runLimit = MODEL_LIMITS.run, fetch: send = fetch, deadline = Date.now() + 100000, trace }) {
   return async (instruction, input, schema) => {
     if (!apiKey || !ledger) throw new Error('Model and shared hosted budget ledger are required');
-    const body = JSON.stringify({ systemInstruction: { parts: [{ text: instruction }] },
-      contents: [{ role: 'user', parts: [{ text: JSON.stringify(input) }] }],
-      generationConfig: { maxOutputTokens: MODEL_LIMITS.output, thinkingConfig: { thinkingLevel: 'minimal' },
-        responseMimeType: 'application/json', responseJsonSchema: schema } });
+    const body = requestBody(instruction,input,schema);
     // UTF-8 bytes conservatively bound text tokens, including instructions/schema.
     const inputBound = Buffer.byteLength(body);
     const requestArtifact = await trace?.artifact('model_request', 'Exact Gemini request body (no headers)', { model: MODEL, body: body.replaceAll(apiKey,'[REDACTED]'), input_bytes: inputBound, credential_redacted: body.includes(apiKey) });
@@ -66,10 +67,10 @@ export function gemini({ apiKey, ledger, runId, runLimit = MODEL_LIMITS.run, fet
       if (result.usageMetadata) await ledger.query(`update scout.collection_runs set stats=jsonb_set(stats,'{model_usage}',
         coalesce(stats->'model_usage','[]'::jsonb)||$2::jsonb) where id=$1`,[runId,JSON.stringify([result.usageMetadata])]);
       const choice = result.candidates?.[0];
-      if (choice?.finishReason !== 'STOP') throw new Error('Incomplete model result; candidate remains pending');
       const text = choice.content?.parts?.filter(part => !part.thought).map(part => part.text ?? '').join('');
+      if (choice?.finishReason !== 'STOP') throw Object.assign(new Error('Incomplete model result; candidate remains pending'),{rejected:(text??raw).replaceAll(apiKey,'[REDACTED]')});
       let decisions;
-      try { decisions = JSON.parse(text); } catch { throw new Error('Invalid model JSON; candidate remains pending'); }
+      try { decisions = JSON.parse(text?.replaceAll(apiKey,'[REDACTED]')); } catch { throw Object.assign(new Error('Invalid model JSON; candidate remains pending'),{rejected:text?.replaceAll(apiKey,'[REDACTED]')??'No model text returned'}); }
       await trace?.finish(op,'pass',{note:'Complete JSON response parsed. Proposal validation and rating review are separate.'});
       return decisions;
       } catch(error) {
