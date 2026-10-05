@@ -150,6 +150,19 @@ test('saved UNOC announcement retains separate session labels without borrowing 
     const duplicate={...candidates[0],title:label,anchors:[label]};
     assert.throws(()=>validateResolution(actual.response,finding,[duplicate],prepared),/distinct cited label/);
   }
+  const mpa=(await fixture('hsa-social-preparation.json.gz')).announcement_contract.mpa_distinction_failure;
+  const supplied=JSON.parse(JSON.parse(mpa.request).contents[0].parts[0].text)[0];
+  const decision=JSON.parse(JSON.parse(mpa.response).candidates[0].content.parts.find(p=>p.text).text),p=supplied.finding;
+  const before=JSON.stringify(supplied);assert.equal(validateResolution(decision,p,supplied.candidates,prepared).outcome,'new');
+  assert.equal(JSON.stringify(supplied),before,'Retained presenter anchor, finding and progress are not rewritten');
+  for(const label of [p.candidate.title,p.candidate.title+'.',p.anchor]){
+    const duplicate={...supplied.candidates[0],title:label,anchors:[label]};
+    assert.throws(()=>validateResolution(decision,p,[duplicate],prepared),/distinct cited label/);
+  }
+  assert.throws(()=>validateResolution(decision,{...p,evidence:{...p.evidence,title:[2]}},supplied.candidates,prepared),/distinct cited label/);
+  assert.throws(()=>validateResolution({...decision,evidence:{distinction:[1]}},p,supplied.candidates,prepared),/distinct cited label/);
+  const sharedTitle={...findings[1],candidate:{...findings[1].candidate,title:existing.title}};
+  assert.equal(validateResolution(review,sharedTitle,[existing],prepared).outcome,'new','A cited distinct session anchor still takes precedence over a shared title');
 });
 
 test('retained whole newsletter accepts six injected events and repeats without another call',async context=>{

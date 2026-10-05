@@ -157,9 +157,11 @@ export function validateResolution(d,p,candidates,prepared){
   if(d.outcome==='uncertain')return d;
   if(d.conflict==='unresolved'||Object.values(d.facts).some(v=>v!=='supported'))throw new Error('Unsupported/conflicting factual evidence cannot be saved; repair or return uncertain');
   if(d.outcome==='new'){
-    const label=normalized(p.anchor).replace(/[.!?]+$/u,'');
-    if(candidates.length&&(!normalized(quotes(p,d.evidence.distinction??[])).includes(label)||candidates.some(r=>
-      [r.title,...r.anchors].some(a=>normalized(a).replace(/[.!?]+$/u,'')===label))))
+    const [anchor,title]=[p.anchor,c.title].map(value=>normalized(value).replace(/[.!?]+$/u,'')),distinction=normalized(quotes(p,d.evidence.distinction??[]));
+    const label=anchor&&distinction.includes(anchor)?anchor:
+      title&&distinction.includes(title)&&normalized(quotes(p,p.evidence.title)).includes(title)?title:null;
+    if(candidates.length&&(!label||candidates.some(r=>
+      [r.title,...r.anchors].some(a=>[anchor,label].includes(normalized(a).replace(/[.!?]+$/u,''))))))
       throw new Error('New finding needs a distinct cited label; disputed date/organizer alone is not new identity');
     return d;
   }
