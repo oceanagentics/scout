@@ -3,13 +3,15 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,sourceURL,HSA,GFW_WEB,LIMITS} from '../collector/hsa.js';
+import {collectHSA,sourceURL,HSA,GFW_WEB,IUCN,LIMITS} from '../collector/hsa.js';
+import {DISCOVERY_QUERIES} from '../collector/bluesky-discovery-documents.js';
 import {gemini} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {PREPARATION_VERSION} from '../collector/octo-documents.js';
 
 const fixture=async name=>{const raw=await readFile(new URL('./fixtures/'+name,import.meta.url));return JSON.parse(name.endsWith('.gz')?gunzipSync(raw):raw);};
 const hsa=await fixture('hsa-webinar-time.json'),gaps=await fixture('scout16-gaps.json.gz'),gfw=await fixture('gfw-website.json.gz'),expansion=await fixture('expansion-feeds.json');
+const discovery=await fixture('bluesky-discovery.json.gz'),iucn=await fixture('iucn-website.json.gz');
 const article=JSON.parse(gfw['partnership-api'].body);
 const response=(url,body,mime='application/json')=>({url,status:200,headers:{'content-type':mime,'set-cookie':'never-store-response-headers'},body:typeof body==='string'?body:JSON.stringify(body)});
 const answer=findings=>({complete:true,reason:'Supplied range considered.',findings});
@@ -182,9 +184,173 @@ test('source limits/failures stay inspectable; unsupported or unscoped document 
     const failed=await collectHSA(db,{...options,read:async()=>{throw new Error('Feed failure');}});assert.equal(failed.documents,0);assert.ok(failed.failed);
     assert.ok(Object.values((await detail(db,failed.run_id)).report.operations).some(o=>o.step==='prepare'&&o.state==='fail'));
     const rows=(await db.query('select count(*)::int n from scout.collection_runs')).rows[0].n;
-    const other=await tracker(db,'https://iucn.org/our-work/topic/high-seas');
+    const other=await tracker(db,'https://www.dosi-project.org/biodiversity-beyond-national-jurisdiction-bbnj/');
     for(const change of [{validate:false},{trackerId:other.id},{sourceId:'00000000-0000-4000-8000-000000000001'},{documents:'all'}])
       await assert.rejects(collectHSA(db,{...options,...change,read:()=>{throw new Error('Must not read');}}),e=>e.status===400);
     assert.equal((await db.query('select count(*)::int n from scout.collection_runs')).rows[0].n,rows);
+  }finally{await db.close();}
+});
+
+
+test('real discovery captures every URI/CID payload with query provenance and bounded window without config changes',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,discovery.tracker.url),before=(await db.query('select * from scout.trackers order by id')).rows;
+    const options={trackerId:t.id,validate:true,documents:true,since:'2026-09-01T00:00:00Z',now:()=>discovery.collected_at,read:async url=>{
+      const q=new URL(url).searchParams.get('q'),saved=discovery.queries.find(r=>new URL(r.url).searchParams.get('q')===q);
+      assert.equal(new URL(url).searchParams.get('since'),'2026-09-01T00:00:00.000Z');
+      assert.equal(new URL(url).searchParams.get('until'),discovery.collected_at);
+      assert.equal(new URL(url).searchParams.get('limit'),'5');return {...saved,url};
+    }};
+    const run=await collectHSA(db,options),report=(await detail(db,run.run_id)).report;
+    assert.equal(run.requests,4);assert.equal(run.outcome,'partial');assert.equal(report.path,'discovery-documents');
+    const plan=Object.values(report.artifacts).find(a=>a.kind==='coverage'&&a.data.queries).data;
+    assert.deepEqual(plan.queries.map(q=>q.q),DISCOVERY_QUERIES);assert.equal(plan.complete,false);
+    assert.equal(plan.window.until,discovery.collected_at);assert.equal(plan.limits.searchPages,1);
+    assert.ok(plan.queries.some(q=>q.cursor&&q.state==='bounded'));
+    const captures=(await db.query('select * from scout.evidence where tracker_id=$1',[t.id])).rows;
+    const payloads=new Set(discovery.queries.flatMap(q=>JSON.parse(q.body).posts.map(post=>JSON.stringify({post}))));
+    assert.equal(captures.length,payloads.size);
+    for(const capture of captures){
+      assert.ok(payloads.has(capture.content));const post=JSON.parse(capture.content).post;
+      assert.equal(capture.parsed.document.identity,post.uri);
+      assert.equal(capture.parsed.document.prepared_versions[capture.parsed.document.version].text,capture.content);
+      const occurrences=Object.values(report.artifacts).find(a=>a.kind==='provenance'&&a.source_id===capture.id).data.provenance;
+      const expected=discovery.queries.flatMap(q=>JSON.parse(q.body).posts.filter(p=>JSON.stringify({post:p})===capture.content));
+      assert.equal(occurrences.length,expected.length);assert.ok(occurrences.every(p=>p.q&&p.search_url&&Number.isInteger(p.position)));
+    }
+    assert.equal(Object.values(report.artifacts).filter(a=>a.kind==='fetch_response').length,4);
+    assert.ok(!JSON.stringify(report).includes('set-cookie'));assert.equal((await stored(db)).length,0);
+    const repeat=await collectHSA(db,options);assert.equal(repeat.prepared,0);assert.equal(repeat.reused,payloads.size);
+    assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,before);
+  }finally{await db.close();}
+});
+
+test('discovery conflicts retain all URI/CID and same-CID variants without choosing a primary or calling the model',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,discovery.tracker.url),original=structuredClone(JSON.parse(discovery.queries[0].body).posts[0]);
+    const edited=structuredClone(original),counter=structuredClone(original);edited.cid+='a';edited.record.text+=' Edited source variant.';counter.likeCount=(counter.likeCount??0)+1;
+    const model=runModel(db,()=>answer([]));let conflicted=true;
+    const options={trackerId:t.id,validate:true,documents:'process',makeModel:model.makeModel,read:async url=>{
+      if(!url.includes('searchPosts'))throw new Error('Support unavailable');
+      const q=new URL(url).searchParams.get('q');
+      return response(url,{posts:conflicted?[q==='BBNJ'?original:q.includes('traité')?counter:edited]:[original]});
+    }};
+    const first=await collectHSA(db,options);assert.equal(first.uncertain,3);assert.equal(model.requests.length,0);assert.equal((await stored(db)).length,0);
+    const captures=(await db.query('select * from scout.evidence where tracker_id=$1',[t.id])).rows;assert.equal(captures.length,3);
+    assert.deepEqual(new Set(captures.map(c=>c.content)),new Set([original,edited,counter].map(post=>JSON.stringify({post}))));
+    const report=(await detail(db,first.run_id)).report;
+    assert.equal(Object.values(report.operations).filter(o=>o.state==='uncertain').length,3);
+    const plan=Object.values(report.artifacts).find(a=>a.kind==='coverage'&&a.data.queries).data;
+    assert.ok(plan.documents.every(d=>d.conflicted));assert.ok(plan.coverage.some(c=>c.state==='conflict'));
+    conflicted=false;const next=await collectHSA(db,options);assert.equal(next.processed,1,next.warnings.join(';'));assert.ok(model.requests.length);
+  }finally{await db.close();}
+});
+
+test('discovery shares support, cited save and repeat/change handling without inferring authority from an author',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,discovery.tracker.url),post=structuredClone(JSON.parse(discovery.queries[0].body).posts[0]);
+    const title='Public monitoring methods briefing',url='https://example.org/discovery-register';delete post.embed;delete post.record.facets;
+    post.record.text=title+'\nRegister: '+url;
+    let support='<html><title>Registration</title><p>'+title+'</p><p>'+url+'</p></html>';
+    const model=runModel(db,input=>{
+      if(input.stage==='resolve')return resolve(input);
+      const s=input.segments.find(s=>s.doc!=='P'&&s.text.includes(title));if(!s)return answer([]);
+      const p=base(title,[{doc:'P',quote:title},{doc:s.doc,quote:url},{doc:s.doc,quote:title}]);
+      p.candidate.kind='event';p.candidate.registration_url=url;p.evidence.registration_url={refs:[1,2],rationale:'Explicit registration relationship and destination.'};return answer([p]);
+    });
+    const options={trackerId:t.id,validate:true,documents:'process',makeModel:model.makeModel,read:async u=>
+      u.includes('searchPosts')?response(u,{posts:[post]}):response(u,support,'text/html')};
+    let run=await collectHSA(db,options);assert.equal(run.processed,1,run.warnings.join(';'));
+    const record=(await stored(db))[0];assert.equal(record.registration_url,url);assert.equal(record.organization,null);
+    const link=(await db.query('select parsed from scout.evidence where record_id=$1 and url<>$2',[record.id,url])).rows[0].parsed;
+    assert.equal(link.accepted_fields.title.rank,0);assert.equal(link.accepted_fields.registration_url.rank,2);
+    let count=model.requests.length;run=await collectHSA(db,options);assert.equal(run.processed,1);assert.equal(model.requests.length,count);
+    support=support.replace('</p></html>','</p><p>Additional registration context.</p></html>');
+    run=await collectHSA(db,options);assert.equal(run.processed,1,run.warnings.join(';'));assert.ok(model.requests.length>count);
+    count=model.requests.length;post.record.text+='\nAdditional public context.';
+    run=await collectHSA(db,options);assert.equal(run.processed,1,run.warnings.join(';'));assert.ok(model.requests.length>count);
+    assert.equal((await stored(db)).length,1);assert.equal((await stored(db))[0].id,record.id);
+    const report=(await detail(db,run.run_id)).report;assert.equal(report.path,'discovery-records');
+    assert.ok(Object.values(report.artifacts).some(a=>a.kind==='support_coverage'&&a.data.links.some(l=>l.relationship==='registration'&&l.state==='fetched')));
+    assert.ok(!JSON.stringify(report).includes('never-store-response-headers'));
+  }finally{await db.close();}
+});
+
+test('discovery empty, denied and bounded queries remain partial/failed; real quota accounting prevents an unreserved save',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,discovery.tracker.url),before=(await db.query('select * from scout.trackers order by id')).rows;
+    const options={trackerId:t.id,validate:true,documents:true};
+    const empty=await collectHSA(db,{...options,read:async url=>response(url,{posts:[]})});assert.equal(empty.outcome,'partial');assert.equal(empty.documents,0);
+    const denied=await collectHSA(db,{...options,read:async url=>({...response(url,'Forbidden','text/plain'),status:403})});
+    assert.equal(denied.outcome,'failed');assert.equal(denied.failed,4);
+    assert.equal(Object.values((await detail(db,denied.run_id)).report.artifacts).filter(a=>a.kind==='fetch_response'&&a.data.body==='Forbidden').length,4);
+    const bounded=await collectHSA(db,{...options,read:async(url,budget)=>{budget.requests=LIMITS.requests;return response(url,{posts:[],cursor:'next'});}});
+    const coverage=Object.values((await detail(db,bounded.run_id)).report.artifacts).find(a=>a.kind==='coverage'&&a.data.queries).data;
+    assert.deepEqual(coverage.queries.map(q=>q.state),['bounded','bounded','unfetched','unfetched']);assert.equal(coverage.complete,false);
+    const post=structuredClone(JSON.parse(discovery.queries[0].body).posts[0]);delete post.embed;delete post.record.facets;post.record.text='Ocean methods briefing';
+    let calls=0;
+    const limited=await collectHSA(db,{...options,documents:'process',read:async url=>response(url,{posts:[post]}),
+      makeModel:(runId,deadline,trace)=>gemini({apiKey:'fixture-test-key',ledger:db,runId,deadline,trace,runLimit:1,fetch:async()=>{
+        calls++;return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(answer([base(post.record.text,[{doc:'P',quote:post.record.text}])]))}]}}]});
+      }})});
+    assert.equal(calls,1);assert.equal((await stored(db)).length,0);assert.ok(limited.warnings.some(w=>w.includes('quota')));
+    assert.equal((await detail(db,limited.run_id)).stats.model_attempts.length,1);
+    for(const row of [t,await tracker(db,IUCN)])await assert.rejects(collectHSA(db,{trackerId:row.id,validate:false,documents:'process',read:()=>assert.fail('Unscoped read')}),e=>e.status===400);
+    assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,before);
+  }finally{await db.close();}
+});
+
+test('whole real IUCN article traverses shared extraction/save, repeat/change and failed-detail recovery',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,IUCN),before=await tracker(db,IUCN),url=iucn.blog.url;
+    const home={...iucn.home,body:iucn.home.body.replace(/<main[\s\S]*?<\/main>/,'<main><div class="wrapper-title"><a href="'+url+'">Blog</a></div></main>')};
+    let article=iucn.blog,fail=false;const inputs=[];
+    const model=runModel(db,input=>{
+      if(input.stage==='resolve')return resolve(input);
+      inputs.push(input);return answer(input.range[0]===0?[base(input.title,[{doc:'P',quote:input.title}])]:[]);
+    });
+    const options={trackerId:t.id,validate:true,documents:'process',makeModel:model.makeModel,read:async u=>{
+      if(u===IUCN)return home;if(u===url)return fail?{...article,status:503}:article;throw new Error('Support unavailable');
+    }};
+    let run=await collectHSA(db,options);for(let i=0;i<3&&!run.processed;i++)run=await collectHSA(db,options);
+    assert.equal(run.processed,1,run.warnings.join(';'));const record=(await stored(db))[0];assert.ok(record);
+    const source=(await db.query("select * from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}'='iucn:node:45913'",[t.id])).rows[0];
+    assert.equal(source.content,iucn.blog.body);const clean=source.parsed.document.prepared_versions[PREPARATION_VERSION];assert.ok(Buffer.byteLength(clean.text)>9000);
+    assert.equal(inputs.map(i=>clean.text.slice(...i.range)).join(''),clean.text);assert.ok(clean.links.length>10);
+    let count=model.requests.length;run=await collectHSA(db,options);assert.equal(run.processed,1);assert.equal(model.requests.length,count);
+    article={...iucn.blog,body:iucn.blog.body.replace('</article>','<p>New implementation appendix.</p></article>')};
+    run=await collectHSA(db,options);for(let i=0;i<3&&!run.processed;i++)run=await collectHSA(db,options);
+    assert.equal(run.processed,1,run.warnings.join(';'));assert.ok(model.requests.length>count);assert.equal((await stored(db))[0].id,record.id);
+    count=model.requests.length;fail=true;const failed=await collectHSA(db,options);assert.equal(failed.documents,0);assert.ok(failed.failed);assert.equal(model.requests.length,count);
+    assert.equal((await detail(db,failed.run_id)).stats.document_source.progress.after_url,url);
+    fail=false;run=await collectHSA(db,options);assert.equal(run.processed,1);assert.equal(model.requests.length,count);
+    const report=(await detail(db,run.run_id)).report;assert.equal(report.path,'iucn-records');
+    assert.ok(Object.values(report.artifacts).some(a=>a.kind==='support_coverage'&&a.data.links.some(l=>l.state==='unsupported')));
+    assert.deepEqual(await tracker(db,IUCN),before);
+  }finally{await db.close();}
+});
+
+test('IUCN persists known URL/node IDs and failed/unlisted rotation; request/time deferrals preserve the cursor',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,IUCN),attempted=new Set();let missingHome=false;
+    const options={trackerId:t.id,validate:true,documents:true,read:async url=>{
+      attempted.add(url);if(url===IUCN){if(missingHome)throw new Error('Listing unavailable');return iucn.home;}
+      const saved=Object.values(iucn).find(r=>r?.url===url&&r.body);if(saved)return saved;throw new Error('Unsaved detail');
+    }};
+    const first=await collectHSA(db,options),initial=(await detail(db,first.run_id)).stats.document_source;
+    assert.equal(first.documents,5);assert.equal(initial.known.length,13);assert.ok(initial.known.find(d=>d.url===iucn.blog.url&&d.id==='45913'));
+    let latest=initial;
+    missingHome=true;
+    for(let n=0;n<2;n++){const run=await collectHSA(db,options),state=(await detail(db,run.run_id)).stats.document_source;
+      assert.equal(run.requests,6);assert.ok(run.failed);assert.notEqual(state.progress.after_url,latest.progress.after_url);assert.equal(state.known.length,13);latest=state;}
+    for(const item of initial.known)assert.ok(attempted.has(item.url),'Unlisted known URL was not retried: '+item.url);
+    assert.ok(latest.known.filter(d=>d.id).length>=7);
+    missingHome=false;
+    const bounded=await collectHSA(db,{...options,read:async(url,budget)=>{budget.requests=LIMITS.requests;return iucn.home;}});
+    assert.equal(bounded.documents,0);assert.deepEqual((await detail(db,bounded.run_id)).stats.document_source.progress,latest.progress);
+    const expired=await collectHSA(db,{...options,deadline:Date.now()-1,read:()=>assert.fail('Expired source read')});
+    assert.equal(expired.requests,0);assert.deepEqual((await detail(db,expired.run_id)).stats.document_source.progress,latest.progress);
+    assert.equal((await detail(db,expired.run_id)).stats.document_source.known.length,13);
+    assert.equal((await stored(db)).length,0);assert.equal((await tracker(db,IUCN)).enabled,false);
   }finally{await db.close();}
 });

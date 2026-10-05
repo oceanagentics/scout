@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { startReport } from './report.js';
 import { collectDocuments } from './octo-documents.js';
 import { retrieveAuthorDocuments } from './bluesky-documents.js';
+import { retrieveDiscoveryDocuments } from './bluesky-discovery-documents.js';
 import { retrieveGFWDocuments } from './publisher-documents.js';
+import { retrieveIUCNDocuments } from './iucn-documents.js';
 import { Buffer } from 'node:buffer';
 import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
@@ -432,14 +434,15 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const symposium=tracker.collector==='web' && tracker.url===SYMPOSIUM;
   const cbd=tracker.collector==='web' && tracker.url===CBD_REGISTRY;
   const octo=tracker.collector==='web' && tracker.url===OCTO;
+  const discovery=tracker.collector==='bluesky_search' && tracker.url==='https://bsky.app/search?q=BBNJ';
   if(documents!==false){
     const author=[HSA,'deepstewardship.bsky.social','globalfishingwatch.org','iddri.bsky.social'].includes(actor);
-    if(![true,'process'].includes(documents)||!(octo||author||gfw)||!validate||assessOnly||sourceId)throw Object.assign(new Error('Document processing requires explicit supported tracker validation without assessment/source selection'),{status:400});
-    return collectDocuments(db,{tracker,read,sourceURL,now,deadline,limits:LIMITS,process:documents==='process',model,makeModel,documentVersion,
-      path:octo?'octo':author?'author':'gfw',retrieve:author?retrieveAuthorDocuments:gfw?retrieveGFWDocuments:undefined});
+    if(![true,'process'].includes(documents)||!(octo||author||gfw||discovery||iucn)||!validate||assessOnly||sourceId)throw Object.assign(new Error('Document processing requires explicit supported tracker validation without assessment/source selection'),{status:400});
+    return collectDocuments(db,{tracker,read,sourceURL,now,since,deadline,limits:LIMITS,process:documents==='process',model,makeModel,documentVersion,
+      path:octo?'octo':author?'author':gfw?'gfw':discovery?'discovery':'iucn',
+      retrieve:author?retrieveAuthorDocuments:gfw?retrieveGFWDocuments:discovery?retrieveDiscoveryDocuments:iucn?retrieveIUCNDocuments:undefined});
   }
   const explorers=tracker.collector==='web' && tracker.url===EXPLORERS;
-  const discovery=tracker.collector==='bluesky_search' && tracker.url==='https://bsky.app/search?q=BBNJ';
   if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo && !explorers && !discovery) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });
   const publisherHost=({[HSA]:'highseasalliance.org','deepstewardship.bsky.social':'dosi-project.org','globalfishingwatch.org':'globalfishingwatch.org','iddri.bsky.social':'iddri.org'})[actor];
   const started = now();

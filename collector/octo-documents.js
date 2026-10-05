@@ -183,7 +183,7 @@ export async function supportDocuments(db,{source,prepared,read,sourceURL,budget
 
 // Opt-in fetch/prepare route. No call into the legacy scripted assessment/save
 // path: every ready document, including unchanged pending work, is returned.
-export async function collectDocuments(db,{tracker,read,sourceURL,now,deadline,limits,process=false,model,makeModel,documentVersion,retrieve,path='octo'}) {
+export async function collectDocuments(db,{tracker,read,sourceURL,now,since,deadline,limits,process=false,model,makeModel,documentVersion,retrieve,path='octo'}) {
   const run=(await db.query('insert into scout.collection_runs(tracker_id,started_at,stats) values($1,$2,$3::jsonb) returning id',[tracker.id,now(),JSON.stringify({validation:true,documents_only:!process})])).rows[0];
   const trace=await startReport(db,run.id,path+(process?'-records':'-documents'));
   const budget={requests:0,deadline:Math.min(deadline,Date.now()+limits.seconds*1000)};
@@ -204,9 +204,12 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,deadline,l
     let selected,plan,retrievalFailed=false;
     if(retrieve){
       const previous=(await db.query("select stats->'document_source' state from scout.collection_runs where tracker_id=$1 and stats ? 'document_source' order by started_at desc,id desc limit 1",[tracker.id])).rows[0]?.state??{};
-      const captured=(await db.query("select distinct parsed#>>'{document,id}' id,url from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like 'gfw:post:%'",[tracker.id])).rows;
-      const known=new Map([...(previous.known??[]),...captured].map(item=>[String(item.id),item]));
-      const result=await retrieve({tracker,sourceURL,budget,limits:{...limits,articles:4},knownArticles:[...known.values()],progress:previous.progress??{},read:async url=>{
+      const captured=(await db.query("select distinct parsed#>>'{document,id}' id,url from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like $2",[tracker.id,path+':%'])).rows;
+      const knownKey=path==='iucn'?'url':'id',known=new Map([...(previous.known??[]),...captured].map(item=>[String(item[knownKey]),item]));
+      const result=await retrieve({tracker,sourceURL,budget,
+        limits:{...limits,articles:4,documents:limits.pages-1,...path==='discovery'?{searchPages:1,postsPerPage:5,requests:4}:{}},
+        ...path==='discovery'?{since:new Date(since).toISOString(),until:now()}:{},
+        knownArticles:[...known.values()],knownDocuments:[...known.values()],progress:previous.progress??{},read:async url=>{
         const fetched=await fetchDocument(url,true);if(!fetched.response)throw new Error(fetched.error);
         const {headers,...payload}=fetched.response;
         const artifact=await trace.artifact('fetch_response','Source response',payload);
@@ -214,24 +217,27 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,deadline,l
         if(payload.status!==200)throw new Error('Source response status '+payload.status);
         return fetched.response;
       }});
-      for(const item of result.inventory??[])if(item.id&&item.url)known.set(String(item.id),{id:String(item.id),url:item.url});
+      for(const item of [...result.inventory??[],...result.documents])if(item[knownKey]&&item.url&&item.state!=='unsupported'){
+        const key=String(item[knownKey]);known.set(key,{...known.get(key),url:item.url,...item.id?{id:String(item.id)}:{}});
+      }
       if(result.progress){
         stats.document_source={known:[...known.values()],progress:result.progress};
         await db.query("update scout.collection_runs set stats=stats||$2::jsonb where id=$1",[run.id,JSON.stringify({document_source:stats.document_source})]);
       }
       const grouped=new Map(),versions=new Map();
-      for(const item of result.documents){
+      for(const entry of result.documents)for(const item of entry.variants??[entry]){
         const identity=item.identity??item.id,key=identity+':'+digest(item.raw),prior=grouped.get(key);
-        const provenance=item.provenance??{listing:item.listing,api_url:item.api_url};
-        if(prior)prior.provenance.push(provenance);
-        else grouped.set(key,{...item,identity,provenance:[provenance]});
+        const provenance=[item.provenance??{listing:item.listing,api_url:item.api_url}].flat();
+        if(prior)prior.provenance.push(...provenance);
+        else grouped.set(key,{...item,identity,provenance,conflicted:entry.state==='conflict'});
         if(!versions.has(identity))versions.set(identity,new Set());versions.get(identity).add(key);
       }
-      selected=[...grouped.values()].map(item=>({...item,conflicted:versions.get(item.identity).size>1}));
+      selected=[...grouped.values()].map(item=>({...item,conflicted:item.conflicted||versions.get(item.identity).size>1}));
       stats.failed+=(result.coverage??[]).filter(c=>c.state==='failed').length;
       retrievalFailed=stats.failed>0;
       stats.unfetched+=(result.coverage??[]).filter(c=>['deferred','unfetched'].includes(c.state)).length;
-      plan=await trace.artifact('coverage','Source documents and retrieval coverage',{documents:selected.map(({id,url,identity,provenance,conflicted})=>({id,url,identity,provenance,conflicted})),coverage:result.coverage,pagination:result.pagination,progress:result.progress});
+      plan=await trace.artifact('coverage','Source documents and retrieval coverage',{documents:selected.map(({id,url,identity,provenance,conflicted})=>({id,url,identity,provenance,conflicted})),
+        coverage:result.coverage,pagination:result.pagination,queries:result.queries,window:result.window,limits:result.limits,complete:result.complete,progress:result.progress});
     }else{
     const known=(await db.query(`select distinct on(parsed#>>'{document,id}') content::jsonb->'feed' as feed,last_seen_at
       from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like 'octo:post:%'
