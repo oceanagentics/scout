@@ -8,6 +8,7 @@ import {DISCOVERY_QUERIES} from '../collector/bluesky-discovery-documents.js';
 import {gemini} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {PREPARATION_VERSION} from '../collector/octo-documents.js';
+import {PREPARATION_VERSION as AUTHOR_PREPARATION_VERSION} from '../collector/bluesky-documents.js';
 
 const fixture=async name=>{const raw=await readFile(new URL('./fixtures/'+name,import.meta.url));return JSON.parse(name.endsWith('.gz')?gunzipSync(raw):raw);};
 const hsa=await fixture('hsa-webinar-time.json'),gaps=await fixture('scout16-gaps.json.gz'),gfw=await fixture('gfw-website.json.gz'),expansion=await fixture('expansion-feeds.json');
@@ -64,6 +65,35 @@ test('all four existing author configurations use exact item captures and retain
       assert.ok(Object.values(report.artifacts).some(a=>a.kind==='fetch_response'&&JSON.parse(a.data.body).feed.length===2));
     }
     assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,before);assert.equal((await stored(db)).length,0);
+  }finally{await db.close();}
+});
+
+test('actual 25-plus-pin author response preserves all captures, preparation, exact response and occurrence provenance on repeat',async()=>{
+  const saved=await fixture('hsa-author-pinned.json.gz'),feed=JSON.parse(saved.response.body),db=await database();try{
+    const t=await tracker(db,'https://bsky.app/profile/'+HSA),before=(await db.query('select * from scout.trackers order by id')).rows;
+    const options={trackerId:t.id,validate:true,documents:true,read:async url=>{
+      const params=new URL(url).searchParams;assert.equal(params.get('limit'),'25');assert.equal(params.get('includePins'),'true');
+      if(params.has('cursor')){assert.equal(params.get('cursor'),feed.cursor);return response(url,{feed:[]});}
+      assert.equal(url,saved.response.url);return response(url,saved.response.body);
+    }};
+    for(let iteration=0;iteration<2;iteration++){
+      const run=await collectHSA(db,options),report=(await detail(db,run.run_id)).report;
+      assert.equal(run.requests,2);assert.equal(run.failed,0);assert.equal(run.prepared,iteration?0:26);assert.equal(run.reused,iteration?26:0);
+      const captures=(await db.query('select * from scout.evidence where tracker_id=$1',[t.id])).rows;
+      assert.equal(captures.length,26);
+      for(const [position,item] of feed.feed.entries()){
+        const raw=JSON.stringify(item),capture=captures.find(c=>c.content===raw);assert.ok(capture);
+        assert.equal(capture.parsed.document.identity,item.post.uri);assert.equal(capture.parsed.document.prepared_versions[AUTHOR_PREPARATION_VERSION].text,raw);
+        const occurrences=Object.values(report.artifacts).find(a=>a.kind==='provenance'&&a.source_id===capture.id).data.provenance;
+        assert.deepEqual(occurrences,[{page:0,position,feed_url:saved.response.url}]);
+      }
+      const responses=Object.values(report.artifacts).filter(a=>a.kind==='fetch_response');assert.equal(responses.length,2);
+      assert.equal(responses[0].data.body,saved.response.body);assert.ok(!JSON.stringify(report).includes('never-store-response-headers'));
+      const plan=Object.values(report.artifacts).find(a=>a.kind==='coverage'&&a.data.documents).data;
+      assert.equal(plan.documents.length,26);assert.equal(plan.complete,true);assert.equal(plan.pagination.state,'exhausted');
+      assert.ok(!Object.values(report.artifacts).some(a=>a.kind==='model_request'));assert.equal((await stored(db)).length,0);
+    }
+    assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,before);
   }finally{await db.close();}
 });
 

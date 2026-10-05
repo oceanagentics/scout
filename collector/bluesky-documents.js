@@ -70,7 +70,12 @@ export async function retrieveAuthorDocuments({tracker,read,sourceURL,budget,lim
       pages.push({url,response});
       if(sourceURL(response.url)!==url||!/json/i.test(response.headers?.['content-type']??'')) throw new Error('Unexpected author-feed destination/format');
       const feed=JSON.parse(response.body);
-      if(!Array.isArray(feed.feed)||feed.feed.length>limits.postsPerPage||feed.cursor!=null&&(typeof feed.cursor!=='string'||!feed.cursor)) throw new Error('Invalid author-feed page/pagination');
+      if(!Array.isArray(feed.feed)||feed.cursor!=null&&(typeof feed.cursor!=='string'||!feed.cursor)) throw new Error('Invalid author-feed page/pagination');
+      // getAuthorFeed prepends one author-owned pin on the first page, outside
+      // the ordinary post/repost limit. Every item still passes source validation.
+      const pins=feed.feed.filter(item=>item?.reason?.$type==='app.bsky.feed.defs#reasonPin');
+      if(feed.feed.length-pins.length>limits.postsPerPage||pins.length>1||pins.length&&(cursor||feed.feed[0]!==pins[0]))
+        throw new Error('Invalid author-feed ordinary/pinned bounds');
       for(const [position,item] of feed.feed.entries()) {
         try {
           const document=prepareAuthorItem(item,{actor,sourceURL});

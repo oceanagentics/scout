@@ -1,15 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { gunzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { prepareAuthorItem, retrieveAuthorDocuments } from '../collector/bluesky-documents.js';
 
 const hsa='highseasalliance.bsky.social';
-const fixture=async name=>JSON.parse(await readFile(new URL('./fixtures/'+name,import.meta.url),'utf8'));
+const fixture=async name=>{const raw=await readFile(new URL('./fixtures/'+name,import.meta.url));return JSON.parse(name.endsWith('.gz')?gunzipSync(raw):raw);};
 const sourceURL=value=>{const url=new URL(value);if(url.protocol!=='https:'||url.username||url.password)throw new Error('Unsupported URL');return url.href;};
 const tracker={collector:'bluesky_feed',url:'https://bsky.app/profile/'+hsa};
 const prepare=(item,actor=hsa)=>prepareAuthorItem(item,{actor,sourceURL});
 const retrieve=(read,limits={feedPages:2,postsPerPage:20})=>retrieveAuthorDocuments({tracker,read,sourceURL,budget:{requests:0,deadline:Date.now()+10000},limits});
-const response=(url,feed)=>({url,headers:{'content-type':'application/json'},body:JSON.stringify(feed)});
+const response=(url,feed)=>({url,headers:{'content-type':'application/json'},body:typeof feed==='string'?feed:JSON.stringify(feed)});
 
 test('saved HSA and three expansion author fixtures retain full structural payload without finding fields',async()=>{
   const inputs=[[hsa,await fixture('hsa-webinar.json')],...Object.entries(await fixture('expansion-feeds.json')).flatMap(([actor,data])=>data.feed.map(item=>[actor,item]))];
@@ -75,6 +77,43 @@ test('structural pagination keeps exact responses and all posts regardless of ti
   assert.equal(result.pagination.state,'bounded');assert.equal(result.pagination.cursor,'more');
   assert.equal(JSON.parse(result.pages[0].response.body).feed[0].post.record.text,item.post.record.text);
   assert.ok(result.coverage.some(c=>c.relationship==='pagination'));
+});
+
+test('actual HSA limit=25 response retains all 25 ordinary entries and the additional first-page pin',async()=>{
+  const saved=await fixture('hsa-author-pinned.json.gz'),feed=JSON.parse(saved.response.body);
+  assert.equal(createHash('sha256').update(saved.response.body).digest('hex'),saved.sha256);
+  assert.equal(feed.feed.length,26);assert.equal(feed.feed[0].reason.$type,'app.bsky.feed.defs#reasonPin');
+  const result=await retrieve(async url=>{
+    assert.equal(new URL(url).searchParams.get('limit'),'25');assert.equal(new URL(url).searchParams.get('includePins'),'true');
+    return response(url,saved.response.body);
+  },{feedPages:1,postsPerPage:25});
+  assert.equal(result.pages[0].response.body,saved.response.body);
+  assert.equal(result.documents.length,26);assert.equal(result.pagination.state,'bounded');assert.equal(result.pagination.cursor,feed.cursor);
+  assert.equal(result.complete,false);assert.ok(!result.coverage.some(c=>c.state==='failed'));
+  for(const [position,item] of feed.feed.entries()){
+    const doc=result.documents[position];assert.equal(doc.raw,JSON.stringify(item));assert.equal(doc.prepared.text,doc.raw);
+    assert.equal(doc.id,item.post.uri);assert.deepEqual(doc.provenance,{page:0,position,feed_url:result.pages[0].url});
+  }
+});
+
+test('ordinary overflow, extra/misplaced/fake pins and malformed pinned posts cannot bypass author bounds',async()=>{
+  const saved=await fixture('hsa-author-pinned.json.gz'),{feed}=JSON.parse(saved.response.body),[pin,...ordinary]=feed;
+  const overflow=[...feed,ordinary[0]],extraPin=[pin,pin,...ordinary],misplaced=[...ordinary,pin];
+  const fakePins=[undefined,'app.bsky.feed.defs#reasonPin',[],{$type:'reasonPin'},{$type:'app.bsky.feed.defs#reasonRepost'}];
+  for(const items of [overflow,extraPin,misplaced,...fakePins.map(reason=>[{...pin,reason},...ordinary])]){
+    const result=await retrieve(async url=>response(url,{feed:items}),{feedPages:1,postsPerPage:25});
+    assert.equal(result.documents.length,0);assert.equal(result.pagination.state,'failed');assert.equal(result.complete,false);
+    assert.ok(result.coverage.some(c=>c.state==='failed'&&/bounds/.test(c.reason)));
+    assert.deepEqual(JSON.parse(result.pages[0].response.body).feed,JSON.parse(JSON.stringify(items)));
+  }
+  for(const post of [undefined,{...pin.post,uri:'invalid'},{...pin.post,author:{...pin.post.author,handle:'another.bsky.social'}}]){
+    const result=await retrieve(async url=>response(url,{feed:[{...pin,post},...ordinary]}),{feedPages:1,postsPerPage:25});
+    assert.equal(result.documents.length,25);assert.equal(result.complete,false);
+    assert.ok(result.coverage.some(c=>c.state==='failed'&&c.position===0));
+    assert.deepEqual(result.documents.map(d=>d.raw),ordinary.map(item=>JSON.stringify(item)));
+  }
+  const laterPin=await retrieve(async url=>response(url,new URL(url).searchParams.has('cursor')?{feed:[pin]}:{feed,cursor:'next'}),{feedPages:2,postsPerPage:25});
+  assert.equal(laterPin.documents.length,26);assert.equal(laterPin.pages.length,2);assert.equal(laterPin.pagination.state,'failed');
 });
 
 test('empty feed can exhaust; malformed item, repeated cursor, oversized page, destination and transport failures cannot succeed',async()=>{
