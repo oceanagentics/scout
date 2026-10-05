@@ -650,6 +650,52 @@ test('HSA processing saves a stated event or no event without following links; r
   }
 });
 
+test('retained resolver inputs compile field-specific audit claims without changing finding evidence or output contract',async context=>{
+  for(const actual of (await fixture('iucn-website.json.gz')).field_audit){const db=await database();try{
+    const original=JSON.stringify(actual),{input,source:s}=actual,tracker=(await db.query('select id from scout.trackers limit 1')).rows[0];
+    validateFinding(input.finding,packDocument(s,s.prepared,0,DOCUMENT_VERSION));
+    const version=input.version,state={state:'pending',revision:0,cursor:s.prepared.text.length,findings:[{key:'retained',finding:input.finding}]};
+    const source=(await db.query('insert into scout.evidence(id,tracker_id,url,content_hash,content,parsed) values($1,$2,$3,$4,$5,$6) returning *',
+      [s.id,tracker.id,s.url,s.content_hash,s.prepared.text,JSON.stringify({document:{identity:'retained-field-audit:'+actual.name,processing_versions:{[version]:state}}})])).rows[0];
+    const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[tracker.id])).rows[0].id,trace=await startReport(db,run);
+    const prepared=await supportDocuments(db,{source,prepared:s.prepared,trace,context:version.split('/').at(-1)});
+    const transport=runModel(db,p=>({...resolve(p),outcome:'uncertain',record_id:null,reason:'Injected identity uncertainty; this check proves request construction only.'}));
+    const result=await processDocument(db,{source,prepared,trace,deadline:Date.now()+100000,model:transport.makeModel(run,Date.now()+100000,trace)});
+    assert.equal(result.state,'uncertain');assert.equal(transport.requests.length,1);assert.equal(result.created,0);
+    const request=JSON.parse(transport.requests[0]),sent=JSON.parse(request.contents[0].parts[0].text)[0],before=JSON.parse(actual.baseline_request);
+    assert.deepEqual(sent.finding,input.finding);assert.deepEqual(sent.field_audit.event,{anchor:input.finding.anchor,title:input.finding.candidate.title});
+    const fields=[...CONTENT_FIELDS,'priority'].filter(k=>(k==='priority'?input.finding.priority:input.finding.candidate[k])!==null);
+    assert.deepEqual(Object.keys(sent.field_audit.fields),fields);
+    for(const key of fields){
+      assert.deepEqual(sent.field_audit.fields[key],{claim:key==='priority'?{value:input.finding.priority,reason:input.finding.reason}:input.finding.candidate[key],
+        quotes:input.finding.evidence[key].map(i=>input.finding.citations[i].quote)});
+    }
+    assert.equal(Object.hasOwn(sent.field_audit,'candidates'),false);
+    const schema=request.generationConfig.responseJsonSchema,unbounded=structuredClone(schema);
+    for(const [key,proof]of Object.entries(unbounded.properties.evidence.properties)){
+      assert.deepEqual(proof.items,{type:'integer',minimum:0,maximum:input.finding.citations.length-1});delete proof.items.maximum;
+      for(const i of [-1,input.finding.citations.length])assert.throws(()=>validateResolution(
+        {...resolve(input),outcome:'uncertain',record_id:null,evidence:{[key]:[i]}},input.finding,input.candidates,prepared),/Resolution evidence/);
+    }
+    assert.deepEqual(unbounded,before.generationConfig.responseJsonSchema);
+    assert.match(request.systemInstruction.parts[0].text,/using ONLY its own quotes/);
+    const compiled=requestBody(request.systemInstruction.parts[0].text,[{...input,field_audit:sent.field_audit}],schema);
+    const after=JSON.parse(compiled);after.generationConfig.responseJsonSchema=unbounded;
+    assert.deepEqual({...after,contents:before.contents,systemInstruction:before.systemInstruction},before);
+    if(actual.name==='GFW conversation'){
+      assert.equal(sent.field_audit.fields.description.claim,sent.field_audit.fields.description.quotes[0]);
+      assert.match(sent.field_audit.fields.priority.quotes[0],/AI can reveal hidden activity at sea, support enforcement/);
+    }else{
+      assert.equal(sent.field_audit.fields.description.quotes.length,1);assert.equal(sent.field_audit.fields.priority.quotes.length,1);
+      if(actual.name==='Unguja')assert.match(sent.field_audit.fields.status.quotes[0],/have launched/);
+    }
+    assert.equal(JSON.stringify(actual),original);
+    const report=(await db.query('select report from scout.collection_runs where id=$1',[run])).rows[0].report;
+    assert.deepEqual(Object.values(report.artifacts).find(a=>a.kind==='retrieval').data.finding,input.finding);
+    context.diagnostic(JSON.stringify({case:actual.name,before_bytes:Buffer.byteLength(actual.baseline_request),after_bytes:Buffer.byteLength(compiled),semantic_validation:false}));
+  }finally{await db.close();}}
+});
+
 test('exact HSA failures report every missing proof and date error; a new contract retries once without erasing history',async context=>{
   const saved=(await fixture('hsa-social-preparation.json.gz')).announcement_contract;
   const outputs=saved.responses.map(raw=>JSON.parse(JSON.parse(raw).candidates[0].content.parts.find(p=>p.text).text));
