@@ -139,6 +139,14 @@ test('saved UNOC announcement retains separate session labels without borrowing 
   assert.equal(validateResolution(review,findings[1],[existing],prepared).outcome,'new');
   assert.throws(()=>validateResolution(review,findings[0],[existing],prepared),/distinct cited label/);
   assert.throws(()=>validateResolution({...review,facts:{...review.facts,title:'unsupported'}},findings[1],[],prepared),/Unsupported\/conflicting/);
+  const actual=(await fixture('hsa-social-preparation.json.gz')).announcement_contract.distinction_failure;
+  const {finding,candidates}=actual.input;
+  assert.ok(finding.anchor.endsWith('.'));assert.ok(!finding.citations[0].quote.endsWith('.'));
+  assert.equal(validateResolution(actual.response,finding,candidates,prepared).outcome,'new');
+  for(const label of [finding.anchor,finding.anchor.slice(0,-1)]){
+    const duplicate={...candidates[0],title:label,anchors:[label]};
+    assert.throws(()=>validateResolution(actual.response,finding,[duplicate],prepared),/distinct cited label/);
+  }
 });
 
 test('retained whole newsletter accepts six injected events and repeats without another call',async context=>{
