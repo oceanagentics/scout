@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,UN_SIDE_EVENTS,CBD_REGISTRY,SYMPOSIUM,BLUE_MARINE,GOF,OCEANCARE,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,UN_SIDE_EVENTS,CBD_REGISTRY,SYMPOSIUM,BLUE_MARINE,GOF,OCEANCARE,RISE_UP,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {collectDocuments,prepareDocument,supportDocuments} from '../collector/octo-documents.js';
@@ -524,6 +524,66 @@ test('OceanCare whole English story resumes native pending resolution through a 
     assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0],prior);
     assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
     context.diagnostic(JSON.stringify({whole_story_characters:12727,native_identity:'oceancare:post:222223:en',injected_calls:2,simulated_records:1,repeat_calls:0,requests:[first.requests,resumed.requests,repeated.requests]}));
+  }finally{await db.close();}
+});
+
+test('RISE UP whole newsletter resumes native pending resolution through listing outages and rotates to a zero-call repeat',async context=>{
+  const saved=await fixture('riseup-website.json.gz'),db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[RISE_UP])).rows[0],reads=[],inputs=[];
+    const alias='https://eepurl.com/g-Klg8fh-2',id='campaign:740487e7a7306085143176166:108f68d54d';
+    // A carried observed issue takes priority; all configured/archive/issue response bodies stay whole.
+    await db.query("insert into scout.collection_runs(tracker_id,started_at,finished_at,outcome,stats) values($1,now()-interval '1 hour',now()-interval '1 hour','partial',$2::jsonb)",[tracker.id,JSON.stringify({document_source:{pending:[{id,url:alias,state:'model-pending'}]}})]);
+    const title='BBNJ Webinar: Designing the BBNJ Clearing-House Mechanism';
+    const occurrence='On 15 October at 15:00 Paris time, the High Seas Alliance and partners will host the first in a series of virtual technical workshops bringing together experts, future users and BBNJ negotiators.';
+    const description='The session will focus on the basic functions of the BBNJ Clearing-House Mechanism and help inform the development of its official prototype.';
+    const transport=runModel(db,async input=>{
+      inputs.push(input);if(input.stage==='resolve')return resolve(input); // Injected output proves continuity, not source completeness or model quality.
+      const source=(await db.query('select * from scout.evidence where id=$1',[input.source_id])).rows[0],prepared=source.parsed.document.prepared_versions['riseup-documents-v1'];
+      const response=[saved.home,saved.july,saved.september].find(r=>sourceURL(r.url)===source.url);assert.ok(response,'Archive must remain discovery only');assert.equal(source.content,response.body);
+      assert.deepEqual(input.range,[0,prepared.text.length]);assert.deepEqual(input.omitted_ranges,[]);assert.equal(input.segments.map(s=>s.text).join(''),prepared.text);
+      if(response!==saved.september)return answer([]);
+      assert.equal(source.parsed.document.identity,'riseup:'+id);assert.equal(prepared.text.length,23346);
+      for(const quote of [title,occurrence,description,'Science & Policy Focus','Member Spotlight','Take Action','Fiscal sponsorship for RISE UP is provided by The Ocean Foundation'])assert.ok(prepared.text.includes(quote),quote);
+      assert.ok(prepared.links.some(l=>l.target.includes('zoom.us/meeting/register/')));
+      const finding=base(title,[{doc:'P',quote:title},{doc:'P',quote:occurrence},{doc:'P',quote:description}]);finding.candidate.description=description;
+      finding.priority='high';finding.reason='Technical workshop to inform development of the BBNJ Clearing-House Mechanism prototype.';finding.evidence={kind:[1],title:[0],description:[2],priority:[2]};return answer([finding]);
+    },true);
+    let resume=false,listingsAvailable=true,dispatches=0;
+    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:(...args)=>{const model=transport.makeModel(...args);return(instruction,input,schema)=>{
+      dispatches++;if(!resume&&input[0].stage==='resolve')throw new Error('Model quota reached');return model(instruction,input,schema);
+    };},read:async url=>{
+      reads.push(url);if(url===RISE_UP)return {...saved.home,status:listingsAvailable?200:503};
+      if(url===sourceURL(saved.archive.url))return {...saved.archive,status:listingsAvailable?200:503};
+      if([alias,sourceURL(saved.september.url)].includes(url))return saved.september;
+      if(['https://eepurl.com/7vsYN_Y4aE',sourceURL(saved.july.url)].includes(url))return saved.july;
+      assert.ok(/https:\/\/(eepurl\.com|mailchi\.mp|us11\.campaign-archive\.com)\//.test(url),'Incidental support must remain unfetched: '+url);
+      throw new Error('Full observed issue body absent from retained fixture');
+    }};
+    await assert.rejects(collectHSA(db,{...options,sourceId:'00000000-0000-4000-8000-000000000000'}),{status:400});assert.equal(reads.length,0);
+    const first=await collectHSA(db,options);assert.equal(first.documents,3);assert.equal(first.created,0);assert.equal(transport.requests.length,3,JSON.stringify({warnings:first.warnings,stages:inputs.map(i=>i.stage)}));
+    const pending=(await db.query('select parsed from scout.evidence where tracker_id=$1 and record_id is null and url=$2',[tracker.id,sourceURL(saved.september.url)])).rows[0];
+    assert.equal(pending.parsed.document.id,id);assert.equal(Object.values(pending.parsed.document.processing_versions)[0].findings.length,1);
+    resume=true;listingsAvailable=false;const resumed=await collectHSA(db,options);assert.equal(resumed.created,1,resumed.warnings.join(';'));assert.equal(transport.requests.length,4);
+    assert.deepEqual(inputs.map(i=>i.stage),['extract','extract','extract','resolve']);
+    const prior=(await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0];
+    assert.equal(prior.report.path,'riseup-records');assert.ok(prior.stats.document_source.known.some(d=>d.id===id&&d.url===sourceURL(saved.september.url)));
+    assert.ok(prior.stats.document_source.pending.some(d=>d.last_failure?.state==='failed'));assert.ok(prior.stats.document_source.progress.after_url);
+    const records=(await db.query('select * from scout.records')).rows;assert.equal(records.length,1);assert.equal(records[0].title,title);assert.equal(records[0].description,description);
+    for(const field of CONTENT_FIELDS.filter(k=>!['kind','title','description'].includes(k)))assert.equal(records[0][field],null);
+    const sources=(await db.query("select id,url,content,parsed#>'{document,prepared_versions}' prepared,parsed#>'{document,processing_versions}' processing from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows;
+    assert.equal(sources.length,3);assert.ok(!sources.some(s=>s.url===sourceURL(saved.archive.url)));assert.equal(sources.find(s=>s.url===RISE_UP).prepared['riseup-documents-v1'].text.length,20430);
+    listingsAvailable=true;const beforeRepeat=dispatches,repeats=[];let newsletterRepeated=false;
+    for(let cycle=0;cycle<5&&!newsletterRepeated;cycle++){
+      const readStart=reads.length,repeated=await collectHSA(db,options);repeats.push(repeated.requests);
+      assert.equal(repeated.processed,repeated.documents);assert.equal(dispatches,beforeRepeat);assert.equal(transport.requests.length,4);
+      newsletterRepeated=reads.slice(readStart).some(url=>[alias,sourceURL(saved.september.url)].includes(url));
+    }
+    assert.ok(newsletterRepeated,'Bounded rotation must revisit the completed native newsletter');
+    assert.deepEqual((await db.query('select * from scout.records')).rows,records);
+    assert.deepEqual((await db.query("select id,url,content,parsed#>'{document,prepared_versions}' prepared,parsed#>'{document,processing_versions}' processing from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows,sources);
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0],prior);
+    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+    context.diagnostic(JSON.stringify({whole_homepage_characters:20430,whole_newsletter_characters:23346,native_identity:'riseup:'+id,injected_calls:4,simulated_records:1,repeat_calls:0,requests:[first.requests,resumed.requests,...repeats]}));
   }finally{await db.close();}
 });
 
