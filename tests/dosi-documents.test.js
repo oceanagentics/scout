@@ -39,10 +39,14 @@ test('whole real newsletter retains all sections/headings, later content and sup
   for(const key of ['kind','organization','date','findings','candidate'])assert.equal(Object.hasOwn(doc,key),false);
 });
 
-test('real configured page/RSS/article/newsletter retrieval retains raw responses, source relationships and unsupported coverage',async()=>{
-  const result=await retrieve(fixtureRead,{limits:{documents:20,requests:30}});
+test('real RSS roundup retrieves its whole newsletter before unrelated articles; home links stay metadata',async()=>{
+  const legacy={url:'https://www.dosi-project.org/management/',via:[{relationship:'content-link',parent_url:DOSI_WEB}]};
+  const requested=[],result=await retrieve(async url=>{requested.push(url);return fixtureRead(url);},
+    {pending:[{...legacy,state:'deferred'}],known:[{url:legacy.url},{url:fixture.guide.url}]});
+  assert.deepEqual(requested.slice(0,4),['home','feed','roundup','newsletter'].map(k=>fixture[k].url));
+  assert.ok(!requested.includes(fixture.guide.url));assert.ok(!requested.includes('https://www.dosi-project.org/management/'));
   assert.equal(result.complete,false);
-  for(const key of ['home','guide','roundup','newsletter']){
+  for(const key of ['home','roundup','newsletter']){
     const doc=result.documents.find(d=>d.url===fixture[key].url);assert.ok(doc,key);assert.equal(doc.raw,fixture[key].body);
     assert.ok(result.responses.some(r=>r.response.body===fixture[key].body));
   }
@@ -50,7 +54,8 @@ test('real configured page/RSS/article/newsletter retrieval retains raw response
   const rss=round.via.find(v=>v.relationship==='rss-item');assert.ok(rss.raw.includes('<item>'));assert.equal(rss.guid,'https://www.dosi-project.org/?p=21004');
   const issue=result.documents.find(d=>d.url===fixture.newsletter.url);
   assert.ok(issue.via.some(v=>v.relationship==='newsletter-link'&&v.parent_url===fixture.roundup.url&&v.link.tag==='a'));
-  assert.ok(result.coverage.some(c=>c.state==='unsupported'&&c.target?.includes('.pdf')));
+  assert.ok(result.coverage.some(c=>c.state==='unfetched'&&c.target==='https://www.dosi-project.org/management/'&&c.label==='Harriet Harden-Davies'));
+  for(const url of [legacy.url,fixture.guide.url])assert.ok(result.pending.some(c=>c.url===url&&c.state==='deferred'&&c.reason.includes('provenance unavailable')));
   assert.ok(result.pending.some(i=>i.state==='failed')); // Saved fixture has no older article responses.
 });
 
@@ -79,7 +84,7 @@ test('RSS position and metadata stay provenance; changed known content is re-fet
 
 test('bounded progress advances new/deferred/failed/known work and follows whole newsletter on a later run',async()=>{
   const urls=['https://www.dosi-project.org/fails/','https://www.dosi-project.org/a/','https://www.dosi-project.org/b/'];
-  const issue='https://mailchi.mp/soton.ac.uk/dosi-deep-sea-roundup-new';let known=[],pending=[];
+  const issue='https://mailchi.mp/soton.ac.uk/dosi-deep-sea-roundup-new';let known=[],pending=[],progress={};
   const observed=new Set(),attempted=[];
   const read=async url=>{
     attempted.push(url);
@@ -89,20 +94,25 @@ test('bounded progress advances new/deferred/failed/known work and follows whole
     if(url===issue)return html(url,'<table id="bodyTable"><tr><td><h2>ALL SECTIONS</h2><p>Later complete bilingual contexte.</p></td></tr></table>');
     return article(url,'Known article B.');
   };
-  for(let run=0;run<5;run++){
-    const result=await retrieve(read,{known,pending,limits:{documents:2,requests:4}});
+  for(let run=0;run<8;run++){
+    const result=await retrieve(read,{known,pending,progress,limits:{documents:2,requests:4}});
+    if(run===1){assert.deepEqual(result.documents.map(d=>d.url),[DOSI_WEB,issue]);assert.equal(result.progress.after_url,urls[1]);}
     for(const doc of result.documents){observed.add(doc.url);if(!known.some(k=>k.url===doc.url))known.push(doc);}
-    pending=result.pending;
+    pending=result.pending;progress=result.progress;
     assert.ok(result.requests<=4);assert.ok(result.documents.length<=2);
   }
   for(const url of [...urls.slice(1),issue])assert.ok(observed.has(url),url);
+  for(const url of [...urls.slice(1),issue])assert.ok(attempted.filter(u=>u===url).length>=2,'Known source rotation: '+url);
   assert.ok(attempted.filter(u=>u===urls[0]).length>=1);
   assert.ok(pending.some(i=>i.url===urls[0]));
 });
 
-test('known newsletter is rechecked even when configured page/RSS is inaccessible or no longer lists it',async()=>{
-  const result=await retrieve(async url=>url===fixture.newsletter.url?fixture.newsletter:({...fixture.home,url,status:403}),{known:[{url:fixture.newsletter.url}]});
-  assert.equal(result.documents.length,1);assert.equal(result.documents[0].url,fixture.newsletter.url);assert.ok(result.documents[0].known);
+test('known article/newsletter provenance survives identity-only storage and inaccessible listings',async()=>{
+  const first=await retrieve(fixtureRead);
+  const result=await retrieve(async url=>url===DOSI_WEB?({...fixture.home,status:403}):fixtureRead(url),
+    {known:first.documents.map(({id,url})=>({id,url})),progress:first.progress});
+  assert.deepEqual(result.documents.map(d=>d.url),[fixture.roundup.url,fixture.newsletter.url]);
+  assert.ok(result.documents.every(d=>d.known));
   assert.ok(result.coverage.some(c=>c.url===DOSI_WEB&&c.state==='failed'));
 });
 
@@ -112,22 +122,23 @@ test('failed, malformed, ambiguous and unsupported responses cannot become succe
     {...fixture.guide,url:'https://example.org/wrong'},html(fixture.guide.url,'<link rel="canonical" href="https://www.dosi-project.org/wrong/"><div class="entry-content">A</div>')])
     assert.throws(()=>prepareDosiDocument(response,{sourceURL}));
   const url='https://www.dosi-project.org/fails/';
-  const failure=await retrieve(async target=>target===DOSI_WEB?home([url]):target.endsWith('/feed/')?{...feed([]),body:'<rss>'}:({...article(target,'No'),status:403}));
+  const failure=await retrieve(async target=>target===DOSI_WEB?home([url]):target.endsWith('/feed/')?{...feed([]),body:'<rss>'}:({...article(target,'No'),status:403}),
+    {pending:[{url,via:[{relationship:'rss-item',feed_url:fixture.feed.url,guid:url}]}]});
   assert.ok(failure.coverage.some(c=>c.relationship==='feed'&&c.state==='failed'));
   assert.ok(failure.pending.some(c=>c.url===url&&c.state==='failed'));
   const unsupported=await retrieve(async target=>target===DOSI_WEB?home(['https://www.dosi-project.org/doc.pdf','https://example.org/article']):feed([]));
-  assert.equal(unsupported.documents.length,1);assert.ok(unsupported.coverage.filter(c=>c.state==='unsupported').length>=2);
+  assert.equal(unsupported.documents.length,1);assert.ok(unsupported.coverage.filter(c=>c.state==='unfetched').length>=2);
 });
 
 test('request/time/quota bounds preserve deferred work and exact obtainable failed responses',async()=>{
-  const url='https://www.dosi-project.org/later/';
-  const bounded=await retrieve(async target=>target===DOSI_WEB?home([url]):feed([]),{limits:{documents:4,requests:1}});
+  const url='https://www.dosi-project.org/later/',entry={url,via:[{relationship:'rss-item',feed_url:fixture.feed.url,guid:url}]};
+  const bounded=await retrieve(async target=>target===DOSI_WEB?home([url]):feed([]),{pending:[entry],limits:{documents:4,requests:1}});
   assert.equal(bounded.requests,1);assert.ok(bounded.pending.some(i=>i.url===url&&i.state==='deferred'));
-  const timed=await retrieve(async()=>{throw new Error('must not fetch');},{budget:{requests:0,deadline:10},now:()=>10,pending:[{url}]});
+  const timed=await retrieve(async()=>{throw new Error('must not fetch');},{budget:{requests:0,deadline:10},now:()=>10,pending:[entry]});
   assert.equal(timed.requests,0);assert.equal(timed.pending[0].state,'deferred');
-  const spent=await retrieve(async()=>{throw new Error('must not fetch');},{budget:{requests:8,deadline:Date.now()+10000},pending:[{url}],progress:{after_url:url}});
+  const spent=await retrieve(async()=>{throw new Error('must not fetch');},{budget:{requests:8,deadline:Date.now()+10000},pending:[entry],progress:{after_url:url}});
   assert.equal(spent.requests,0);assert.equal(spent.progress.after_url,url);assert.equal(spent.pending[0].state,'deferred');
-  const quota=await retrieve(async()=>{throw Object.assign(new Error('Quota exhausted'),{quota:true});},{known:[{url}]});
+  const quota=await retrieve(async()=>{throw Object.assign(new Error('Quota exhausted'),{quota:true});},{known:[entry]});
   assert.equal(quota.requests,1);assert.equal(quota.pending[0].state,'deferred');
   const wrong=await retrieve(async()=>({...fixture.home,url:'https://example.org/wrong'}));
   assert.equal(wrong.documents.length,0);assert.equal(wrong.responses[0].response.body,fixture.home.body);

@@ -37,7 +37,7 @@ export async function retrieveDosiDocuments({tracker,read,sourceURL,budget,known
   if(!Number.isInteger(limits.documents)||limits.documents<1||!Number.isInteger(limits.requests)||limits.requests<1)
     throw new Error('Invalid DOSI retrieval bounds');
   const documents=[],responses=[],coverage=[],inventory=new Map(),queue=[],knownURLs=new Set();let requests=0,blocked;
-  progress={...progress};
+  progress={...progress,provenance:{...progress.provenance}};
   const route=value=>{
     const url=sourceURL(value),u=new URL(url);u.hash='';
     if(u.origin!==origin&&!newsletter(u))throw new Error('Outside DOSI article/newsletter retrieval routes');
@@ -51,7 +51,9 @@ export async function retrieveDosiDocuments({tracker,read,sourceURL,budget,known
       const url=route(value);if(url===DOSI_WEB)return;
       const existing=inventory.get(url);
       if(existing){if(!existing.via.some(v=>isDeepStrictEqual(v,via)))existing.via.push(via);return;}
-      const item={id:'page:'+url,url,via:[via],state:'pending'};inventory.set(url,item);queue.push(item);
+      const item={id:'page:'+url,url,via:progress.provenance[url]?[progress.provenance[url]]:[],state:'pending'};
+      if(!item.via.some(v=>isDeepStrictEqual(v,via)))item.via.push(via);
+      inventory.set(url,item);queue.push(item);
     }catch(error){coverage.push({target:value,via,state:'unsupported',reason:error.message});}
   };
   for(const item of known){try{knownURLs.add(route(item.url));}catch{}}
@@ -72,11 +74,8 @@ export async function retrieveDosiDocuments({tracker,read,sourceURL,budget,known
   let home;
   try{
     home=prepareDosiDocument(await fetch(DOSI_WEB),{sourceURL});documents.push({...home,via:[{relationship:'configured'}]});
-    for(const link of home.prepared.links)if(link.tag==='a'){
-      try{const target=route(link.target);if(new URL(target).origin===origin)enqueue(target,{relationship:'content-link',parent_url:DOSI_WEB,link});
-        else coverage.push({...link,state:'unfetched',reason:'Newsletter retrieval requires an article relationship'});}
-      catch(error){coverage.push({...link,state:'unsupported',reason:error.message});}
-    }
+    for(const link of home.prepared.links)if(link.tag==='a')
+      coverage.push({...link,state:'unfetched',reason:'Configured-page links retained as metadata; articles come from observed RSS identities'});
   }catch(error){coverage.push({url:DOSI_WEB,state:blocked?'deferred':'failed',reason:error.message});}
   if(home){
     const dom=parseDocument(home.raw),feeds=DomUtils.getElementsByTagName('link',dom.children).filter(n=>n.attribs.type==='application/rss+xml'&&n.attribs.href===origin+'/feed/');
@@ -97,28 +96,45 @@ export async function retrieveDosiDocuments({tracker,read,sourceURL,budget,known
   }
   // Pending work goes first, then newly discovered documents, then known
   // rechecks. Repeated bounded runs do not restart at the listing's first item.
-  for(const item of known)enqueue(item.url,{relationship:'known'});
-  const priority=item=>item.via.some(v=>v.relationship==='pending'&&v.previous_state!=='failed')?0:
+  for(const item of known){
+    enqueue(item.url,{relationship:'known'});
+    for(const via of item.via??[])if(!['pending','known'].includes(via.relationship))enqueue(item.url,via);
+  }
+  const priority=item=>item.via.some(v=>v.relationship==='pending'&&v.previous_state!=='failed')?(!progress.provenance[item.url]&&item.via.some(v=>v.relationship==='newsletter-link')?-1:0):
     item.via.some(v=>v.relationship==='pending')?2:knownURLs.has(item.url)?3:1;
   const ordered=queue.slice().sort((a,b)=>a.url<b.url?-1:a.url>b.url?1:0);
   const rotated=typeof progress.after_url==='string'?[...ordered.filter(i=>i.url>progress.after_url),...ordered.filter(i=>i.url<=progress.after_url)]:queue.slice();
   queue.sort((a,b)=>priority(a)-priority(b)||rotated.indexOf(a)-rotated.indexOf(b));
   for(let index=0;index<queue.length;index++){
     const item=queue[index];
+    if(!item.via.some(v=>['rss-item','newsletter-link'].includes(v.relationship))){
+      item.state='deferred';item.reason='RSS article or associated newsletter provenance unavailable; URL retained without fetching';continue;
+    }
     if(documents.length>=limits.documents||blocked){item.state='deferred';item.reason=blocked??'DOSI document bound reached';continue;}
     try{
-      const before=requests;let response;
-      try{response=await fetch(item.url);}finally{if(requests>before)progress.after_url=item.url;}
+      const before=requests,parent=item.via.find(v=>v.relationship==='newsletter-link')?.parent_url;let response;
+      // New/just-followed issues finish their parent; independent rechecks rotate normally.
+      try{response=await fetch(item.url);}finally{if(requests>before)
+        progress.after_url=parent&&(!progress.provenance[item.url]||documents.some(d=>d.url===parent))?parent:item.url;}
       const document=prepareDosiDocument(response,{sourceURL});
       item.state='retained';documents.push({...document,via:item.via,known:knownURLs.has(item.url)});
       if(new URL(item.url).origin===origin)for(const link of document.prepared.links)if(link.tag==='a'){
         let target;try{target=sourceURL(link.target);}catch(error){coverage.push({...link,parent_url:item.url,state:'unsupported',reason:error.message});continue;}
-        if(newsletter(new URL(target)))enqueue(target,{relationship:'newsletter-link',parent_url:item.url,link});
-        else coverage.push({...link,parent_url:item.url,state:'unfetched',reason:'Article support link delegated to shared support retrieval; no recursive crawl'});
+        if(newsletter(new URL(target))){
+          enqueue(target,{relationship:'newsletter-link',parent_url:item.url,link});
+          const at=queue.findIndex(next=>next.url===target);
+          if(at>index+1)queue.splice(index+1,0,...queue.splice(at,1));
+        }else coverage.push({...link,parent_url:item.url,state:'unfetched',reason:'Incidental article links retained as metadata'});
       }
     }catch(error){item.state=blocked?'deferred':'failed';item.reason=error.message;}
   }
   const items=[...inventory.values()];
-  coverage.push(...items,{relationship:'scope',state:'partial',reason:'Configured page, observed root RSS, one-hop content articles and explicit linked newsletters only; archives, other supports and media remain unfetched'});
+  // Shared known entries retain only identity/URL; keep one acquisition proof
+  // in the existing durable progress so valid unlisted sources can be rechecked.
+  for(const item of items.filter(i=>i.state==='retained')){
+    const via=item.via.find(v=>v.relationship==='newsletter-link')??item.via.find(v=>v.relationship==='rss-item');
+    if(via)progress.provenance[item.url]=via;
+  }
+  coverage.push(...items,{relationship:'scope',state:'partial',reason:'Configured page, observed RSS articles and their explicitly linked newsletters only; incidental links and media remain unfetched'});
   return {documents,responses,coverage,inventory:items,pending:items.filter(i=>i.state!=='retained').sort((a,b)=>Number(a.state==='failed')-Number(b.state==='failed')),progress,requests,limits,complete:false};
 }
