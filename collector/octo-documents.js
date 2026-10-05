@@ -6,7 +6,7 @@ import { processDocument } from './document-records.js';
 
 const digest = text => createHash('sha256').update(text).digest('hex');
 const FEED = 'https://octogroup.org/feed/';
-export const PREPARATION_VERSION = 'octo-documents-v5';
+export const PREPARATION_VERSION = 'octo-documents-v6';
 export const CHUNK_BYTES = 4000; // Source text only; the future model stage must bound its entire request.
 const framing = new Set(['head','script','style','nav','noscript','template']);
 const blocks = new Set(['p','h1','h2','h3','h4','h5','h6','li','blockquote','pre','table','figcaption']);
@@ -15,7 +15,11 @@ const blocks = new Set(['p','h1','h2','h3','h4','h5','h6','li','blockquote','pre
 // retained HTML and prepared text; chunks reference context rather than omit it.
 export function prepareDocument({title,html,url}) {
   const dom=parseDocument(html,{withStartIndices:true,withEndIndices:true});
-  const result={version:PREPARATION_VERSION,title:DomUtils.textContent(parseDocument(title)),url,text:'',blocks:[],links:[],omissions:[],chunks:[],chunk_bytes:CHUNK_BYTES};
+  const result={version:PREPARATION_VERSION,title:DomUtils.textContent(parseDocument(title)),url,text:'',blocks:[],links:[],insertions:[],omissions:[],chunks:[],chunk_bytes:CHUNK_BYTES};
+  // Temporary markers distinguish our link annotations from identical literal
+  // source prose. They disappear before storage; ranges resolve to HTML links.
+  let marker='\0';while(html.includes(marker)||DomUtils.textContent(dom).includes(marker))marker+=marker;
+  const annotations=new RegExp(marker+'(\\d+)'+marker,'g');
   const headings=[];
   function render(node) {
     if(framing.has(node.name)){result.omissions.push({start:node.startIndex,end:node.endIndex+1,reason:'Removed '+node.name+' framing'});return '';}
@@ -29,8 +33,8 @@ export function prepareDocument({title,html,url}) {
         const relationship=node.name==='a'&&(/\b(?:category|tag)\b/.test(node.attribs.rel??'')||(node.attribs.class??'').split(/\s+/).includes('elementor-post-info__terms-list-item'))?'taxonomy':
           node.name==='a'&&(/\bregistration\b/.test(node.attribs.rel??'')||/^(?:register|registration)\b/i.test(context))?'registration':
           node.name==='a'&&(/\bauthor\b/.test(node.attribs.rel??'')||/^(?:organizer|organiser|official event)\b/i.test(context))?'organizer':'support';
-        result.links.push({label,target,tag:node.name,relationship,context,start:node.startIndex,end:node.endIndex+1,state:'unfetched'});
-        value=label+' <'+target+'>';
+        result.links.push({label:label.replace(annotations,(_,index)=>' <'+result.links[index].target+'>'),target,tag:node.name,relationship,context,start:node.startIndex,end:node.endIndex+1,state:'unfetched'});
+        value=label+marker+(result.links.length-1)+marker;
       }
     }
     if(blocks.has(node.name)||['br','tr','caption','div','section','article','ul','ol','dl','dt','dd','figure'].includes(node.name))value+='\n';
@@ -40,12 +44,16 @@ export function prepareDocument({title,html,url}) {
   function walk(node) {
     if(framing.has(node.name)) {render(node);return;}
     if(blocks.has(node.name)||node.type==='text'&&node.data.trim()||['a','img','iframe'].includes(node.name)) {
-      const text=render(node).replace(/[ \r\f\v]+/g,' ').replace(/ *\n */g,'\n').trim();
+      const insertions=[];let delta=0;
+      const text=render(node).replace(/[ \r\f\v]+/g,' ').replace(/ *\n */g,'\n').trim().replace(annotations,(token,index,offset)=>{
+        const text=' <'+result.links[index].target+'>',start=offset+delta;
+        insertions.push({start,end:start+text.length,link:+index});delta+=text.length-token.length;return text;
+      });
       if(!text)return;
       const level=/^h[1-6]$/.test(node.name)?+node.name[1]:null;
       if(level)headings.splice(level-1);
       const id=result.blocks.length;
-      result.blocks.push({id,tag:node.name??'text',html_start:node.startIndex,html_end:node.endIndex+1,headings:headings.filter(x=>x!=null),text});
+      result.blocks.push({id,tag:node.name??'text',html_start:node.startIndex,html_end:node.endIndex+1,headings:headings.filter(x=>x!=null),text,insertions});
       if(node.name==='table')result.blocks.at(-1).table_context=DomUtils.findAll(n=>n.name==='caption'||n.name==='tr'&&DomUtils.getElementsByTagName('th',n.children).length,node.children)
         .map(n=>(n.name==='caption'?[n]:DomUtils.getElementsByTagName('th',n.children)).map(cell=>DomUtils.textContent(cell).replace(/\s+/g,' ').trim()).join('\t')).join('\n');
       if(level)headings[level-1]=id;
@@ -77,6 +85,7 @@ export function prepareDocument({title,html,url}) {
   for(const block of result.blocks){
     if(result.text)result.text+='\n\n';
     block.start=result.text.length;result.text+=block.text;block.end=result.text.length;delete block.text;
+    for(const i of block.insertions??[])result.insertions.push({...i,start:i.start+block.start,end:i.end+block.start});delete block.insertions;
   }
   for(let start=0;start<result.text.length;){
     let end=start,bytes=0;

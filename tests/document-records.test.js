@@ -8,7 +8,7 @@ import {gemini,MODEL_LIMITS,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {prepareDocument,supportDocuments,PREPARATION_VERSION} from '../collector/octo-documents.js';
 import {startReport} from '../collector/report.js';
-import {packDocument,validateFinding as validateCitedFinding,candidatesFor as findCandidates,DOCUMENT_VERSION,DOCUMENT_INSTRUCTION,DOCUMENT_SCHEMA} from '../collector/document-records.js';
+import {packDocument,validateFinding as validateCitedFinding,validateResolution,candidatesFor as findCandidates,DOCUMENT_VERSION,DOCUMENT_INSTRUCTION,DOCUMENT_SCHEMA,DOCUMENT_REPAIR_SCHEMA,DOCUMENT_REPAIR_INSTRUCTION} from '../collector/document-records.js';
 import {stepState} from '../src/runs.js';
 
 const fixture=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));
@@ -407,7 +407,8 @@ test('MPAtlas complete text and long table context reach extraction; lookup neve
     const post=long?{...article,content:{rendered:'<h1>Data workshops</h1><h2>First session</h2><table><caption>Schedule</caption><tr><th>Session</th><th>UTC date</th><th>Organizer</th><th>Context</th></tr>'+row.repeat(50)+'</table><p><a href="/register">Register</a></p>'}}:mp;
     const source=runner(db,stages(input=>{inputs.push(input);return long?[proposal()]:[];}),{post});
     try{
-      const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));
+      let run=await source.run();if(!run.processed){assert.ok(run.warnings.some(w=>/quota/.test(w)));run=await source.run();}
+      assert.equal(run.processed,1,run.warnings.join(';'));
       const prepared=(await progress(db)).prepared_versions[PREPARATION_VERSION];
       assert.equal(inputs.map(i=>prepared.text.slice(...i.range)).join(''),prepared.text);
       if(long){
@@ -642,4 +643,52 @@ test('retained complete=false refusal stays unresolved until a new valid unit re
     const state=Object.values((await progress(db)).processing_versions)[0];assert.equal(state.cursor,0);assert.equal(state.state,'failed');
     const zero=runner(db,()=>answer([]));assert.equal((await zero.run()).processed,1);assert.equal((await current(db)).length,0);
   }finally{await db.close();}
+});
+
+test('latest SPRFMO rejection keeps its full repair context and rejects wrong keys, altered quotes and unsupported facts',async context=>{
+  const live=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/gfw-live-repair.json.gz',import.meta.url))));
+  const old=JSON.parse(live.artifacts.a22.data.body),oldInput=JSON.parse(old.contents[0].parts[0].text)[0];
+  const rejected=live.artifacts.a24.data.response,errors=live.artifacts.a25.data.errors;
+  assert.equal(Buffer.byteLength(requestBody(old.systemInstruction.parts[0].text,[{...oldInput,repair:{rejected,errors}}],old.generationConfig.responseJsonSchema)),9229);
+  const originalRepair={...oldInput,repair:{rejected,errors}},compact=requestBody(DOCUMENT_REPAIR_INSTRUCTION,[originalRepair],DOCUMENT_REPAIR_SCHEMA);
+  assert.ok(Buffer.byteLength(compact)<=8000);assert.deepEqual(JSON.parse(JSON.parse(compact).contents[0].parts[0].text)[0],originalRepair);
+  context.diagnostic(JSON.stringify({original_repair_bytes:9229,compact_identical_input_bytes:Buffer.byteLength(compact)}));
+  const post=JSON.parse(live.artifacts.a2.data.body),prepared=prepareDocument({title:post.title.rendered,url:post.link,html:post.content.rendered});
+  const input=packDocument(live.sources[0],prepared,586,DOCUMENT_VERSION+'/'+prepared.version+'/'+'0'.repeat(64));
+  assert.throws(()=>validateCitedFinding(rejected.findings[0],oldInput),/anchor/);
+  assert.throws(()=>validateCitedFinding(rejected.findings[0],input),/Evidence/);
+  const wire=requestBody(DOCUMENT_INSTRUCTION,[{...input,repair:{rejected,errors}}],DOCUMENT_REPAIR_SCHEMA);
+  assert.ok(Buffer.byteLength(wire)<=8000);const decoded=JSON.parse(JSON.parse(wire).contents[0].parts[0].text)[0];
+  assert.deepEqual(decoded,{...input,repair:{rejected,errors}});
+  const corrected=structuredClone(rejected.findings[0]);corrected.evidence=Object.fromEntries(Object.entries(corrected.evidence).map(([k,v])=>[k.replace(/^candidate\./,''),v]));
+  assert.equal(validateCitedFinding(corrected,input),corrected);
+  const altered=structuredClone(corrected);altered.citations[0].quote=altered.citations[0].quote.replace(' <https://www.sprfmo.int/meetings/comm/14th-commission-meeting>','');
+  assert.throws(()=>validateCitedFinding(altered,input),/Every citation/);
+  const missing=structuredClone(corrected);delete missing.evidence.description;assert.throws(()=>validateCitedFinding(missing,input),/description/);
+  const review={outcome:'new',record_id:null,reason:'Meeting passage does not substantiate every claimed field.',evidence:{identity:[0],distinction:[0]},
+    facts:Object.fromEntries([...CONTENT_FIELDS.filter(k=>corrected.candidate[k]!==null),'priority'].map(k=>[k,['description','organization','priority'].includes(k)?'unsupported':'supported'])),conflict:'unresolved'};
+  assert.throws(()=>validateResolution(review,corrected,[],prepared),/Unsupported\/conflicting/);
+  assert.equal(validateResolution({...review,outcome:'uncertain'},corrected,[],prepared).outcome,'uncertain');
+  for(const key of ['description','organization']){corrected.candidate[key]=null;delete corrected.evidence[key];}
+  assert.equal(validateCitedFinding(corrected,input),corrected);
+  assert.equal(validateResolution({...review,conflict:'none',facts:Object.fromEntries([...CONTENT_FIELDS.filter(k=>corrected.candidate[k]!==null),'priority'].map(k=>[k,'supported']))},corrected,[],prepared).outcome,'new');
+});
+
+test('only renderer-inserted links may be omitted from anchors; literal URL prose and exact citations remain intact',()=>{
+  const url='https://example.org/meeting',html='<p>14th <a href="'+url+'">Meeting</a> of the Commission.</p>'+
+    '<p>Literal Meeting &lt;'+url+'&gt; of the Commission.</p><p><a href="/other"><img src="/image" alt="Meeting poster"></a></p>';
+  const prepared=prepareDocument({title:'Meeting notice',url,html}),input=packDocument({id:'source'},prepared,0,'test');
+  assert.ok(!JSON.stringify(prepared).includes('\\u0000'));
+  for(const insertion of prepared.insertions){
+    const link=prepared.links[insertion.link];assert.equal(prepared.text.slice(insertion.start,insertion.end),' <'+link.target+'>');
+    assert.match(html.slice(link.start,link.end),/^<(a|img)/);
+  }
+  assert.equal(prepared.insertions.length,3);
+  const p={...release,anchor:'14th Meeting of the Commission',candidate:{...release.candidate,title:'14th Meeting of the Commission',organization:null,description:null},
+    citations:[{doc:'P',quote:'14th Meeting <'+url+'> of the Commission.'}],evidence:Object.fromEntries(['kind','title','priority'].map(k=>[k,{refs:[0],rationale:'Retained meeting text.'}])),dates:{}};
+  assert.equal(validateCitedFinding(p,input),p);
+  const unmarked={...input,segments:input.segments.map(({inserted_links,...s})=>s)};assert.throws(()=>validateCitedFinding(p,unmarked),/anchor/);
+  const literal={...p,anchor:'Literal Meeting of the Commission',citations:[{doc:'P',quote:'Literal Meeting <'+url+'> of the Commission.'}]};
+  assert.throws(()=>validateCitedFinding(literal,input),/anchor/);
+  p.citations[0].quote='14th Meeting of the Commission.';assert.throws(()=>validateCitedFinding(p,input),/Every citation/);
 });

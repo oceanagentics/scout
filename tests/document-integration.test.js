@@ -8,7 +8,7 @@ import {DISCOVERY_QUERIES} from '../collector/bluesky-discovery-documents.js';
 import {gemini} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {PREPARATION_VERSION,supportDocuments} from '../collector/octo-documents.js';
-import {DOCUMENT_VERSION} from '../collector/document-records.js';
+import {DOCUMENT_VERSION,DOCUMENT_REPAIR_SCHEMA} from '../collector/document-records.js';
 import {startReport} from '../collector/report.js';
 import {PREPARATION_VERSION as AUTHOR_PREPARATION_VERSION} from '../collector/bluesky-documents.js';
 import {PREPARATION_VERSION as DOSI_PREPARATION_VERSION} from '../collector/dosi-documents.js';
@@ -532,7 +532,7 @@ test('GFW retains the live rejected output, resumes a bounded counted repair and
     const second=await collectHSA(db,{...options,makeModel:repair.makeModel});
     assert.equal(repair.requests.length,1);assert.ok(Buffer.byteLength(repair.requests[0])<=8000);assert.equal(second.processed,0);
     const after=(await capture()).parsed.document.processing_versions[key];
-    assert.equal(after.cursor,pending.pending.input.range[1]);assert.equal(after.pending,undefined);assert.equal(after.findings.length,1);
+    assert.equal(after.cursor,pending.pending.input.range[1],second.warnings.join(';'));assert.equal(after.pending,undefined);assert.equal(after.findings.length,1);
     assert.ok(after.cursor<(await capture()).parsed.document.prepared_versions[PREPARATION_VERSION].text.length);assert.equal((await stored(db)).length,0);
     const remaining=runModel(db,input=>{
       if(input.stage==='extract'){assert.ok(input.range[0]>=after.cursor);return answer([]);}
@@ -547,6 +547,59 @@ test('GFW retains the live rejected output, resumes a bounded counted repair and
     assert.equal(final.processing_versions[key].cursor,final.prepared_versions[PREPARATION_VERSION].text.length);
     const calls=remaining.requests.length;const repeat=await collectHSA(db,{...options,makeModel:remaining.makeModel});
     assert.equal(repeat.processed,1);assert.equal(remaining.requests.length,calls);assert.equal((await stored(db)).length,1);
+  }finally{await db.close();}
+});
+
+test('latest GFW rejection resumes a complete compact repair under quota, traverses retained supports and saves without duplicates',async context=>{
+  const live=await fixture('gfw-live-repair.json.gz'),db=await database();try{
+    const t=await tracker(db,GFW_WEB),card=live.artifacts.a1.data.body.match(/<article id="post-74977"[\s\S]*?<\/article>/)[0];
+    const home='<html><head><link rel="canonical" href="'+GFW_WEB+'"><link rel="https://api.w.org/" href="https://globalfishingwatch.org/wp-json/"></head><body>'+card+'</body></html>';
+    const options={trackerId:t.id,validate:true,documents:'process',read:async url=>{
+      if(url===GFW_WEB)return response(url,home,'text/html');
+      if(url===live.artifacts.a2.data.url)return response(url,live.artifacts.a2.data.body);
+      const support=live.sources.slice(1).find(s=>s.url===url);if(support){const saved=JSON.parse(support.content);return response(url,saved.body,'text/html');}
+      throw new Error('Unprovided support');
+    }};
+    await collectHSA(db,{...options,documents:true});
+    const capture=async()=>(await db.query("select * from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,id}'='74977'",[t.id])).rows[0];
+    const source=await capture();assert.equal(source.content,live.sources[0].content);
+    await db.query('update scout.evidence set parsed=$2::jsonb where id=$1',[source.id,JSON.stringify(live.sources[0].parsed)]);
+    const replay=runModel(db,input=>new Response(live.artifacts[input.range[0]?'a23':'a19'].data.body,{headers:{'content-type':'application/json'}}),{runLimit:2});
+    const failed=await collectHSA(db,{...options,makeModel:replay.makeModel});
+    assert.equal(replay.requests.length,2);assert.equal(failed.processed,0);assert.equal((await stored(db)).length,0);
+    const failure=await detail(db,failed.run_id);assert.equal(failure.stats.model_attempts.length,2);
+    for(const body of replay.requests)assert.ok(Object.values(failure.report.artifacts).some(a=>a.kind==='model_request'&&a.data.body===body));
+    assert.ok(Object.values(failure.report.artifacts).some(a=>a.kind==='model_response'&&a.data.body===live.artifacts.a23.data.body));
+    assert.ok(!failed.warnings.some(w=>/Repair request exceeds/.test(w)),failed.warnings.join(';'));
+    const key=Object.keys((await capture()).parsed.document.processing_versions).find(k=>k.startsWith(DOCUMENT_VERSION+'/'+PREPARATION_VERSION+'/'));
+    const pending=(await capture()).parsed.document.processing_versions[key];
+    assert.equal(pending.cursor,replay.inputs[0].range[1]);assert.equal(pending.pending.round,1);
+    assert.deepEqual(pending.pending.repair.rejected,live.artifacts.a24.data.response);assert.match(pending.pending.repair.errors.join(';'),/Evidence/);
+    const corrected=structuredClone(live.artifacts.a24.data.response);
+    corrected.findings[0].evidence=Object.fromEntries(Object.entries(corrected.findings[0].evidence).map(([k,v])=>[k.replace(/^candidate\./,''),v]));
+    for(const key of ['description','organization']){corrected.findings[0].candidate[key]=null;delete corrected.findings[0].evidence[key];}
+    const repair=runModel(db,()=>corrected,{runLimit:1}),resumed=await collectHSA(db,{...options,makeModel:repair.makeModel});
+    assert.equal(repair.requests.length,1);assert.equal(resumed.processed,0);assert.equal((await stored(db)).length,0);
+    assert.equal((await detail(db,resumed.run_id)).stats.model_attempts.length,1);assert.equal(JSON.parse(repair.requests[0]).generationConfig.maxOutputTokens,1024);
+    assert.deepEqual(repair.inputs[0],{...pending.pending.input,repair:pending.pending.repair});
+    assert.deepEqual(JSON.parse(repair.requests[0]).generationConfig.responseJsonSchema,DOCUMENT_REPAIR_SCHEMA);
+    const repaired=(await capture()).parsed.document.processing_versions[key];
+    assert.equal(repaired.cursor,pending.pending.input.range[1],resumed.warnings.join(';'));assert.equal(repaired.pending,undefined);assert.equal(repaired.findings.length,1);
+    const transport=runModel(db,input=>input.stage==='extract'?answer([]):resolve(input));
+    let complete;for(let i=0;i<20;i++){complete=await collectHSA(db,{...options,makeModel:transport.makeModel});if(complete.processed||complete.warnings.some(w=>/cannot fit/.test(w)))break;}
+    assert.equal(complete.processed,1,complete.warnings.join(';'));assert.equal((await stored(db)).length,1);
+    const record=(await stored(db))[0];assert.equal(record.title,corrected.findings[0].candidate.title);assert.equal(record.starts_at,null);assert.equal(record.organization,null);
+    const final=(await capture()).parsed.document;
+    for(const [v,p] of Object.entries(live.sources[0].parsed.document.processing_versions))assert.deepEqual(final.processing_versions[v],p);
+    for(const [v,p] of Object.entries(live.sources[0].parsed.document.prepared_versions))assert.deepEqual(final.prepared_versions[v],p);
+    const extract=[...replay.inputs,repair.inputs[0],...transport.inputs.filter(i=>i.stage==='extract')].filter(i=>!i.repair);
+    const ranges=[replay.inputs[0].range,pending.pending.input.range,...transport.inputs.filter(i=>i.stage==='extract').map(i=>i.range)];
+    for(let i=1;i<ranges.length;i++)assert.equal(ranges[i][0],ranges[i-1][1]);
+    assert.equal(final.processing_versions[key].cursor,ranges.at(-1)[1]);assert.ok(ranges.at(-1)[1]>59000);
+    assert.ok(extract.some(i=>i.segments.some(s=>s.doc==='S3')));
+    const count=transport.requests.length,repeat=await collectHSA(db,{...options,makeModel:transport.makeModel});assert.equal(repeat.processed,1);assert.equal(transport.requests.length,count);assert.equal((await stored(db))[0].id,record.id);
+    const report=(await detail(db,resumed.run_id)).report;assert.ok(Object.values(report.artifacts).some(a=>a.kind==='model_request'&&a.data.body===repair.requests[0]));
+    context.diagnostic(JSON.stringify({initial_bytes:replay.requests.map(r=>Buffer.byteLength(r)),repair_bytes:Buffer.byteLength(repair.requests[0]),remaining_attempts:transport.requests.length,cursor:final.processing_versions[key].cursor}));
   }finally{await db.close();}
 });
 
