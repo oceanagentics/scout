@@ -14,12 +14,12 @@ const sourceURL=value=>{
   if(url.protocol!=='https:'||url.username||url.password)throw new Error('Unsupported source URL');
   return url.href;
 };
-async function collect({home=fixture.home,overrides={},knownArticles=[],linkedEvidence=[],limits={},budget,progress}={}){
+async function collect({home=fixture.home,overrides={},knownArticles=[],pending=[],linkedEvidence=[],limits={},budget,progress}={}){
   const responses=new Map(Object.values(fixture).filter(v=>v?.url&&typeof v.body==='string').map(v=>[v.url,v]));
   responses.set(GFW_LISTING,home);
   for(const [url,response] of Object.entries(overrides))responses.set(url,response);
   const requests=[];
-  const result=await retrieveGFWDocuments({sourceURL,knownArticles,linkedEvidence,progress,
+  const result=await retrieveGFWDocuments({sourceURL,knownArticles,pending,linkedEvidence,progress,
     limits:{articles:4,requests:8,bytes:2_000_000,...limits},budget:budget??{requests:0,deadline:Date.now()+10_000},
     read:async url=>{requests.push(url);const response=responses.get(url);if(!response)throw new Error('Unsaved response');return response;}});
   return {...result,requests};
@@ -84,6 +84,27 @@ test('known article is rechecked with unchanged or unavailable listing and retai
     assert.equal(result.documents[0].identity,identity);assert.match(result.documents[0].prepared.text,/New technical appendix/);
     assert.ok(result.requests.includes(fixture['partnership-api'].url));
   }
+});
+
+test('retained pending work leads bounded acquisition while ordinary IDs keep their rotation',async()=>{
+  const live=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/gfw-live-repair.json.gz',import.meta.url))));
+  const source=live.sources[0],response={...live.artifacts.a2.data,headers:{'content-type':'application/json'}};
+  const id=String(JSON.parse(source.content).id),knownArticles=[{id,url:source.url}];
+  const input={home:{...live.artifacts.a1.data,headers:{'content-type':'text/html'}},knownArticles,
+    overrides:{[response.url]:response},progress:{after_id:'66227'},limits:{articles:4,requests:5}};
+  const ordinary=await collect(input);
+  const pending=[{id,url:source.url,state:'model-pending'},{url:article.link,state:'model-repair'},
+    {url:'https://globalfishingwatch.org/unobserved/',state:'model-repair'}];
+  const before=JSON.stringify({pending,knownArticles,live});
+  const run=await collect({...input,pending});
+  assert.deepEqual(run.requests,[GFW_LISTING,fixture['partnership-api'].url,response.url,...ordinary.requests.slice(1,3)]);
+  const doc=run.documents.find(d=>d.id===id);
+  assert.equal(doc.identity,'gfw:post:'+id);assert.equal(doc.raw,source.content);
+  assert.equal(JSON.stringify({pending,knownArticles,live}),before);
+  assert.equal(run.progress.after_id,ordinary.requests[2].split('/').at(-1));
+  for(const state of ['complete','exhausted'])assert.deepEqual((await collect({...input,pending:pending.map(p=>({...p,state}))})).requests,ordinary.requests);
+  const deferred=await collect({...input,pending,limits:{articles:4,requests:1}});
+  assert.deepEqual(deferred.requests,[GFW_LISTING]);assert.equal(deferred.progress.after_id,input.progress.after_id);
 });
 
 test('failed details and excerpt-only responses never become prepared full documents',async()=>{

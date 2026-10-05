@@ -7,7 +7,7 @@ const origin = 'https://globalfishingwatch.org';
 
 // Retrieval only. Persistence, change detection, support fetching and finding
 // processing belong to the shared document pipeline.
-export async function retrieveGFWDocuments({read,sourceURL,budget,limits,knownArticles=[],linkedEvidence=[],progress={}}) {
+export async function retrieveGFWDocuments({read,sourceURL,budget,limits,knownArticles=[],pending=[],linkedEvidence=[],progress={}}) {
   const result={source:GFW_LISTING,documents:[],inventory:[],fetches:[],coverage:[],limits:{...limits},progress:{...progress}};
   const wrappers=new Set(progress.wrapper_ids??[]);
   const publisherURL=value=>{
@@ -83,6 +83,8 @@ export async function retrieveGFWDocuments({read,sourceURL,budget,limits,knownAr
   const ordered=[...candidates.values()].sort((a,b)=>Number(b.id)-Number(a.id));
   const after=Number(progress.after_id);
   const queue=Number.isFinite(after)?[...ordered.filter(a=>Number(a.id)<after),...ordered.filter(a=>Number(a.id)>=after)]:ordered;
+  const priority=new Map(pending.filter(d=>['model-repair','model-pending'].includes(d.state)).map(d=>[d.url,d.state==='model-repair'?0:1]));
+  queue.sort((a,b)=>(priority.get(a.url)??2)-(priority.get(b.url)??2)); // Prioritize only existing known/listed candidates.
   for(const item of queue){
     if(item.state==='failed')continue;
     if(selected++>=limits.articles){result.coverage.push({identity:item.identity,url:item.url,state:'deferred',reason:'Article limit'});continue;}
