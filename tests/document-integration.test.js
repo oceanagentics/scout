@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,UN_SIDE_EVENTS,CBD_REGISTRY,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,UN_SIDE_EVENTS,CBD_REGISTRY,SYMPOSIUM,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {collectDocuments,prepareDocument,supportDocuments} from '../collector/octo-documents.js';
@@ -337,6 +337,54 @@ test('UN side-event whole sources resume native pending sessions through a listi
     assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0],prior);
     assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
     context.diagnostic(JSON.stringify({documents:4,requests_per_run:4,injected_model_calls:5,simulated_records:1,known_sessions_during_outage:3,repeat_model_calls:0}));
+  }finally{await db.close();}
+});
+
+test('Symposium whole pages resume native pending findings through a home outage and repeat without model calls',async context=>{
+  const saved=await fixture('symposium-website.json.gz'),db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[SYMPOSIUM])).rows[0],reads=[],inputs=[];
+    const pages=new Map(Object.values(saved).filter(p=>p?.body).map(p=>[p.url,p]));
+    const title='Friday Workshop: The BBNJ Agreement Expert Group';
+    const purpose='On Friday 13 March, the BBNJ Agreement Expert Group (funded by the European Union) will host a one-day workshop at the Windsor Florida to discuss practical options for operationalising the BBNJ Clearing House Mechanism (CHM).';
+    const description='The session will examine how to make the CHM an active, needs-driven mechanism and how to ensure effective coordination across the four pillars without duplication or fragmentation.';
+    const transport=runModel(db,async input=>{
+      inputs.push(input);if(input.stage==='resolve')return resolve(input);
+      const source=(await db.query('select * from scout.evidence where id=$1',[input.source_id])).rows[0],prepared=source.parsed.document.prepared_versions['octo-documents-v6'];
+      assert.equal(source.content,pages.get(source.url).body);assert.equal(source.parsed.document.identity,'symposium:document:'+source.parsed.document.id);
+      assert.deepEqual(input.range,[0,prepared.text.length]);assert.deepEqual(input.omitted_ranges,[]);assert.equal(input.segments.map(s=>s.text).join(''),prepared.text);
+      if(source.url!==saved['satellite-events-2026'].url)return answer([]); // Injected zeroes do not establish semantic coverage.
+      for(const quote of [title,purpose,description])assert.ok(prepared.text.includes(quote));
+      const finding=base(title,[{doc:'P',quote:title},{doc:'P',quote:purpose},{doc:'P',quote:description}]);
+      finding.candidate.description=description;finding.priority='high';finding.reason='Concrete discussion of operationalising the BBNJ Clearing House Mechanism.';
+      finding.evidence={kind:[1],title:[0],description:[2],priority:[1]};return answer([finding]);
+    },true);
+    let remaining=2,available=true;
+    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:(...args)=>{const model=transport.makeModel(...args);return(...input)=>{
+      if(remaining--<=0)throw new Error('Model quota reached');return model(...input);
+    };},read:async url=>{reads.push(url);assert.ok(url.startsWith(SYMPOSIUM));if(!pages.has(url))throw new Error('Retained route body absent');
+      return {...pages.get(url),...url===SYMPOSIUM&&!available?{status:503}:{}};
+    }};
+    await assert.rejects(collectHSA(db,{...options,sourceId:'00000000-0000-4000-8000-000000000000'}),{status:400});assert.equal(reads.length,0);
+    const first=await collectHSA(db,options);assert.equal(first.documents,2);assert.equal(first.created,0);assert.equal(transport.requests.length,2);
+    const pending=(await db.query("select parsed from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}'='symposium:document:118021646'",[tracker.id])).rows[0];
+    assert.equal(pending.parsed.document.id,'118021646');assert.equal(Object.values(pending.parsed.document.processing_versions)[0].findings.length,1);
+    available=false;remaining=2;const start=reads.length,resumed=await collectHSA(db,options);
+    assert.deepEqual(reads.slice(start,start+2),[SYMPOSIUM,saved['satellite-events-2026'].url]);
+    assert.equal(resumed.created,1,resumed.warnings.join(';'));assert.equal(transport.requests.length,4);
+    const prior=(await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0];
+    assert.equal(prior.report.path,'symposium-records');assert.deepEqual(prior.stats.document_source.known.map(d=>d.id).sort(),['118021646','130630133','69869785']);
+    assert.ok(prior.stats.document_source.pending.some(d=>d.last_failure?.state==='failed'));assert.ok(prior.stats.document_source.progress.after_url);
+    const records=(await db.query('select * from scout.records')).rows;assert.equal(records.length,1);assert.equal(records[0].title,title);assert.equal(records[0].description,description);
+    for(const field of CONTENT_FIELDS.filter(k=>!['kind','title','description'].includes(k)))assert.equal(records[0][field],null);
+    const sources=(await db.query("select id,content,parsed#>'{document,prepared_versions}' prepared,parsed#>'{document,processing_versions}' processing from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows;
+    available=true;const repeated=await collectHSA(db,options);assert.equal(repeated.documents,3);assert.equal(repeated.processed,3);assert.equal(transport.requests.length,4);
+    assert.deepEqual((await db.query('select * from scout.records')).rows,records);
+    assert.deepEqual((await db.query("select id,content,parsed#>'{document,prepared_versions}' prepared,parsed#>'{document,processing_versions}' processing from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows,sources);
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0],prior);
+    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+    assert.equal(inputs.filter(i=>i.stage==='extract').length,3);assert.equal(inputs.filter(i=>i.stage==='resolve').length,1);
+    assert.ok(reads.every(url=>[SYMPOSIUM,...['2025','2026','satellite-events','satellite-events-2026','session_recordings','session_recordings_2026'].map(p=>SYMPOSIUM+p)].includes(url)));
+    context.diagnostic(JSON.stringify({whole_sources:3,injected_calls:4,simulated_records:1,repeat_calls:0,missing_route_bodies:4,requests:[first.requests,resumed.requests,repeated.requests]}));
   }finally{await db.close();}
 });
 
