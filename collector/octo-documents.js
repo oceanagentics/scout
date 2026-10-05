@@ -110,6 +110,58 @@ export function prepareDocument({title,html,url,htmlWhitespace=false}) {
   return result;
 }
 
+export function prepareCbdPayload({id,url,raw,rows,task,provenance,sourceURL}){
+  const array=Array.isArray(JSON.parse(raw));
+  const prepared={version:'cbd-documents-v2',title:'',url,input:'whole-registry-source',text:'',blocks:[],chunks:[],links:[],omissions:[],
+    offset_basis:'Prepared UTF-16 text; literal labels are generated. HTML offsets refer to the decoded field, not the raw JSON response.',
+    source_rows:rows.map((row,index)=>({source_id:row._id,row:index,raw_path:array?'$['+index+']':'$'}))};
+  const coverage=[];
+  for(const[rowIndex,row]of rows.entries()){
+    const root=array?'$['+rowIndex+']':'$',attribution={relationship:task.kind,source_id:row._id,row:rowIndex},fields=[];
+    function walk(value,path,key){
+      if(value&&typeof value==='object'&&Object.keys(value).length){
+        for(const[k,v]of Object.entries(value))walk(v,path+(Array.isArray(value)?'['+k+']':'.'+k),k);
+      }else fields.push({value,path,key});
+    }
+    walk(row,root,'');
+    // Literal identity/name/schedule/reference fields precede long descriptions;
+    // every returned field remains represented, without relevance selection.
+    fields.sort((a,b)=>(a.key==='description')-(b.key==='description'));
+    for(const{value,path,key}of fields){
+      if(prepared.text)prepared.text+='\n\n';
+      const start=prepared.text.length,label=path+': ',html=key==='description'&&typeof value==='string'&&/<\/?[a-z][^>]*>/i.test(value);
+      let clean;
+      if(html){
+        try{clean=prepareDocument({title:'',url,html:value});}
+        catch{prepared.omissions.push({path,reason:'HTML has no readable body; complete literal field retained below'});}
+      }
+      const text=clean?.text??(typeof value==='string'?value:JSON.stringify(value));
+      prepared.text+=label+text;
+      const field={id:prepared.blocks.length,tag:'source-field',field:key,attribution,source_paths:[path],start,end:prepared.text.length,headings:[],
+        transformation:clean?'html-cleaned':'literal',value_range:[start+label.length,prepared.text.length]};
+      prepared.blocks.push(field);
+      if(clean){
+        const base=prepared.blocks.length,offset=start+label.length;
+        for(const block of clean.blocks)prepared.blocks.push({...block,id:base+block.id,start:offset+block.start,end:offset+block.end,
+          headings:block.headings.map(id=>base+id),source_paths:[path],attribution,html_offset_basis:'Decoded '+path+' HTML; prepared ranges are cleaned text'});
+        for(const link of clean.links)prepared.links.push({...link,source_paths:[path],attribution,html_offset_basis:'Decoded '+path+' HTML'});
+        prepared.omissions.push(...clean.omissions.map(o=>({...o,path,offset_basis:'Decoded HTML field'})));
+      }
+      if(typeof value==='string'&&['uri','url','href'].includes(key)){
+        try{prepared.links.push({target:sourceURL(value),label:value,tag:'api',relationship:'support',context:path,source_paths:[path],attribution,state:'unfetched'});}
+        catch{coverage.push({target:value,path,state:'unsupported',reason:'Non-public-HTTPS API reference retained, not fetched'});}
+      }
+      prepared.chunks.push({start:prepared.chunks.at(-1)?.end??0,end:field.end,block_ids:[field.id],context_block_ids:[],preceding_context:null});
+    }
+  }
+  if(!rows.length){
+    prepared.text='$: []';prepared.blocks.push({id:0,tag:'source-field',field:'rows',attribution:{relationship:task.kind},source_paths:['$'],start:0,end:prepared.text.length,headings:[],transformation:'literal',value_range:[3,prepared.text.length]});
+    prepared.chunks.push({start:0,end:prepared.text.length,block_ids:[0],context_block_ids:[],preceding_context:null});
+  }
+  prepared.coverage=coverage;
+  return {id,url,raw,rows,task,provenance,prepared,coverage};
+}
+
 function feedItems(body) {
   if(!/<\/rss>\s*$/i.test(body))throw new Error('Incomplete RSS document');
   const dom=parseDocument(body,{xmlMode:true,withStartIndices:true,withEndIndices:true});

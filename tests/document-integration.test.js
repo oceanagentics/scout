@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,UN_SIDE_EVENTS,CBD_REGISTRY,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {collectDocuments,prepareDocument,supportDocuments} from '../collector/octo-documents.js';
@@ -279,6 +279,64 @@ test('DOALOS whole pages resume resolution, retain non-events and recheck known 
     assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0],prior);
     assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
     context.diagnostic(JSON.stringify({documents:4,injected_model_calls:5,records:0,uncertain_gatherings:1,known_notices_during_outage:2,repeat_model_calls:0}));
+  }finally{await db.close();}
+});
+
+test('UN side-event whole sources resume native pending sessions through a listing outage and repeat without model calls',async context=>{
+  const saved=await fixture('un-side-events.json.gz'),db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[UN_SIDE_EVENTS])).rows[0],reads=[],inputs=[];
+    // Retained API bodies originally used projections; rewriting their query URL proves local mechanics, not live unprojected coverage.
+    const sessions=new Map(Object.values(saved).filter(r=>r.url?.startsWith('https://api.cbd.int/')).map(r=>[JSON.parse(new URL(r.url).searchParams.get('q'))['sideEvent.id'],r]));
+    const title=JSON.parse(sessions.get(6915).body)[0].sideEvent.title;
+    const description='It will also explore interlinkages and opportunities for cooperation between the BBNJ Agreement and work under the CBD, including the KMGBF, as well as synergies in their implementation, in particular with regard to scientific and technical issues.';
+    const transport=runModel(db,async input=>{
+      inputs.push(input);if(input.stage==='resolve'){
+        for(const field of CONTENT_FIELDS.filter(k=>!['kind','title','description'].includes(k)))assert.equal(input.finding.candidate[field],null);
+        return resolve(input);
+      }
+      const source=(await db.query('select * from scout.evidence where id=$1',[input.source_id])).rows[0],identity=source.parsed.document.identity;
+      const prepared=source.parsed.document.prepared_versions['un-side-documents-v2'],id=identity==='un-side:listing'?null:+identity.split(':').at(-1);
+      assert.equal(source.content,id?sessions.get(id).body:saved[UN_SIDE_EVENTS].body);assert.equal(source.parsed.document.id,identity);
+      assert.deepEqual(input.range,[0,prepared.text.length]);assert.deepEqual(input.omitted_ranges,[]);
+      assert.equal(input.segments.map(s=>s.text).join(''),prepared.text);assert.deepEqual(Object.keys(input.documents),['P']);
+      assert.ok(prepared.links.every(l=>l.state==='unfetched'));
+      if(id!==6915)return answer([]); // Injected zeroes for other sources are not semantic coverage claims.
+      assert.ok(prepared.text.includes(description));assert.ok(prepared.blocks.some(b=>b.source_paths?.includes('$[0].sideEvent.hostOrgs[0]')));
+      const finding=base(title,[{doc:'P',quote:title},{doc:'P',quote:description}]);finding.candidate.description=description;
+      finding.evidence={kind:[1],title:[0],description:[1],priority:[1]};return answer([finding]);
+    },true);
+    let remaining=2,available=true;
+    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:(...args)=>{const model=transport.makeModel(...args);return(...input)=>{
+      if(remaining--<=0)throw new Error('Model quota reached');return model(...input);
+    };},read:async url=>{
+      reads.push(url);if(url===UN_SIDE_EVENTS)return {...saved[url],status:available?200:503};
+      const u=new URL(url),q=JSON.parse(u.searchParams.get('q'));
+      assert.equal(u.origin+u.pathname,'https://api.cbd.int/api/v2016/reservations/');assert.deepEqual([...u.searchParams.keys()],['q']);
+      assert.deepEqual(Object.keys(q),['sideEvent.id']);assert.ok([6915,5838,5378].includes(q['sideEvent.id']));return {...sessions.get(q['sideEvent.id']),url};
+    }};
+    await assert.rejects(collectHSA(db,{...options,sourceId:'00000000-0000-4000-8000-000000000000'}),{status:400});
+    const cbd=(await db.query('select id from scout.trackers where url=$1',[CBD_REGISTRY])).rows[0];
+    await assert.rejects(collectHSA(db,{...options,trackerId:cbd.id}),{status:400});assert.equal(reads.length,0);
+    const first=await collectHSA(db,options);assert.equal(first.documents,4);assert.equal(first.requests,4);assert.equal(first.created,0);assert.equal(transport.requests.length,2);
+    const pending=(await db.query("select parsed#>'{document,processing_versions}' versions from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}'='un-side:session:6915'",[tracker.id])).rows[0];
+    assert.equal(Object.values(pending.versions)[0].findings.length,1);assert.equal(Object.values(pending.versions)[0].findings[0].resolution,undefined);
+    available=false;remaining=3;const resumed=await collectHSA(db,options);
+    assert.equal(resumed.documents,3);assert.equal(resumed.requests,4);assert.equal(resumed.created,1,resumed.warnings.join(';'));
+    assert.equal(inputs.filter(i=>i.stage==='extract').length,4);assert.equal(new Set(inputs.filter(i=>i.stage==='extract').map(i=>i.source_id)).size,4);
+    assert.equal(inputs.filter(i=>i.stage==='resolve').length,1);assert.equal(inputs.at(-1).finding.candidate.title,title);
+    const prior=(await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0];
+    assert.equal(prior.report.path,'un-side-records');assert.deepEqual(prior.stats.document_source.known.map(d=>d.id).sort(),['un-side:listing','un-side:session:5378','un-side:session:5838','un-side:session:6915']);
+    const coverage=Object.values(prior.report.artifacts).find(a=>a.kind==='coverage'&&a.data.documents?.some(d=>d.provenance));
+    assert.equal(coverage.data.complete,false);assert.equal(coverage.data.coverage.filter(c=>c.relationship==='source-references'&&c.state==='unfetched').length,3);
+    const records=(await db.query('select * from scout.records')).rows;assert.equal(records.length,1);assert.equal(records[0].title,title);assert.equal(records[0].description,description);
+    const versions=(await db.query("select id,content,parsed#>'{document,processing_versions}' versions from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows;
+    assert.equal(versions.length,4);
+    available=true;const repeated=await collectHSA(db,options);assert.equal(repeated.documents,4);assert.equal(repeated.processed,4);assert.equal(repeated.requests,4);assert.equal(transport.requests.length,5);
+    assert.deepEqual((await db.query('select * from scout.records')).rows,records);
+    assert.deepEqual((await db.query("select id,content,parsed#>'{document,processing_versions}' versions from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows,versions);
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0],prior);
+    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+    context.diagnostic(JSON.stringify({documents:4,requests_per_run:4,injected_model_calls:5,simulated_records:1,known_sessions_during_outage:3,repeat_model_calls:0}));
   }finally{await db.close();}
 });
 
