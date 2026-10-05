@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,GFW_WEB,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,GFW_WEB,HARVEST,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {collectDocuments,prepareDocument,supportDocuments} from '../collector/octo-documents.js';
@@ -116,6 +116,37 @@ test('whole GFW announcement saves in two calls; retained invalid output repairs
       context.diagnostic(JSON.stringify({source:rejected?'GFW retained rejection':'GFW injected event',request_bytes:transport.requests.map(b=>Buffer.byteLength(b)),cursor:state.cursor}));
     }finally{await db.close();}
   }
+});
+
+test('Harvest configured primary and observed index reach full model input with durable provenance and unchanged repeat',async()=>{
+  const saved=await fixture('harvest-website.json.gz'),db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[HARVEST])).rows[0],reads=[],inputs=[];
+    const responses=new Map([saved.home,saved.webinars].map(r=>[r.url,r]));
+    const transport=runModel(db,async input=>{
+      assert.equal(input.stage,'extract');const url=input.documents.P.url;assert.ok(responses.has(url));inputs.push(url);
+      const source=(await db.query('select * from scout.evidence where id=$1',[input.source_id])).rows[0];
+      const prepared=Object.values(source.parsed.document.prepared_versions)[0];
+      assert.equal(source.content,responses.get(url).body);assert.ok(prepared.text.length>4000);
+      assert.deepEqual(input.range,[0,prepared.text.length]);assert.deepEqual(input.omitted_ranges,[]);
+      assert.equal(input.segments.map(s=>s.text).join(''),prepared.text);assert.deepEqual(Object.keys(input.documents),['P']);
+      return answer([]); // Injected zero tests the route, not actual event coverage.
+    });
+    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:transport.makeModel,read:async url=>{
+      reads.push(url);assert.ok(responses.has(url),'Incidental destination must remain unfetched: '+url);
+      return {status:200,...responses.get(url)}; // Historical saved bodies omit HTTP status.
+    }};
+    await assert.rejects(collectHSA(db,{...options,sourceId:'00000000-0000-4000-8000-000000000000'}),{status:400});assert.equal(reads.length,0);
+    const first=await collectHSA(db,options);assert.equal(first.documents,2);assert.equal(first.processed,2,first.warnings.join(';'));
+    assert.deepEqual(inputs,[saved.home.url,saved.webinars.url]);assert.deepEqual(reads,inputs);assert.equal(transport.requests.length,2);
+    const run=(await db.query('select stats,report from scout.collection_runs where id=$1',[first.run_id])).rows[0];
+    assert.equal(run.stats.model_attempts.length,2);assert.equal(run.stats.document_source.progress.after_url,saved.webinars.url);
+    assert.deepEqual(run.stats.document_source.known,[{url:saved.home.url,id:'4426'},{url:saved.webinars.url,id:'4323'}]);
+    const coverage=Object.values(run.report.artifacts).find(a=>a.kind==='coverage'&&a.data.documents?.some(d=>d.provenance));
+    assert.deepEqual(coverage.data.documents.map(d=>d.provenance[0].listing.via),['configured',saved.home.url]);
+    const repeat=await collectHSA(db,options);assert.equal(repeat.processed,2);assert.equal(transport.requests.length,2);assert.equal(repeat.created,0);
+    assert.deepEqual(reads,[...inputs,...inputs]);assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+    assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+  }finally{await db.close();}
 });
 
 test('saved UNOC announcement retains separate session labels without borrowing the parent schedule',async()=>{
