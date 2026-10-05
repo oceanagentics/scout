@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { prepareDocument } from './octo-documents.js';
 
 export const DOSI_WEB='https://www.dosi-project.org/biodiversity-beyond-national-jurisdiction-bbnj/';
-export const PREPARATION_VERSION='dosi-documents-v1';
+export const PREPARATION_VERSION='dosi-documents-v2';
 const origin='https://www.dosi-project.org';
 const newsletter=url=>url.origin==='https://mailchi.mp'&&/^\/soton\.ac\.uk\/dosi-deep-sea-roundup-[^/]+$/.test(url.pathname);
 const classes=node=>(node.attribs?.class??'').split(/\s+/);
@@ -21,7 +21,7 @@ export function prepareDosiDocument(response,{sourceURL}) {
   const headers=newsletter(u)?[]:DomUtils.findAll(n=>classes(n).includes('post_header_single'),dom.children);
   const regions=[...headers,bodies[0]].map(n=>({start:n.startIndex,end:n.endIndex+1}));
   const html=regions.map(r=>response.body.slice(r.start,r.end)).join('\n');
-  const prepared=prepareDocument({title:'',html,url});prepared.version=PREPARATION_VERSION;
+  const prepared=prepareDocument({title:'',html,url,htmlWhitespace:true});prepared.version=PREPARATION_VERSION;
   prepared.input=newsletter(u)?'whole-newsletter':'website-document';
   prepared.omissions.push({reason:'Only structural content/header regions prepared; surrounding site or campaign UI framing excluded; full response retained',regions});
   // Preserve common observed link relationships as evidence for later fact

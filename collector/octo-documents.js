@@ -14,18 +14,20 @@ const blocks = new Set(['p','h1','h2','h3','h4','h5','h6','li','blockquote','pre
 
 // No finding fields or relevance rules. Ranges use UTF-16 offsets into the
 // retained HTML and prepared text; chunks reference context rather than omit it.
-export function prepareDocument({title,html,url}) {
+// Source adapters opt into HTML whitespace with their own preparation version.
+export function prepareDocument({title,html,url,htmlWhitespace=false}) {
   const dom=parseDocument(html,{withStartIndices:true,withEndIndices:true});
   const result={version:PREPARATION_VERSION,title:DomUtils.textContent(parseDocument(title)),url,text:'',blocks:[],links:[],insertions:[],omissions:[],chunks:[],chunk_bytes:CHUNK_BYTES};
-  // Temporary markers distinguish our link annotations from identical literal
-  // source prose. They disappear before storage; ranges resolve to HTML links.
+  // Temporary markers protect preformatted text and distinguish link annotations
+  // from source prose. They disappear before storage; ranges resolve to HTML links.
   let marker='\0';while(html.includes(marker)||DomUtils.textContent(dom).includes(marker))marker+=marker;
   const annotations=new RegExp(marker+'(\\d+)'+marker,'g');
-  const headings=[];
-  function render(node) {
+  const headings=[],literalText=[],literals=new RegExp(marker+'p(\\d+)'+marker,'g');
+  function render(node,preformatted=false) {
     if(framing.has(node.name)){result.omissions.push({start:node.startIndex,end:node.endIndex+1,reason:'Removed '+node.name+' framing'});return '';}
-    if(node.type==='text')return node.data;
-    let value=(node.children??[]).map(render).join('');
+    if(node.type==='text')return htmlWhitespace&&!preformatted?node.data.replace(/[ \t\r\n\f\u00a0]+/g,' '):node.data;
+    const literal=htmlWhitespace&&['pre','textarea'].includes(node.name);
+    let value=(node.children??[]).map(child=>render(child,preformatted||literal)).join('');
     if(node.name==='a'||node.name==='img'||node.name==='iframe') {
       const raw=node.attribs?.href??node.attribs?.src;
       if(raw){let target;try{target=new URL(raw,url).href;}catch{target=raw;}
@@ -34,19 +36,20 @@ export function prepareDocument({title,html,url}) {
         const relationship=node.name==='a'&&(/\b(?:category|tag)\b/.test(node.attribs.rel??'')||(node.attribs.class??'').split(/\s+/).includes('elementor-post-info__terms-list-item'))?'taxonomy':
           node.name==='a'&&(/\bregistration\b/.test(node.attribs.rel??'')||/^(?:register|registration)\b/i.test(context))?'registration':
           node.name==='a'&&(/\bauthor\b/.test(node.attribs.rel??'')||/^(?:organizer|organiser|official event)\b/i.test(context))?'organizer':'support';
-        result.links.push({label:label.replace(annotations,(_,index)=>' <'+result.links[index].target+'>'),target,tag:node.name,relationship,context,start:node.startIndex,end:node.endIndex+1,state:'unfetched'});
+        result.links.push({label:label.replace(literals,(_,index)=>literalText[index]).replace(annotations,(_,index)=>' <'+result.links[index].target+'>'),target,tag:node.name,relationship,context,start:node.startIndex,end:node.endIndex+1,state:'unfetched'});
         value=label+marker+(result.links.length-1)+marker;
       }
     }
-    if(blocks.has(node.name)||['br','tr','caption','div','section','article','ul','ol','dl','dt','dd','figure'].includes(node.name))value+='\n';
+    if(literal&&!preformatted){literalText.push(value);value=marker+'p'+(literalText.length-1)+marker;}
+    if(blocks.has(node.name)||['br','tr','caption','div','section','article','ul','ol','dl','dt','dd','figure'].includes(node.name))value+=htmlWhitespace&&(/^(?:p|h[1-6]|blockquote|pre)$/.test(node.name))?'\n\n':'\n';
     if(node.name==='td'||node.name==='th')value+='\t';
     return value;
   }
   function walk(node) {
     if(framing.has(node.name)) {render(node);return;}
-    if(blocks.has(node.name)||node.type==='text'&&node.data.trim()||['a','img','iframe'].includes(node.name)) {
+    if(blocks.has(node.name)||htmlWhitespace&&node.name==='textarea'||node.type==='text'&&node.data.trim()||['a','img','iframe'].includes(node.name)) {
       const insertions=[];let delta=0;
-      const text=render(node).replace(/[ \r\f\v]+/g,' ').replace(/ *\n */g,'\n').trim().replace(annotations,(token,index,offset)=>{
+      const text=render(node).replace(/[ \r\f\v]+/g,' ').replace(/ *\n */g,'\n').trim().replace(literals,(_,index)=>literalText[index]).replace(annotations,(token,index,offset)=>{
         const text=' <'+result.links[index].target+'>',start=offset+delta;
         insertions.push({start,end:start+text.length,link:+index});delta+=text.length-token.length;return text;
       });

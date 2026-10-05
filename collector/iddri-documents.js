@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { prepareDocument } from './octo-documents.js';
 
+export const PREPARATION_VERSION='iddri-documents-v1';
 export const IDDRI_LISTINGS=[
   'https://www.iddri.org/en/publications-and-events/high-seas?page=0',
   'https://www.iddri.org/fr/publications-et-evenements/haute-mer?page=0',
@@ -10,7 +11,7 @@ const hasClass=(node,name)=>(node.attribs?.class??'').split(/\s+/).includes(name
 
 // Caller persists the cursor even after failed attempts, and supplies known
 // language editions independently. No translation merge or finding selection.
-export async function retrieveIDDRIDocuments({read,sourceURL,budget,limits,knownDocuments=[],progress={}}){
+export async function retrieveIDDRIDocuments({read,sourceURL,budget,limits,knownDocuments=[],pending=[],progress={}}){
   const result={listings:[],inventory:[],documents:[],fetches:[],coverage:[],limits:{...limits},progress:{...progress}};
   const publisherURL=(value,base)=>{
     if(typeof value!=='string'||!value.trim())throw new Error('IDDRI source URL unavailable');
@@ -68,6 +69,8 @@ export async function retrieveIDDRIDocuments({read,sourceURL,budget,limits,known
   }
   const ordered=[...candidates.values()].sort((a,b)=>a.url<b.url?-1:a.url>b.url?1:0);
   const queue=typeof progress.after_url==='string'?[...ordered.filter(d=>d.url>progress.after_url),...ordered.filter(d=>d.url<=progress.after_url)]:ordered;
+  const priority=new Map(pending.filter(d=>['model-repair','model-pending'].includes(d.state)).map(d=>[d.url,d.state==='model-repair'?0:1]));
+  queue.sort((a,b)=>(priority.get(a.url)??2)-(priority.get(b.url)??2)); // Prioritize only existing known/listed candidates.
   let selected=0;
   for(const item of queue){
     if(selected++>=limits.documents){result.coverage.push({url:item.url,state:'deferred',reason:'Document limit'});continue;}
@@ -92,7 +95,7 @@ export async function retrieveIDDRIDocuments({read,sourceURL,budget,limits,known
       const html=[node,...structured].map(n=>response.entry.body.slice(n.startIndex,n.endIndex+1)).join('\n');
       const metadata=DomUtils.getElementsByTagName('meta',response.dom.children).map(n=>({...n.attribs}));
       const alternates=links.filter(n=>n.attribs.rel==='alternate').map(n=>({...n.attribs,state:'unfetched'}));
-      const prepared=prepareDocument({title,url:item.url,html});
+      const prepared=prepareDocument({title,url:item.url,html,htmlWhitespace:true});prepared.version=PREPARATION_VERSION;
       for(const alternate of alternates){
         try{
           const target=publisherURL(alternate.href,item.url);

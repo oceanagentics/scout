@@ -12,11 +12,11 @@ const sourceURL=value=>{
   if(url.protocol!=='https:'||url.username||url.password)throw new Error('Unsupported source URL');
   return url.href;
 };
-async function collect({overrides={},knownDocuments=[],progress,limits={},budget}={}){
+async function collect({overrides={},knownDocuments=[],pending=[],progress,limits={},budget}={}){
   const responses=new Map(Object.values(fixture).filter(v=>v?.url&&typeof v.body==='string').map(v=>[v.url,v]));
   for(const [url,response] of Object.entries(overrides))responses.set(url,response);
   const requests=[];
-  const result=await retrieveIDDRIDocuments({sourceURL,knownDocuments,progress,
+  const result=await retrieveIDDRIDocuments({sourceURL,knownDocuments,pending,progress,
     limits:{documents:30,requests:35,bytes:2_000_000,...limits},budget:budget??{requests:0,deadline:Date.now()+20_000},
     read:async url=>{requests.push(url);const response=responses.get(url);if(!response)throw new Error('Unsaved response');return response;}});
   return {...result,requests};
@@ -30,7 +30,7 @@ test('saved bilingual details retain whole bodies, publication metadata, alterna
     assert.equal(doc.raw,response.body);assert.equal(doc.identity,`iddri:node:${doc.id}:${doc.language}`);
     assert.ok(doc.metadata.some(m=>m.property==='og:type'));assert.ok(doc.alternates.length===2);
     const body=DomUtils.findAll(n=>(n.attribs?.class??'').split(/\s+/).includes('field--name-body'),parseDocument(doc.html).children)[0];
-    assert.ok(doc.prepared.text.includes(prepareDocument({title:'',url:doc.url,html:DomUtils.getOuterHTML(body)}).text));
+    assert.ok(doc.prepared.text.includes(prepareDocument({title:'',url:doc.url,html:DomUtils.getOuterHTML(body),htmlWhitespace:true}).text));
     assert.equal(doc.prepared.chunks.map(c=>doc.prepared.text.slice(c.start,c.end)).join(''),doc.prepared.text);
     for(const key of ['kind','organization','starts_at','ends_at','location','registration_url','findings','translation_of'])assert.ok(!Object.hasOwn(doc,key));
   }
@@ -43,6 +43,23 @@ test('saved bilingual details retain whole bodies, publication metadata, alterna
   assert.ok(run.coverage.some(c=>/zoom\.us/.test(c.target??'')&&c.state==='unfetched'));
   assert.ok(!run.requests.includes(fixture.zoom.url));assert.ok(!JSON.stringify(run.fetches).includes('traceresponse'));
   assert.ok(run.coverage.some(c=>c.reason.includes('pagination')));
+});
+
+test('retained Barcelona repair is selected before rotation and excerpts match without changing source words or URLs',async()=>{
+  const {source,replies}=fixture.spacing,old=source.parsed.document.prepared_versions['octo-documents-v6'];
+  assert.equal(source.parsed.document.processing_versions[source.parsed.document.processing.version].pending.round,2);
+  const unobserved='https://www.iddri.org/en/unobserved-document';
+  const run=await collect({knownDocuments:[{url:source.url}],progress:{after_url:source.url},limits:{documents:1},
+    pending:[{url:unobserved,state:'model-repair'},{url:source.url,state:'model-repair'}],
+    overrides:{[source.url]:{url:source.url,status:200,headers:{'content-type':'text/html'},body:source.content}}});
+  const doc=run.documents[0],norm=text=>text.replace(/\s+/gu,' ').trim();
+  assert.equal(run.documents.length,1);assert.equal(doc.raw,source.content);assert.equal(doc.prepared.version,'iddri-documents-v1');
+  assert.ok(!run.requests.includes(unobserved));assert.equal(run.progress.after_url,source.url);
+  assert.equal(norm(doc.prepared.text),norm(old.text));
+  assert.deepEqual(doc.prepared.links.map(l=>({...l,label:norm(l.label)})),old.links.map(l=>({...l,label:norm(l.label)})));
+  for(const reply of replies)for(const finding of reply.response.findings)for(const citation of finding.citations){
+    assert.ok(!old.text.includes(citation.quote));assert.ok(doc.prepared.text.includes(citation.quote));
+  }
 });
 
 test('listing reorder and repeated URLs keep bounded selections and language identities stable',async()=>{

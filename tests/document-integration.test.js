@@ -7,7 +7,7 @@ import {collectHSA,HSA,GFW_WEB,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {collectDocuments,prepareDocument,supportDocuments} from '../collector/octo-documents.js';
-import {prepareDosiDocument} from '../collector/dosi-documents.js';
+import {prepareDosiDocument,retrieveDosiDocuments} from '../collector/dosi-documents.js';
 import {startReport} from '../collector/report.js';
 import {packDocument,processDocument,validateFinding,validateResolution,DOCUMENT_VERSION,DOCUMENT_SCHEMA,DOCUMENT_INSTRUCTION} from '../collector/document-records.js';
 
@@ -178,7 +178,7 @@ test('retained whole newsletter accepts six injected events and repeats without 
       if(input.stage==='resolve')return {...resolve(input),outcome:'new',record_id:null};
       if(input.documents.P.url!==saved.newsletter.url)return answer([]);
       newsletter=input;assert.equal(input.range[0],0);assert.equal(input.segments.length,1);
-      assert.equal(input.range[1],39565);assert.deepEqual(input.omitted_ranges,[]);
+      assert.equal(input.range[1],doc.prepared.text.length);assert.deepEqual(input.omitted_ranges,[]);
       return answer(titles.map(title=>base(title,[{doc:'P',quote:title}])));
     },true);
     const doc=prepareDosiDocument(saved.newsletter,{sourceURL});
@@ -225,21 +225,25 @@ test('retained DOSI repair resumes before fresh articles; raw UI churn preserves
       assert.notEqual(input.source_id,newsletter.id,'Retained repair is rebound to the new raw capture');
       return answer([base(title,[{doc:'P',quote:title}])]);
     });
-    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:transport.makeModel,read:async url=>{
+    // Replay the retained v1 preparation exactly; a version upgrade is checked separately below.
+    const retainedPreparation=doc=>({...doc,prepared:{...retained.get(doc.url).parsed.document.prepared_versions['dosi-documents-v1'],omissions:doc.prepared.omissions}});
+    const options={tracker,sourceURL,now:()=>new Date().toISOString(),deadline:Date.now()+100000,limits:{seconds:100,requests:8,pages:4},process:true,path:'dosi',makeModel:transport.makeModel,
+      retrieve:async args=>{const result=await retrieveDosiDocuments(args);result.documents=result.documents.map(retainedPreparation);return result;},read:async url=>{
       reads.push(url);if(url===saved.feed.url)return saved.feed;
       const s=retained.get(url);if(!s)throw new Error('Fixture intentionally lacks other articles');
       return {url,status:200,headers:{'content-type':'text/html'},body:prefix+s.content};
     }};
-    const first=await collectHSA(db,options);
+    const first=await collectDocuments(db,options);
     assert.deepEqual(reads.slice(0,3),[saved.home.url,saved.feed.url,newsletter.url]);
     assert.equal(first.created,1,first.warnings.join(';'));assert.equal(transport.requests.length,2);
     const records=(await db.query('select * from scout.records')).rows;assert.equal(records[0].title,title);assert.equal(records[0].starts_at,null);
     const association=(await db.query('select * from scout.evidence where record_id is not null')).rows[0];
     prefix='<!-- another injected UI framing change -->';
     // Isolate completed-capture rechecks from the deliberately unavailable older articles above.
+    const recheck=async()=>({documents:[churn,newsletter].map(s=>prepareDosiDocument({url:s.url,status:200,headers:{'content-type':'text/html'},body:prefix+s.content},{sourceURL})),coverage:[]});
     const repeat=await collectDocuments(db,{tracker,sourceURL,now:()=>new Date().toISOString(),deadline:Date.now()+100000,
       limits:{seconds:100,requests:4,pages:4},process:true,path:'dosi',makeModel:transport.makeModel,
-      retrieve:async()=>({documents:[churn,newsletter].map(s=>prepareDosiDocument({url:s.url,status:200,headers:{'content-type':'text/html'},body:prefix+s.content},{sourceURL})),coverage:[]})});
+      retrieve:async()=>{const result=await recheck();result.documents=result.documents.map(retainedPreparation);return result;}});
     assert.equal(repeat.created,0);assert.equal(transport.requests.length,2);
     assert.deepEqual((await db.query('select * from scout.records')).rows,records);
     const associations=(await db.query('select * from scout.evidence where record_id is not null')).rows;
@@ -253,6 +257,14 @@ test('retained DOSI repair resumes before fresh articles; raw UI churn preserves
     const resumed=(await db.query("select parsed from scout.evidence where record_id is null and url=$1 order by last_seen_at desc limit 1",[newsletter.url])).rows[0].parsed.document;
     assert.equal(resumed.processing.version,newsletter.parsed.document.processing.version);
     assert.equal(resumed.processing_versions[resumed.processing.version].state,'complete');
+    let upgradedCalls=0;
+    await collectDocuments(db,{...options,retrieve:recheck,model:async(_,[input])=>{upgradedCalls++;assert.equal(input.repair,undefined);return answer([]);}});
+    assert.equal(upgradedCalls,2,'Only the changed DOSI preparation receives fresh extraction');
+    const upgraded=(await db.query("select parsed from scout.evidence where record_id is null and url=$1 order by last_seen_at desc limit 1",[newsletter.url])).rows[0].parsed.document;
+    assert.match(upgraded.processing.version,/dosi-documents-v2/);
+    assert.deepEqual(upgraded.processing_versions[resumed.processing.version],resumed.processing_versions[resumed.processing.version]);
+    assert.deepEqual(upgraded.prepared_versions['dosi-documents-v1'],resumed.prepared_versions['dosi-documents-v1']);
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=any($1::uuid[]) order by id',[runs.map(r=>r.id)])).rows,historical);
     context.diagnostic(JSON.stringify({retained_repair_round:1,whole_chars:pending.input.range[1],model_calls:2,repeat_calls:0,historical_runs_unchanged:2}));
   }finally{await db.close();}
 });

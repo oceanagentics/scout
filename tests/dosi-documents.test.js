@@ -5,6 +5,7 @@ import { gunzipSync } from 'node:zlib';
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { sourceURL } from '../collector/hsa.js';
 import { DOSI_WEB, prepareDosiDocument, retrieveDosiDocuments } from '../collector/dosi-documents.js';
+import { prepareDocument } from '../collector/octo-documents.js';
 
 const saved=async name=>JSON.parse(gunzipSync(await readFile(new URL('./fixtures/'+name+'.json.gz',import.meta.url))));
 const fixture=await saved('dosi-website');
@@ -37,6 +38,31 @@ test('whole real newsletter retains all sections/headings, later content and sup
   assert.ok(doc.prepared.links.filter(l=>l.tag==='a').length>60);
   assert.ok(doc.prepared.links.some(l=>l.tag==='a'&&l.relationship==='support'));
   for(const key of ['kind','organization','date','findings','candidate'])assert.equal(Object.hasOwn(doc,key),false);
+});
+
+test('DOSI HTML spacing makes retained title/date excerpts literal while preserving words, URLs, offsets and preformatted tables',()=>{
+  const source=fixture.retained_resume.sources.find(s=>s.url.includes('24-09-2026'));
+  const old=source.parsed.document.prepared_versions['dosi-documents-v1'];
+  const doc=prepareDosiDocument({...fixture.newsletter,url:source.url,body:source.content},{sourceURL}),p=doc.prepared;
+  assert.equal(p.version,'dosi-documents-v2');assert.equal(doc.raw,source.content);assert.equal(norm(p.text),norm(old.text));
+  for(const response of fixture.spacing_repairs)for(const finding of response.response.findings)for(const citation of finding.citations){
+    assert.ok(!old.text.includes(citation.quote));assert.ok(p.text.includes(citation.quote),finding.anchor);
+  }
+  assert.deepEqual(p.links.map(l=>({...l,label:norm(l.label)})),old.links.map(l=>({...l,label:norm(l.label)})));
+  for(const insertion of p.insertions)assert.equal(p.text.slice(insertion.start,insertion.end),' <'+p.links[insertion.link].target+'>');
+  assert.deepEqual(p.blocks.map(({tag,html_start,html_end})=>({tag,html_start,html_end})),old.blocks.map(({tag,html_start,html_end})=>({tag,html_start,html_end})));
+  assert.equal(p.chunks.map(c=>p.text.slice(c.start,c.end)).join(''),p.text);
+  const literal='  exact  spaces\n\n\tand\u00a0NBSP\n',url='https://www.dosi-project.org/spacing/';
+  const html='<div class="entry-content"><h3>Heading</h3>\n\n<h4>Date</h4>\nordinary\t words&nbsp;here'+
+    '<pre>'+literal+'<a href="/kept">link</a></pre><textarea>'+literal+'</textarea>'+
+    '<table><tr><td>A\t B</td><td>C</td></tr><tr><td>D</td><td>E</td></tr></table><a href="/wrapped"><pre>'+literal+'</pre></a></div>';
+  const prepared=prepareDosiDocument({url,status:200,headers:{'content-type':'text/html'},body:'<html>'+html+'</html>'},{sourceURL}).prepared;
+  assert.ok(prepared.text.includes('Heading\n\nDate\n\nordinary words here'));
+  assert.ok(prepared.text.includes(literal+'link <https://www.dosi-project.org/kept>'));
+  assert.ok(prepared.text.includes(literal+'\n\nA B\tC\t\nD\tE'));
+  for(const insertion of prepared.insertions)assert.equal(prepared.text.slice(insertion.start,insertion.end),' <'+prepared.links[insertion.link].target+'>');
+  assert.ok(prepared.links.every(link=>!link.label.includes('\0')));
+  const unscoped=prepareDocument({title:'',html,url});assert.ok(unscoped.text.includes('ordinary\t words\u00a0here'),'Other adapters keep their existing preparation behavior');
 });
 
 test('real RSS roundup retrieves its whole newsletter before unrelated articles; home links stay metadata',async()=>{

@@ -55,9 +55,10 @@ export function validateFinding(p,input) {
   const fail=message=>{throw new Error(message);};
   if(!exactKeys(p,DOCUMENT_SCHEMA.properties.findings.items.required))fail('Complete finding/citation/evidence/date keys required');
   if(!['high','normal','low'].includes(p.priority)||!textValue(p.reason)||p.reason.length>240)fail('priority enum / reason <=240');
-  if(!Array.isArray(p.citations)||p.citations.some(c=>!exactKeys(c,['doc','quote'])||!textValue(c.quote)||!input.documents[c.doc]||
-    ![input.documents[c.doc].title,input.documents[c.doc].url,...input.segments.filter(s=>s.doc===c.doc).map(s=>s.text)].some(text=>text?.includes(c.quote))))
-    fail('Every citation must resolve to a supplied retained document passage');
+  if(!Array.isArray(p.citations))fail('citations must be an array');
+  for(const [index,c]of p.citations.entries())if(!exactKeys(c,['doc','quote'])||!textValue(c.quote)||!input.documents[c.doc]||
+    ![input.documents[c.doc].title,input.documents[c.doc].url,...input.segments.filter(s=>s.doc===c.doc).map(s=>s.text)].some(text=>text?.includes(c.quote)))
+    fail('citations['+index+']: must resolve literally in supplied document '+(c?.doc??'(missing)')+'. Copy short verbatim excerpts, preserving spaces and supplied <URL> delimiters inside longer quotes. Cite the exact supplied URL separately for URL fields.');
   const ground=Object.values(input.documents).flatMap(d=>[d.title,d.url]).concat(input.segments.map(s=>s.text)).join('\n');
   const labels=input.segments.map(s=>{let text=s.text;for(const [a,b]of [...s.inserted_links??[]].reverse())text=text.slice(0,a-s.range[0])+text.slice(b-s.range[0]);return text;});
   if(!textValue(p.anchor)||p.anchor.length>280||!ground.includes(p.anchor)&&!labels.some(text=>text.includes(p.anchor)))fail('anchor must be a supplied literal finding label <=280');

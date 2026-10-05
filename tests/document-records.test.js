@@ -160,7 +160,7 @@ test('retained complete=false refusal stays unresolved until a new valid unit re
   }finally{await db.close();}
 });
 
-test('only renderer-inserted links may be omitted from anchors; literal URL prose and exact citations remain intact',()=>{
+test('only renderer-inserted links may be omitted from anchors; literal URL prose and exact citations remain intact',async()=>{
   const url='https://example.org/meeting',html='<p>14th <a href="'+url+'">Meeting</a> of the Commission.</p>'+
     '<p>Literal Meeting &lt;'+url+'&gt; of the Commission.</p><p><a href="/other"><img src="/image" alt="Meeting poster"></a></p>';
   const prepared=prepareDocument({title:'Meeting notice',url,html}),input=packDocument({id:'source'},prepared,0,'test');
@@ -176,5 +176,10 @@ test('only renderer-inserted links may be omitted from anchors; literal URL pros
   const unmarked={...input,segments:input.segments.map(({inserted_links,...s})=>s)};assert.throws(()=>validateCitedFinding(p,unmarked),/anchor/);
   const literal={...p,anchor:'Literal Meeting of the Commission',citations:[{doc:'P',quote:'Literal Meeting <'+url+'> of the Commission.'}]};
   assert.throws(()=>validateCitedFinding(literal,input),/anchor/);
-  p.citations[0].quote='14th Meeting of the Commission.';assert.throws(()=>validateCitedFinding(p,input),/Every citation/);
+  p.citations[0].quote='14th Meeting of the Commission.';assert.throws(()=>validateCitedFinding(p,input),/citations\[0\].*<URL>.*separately/);
+  const actual=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iddri-website.json.gz',import.meta.url)))).spacing.link_delimiters;
+  for(const reply of actual.replies)for(const finding of reply.response.findings){
+    assert.throws(()=>validateCitedFinding(finding,actual.input),/citations\[0\].*<URL>.*separately/);
+    assert.throws(()=>validateCitedFinding({...finding,citations:[{doc:'P',quote:actual.input.documents.P.url},...finding.citations]},actual.input),/citations\[1\]/);
+  }
 });
