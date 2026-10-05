@@ -282,6 +282,68 @@ test('DOALOS whole pages resume resolution, retain non-events and recheck known 
   }finally{await db.close();}
 });
 
+test('retained HSA COP1 paraphrase requires candidate comparisons without forcing a merge',async()=>{
+  const actual=await fixture('hsa-identity-failure.json.gz'),{finding,candidates,coverage}=actual.input,before=JSON.stringify(actual);
+  assert.equal(actual.run_id,'f88603bc-83c9-4298-806c-018e96629f94');assert.equal(coverage.complete,true);assert.equal(candidates.length,10);
+  assert.equal(candidates.find(r=>r.id===actual.existing_record).title,'first meeting of the COP of the BBNJ Agreement');
+  assert.equal(finding.candidate.title,'The first BBNJ Conference of the Parties (BBNJ COP1)');
+  assert.equal(actual.response.outcome,'new');assert.equal(actual.response.evidence.distinction[0],0);
+  assert.throws(()=>validateResolution(actual.response,finding,candidates,{}),/every supplied candidate/);
+  const comparisons=candidates.map(r=>({record_id:r.id,relation:r.id===actual.existing_record?'possible_match':'distinct',citations:[0],
+    reason:r.id===actual.existing_record?'Both labels identify the inaugural BBNJ COP; no different edition or session is established.':
+      'The cited inaugural BBNJ COP differs from the candidate gathering: '+r.title}));
+  const proposal={...actual.response,comparisons};
+  assert.throws(()=>validateResolution(proposal,finding,candidates,{}),/every supplied candidate/);
+  assert.equal(validateResolution({...proposal,outcome:'uncertain'},finding,candidates,{}).record_id,null);
+  assert.throws(()=>validateResolution({...proposal,outcome:'evidence',record_id:actual.existing_record},finding,candidates,{}),/Target lacks supported finding identity/);
+  const distinct=comparisons.map(c=>({...c,relation:'distinct'}));
+  assert.throws(()=>validateResolution({...proposal,comparisons:distinct.slice(1)},finding,candidates,{}),/every supplied candidate/);
+  for(const changed of [
+    [{...comparisons[0],record_id:'not-supplied'}],
+    [comparisons[0],comparisons[0]],
+    [{...comparisons[0],citations:[finding.citations.length]}],
+    [{...comparisons[0],reason:''}],
+  ])assert.throws(()=>validateResolution({...proposal,comparisons:changed},finding,candidates,{}),/Candidate comparisons/);
+  // Coverage is enforced mechanically; a false semantic distinction remains a model-quality failure.
+  assert.equal(validateResolution({...proposal,comparisons:distinct},finding,candidates,{}).outcome,'new');
+  const named={...finding.candidate,id:'first-copy',anchors:[finding.anchor]};
+  assert.throws(()=>validateResolution({...actual.response,outcome:'evidence',record_id:named.id,comparisons:[{
+    record_id:named.id,relation:'distinct',citations:[0],reason:'Different gathering.'}]},finding,[named],{}),/Selected target cannot be declared distinct/);
+  assert.throws(()=>validateResolution({...actual.response,outcome:'evidence',record_id:named.id},finding,[named,{...named,id:'second-copy'}],{}),/Ambiguous finding identity/);
+  assert.equal(validateResolution(actual.response,finding,[],{}).outcome,'new','No-candidate output shape remains valid');
+  assert.equal(JSON.stringify(actual),before,'Retained request, reply and all candidate values stay unchanged');
+  for(const corrected of [false,true]){const db=await database();try{
+    const tracker=(await db.query('select id from scout.trackers where url=$1',[HSA_WEB])).rows[0];
+    const old=candidates.find(r=>r.id===actual.existing_record);
+    await db.query('insert into scout.records(id,'+CONTENT_FIELDS.join(',')+',priority) values('+Array.from({length:CONTENT_FIELDS.length+2},(_,i)=>'$'+(i+1)).join(',')+')',
+      [old.id,...CONTENT_FIELDS.map(k=>old[k]??null),old.priority]);
+    const record=(await db.query('select * from scout.records where id=$1',[old.id])).rows[0];
+    // Resume mechanics use the exact retained finding/quote, not a new whole-source acquisition.
+    const source=(await db.query('insert into scout.evidence(tracker_id,url,content,content_hash,parsed) values($1,$2,$3,md5($3),$4) returning *',
+      [tracker.id,actual.input.url,finding.citations[0].quote,JSON.stringify({document:{identity:'hsa:document:6736'}})])).rows[0];
+    const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[tracker.id])).rows[0].id,trace=await startReport(db,run);
+    const prepared=await supportDocuments(db,{source,prepared:prepareDocument({title:finding.candidate.title,url:source.url,html:source.content}),trace});
+    const version=DOCUMENT_VERSION+'/'+prepared.version+'/'+prepared.context,repair={rejected:actual.response,errors:['Retained prior resolution rejection']};
+    const state={state:'failed',revision:0,cursor:prepared.text.length,findings:[{key:'retained',finding,pending:{round:2,repair}}]};
+    await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,processing_versions}',$2::jsonb) where id=$1",[source.id,JSON.stringify({[version]:state})]);
+    const transport=runModel(db,input=>{
+      assert.equal(input.stage,'resolve');assert.deepEqual(input.finding,finding);assert.deepEqual(input.repair,repair);
+      assert.deepEqual(input.candidates.map(r=>r.id),[old.id]);
+      return corrected?{...actual.response,outcome:'uncertain',reason:'The inaugural COP may match the existing first COP; no independent distinction.'}:actual.response;
+    });
+    const options={source:(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0],prepared,trace,deadline:Date.now()+100000,model:transport.makeModel(run,Date.now()+100000,trace)};
+    const result=await processDocument(db,options);assert.equal(result.state,corrected?'uncertain':'failed');assert.equal(result.created,0);assert.equal(transport.requests.length,1);
+    options.source=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];
+    assert.equal(options.source.parsed.document.processing.version,version);
+    const entry=options.source.parsed.document.processing_versions[version].findings[0];
+    if(corrected)assert.equal(entry.resolution.outcome,'uncertain');else{assert.equal(entry.exhausted,true);assert.equal(entry.pending.round,3);assert.match(entry.error,/every supplied candidate/);}
+    const report=(await db.query('select report,stats from scout.collection_runs where id=$1',[run])).rows[0];
+    assert.equal(report.stats.model_attempts.length,1);assert.deepEqual(Object.values(report.report.operations).filter(o=>o.stage==='resolve'&&o.step==='generate').map(o=>o.repair),[2]);
+    await processDocument(db,options);assert.equal(transport.requests.length,1,'Resolved/exhausted finding cannot receive a fresh allowance');
+    assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+  }finally{await db.close();}}
+});
+
 test('saved UNOC announcement retains separate session labels without borrowing the parent schedule',async()=>{
   const saved=(await fixture('iddri-website.json.gz')).unoc;
   const prepared=prepareDocument({title:'IDDRI at UNOC',url:saved.url,html:saved.body});
@@ -300,29 +362,34 @@ test('saved UNOC announcement retains separate session labels without borrowing 
   }
   const existing={...findings[0].candidate,id:'first-session',anchors:[titles[0]]};
   const review={outcome:'new',record_id:null,reason:'Distinct session on the same announcement.',
-    evidence:{distinction:[0]},facts:{kind:'supported',title:'supported',priority:'supported'},conflict:'none'};
+    evidence:{distinction:[0]},facts:{kind:'supported',title:'supported',priority:'supported'},conflict:'none',comparisons:[{
+      record_id:existing.id,relation:'distinct',citations:[0],reason:'The cited early-implementation session differs from the candidate session about MPA monitoring, control and surveillance.'}]};
   assert.equal(validateResolution(review,findings[1],[existing],prepared).outcome,'new');
   assert.throws(()=>validateResolution(review,findings[0],[existing],prepared),/distinct cited label/);
-  assert.throws(()=>validateResolution({...review,facts:{...review.facts,title:'unsupported'}},findings[1],[],prepared),/Unsupported\/conflicting/);
-  const rejectedKind={...review,facts:{...review.facts,kind:'unsupported'}};
+  assert.throws(()=>validateResolution({...review,comparisons:[],facts:{...review.facts,title:'unsupported'}},findings[1],[],prepared),/Unsupported\/conflicting/);
+  const rejectedKind={...review,comparisons:[],facts:{...review.facts,kind:'unsupported'}};
   assert.throws(()=>validateResolution(rejectedKind,findings[1],[],prepared),/Unsupported\/conflicting/);
   assert.equal(validateResolution({...rejectedKind,outcome:'uncertain'},findings[1],[],prepared).outcome,'uncertain');
   const actual=(await fixture('hsa-social-preparation.json.gz')).announcement_contract.distinction_failure;
   const {finding,candidates}=actual.input;
   assert.ok(finding.anchor.endsWith('.'));assert.ok(!finding.citations[0].quote.endsWith('.'));
-  assert.equal(validateResolution(actual.response,finding,candidates,prepared).outcome,'new');
+  const comparison={...actual.response,comparisons:candidates.map(r=>({record_id:r.id,relation:'distinct',citations:[0,2],
+    reason:'The cited science side event differs from the candidate celebration of treaty entry into force.'}))};
+  assert.equal(validateResolution(comparison,finding,candidates,prepared).outcome,'new');
   for(const label of [finding.anchor,finding.anchor.slice(0,-1)]){
     const duplicate={...candidates[0],title:label,anchors:[label]};
-    assert.throws(()=>validateResolution(actual.response,finding,[duplicate],prepared),/distinct cited label/);
+    assert.throws(()=>validateResolution(comparison,finding,[duplicate],prepared),/distinct cited label/);
   }
   const mpa=(await fixture('hsa-social-preparation.json.gz')).announcement_contract.mpa_distinction_failure;
   const supplied=JSON.parse(JSON.parse(mpa.request).contents[0].parts[0].text)[0];
   const decision=JSON.parse(JSON.parse(mpa.response).candidates[0].content.parts.find(p=>p.text).text),p=supplied.finding;
+  decision.comparisons=supplied.candidates.map(r=>({record_id:r.id,relation:'distinct',citations:[0,2],
+    reason:'The cited practical high seas MPA monitoring session differs from the candidate: '+r.title}));
   const before=JSON.stringify(supplied);assert.equal(validateResolution(decision,p,supplied.candidates,prepared).outcome,'new');
   assert.equal(JSON.stringify(supplied),before,'Retained presenter anchor, finding and progress are not rewritten');
   for(const label of [p.candidate.title,p.candidate.title+'.',p.anchor]){
     const duplicate={...supplied.candidates[0],title:label,anchors:[label]};
-    assert.throws(()=>validateResolution(decision,p,[duplicate],prepared),/distinct cited label/);
+    assert.throws(()=>validateResolution({...decision,comparisons:decision.comparisons.slice(0,1)},p,[duplicate],prepared),/distinct cited label/);
   }
   assert.throws(()=>validateResolution(decision,{...p,evidence:{...p.evidence,title:[2]}},supplied.candidates,prepared),/distinct cited label/);
   assert.throws(()=>validateResolution({...decision,evidence:{distinction:[1]}},p,supplied.candidates,prepared),/distinct cited label/);
@@ -339,7 +406,10 @@ test('retained whole newsletter accepts six injected events and repeats without 
     const tracker=(await db.query('select * from scout.trackers where url=$1',[saved.home.url])).rows[0];
     let newsletter;
     const transport=runModel(db,input=>{
-      if(input.stage==='resolve')return {...resolve(input),outcome:'new',record_id:null};
+      if(input.stage==='resolve')return {...resolve(input),outcome:'new',record_id:null,comparisons:input.candidates.map(r=>{
+        assert.ok(titles.includes(r.title)&&r.title!==input.finding.candidate.title);
+        return {record_id:r.id,relation:'distinct',citations:[0],reason:'Separate named gathering in the retained newsletter: '+input.finding.anchor};
+      })};
       if(input.documents.P.url!==saved.newsletter.url)return answer([]);
       newsletter=input;assert.equal(input.range[0],0);assert.equal(input.segments.length,1);
       assert.equal(input.range[1],doc.prepared.text.length);assert.deepEqual(input.omitted_ranges,[]);
@@ -743,7 +813,7 @@ test('HSA processing saves a stated event or no event without following links; r
   }
 });
 
-test('retained resolver inputs compile field-specific audit claims without changing finding evidence or output contract',async context=>{
+test('retained resolver inputs compile field-specific audit claims and optional comparisons without changing findings',async context=>{
   for(const actual of (await fixture('iucn-website.json.gz')).field_audit){const db=await database();try{
     const original=JSON.stringify(actual),{input,source:s}=actual,tracker=(await db.query('select id from scout.trackers limit 1')).rows[0];
     validateFinding(input.finding,packDocument(s,s.prepared,0,DOCUMENT_VERSION));
@@ -770,6 +840,10 @@ test('retained resolver inputs compile field-specific audit claims without chang
       for(const i of [-1,input.finding.citations.length])assert.throws(()=>validateResolution(
         {...resolve(input),outcome:'uncertain',record_id:null,evidence:{[key]:[i]}},input.finding,input.candidates,prepared),/Resolution evidence/);
     }
+    assert.equal(schema.required.includes('comparisons'),false);
+    assert.deepEqual(schema.properties.comparisons.items.properties.citations.items,{type:'integer',minimum:0,maximum:input.finding.citations.length-1});
+    assert.deepEqual(schema.properties.comparisons.items.required,['record_id','relation','citations','reason']);
+    delete unbounded.properties.comparisons;
     assert.deepEqual(unbounded,before.generationConfig.responseJsonSchema);
     assert.match(request.systemInstruction.parts[0].text,/using ONLY its own quotes/);
     const compiled=requestBody(request.systemInstruction.parts[0].text,[{...input,field_audit:sent.field_audit}],schema);
