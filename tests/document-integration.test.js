@@ -4,10 +4,10 @@ import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
 import {collectHSA,HSA,GFW_WEB} from '../collector/hsa.js';
-import {gemini} from '../collector/model.js';
+import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {prepareDocument} from '../collector/octo-documents.js';
-import {packDocument,validateFinding,validateResolution,DOCUMENT_VERSION} from '../collector/document-records.js';
+import {packDocument,validateFinding,validateResolution,DOCUMENT_VERSION,DOCUMENT_SCHEMA,DOCUMENT_INSTRUCTION} from '../collector/document-records.js';
 
 const fixture=async name=>{const raw=await readFile(new URL('./fixtures/'+name,import.meta.url));return JSON.parse(name.endsWith('.gz')?gunzipSync(raw):raw);};
 
@@ -190,6 +190,15 @@ test('exact HSA failures report every missing proof and date error; a new contra
   const saved=(await fixture('hsa-social-preparation.json.gz')).announcement_contract;
   const outputs=saved.responses.map(raw=>JSON.parse(JSON.parse(raw).candidates[0].content.parts.find(p=>p.text).text));
   const input=JSON.parse(JSON.parse(saved.requests[0]).contents[0].parts[0].text)[0];
+  const repairBytes=[];
+  for(const raw of saved.nested_proof.responses){
+    const rejected=JSON.parse(JSON.parse(raw).candidates[0].content.parts.find(p=>p.text).text),original=JSON.stringify(rejected);
+    let message;assert.throws(()=>validateFinding(rejected.findings[0],input),error=>{message=error.message;return /Invalid evidence for kind, title/.test(message);});
+    const body=requestBody(DOCUMENT_INSTRUCTION,[{...input,repair:{rejected,errors:['finding 0: '+message]}}],DOCUMENT_SCHEMA);
+    repairBytes.push(Buffer.byteLength(body));assert.ok(Buffer.byteLength(body)<=8000);
+    assert.equal(JSON.stringify(rejected),original,'Real failed output must remain intact');
+  }
+  context.diagnostic(JSON.stringify({source:'HSA exact empty proofs',repair_bytes:repairBytes}));
   for(const [i,response]of outputs.entries()){
     const original=JSON.stringify(response);
     assert.throws(()=>validateFinding(response.findings[0],input),error=>{
@@ -240,8 +249,9 @@ test('exact HSA failures report every missing proof and date error; a new contra
     assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
     for(const body of transport.requests){
       const schema=JSON.parse(body).generationConfig.responseJsonSchema,evidence=schema.properties.findings.items.properties.evidence;
-      assert.equal(evidence.additionalProperties,false);assert.deepEqual(evidence.required,['kind','title','priority']);
+      assert.deepEqual(evidence.additionalProperties,evidence.properties.kind);assert.deepEqual(evidence.required,['kind','title','priority']);
       assert.equal(evidence.properties['candidate.kind'],undefined);assert.equal(evidence.properties.kind.type,'object');
+      assert.deepEqual(evidence.properties.kind.required,['refs','rationale']);assert.equal(evidence.properties.kind.properties.refs.items.type,'integer');
       assert.ok(!JSON.stringify(schema).includes('$ref'));assert.equal(schema.$defs,undefined);
       assert.equal(schema.properties.findings.items.properties.dates.additionalProperties.properties.parts.properties.zone.minItems,1);
     }
