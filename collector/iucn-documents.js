@@ -3,7 +3,7 @@ import { parseDocument, DomUtils } from 'htmlparser2';
 import { prepareDocument } from './octo-documents.js';
 
 export const IUCN_LISTING='https://iucn.org/our-work/topic/high-seas';
-export const PREPARATION_VERSION='iucn-documents-v1';
+export const PREPARATION_VERSION='iucn-documents-v2';
 const hasClass=(node,name)=>(node.attribs?.class??'').split(/\s+/).includes(name);
 
 // Source-only adapter; the caller owns captures, reporting and model stages.
@@ -94,7 +94,22 @@ export async function retrieveIUCNDocuments({read,sourceURL,budget,limits,knownD
       const regions=sections.map(n=>({start:n.startIndex,end:n.endIndex+1}));
       const html=regions.map(r=>response.entry.body.slice(r.start,r.end)).join('\n');
       const metadata=DomUtils.getElementsByTagName('meta',response.dom.children).map(n=>({...n.attribs}));
-      const prepared=prepareDocument({title,url:item.url,html});prepared.version=PREPARATION_VERSION;
+      const contacts=DomUtils.getElementsByTagName('a',parseDocument(html,{withStartIndices:true,withEndIndices:true}).children).filter(n=>{
+        const token=/^\/cdn-cgi\/l\/email-protection#((?:[\da-f]{2}){2,})$/i.exec(n.attribs.href??'')?.[1];
+        return token&&DomUtils.findAll(c=>hasClass(c,'__cf_email__')&&/^(?:[\da-f]{2}){2,}$/i.test(c.attribs['data-cfemail']??''),n.children).length;
+      });
+      let preparationHTML=html;
+      for(const contact of contacts){
+        const opening=html.slice(contact.startIndex,contact.endIndex+1).match(/^<a\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/i)?.[0];
+        if(!opening)throw new Error('Protected contact opening tag unavailable');
+        // Ignore only the verified transport href in the preparation copy; equal width preserves raw HTML offsets.
+        const masked=opening.replace(/(\s+)([^\s=<>/]+)(\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g,
+          (attribute,space,name,value='')=>name.toLowerCase()==='href'?space+'data'+value:attribute);
+        preparationHTML=preparationHTML.slice(0,contact.startIndex)+masked+preparationHTML.slice(contact.startIndex+opening.length);
+      }
+      const prepared=prepareDocument({title,url:item.url,html:preparationHTML});
+      prepared.version=contacts.length?PREPARATION_VERSION:'iucn-documents-v1';
+      prepared.omissions.push(...contacts.map(n=>({start:n.startIndex,end:n.endIndex+1,reason:'Opaque protected-contact href excluded; visible contact text and original HTML retained'})));
       prepared.omissions.push({reason:'Primary header, lead, body, media and resource metadata retained; breadcrumbs, sharing, taxonomy and related cards excluded; full response retained',regions});
       result.documents.push({id,identity:'iucn:node:'+id,url:item.url,raw:response.entry.body,html,regions,metadata,node_attributes:{...node.attribs},listing:item,prepared});
       result.coverage.push({url:item.url,identity:'iucn:node:'+id,state:'prepared',reason:'Whole primary announcement retained; related cards excluded and embedded links unfetched',links:prepared.links});

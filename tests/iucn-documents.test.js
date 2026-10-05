@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
+import { PGlite } from '@electric-sql/pglite';
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { retrieveIUCNDocuments, IUCN_LISTING, PREPARATION_VERSION } from '../collector/iucn-documents.js';
-import { prepareDocument } from '../collector/octo-documents.js';
+import { collectDocuments, prepareDocument } from '../collector/octo-documents.js';
 
 const fixture=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/iucn-website.json.gz',import.meta.url))));
 const sourceURL=value=>{
@@ -31,19 +32,19 @@ test('real fixture preserves whole articles, metadata, featured/listing identiti
   for(const doc of run.documents){
     const response=Object.values(fixture).find(v=>v?.url===doc.url);
     assert.equal(doc.raw,response.body);assert.ok(doc.metadata.length);assert.equal(doc.identity,'iucn:node:'+doc.id);
-    assert.equal(doc.prepared.version,PREPARATION_VERSION);
+    assert.ok(['iucn-documents-v1',PREPARATION_VERSION].includes(doc.prepared.version));
     assert.equal(doc.html,doc.regions.map(r=>response.body.slice(r.start,r.end)).join('\n'));
     assert.equal(doc.prepared.chunks.map(c=>doc.prepared.text.slice(c.start,c.end)).join(''),doc.prepared.text);
     const node=parseDocument(doc.html,{withStartIndices:true});
     const body=DomUtils.findAll(n=>(n.attribs?.class??'').split(/\s+/).includes('field--name-field-body'),node.children)[0];
-    const expected=prepareDocument({title:'',url:doc.url,html:DomUtils.getOuterHTML(body)}).text;
+    const expected=prepareDocument({title:'',url:doc.url,html:DomUtils.getOuterHTML(body)}).text.replace(/ <https:\/\/iucn\.org\/cdn-cgi\/l\/email-protection#[\da-f]+>/gi,'');
     assert.ok(doc.prepared.text.includes(expected));
     const original=parseDocument(response.body);
     for(const region of DomUtils.findAll(n=>(n.attribs?.class??'').split(/\s+/).some(c=>
       ['content-title','content-lead','content-author-info','content-media-image','content-paragraphs','main-section'].includes(c)),original.children)){
       if(!DomUtils.textContent(region).trim())continue;
       const expected=prepareDocument({title:'',url:doc.url,html:DomUtils.getOuterHTML(region)});
-      assert.ok(doc.prepared.text.includes(expected.text));
+      assert.ok(doc.prepared.text.includes(expected.text.replace(/ <https:\/\/iucn\.org\/cdn-cgi\/l\/email-protection#[\da-f]+>/gi,'')));
     }
     assert.ok(!Object.hasOwn(doc,'kind'));assert.ok(!Object.hasOwn(doc,'organization'));assert.ok(!Object.hasOwn(doc,'findings'));
   }
@@ -55,6 +56,89 @@ test('real fixture preserves whole articles, metadata, featured/listing identiti
   assert.ok(run.documents.some(d=>d.url===fixture.dataset.url));
   assert.ok(run.coverage.some(c=>c.reason.includes('archives/pagination')));
   assert.ok(run.coverage.some(c=>c.state==='failed'));assert.ok(!JSON.stringify(run.fetches).includes('set-cookie'));
+});
+
+test('retained contact-token changes preserve literal content, ordinary links, raw offsets and preparation continuity',async()=>{
+  const documents=[];
+  for(const capture of fixture.retained_contacts){
+    const response={url:capture.url,status:200,headers:{'content-type':'text/html'},body:capture.content};
+    const run=await collect({home:{...fixture.home,status:503},knownDocuments:[{id:capture.parsed.document.id,url:capture.url}],overrides:{[capture.url]:response}});
+    assert.deepEqual(run.requests,[IUCN_LISTING,capture.url]);assert.equal(run.documents.length,1);
+    const doc=run.documents[0],old=capture.parsed.document.prepared_versions['iucn-documents-v1'];documents.push(doc);
+    assert.equal(doc.raw,capture.content);assert.equal(doc.html,doc.regions.map(r=>doc.raw.slice(r.start,r.end)).join('\n'));
+    assert.equal(doc.prepared.text,old.text.replace(/ <https:\/\/iucn\.org\/cdn-cgi\/l\/email-protection#[\da-f]+>/gi,''));
+    assert.deepEqual(doc.prepared.links,old.links.filter(l=>!l.target.startsWith('https://iucn.org/cdn-cgi/l/email-protection#')));
+    assert.deepEqual(doc.prepared.blocks.map(b=>[b.html_start,b.html_end]),old.blocks.map(b=>[b.html_start,b.html_end]));
+    assert.equal(doc.prepared.chunks.map(c=>doc.prepared.text.slice(c.start,c.end)).join(''),doc.prepared.text);
+  }
+  for(const offset of [0,3])for(const doc of documents.slice(offset,offset+3)){
+    assert.equal(doc.prepared.version,PREPARATION_VERSION);
+    assert.deepEqual(doc.prepared,documents[offset].prepared);
+  }
+  assert.deepEqual(documents[6].prepared,fixture.retained_contacts[6].parsed.document.prepared_versions['iucn-documents-v1']);
+  const capture=fixture.retained_contacts[0],doc=documents[0];
+  const body=DomUtils.findAll(n=>(n.attribs?.class??'').split(/\s+/).includes('field--name-field-body'),parseDocument(capture.content,{withStartIndices:true}).children)[0];
+  const start=capture.content.indexOf('>',body.startIndex)+1;
+  const extra='<p>New contact hours: 10:00 UTC. <a href="mailto:public@example.org">Public contact</a> '+
+    '<a href="/cdn-cgi/l/email-protection#aabbccdd">Ordinary unverified link</a> '+
+    '<a href="/cdn-cgi/l/email-protection#aabbccdd"><span class="__cf_email__" data-cfemail="not-a-token">Malformed marker</span></a> '+
+    '<a href="https://example.org/cdn-cgi/l/email-protection#aabbccdd"><span class="__cf_email__" data-cfemail="aabbccdd">External link</span></a> '+
+    '<a title="Contact > transport" href="/cdn-cgi/l/email-protection#aabbccdd"><span class="__cf_email__" data-cfemail="aabbccdd">New visible contact text</span></a></p>';
+  const changed=await collect({home:{...fixture.home,status:503},knownDocuments:[{id:doc.id,url:doc.url}],overrides:{[doc.url]:{
+    url:doc.url,status:200,headers:{'content-type':'text/html'},body:capture.content.slice(0,start)+extra+capture.content.slice(start)}}});
+  const prepared=changed.documents[0].prepared;assert.notDeepEqual(prepared,doc.prepared);
+  assert.ok(prepared.text.includes('New contact hours: 10:00 UTC.'));assert.ok(prepared.text.includes('New visible contact text'));
+  assert.ok(prepared.links.some(l=>l.target==='mailto:public@example.org'));
+  assert.equal(prepared.links.filter(l=>l.target==='https://iucn.org/cdn-cgi/l/email-protection#aabbccdd').length,2);
+  assert.ok(prepared.links.some(l=>l.target==='https://example.org/cdn-cgi/l/email-protection#aabbccdd'));
+  assert.deepEqual(changed.requests,[IUCN_LISTING,doc.url]);
+});
+
+test('retained token captures carry pending, complete and exhausted processing without resetting old versions',async()=>{
+  const db=new PGlite();
+  try{
+    await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;
+      create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');create table auth.identities(user_id uuid,provider text,identity_data jsonb);
+      create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;`);
+    for(const name of readdirSync(new URL('../supabase/migrations/',import.meta.url)).sort())await db.exec(readFileSync(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
+    await db.exec(readFileSync(new URL('../supabase/seeds/trackers.sql',import.meta.url),'utf8'));
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[IUCN_LISTING])).rows[0],documents=[];
+    for(const capture of fixture.retained_contacts){
+      await db.query('insert into scout.evidence(id,tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,$6,$7)',
+        [capture.id,tracker.id,capture.url,capture.content_hash,capture.content,JSON.stringify(capture.parsed),capture.last_seen_at]);
+      const run=await collect({home:{...fixture.home,status:503},knownDocuments:[{id:capture.parsed.document.id,url:capture.url}],overrides:{[capture.url]:{
+        url:capture.url,status:200,headers:{'content-type':'text/html'},body:capture.content}}});documents.push(run.documents[0]);
+    }
+    const inputs=[];let item=documents[0],mode='pending';
+    const options={tracker,sourceURL,now:()=>new Date().toISOString(),deadline:Date.now()+100000,limits:{seconds:100,requests:4,pages:4},process:true,path:'iucn',
+      retrieve:async()=>({documents:[item],coverage:[]}),model:async(_,supplied)=>{
+        inputs.push(supplied[0]);
+        if(mode==='pending'){if(inputs.length===1)throw Object.assign(new Error('Invalid JSON'),{rejected:'Injected invalid response'});throw new Error('Model quota reached');}
+        return {complete:mode!=='exhausted',reason:'Injected storage/continuity decision only.',findings:[]};
+      }};
+    await collectDocuments(db,options);assert.equal(inputs.length,2);
+    const first=(await db.query('select parsed from scout.evidence where id=$1',[fixture.retained_contacts[0].id])).rows[0].parsed.document;
+    const version=first.processing.version,pending=first.processing_versions[version].pending;assert.equal(pending.round,1);
+    mode='complete';item=documents[1];await collectDocuments(db,options);assert.equal(inputs.length,3);
+    assert.deepEqual(inputs[2],{...pending.input,source_id:fixture.retained_contacts[1].id,repair:pending.repair});
+    item=documents[2];const repeat=await collectDocuments(db,options);assert.equal(repeat.processed,1);assert.equal(inputs.length,3);
+    const completed=(await db.query('select parsed from scout.evidence where id=$1',[fixture.retained_contacts[2].id])).rows[0].parsed.document;
+    assert.equal(completed.processing.version,version);assert.equal(completed.processing_versions[version].state,'complete');
+    item=(await collect({home:{...fixture.home,status:503},knownDocuments:[{id:item.id,url:item.url}],overrides:{[item.url]:{
+      url:item.url,status:200,headers:{'content-type':'text/html'},body:item.raw.replace('Remmy Lema','Updated contact person')}}})).documents[0];
+    await collectDocuments(db,options);assert.equal(inputs.length,4,'Visible contact change requires fresh processing');
+    mode='exhausted';item=documents[3];await collectDocuments(db,options);assert.equal(inputs.length,7);
+    const exhausted=(await db.query('select parsed from scout.evidence where id=$1',[fixture.retained_contacts[3].id])).rows[0].parsed.document;
+    assert.equal(exhausted.processing_versions[exhausted.processing.version].exhausted,true);
+    for(const next of documents.slice(4,6)){item=next;await collectDocuments(db,options);assert.equal(inputs.length,7,'Token change must not renew exhausted attempts');}
+    for(const capture of fixture.retained_contacts){
+      const retained=(await db.query('select content,parsed from scout.evidence where id=$1',[capture.id])).rows[0];
+      assert.equal(retained.content,capture.content);
+      for(const [key,value] of Object.entries(capture.parsed.document.prepared_versions))assert.deepEqual(retained.parsed.document.prepared_versions[key],value);
+      for(const [key,value] of Object.entries(capture.parsed.document.processing_versions))assert.deepEqual(retained.parsed.document.processing_versions[key],value);
+    }
+    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+  }finally{await db.close();}
 });
 
 test('structural listing reorder and duplicate cards preserve identities and bounded selection',async()=>{
