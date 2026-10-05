@@ -69,6 +69,43 @@ test('successful run persists progress, exact model bodies and capture/record li
   }finally{await db.close();}
 });
 
+test('legacy Low findings retain reader-visible source/reason and skip unchanged calls while uncertainty and fresh identity remain guarded',async()=>{
+  for(const scenario of ['saved','uncertain','concurrent']){
+    const db=await database();let calls=0,sourceId,concurrent;
+    const reason='General BBNJ advocacy promotion.',fixtureRead=read(['BBNJ advocacy announcement.']);
+    const model=async(_instruction,inputs)=>{
+      calls++;assert.equal(inputs.length,1);const input=inputs[0];sourceId=input.source_id;
+      const low={...decision(input),priority:'low',reason};
+      if(scenario==='uncertain')return [{...low,action:'uncertain',candidate:null}];
+      if(scenario==='concurrent'){
+        assert.equal(input.candidates.length,0);
+        concurrent=(await db.query('insert into scout.records('+CONTENT_FIELDS.join(',')+',priority,identity_key) values('+CONTENT_FIELDS.map((_,i)=>'$'+(i+1)).join(',')+',$11,$12) returning *',
+          [...CONTENT_FIELDS.map(k=>low.candidate[k]),'normal','concurrent-fixture'])).rows[0];
+      }
+      return [low];
+    };
+    try{
+      const run=await collectHSA(db,{...options,read:fixtureRead,model});assert.equal(calls,1);
+      const rows=(await db.query('select * from scout.records order by id')).rows;
+      const source=(await db.query('select * from scout.evidence where id=$1',[sourceId])).rows[0];
+      if(scenario!=='saved'){
+        assert.equal(run.created,0);assert.deepEqual(rows,concurrent?[concurrent]:[]);assert.equal(source.record_id,null);
+        assert.equal(source.parsed.assessment.state,'uncertain');
+        if(concurrent){assert.match(source.parsed.assessment.reason,/refreshed shortlist/);assert.equal(source.parsed.assessment.model_decision.priority,'low');}
+        continue;
+      }
+      assert.equal(run.created,1,run.warnings.join(';'));assert.equal(rows.length,1);assert.equal(rows[0].priority,'low');
+      assert.equal(source.record_id,rows[0].id);assert.equal(source.parsed.assessment.reason,reason);assert.equal(source.parsed.assessment.priority_accepted,true);
+      await db.exec('set role authenticated');await db.query("select set_config('request.jwt.claim.sub',$1,false)",[member]);
+      assert.deepEqual((await db.query('select record_id,url,priority_reason from scout.source_details')).rows,[{record_id:rows[0].id,url:source.url,priority_reason:reason}]);
+      await db.exec('reset role');
+      const repeat=await collectHSA(db,{...options,read:fixtureRead,model});assert.equal(repeat.assessed,0);assert.equal(repeat.created,0);assert.equal(calls,1);
+      assert.deepEqual((await db.query('select * from scout.records order by id')).rows,rows);
+      assert.deepEqual((await db.query('select parsed from scout.evidence where id=$1',[sourceId])).rows[0].parsed,source.parsed);
+    }finally{await db.close();}
+  }
+});
+
 test('recovered provider retry summarizes successful generation while retaining both attempts and the error',async()=>{
   const db=await database();let calls=0;
   try{

@@ -1911,7 +1911,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
           validateDecision(decision,input);
         }
         const evaluatedUncertainty=decision.action==='uncertain';
-        if (decision.action==='new' && decision.candidate && decision.priority!=='low') {
+        if (decision.action==='new' && decision.candidate) {
           const fresh=await assessmentInput(db,source,tracker);
           const matches=fresh.candidates.filter(candidate=>{
             const seen=input.candidates.some(item=>item.id===candidate.id);
@@ -1939,7 +1939,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
           let target;
           await tx.query('update scout.evidence set parsed=$2 where id=$1',[source.id,JSON.stringify(parsed)]);
           if (decision.action==='uncertain') { stats.warnings.push(decision.reason); return; }
-          if (['new','update'].includes(decision.action) && (decision.priority!=='low'||decision.record_id)) {
+          if (['new','update'].includes(decision.action)) {
             const existing=input.candidates.find(row=>row.id===decision.record_id);
             let identity=existing?.identity_key ?? (parsed.kind==='event'&&parsed.event_url ? `event:${parsed.event_url}` : parsed.source.identity);
             if (!existing && (await tx.query('select id from scout.records where identity_key=$1',[identity])).rows.length) {
