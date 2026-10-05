@@ -79,9 +79,9 @@ const stages=(findings,resolve=input=>resolution(input))=>input=>{
 };
 const current=async db=>(await db.query('select * from scout.records order by title')).rows;
 const progress=async(db,id)=>(await db.query("select parsed from scout.evidence where record_id is null and ($1::text is null or parsed#>>'{document,id}'=$1) order by last_seen_at desc limit 1",[id==null?null:String(id)])).rows[0].parsed.document;
-const release={...proposal(),anchor:'Ocean Data Release',candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'announcement',title:'Ocean Data Release',organization:'Ocean Institute',description:'A new ocean data portal was released.'},
-  evidence:{kind:'Ocean Data Release',title:'Ocean Data Release',organization:'Ocean Institute',description:'A new ocean data portal was released.',priority:'A new ocean data portal was released.'}};
-const digest={...article,title:{rendered:'Weekly digest'},content:{rendered:'<h2>Ocean Data Release</h2><p>Ocean Institute</p><p>A new ocean data portal was released.</p>'}};
+const release={...proposal(),anchor:'Ocean Data Workshop',candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'event',title:'Ocean Data Workshop',organization:'Ocean Institute',description:'A workshop on ocean data standards.'},
+  evidence:{kind:'Ocean Data Workshop',title:'Ocean Data Workshop',organization:'Ocean Institute',description:'A workshop on ocean data standards.',priority:'A workshop on ocean data standards.'}};
+const digest={...article,title:{rendered:'Weekly digest'},content:{rendered:'<h2>Ocean Data Workshop</h2><p>Ocean Institute</p><p>A workshop on ocean data standards.</p>'}};
 const seed=async(db,p=release,key='fixture')=>(await db.query('insert into scout.records('+CONTENT_FIELDS.join(',')+',priority,identity_key) values('+CONTENT_FIELDS.map((_,i)=>'$'+(i+1)).join(',')+',$11,$12) returning *',[...CONTENT_FIELDS.map(k=>p.candidate[k]),p.priority,key])).rows[0];
 
 test('both stages share durable minute/run limits, counted transient retry and resumable repair state',async()=>{

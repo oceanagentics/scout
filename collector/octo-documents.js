@@ -121,75 +121,18 @@ function feedItems(body) {
   });
 }
 
-// One hop from retained primary links: three destinations/article, six/run.
-// Registration/organizer relationships are link metadata, never arrival order.
-export async function supportDocuments(db,{source,prepared,read,sourceURL,budget,limits,trace,cache}){
-  const links=new Map(),coverage=[],documents=[{id:'P',capture_id:source.id,hash:source.content_hash,url:prepared.url,relationship:'primary',preparation_version:prepared.version,prepared}];
-  for(const link of prepared.links){
-    if(link.relationship==='taxonomy'){coverage.push({...link,state:'skipped',reason:'Publisher taxonomy link retained without support fetching'});continue;}
-    let url;try{url=sourceURL(link.target);}catch{coverage.push({...link,state:'unsupported',reason:'Public HTTPS document URL required'});continue;}
-    if(link.tag!=='a'||/\.(?:pdf|png|jpe?g|gif|webp|mp4|mp3|zip)(?:$|\?)/i.test(url)){coverage.push({...link,url,state:'unsupported',reason:'Only linked HTML/text/JSON documents in this one-hop pass'});continue;}
-    if(url===sourceURL(prepared.url)){coverage.push({...link,url,state:'skipped',reason:'Primary document already retained'});continue;}
-    const prior=links.get(url);
-    if(!prior||prior.relationship==='support')links.set(url,{...link,url});
-  }
-  let selected=0;
-  for(const link of [...links.values()].sort((a,b)=>(a.relationship==='support')-(b.relationship==='support'))){
-    const relation={from:source.id,url:link.url,label:link.label,context:link.context,relationship:link.relationship};
-    if(selected++>=3){coverage.push({...relation,state:'deferred',reason:'Three support destinations per article'});continue;}
-    let result=cache.get(link.url);
-    if(!result){
-      if(cache.size>=limits.pages||budget.requests>=limits.requests||Date.now()>=budget.deadline){coverage.push({...relation,state:'deferred',reason:'Shared support/request/time bound'});continue;}
-      result={state:'failed'};cache.set(link.url,result);
-      const op=await trace.start('fetch',{url:link.url,note:'One-hop supporting document; shared public-fetch safeguards.'});
-      const before=budget.requests;
-      try{
-        const r=await read(link.url,budget);if(budget.requests===before)budget.requests++;
-        if(r.status!==200||typeof r.body!=='string'||Buffer.byteLength(r.body)>limits.bytes)throw new Error('Support response status/byte bound');
-        const url=sourceURL(r.url),mime=r.headers?.['content-type']?.split(';')[0]??'text/html';
-        const payload={url,status:r.status,mime,body:r.body},hash=digest(JSON.stringify(payload));
-        const capture=(await db.query("insert into scout.evidence(tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,clock_timestamp()) "+
-          "on conflict(record_id,tracker_id,url,content_hash) do update set last_seen_at=excluded.last_seen_at returning *",
-          [source.tracker_id,url,hash,JSON.stringify(payload),JSON.stringify({document:{identity:'support:'+link.url}})])).rows[0];
-        const ref=await trace.capture(capture);
-        Object.assign(result,{capture_id:capture.id,hash,url});
-        if(!['text/html','application/xhtml+xml','application/json','text/plain'].includes(mime)){
-          Object.assign(result,{state:'unsupported',capture_id:capture.id,hash,url,reason:'Unsupported support MIME type: '+mime});
-          await trace.finish(op,'skipped',{artifacts:[ref],note:result.reason});
-        }else{
-        let clean=capture.parsed.document.prepared_versions?.[PREPARATION_VERSION];
-        if(!clean){
-          const html=mime==='application/json'||mime==='text/plain'?'<pre>'+r.body.replaceAll('&','&amp;').replaceAll('<','&lt;')+'</pre>':r.body;
-          const title=DomUtils.textContent(DomUtils.getElementsByTagName('title',parseDocument(html).children)[0]??{children:[]})||url;
-          clean=prepareDocument({url,title,html});
-          await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,prepared_versions}',coalesce(parsed#>'{document,prepared_versions}','{}')||jsonb_build_object($2::text,$3::jsonb)) where id=$1",[capture.id,PREPARATION_VERSION,JSON.stringify(clean)]);
-        }
-        Object.assign(result,{state:'fetched',capture_id:capture.id,hash,url,prepared:clean});
-        const artifact=await trace.artifact('preparation','Cleaned supporting document',undefined,{source_id:capture.id,content_hash:hash,preparation_version:PREPARATION_VERSION});
-        await trace.finish(op,'pass',{artifacts:[ref,artifact],note:'Payload and cleaned support retained. Links from this page are not followed.'});
-        }
-      }catch(error){
-        if(budget.requests===before)budget.requests++;
-        result.reason=error.message;await trace.finish(op,'fail',{note:'Support unavailable: '+error.message});
-      }
-    }
-    coverage.push({...relation,...Object.fromEntries(Object.entries(result).filter(([k])=>k!=='prepared'))});
-    if(result.state==='fetched'&&!documents.some(d=>d.capture_id===result.capture_id))
-      documents.push({id:'S'+documents.length,capture_id:result.capture_id,hash:result.hash,url:result.url,relationship:link.relationship,via:relation,preparation_version:result.prepared.version,prepared:result.prepared});
-  }
-  // JSONB changes object-key order on readback; coverage ordering is mechanical,
-  // not a support change. Source payload hashes themselves remain exact.
-  const context=digest(JSON.stringify({primary:source.content_hash,coverage:coverage.map(link=>Object.fromEntries(Object.entries(link).sort(([a],[b])=>a.localeCompare(b)))),documents:documents.map(({prepared,...d})=>d)}));
-  const combined={...prepared,text:'',blocks:[],documents,context,coverage};
-  for(const doc of documents){
-    if(combined.text)combined.text+='\n\n';
-    doc.start=combined.text.length;combined.text+=doc.prepared.text;doc.end=combined.text.length;
-    for(const b of doc.prepared.blocks)combined.blocks.push({...b,id:doc.id+':'+b.id,doc:doc.id,start:b.start+doc.start,end:b.end+doc.start,headings:b.headings.map(i=>doc.id+':'+i)});
-  }
-  const artifact=await trace.artifact('support_coverage','Primary/support relationships, versions and coverage',{context,documents:documents.map(({prepared,...d})=>d),links:coverage});
-  const op=await trace.start('prepare',{source_ids:[source.id],artifacts:[artifact],note:'Bounded one-hop support context; every omitted/failed destination remains explicit.'});
+// Incidental announcement links remain metadata; extraction uses only its own
+// retained primary body. No registration/organizer/topic destinations are opened.
+export async function supportDocuments(_db,{source,prepared,trace}){
+  const coverage=prepared.links.map(link=>({...link,state:'unfetched',reason:'Citation/link metadata only; not opened for event extraction'}));
+  const documents=[{id:'P',capture_id:source.id,hash:source.content_hash,url:prepared.url,relationship:'primary',
+    preparation_version:prepared.version,prepared,start:0,end:prepared.text.length}];
+  const context=digest(JSON.stringify({primary:source.content_hash,mode:'announcement-events'}));
+  const artifact=await trace.artifact('support_coverage','Primary announcement and unopened citation links',
+    {context,documents:documents.map(({prepared,...d})=>d),links:coverage});
+  const op=await trace.start('prepare',{source_ids:[source.id],artifacts:[artifact],note:'Independent primary announcement; incidental links retained without retrieval or concatenation.'});
   await trace.finish(op,'pass');
-  return combined;
+  return {...prepared,documents,context,coverage};
 }
 
 // Opt-in fetch/prepare route. No call into the legacy scripted assessment/save
@@ -198,8 +141,8 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
   const run=(await db.query('insert into scout.collection_runs(tracker_id,started_at,stats) values($1,$2,$3::jsonb) returning id',[tracker.id,now(),JSON.stringify({validation:true,documents_only:!process})])).rows[0];
   const trace=await startReport(db,run.id,path+(process?'-records':'-documents'));
   const budget={requests:0,deadline:Math.min(deadline,Date.now()+limits.seconds*1000)};
-  const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,uncertain:0,unfetched:0,processed:0,created:0,changed:0,warnings:[...process?[]:['Fetch/prepare only; generation, validation/repair and record saving are not requested.'],path==='octo'?'One RSS page; archives/media remain unfetched.':'Bounded source retrieval; inspect source coverage for failed/deferred items and unvisited pages.',process?'One-hop support limited to three destinations/document and six/run.':'Supporting links/media remain unfetched.']};
-  const ready=[],inventory=[],supportCache=new Map();
+  const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,uncertain:0,unfetched:0,processed:0,created:0,changed:0,warnings:[...process?[]:['Fetch/prepare only; generation, validation/repair and record saving are not requested.'],path==='octo'?'One RSS page; archives/media remain unfetched.':'Bounded source retrieval; inspect source coverage for failed/deferred items and unvisited pages.','Incidental links retained as citations/metadata; no support expansion.']};
+  const ready=[],inventory=[];
   async function fetchDocument(url,withHeaders=false){
     const op=await trace.start('fetch',{url});
     if(budget.requests>=limits.requests||Date.now()>=budget.deadline){await trace.finish(op,'skipped',{note:'Shared request/time bound; document not fetched.'});return {op,error:'Shared request/time bound'};}
@@ -271,7 +214,7 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
     // no longer contains them. Least-recently observed first avoids starvation.
     const checked=new Map(known.map(row=>[row.feed.id,Date.parse(row.last_seen_at)]));
     selected=[...candidates.values()].sort((a,b)=>(checked.get(a.id)??0)-(checked.get(b.id)??0));
-    plan=await trace.artifact('coverage','Document retrieval plan',{feed:FEED,documents:selected.map(i=>({id:i.id,url:i.url})),invalid:inventory,article_limit:limits.requests-1,supporting_links:process?'One hop; three/article, six/run within shared request/byte/redirect/time guards':'Not fetched; full targets retained in preparation'});
+    plan=await trace.artifact('coverage','Document retrieval plan',{feed:FEED,documents:selected.map(i=>({id:i.id,url:i.url})),invalid:inventory,article_limit:limits.requests-1,supporting_links:'Not opened; full targets retained as citations/metadata'});
     }
     const selection=await trace.start('prepare',{checkpoint:true,artifacts:[plan]});await trace.finish(selection,retrievalFailed?'fail':'pass',{note:'Document identities selected without topic, category, date or finding filters; source failures remain in coverage.'});
     for(const [index,entry] of selected.entries()){
@@ -326,8 +269,12 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
           await trace.finish(conflict,'uncertain',{note:'Conflicting payloads for one source identity in this retrieval; retain all versions without choosing observation order.'});continue;
         }
         if(process){
+          if(feedOnly){
+            stats.failed++;inventory.at(-1).processing='failed';
+            stats.warnings.push('Full announcement unavailable; retained feed snippet is discovery only.');continue;
+          }
           model??=makeModel?.(run.id,budget.deadline,trace);
-          const context=await supportDocuments(db,{source,prepared,read,sourceURL,budget,limits,trace,cache:supportCache});
+          const context=await supportDocuments(db,{source,prepared,trace});
           const result=await processDocument(db,{source,prepared:context,trace,model,deadline:budget.deadline,version:documentVersion,
             changed:Boolean(previous&&previous.content_hash!==hash)});
           stats.created+=result.created;stats.changed+=result.changed;
@@ -341,7 +288,7 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
       }
     }
     if(!selected.length)await trace.skip('prepare','No structurally usable document identities found.');
-    const coverage=await trace.artifact('coverage','Document outcomes',{documents:inventory,unvisited:'Source bounds in retrieval coverage; unsupported/deferred support, media and further hops remain unvisited.'});
+    const coverage=await trace.artifact('coverage','Document outcomes',{documents:inventory,unvisited:'Source retrieval bounds remain explicit; incidental citation links and media are not opened for extraction.'});
     await trace.finish(selection,retrievalFailed?'fail':'pass',{artifacts:[plan,coverage],note:'Document identities selected without topic, category, date or finding filters; inspect bounded retrieval outcomes and failures.'});
     stats.requests=budget.requests;stats.pending=ready.length-stats.processed;
     // A successful preparation is not an end-to-end successful collection.

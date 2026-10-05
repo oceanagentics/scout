@@ -3,13 +3,11 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA} from '../collector/hsa.js';
+import {collectHSA,HSA,GFW_WEB} from '../collector/hsa.js';
 import {gemini} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {prepareDocument} from '../collector/octo-documents.js';
-import {PREPARATION_VERSION as AUTHOR_PREPARATION_VERSION} from '../collector/bluesky-documents.js';
-import {packDocument,validateFinding,validateResolution,processDocument,DOCUMENT_VERSION} from '../collector/document-records.js';
-import {startReport} from '../collector/report.js';
+import {packDocument,validateFinding,validateResolution,DOCUMENT_VERSION} from '../collector/document-records.js';
 
 const fixture=async name=>{const raw=await readFile(new URL('./fixtures/'+name,import.meta.url));return JSON.parse(name.endsWith('.gz')?gunzipSync(raw):raw);};
 
@@ -41,7 +39,7 @@ function runModel(db,respond){
   return {makeModel,requests};
 }
 
-const base=(title,citations)=>({anchor:title,urls:[],candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'announcement',title},
+const base=(title,citations)=>({anchor:title,urls:[],candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'event',title},
   priority:'normal',reason:'Substantive public source finding.',citations,evidence:Object.fromEntries(['kind','title','priority'].map(k=>[k,{refs:[0],rationale:'Cited source finding.'}])),dates:{}});
 
 test('saved webinar and conference passages require literal evidence and leave missing details unknown',async()=>{
@@ -57,6 +55,7 @@ test('saved webinar and conference passages require literal evidence and leave m
     const finding=base(anchor,[{doc:'P',quote:anchor===webinar.title.rendered?anchor:quote}]);
     finding.candidate.kind='event';
     assert.equal(validateFinding(finding,input),finding);
+    for(const kind of ['announcement','treaty_status'])assert.throws(()=>validateFinding({...finding,candidate:{...finding.candidate,kind}},input),/supported kind/);
     assert.ok(prepared.links.length>0);assert.deepEqual(Object.keys(input.documents),['P']);
     const invented=structuredClone(finding);invented.citations[0].quote+=' invented details';
     assert.throws(()=>validateFinding(invented,input),/citation/);
@@ -65,6 +64,58 @@ test('saved webinar and conference passages require literal evidence and leave m
     dated.evidence.starts_at={refs:[0],rationale:'Assumed year.'};
     dated.dates.starts_at={local:'2026-10-20T16:00:00',zone:'UTC',parts:{year:[],date:[0],time:[0],zone:[0]}};
     assert.throws(()=>validateFinding(dated,input),/year\/date\/clock\/zone/);
+  }
+});
+
+test('retained GFW event saves before the final range, resumes under quota, and keeps an oversized repair intact',async context=>{
+  const saved=await fixture('gfw-live-repair.json.gz'),post=JSON.parse(saved.artifacts.a2.data.body);
+  const card=saved.artifacts.a1.data.body.match(/<article id="post-74977"[\s\S]*?<\/article>/)[0];
+  const listing='<html><head><link rel="canonical" href="'+GFW_WEB+'"><link rel="https://api.w.org/" href="https://globalfishingwatch.org/wp-json/"></head><body>'+card+'</body></html>';
+  for(const rejected of [false,true]){
+    const db=await database();try{
+      const tracker=(await db.query('select * from scout.trackers where url=$1',[GFW_WEB])).rows[0],reads=[];
+      const decision=structuredClone(saved.artifacts.a24.data.response);
+      if(!rejected){
+        decision.findings[0].evidence=Object.fromEntries(Object.entries(decision.findings[0].evidence).map(([k,v])=>[k.replace(/^candidate\./,''),v]));
+        for(const field of ['organization','description']){decision.findings[0].candidate[field]=null;delete decision.findings[0].evidence[field];}
+      }
+      const transport=runModel(db,input=>input.stage==='resolve'?resolve(input):input.range[0]?answer([]):decision);
+      const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:transport.makeModel,read:async url=>{
+        reads.push(url);
+        assert.ok([GFW_WEB,saved.artifacts.a2.data.url].includes(url),'Incidental link must not be requested: '+url);
+        return {url,status:200,headers:{'content-type':url===GFW_WEB?'text/html':'application/json'},body:url===GFW_WEB?listing:saved.artifacts.a2.data.body};
+      }};
+      const first=await collectHSA(db,options);
+      assert.equal(first.processed,0);assert.equal(reads.length,2);assert.equal(first.requests,2);
+      const source=(await db.query('select * from scout.evidence where tracker_id=$1 and record_id is null',[tracker.id])).rows[0];
+      const state=Object.values(source.parsed.document.processing_versions)[0];
+      if(rejected){
+        assert.equal(transport.requests.length,1);assert.equal(first.created,0);assert.equal(state.cursor,0);
+        assert.deepEqual(state.pending.repair.rejected,saved.artifacts.a24.data.response);
+        assert.match(first.warnings.join(';'),/Repair request exceeds 8000 bytes/);
+        const repeated=await collectHSA(db,options);
+        assert.equal(repeated.processed,0);assert.equal(transport.requests.length,1);
+        assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+        context.diagnostic(JSON.stringify({source:'GFW retained rejection',request_bytes:transport.requests.map(b=>Buffer.byteLength(b)),deferred:first.warnings.find(w=>w.includes('Repair request'))}));
+      }else{
+        assert.equal(first.created,1);assert.equal(transport.requests.length,2);assert.match(first.warnings.join(';'),/quota/);
+        const prepared=Object.values(source.parsed.document.prepared_versions)[0];
+        assert.ok(state.cursor>0&&state.cursor<prepared.text.length);assert.ok(state.findings[0].record_id);
+        const record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.title,decision.findings[0].candidate.title);
+        assert.equal(record.starts_at,null);assert.equal(record.organization,null);
+        // Simulate the next minute only in this isolated ledger; keep both reservations.
+        await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{model_attempts}',(select jsonb_agg(a||jsonb_build_object('at',(a->>'at')::timestamptz-interval '61 seconds')) from jsonb_array_elements(stats->'model_attempts') a)) where id=$1",[first.run_id]);
+        const resumed=await collectHSA(db,options);assert.equal(resumed.processed,1,resumed.warnings.join(';'));assert.equal(resumed.created,0);
+        assert.equal(transport.requests.length,3);
+        const lastInput=JSON.parse(JSON.parse(transport.requests.at(-1)).contents[0].parts[0].text)[0];assert.equal(lastInput.range[0],state.cursor);
+        const repeated=await collectHSA(db,options);assert.equal(repeated.processed,1);assert.equal(transport.requests.length,3);
+        assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+        const ledger=(await db.query('select stats from scout.collection_runs where id=any($1::uuid[])',[ [first.run_id,resumed.run_id] ])).rows;
+        assert.equal(ledger.reduce((sum,r)=>sum+r.stats.model_attempts.length,0),3);
+        context.diagnostic(JSON.stringify({source:'GFW injected event',request_bytes:transport.requests.map(b=>Buffer.byteLength(b)),saved_at_cursor:state.cursor,primary_characters:prepared.text.length}));
+      }
+      assert.equal(reads.length,rejected?4:6);
+    }finally{await db.close();}
   }
 });
 
@@ -92,7 +143,7 @@ test('saved UNOC announcement retains separate session labels without borrowing 
   assert.throws(()=>validateResolution({...review,facts:{...review.facts,title:'unsupported'}},findings[1],[],prepared),/Unsupported\/conflicting/);
 });
 
-test('saved HSA webinar and non-event persist injected primary-only decisions; repeat adds no model calls or duplicate writes',async()=>{
+test('HSA processing saves a stated event or no event without following links; repeat adds no calls or duplicate writes',async context=>{
   const webinar=await fixture('hsa-webinar-time.json'),saved=await fixture('hsa-author-pinned.json.gz');
   const nonEvent=JSON.parse(saved.response.body).feed.find(i=>i.post.uri.endsWith('/3mtyfj3wpdx2g'));
   assert.ok(nonEvent.post.record.text.startsWith('The albatross:'));
@@ -100,20 +151,6 @@ test('saved HSA webinar and non-event persist injected primary-only decisions; r
     const db=await database();try{
       const tracker=(await db.query('select * from scout.trackers where url=$1',['https://bsky.app/profile/'+HSA])).rows[0];
       const fetched=[];
-      const captured=await collectHSA(db,{trackerId:tracker.id,validate:true,documents:true,read:async url=>{
-        fetched.push(url);assert.ok(url.startsWith('https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed'));
-        return {url,status:200,headers:{'content-type':'application/json'},body:JSON.stringify({feed:[item]})};
-      }});
-      assert.equal(captured.prepared,1,captured.warnings.join(';'));
-      const source=(await db.query('select * from scout.evidence where tracker_id=$1',[tracker.id])).rows[0];
-      assert.equal(source.content,JSON.stringify(item));assert.equal(fetched.length,1);
-      const primary=source.parsed.document.prepared_versions[AUTHOR_PREPARATION_VERSION];
-      // Exercise the processor with this retained announcement only. The acquisition
-      // pipeline's automatic support fetching still needs its separate correction.
-      const prepared={...primary,documents:[{id:'P',capture_id:source.id,hash:source.content_hash,url:source.url,
-        relationship:'primary',preparation_version:primary.version,prepared:primary,start:0,end:primary.text.length}]};
-      const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[tracker.id])).rows[0];
-      const trace=await startReport(db,run.id,'author-records'),deadline=Date.now()+10000;
       const transport=runModel(db,input=>{
         if(input.stage==='resolve')return resolve(input);
         assert.deepEqual(Object.keys(input.documents),['P']);
@@ -121,20 +158,30 @@ test('saved HSA webinar and non-event persist injected primary-only decisions; r
         const finding=base('Let’s Talk BBNJ',[{doc:'P',quote:item.post.record.text.split('\n')[0]}]);
         finding.candidate.kind='event';return answer([finding]);
       });
-      const model=transport.makeModel(run.id,deadline,trace);
-      const result=await processDocument(db,{source,prepared,trace,model,deadline});
-      assert.equal(result.state,'complete');assert.equal(result.created,isEvent?1:0);
+      const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:transport.makeModel,read:async url=>{
+        fetched.push(url);assert.ok(url.startsWith('https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed'));
+        return {url,status:200,headers:{'content-type':'application/json'},body:JSON.stringify({feed:[item]})};
+      }};
+      const run=await collectHSA(db,options);
+      assert.equal(run.processed,1,run.warnings.join(';'));assert.equal(run.created,isEvent?1:0);
+      const source=(await db.query('select * from scout.evidence where tracker_id=$1 and record_id is null',[tracker.id])).rows[0];
+      assert.equal(source.content,JSON.stringify(item));assert.equal(fetched.length,1);assert.equal(run.requests,1);
       const rows=(await db.query('select * from scout.records')).rows;
       assert.equal(rows.length,isEvent?1:0);
       if(isEvent)for(const field of ['starts_at','ends_at','organization','location'])assert.equal(rows[0][field],null);
       const before=transport.requests.length;assert.equal(before,isEvent?2:1);
-      const refreshed=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];
-      await processDocument(db,{source:refreshed,prepared,trace,model,deadline});
+      const repeat=await collectHSA(db,options);
+      assert.equal(repeat.processed,1);assert.equal(fetched.length,2);assert.equal(repeat.requests,1);
       assert.equal(transport.requests.length,before);assert.deepEqual((await db.query('select * from scout.records')).rows,rows);
-      const detail=(await db.query('select stats,report from scout.collection_runs where id=$1',[run.id])).rows[0];
+      const detail=(await db.query('select stats,report from scout.collection_runs where id=$1',[run.run_id])).rows[0];
       assert.equal(detail.stats.model_attempts.length,before);
+      assert.equal(detail.report.path,'author-records');
+      const coverage=Object.values(detail.report.artifacts).find(a=>a.kind==='support_coverage').data;
+      assert.deepEqual(coverage.documents.map(d=>d.id),['P']);assert.ok(coverage.links.length>0);
+      assert.ok(coverage.links.every(l=>l.state==='unfetched'));
       assert.ok(Object.values(detail.report.artifacts).some(a=>a.kind==='model_request'));
       assert.ok(!JSON.stringify(detail.report).includes('fixture-test-key'));
+      context.diagnostic(JSON.stringify({source:isEvent?'HSA webinar':'HSA non-event',request_bytes:transport.requests.map(b=>Buffer.byteLength(b)),repeat_calls:transport.requests.length-before}));
     }finally{await db.close();}
   }
 });
