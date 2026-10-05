@@ -269,6 +269,65 @@ test('retained DOSI repair resumes before fresh articles; raw UI churn preserves
   }finally{await db.close();}
 });
 
+test('actual DOSI unknown-clock refusal resumes at repair one, can save null dates, and preserves completed sources and history',async()=>{
+  const saved=(await fixture('hsa-social-preparation.json.gz')).announcement_contract.dosi_unknown_schedule;
+  for(const mode of ['exhausted','wrong-source','ambiguous','refused','accepted']){const db=await database();try{
+    const accepted=mode==='accepted';
+    const r=structuredClone(saved.run);
+    // Synthetic variants must not obtain fresh allowance from exhausted or unrelated history.
+    const [responseId,response]=Object.entries(r.report.artifacts).find(([,a])=>a.kind==='extract_response'&&a.data.response.complete===false);
+    if(mode==='exhausted')response.data.round=2;
+    if(mode==='ambiguous'){
+      r.report.artifacts.a999=structuredClone(response);
+      for(const op of Object.values(r.report.operations))if(op.artifacts?.includes(responseId))op.artifacts.push('a999');
+    }
+    if(mode==='wrong-source')for(const op of Object.values(r.report.operations))
+      if(op.artifacts?.some(id=>r.report.artifacts[id].kind==='processing_error'))op.source_ids=[saved.sources[1].id];
+    await db.query('update scout.trackers set id=$1 where url=$2',[r.tracker_id,'https://bsky.app/profile/deepstewardship.bsky.social']);
+    for(const s of saved.sources)await db.query('insert into scout.evidence(id,tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,$6,$7)',
+      [s.id,r.tracker_id,s.url,s.content_hash,s.content,JSON.stringify(s.parsed),s.last_seen_at]);
+    await db.query('insert into scout.collection_runs(id,tracker_id,started_at,finished_at,outcome,stats,report) values($1,$2,$3,$4,$5,$6,$7)',
+      [r.id,r.tracker_id,r.started_at,r.finished_at,r.outcome,JSON.stringify(r.stats),JSON.stringify(r.report)]);
+    const original=(await db.query('select * from scout.collection_runs where id=$1',[r.id])).rows[0];
+    const source=(await db.query('select * from scout.evidence where id=$1',[saved.sources[0].id])).rows[0];
+    const previous=source.parsed.document.processing_versions[source.parsed.document.processing.version];assert.equal(previous.pending,undefined);
+    const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[r.tracker_id])).rows[0].id;
+    const trace=await startReport(db,run),deadline=Date.now()+100000;
+    const prepared=await supportDocuments(db,{source,prepared:source.parsed.document.prepared_versions['bluesky-author-documents-v3'],trace});
+    const transport=runModel(db,input=>{
+      if(input.stage==='resolve')return resolve(input);
+      assert.deepEqual(input.repair.rejected,saved.response);assert.equal(input.range[1],384);
+      if(!accepted)return saved.response;
+      const quote='How Deep is Your Love will be screened in UK cinemas from 2nd October with preview screenings + Q&A in London from the 23rd of this month.';
+      return answer([base('How Deep is Your Love',[{doc:'P',quote}])]);
+    });
+    const options={source,prepared,trace,deadline,model:transport.makeModel(run,deadline,trace)};
+    const result=await processDocument(db,options);
+    const state=(await db.query('select parsed from scout.evidence where id=$1',[source.id])).rows[0].parsed.document;
+    if(['exhausted','wrong-source','ambiguous'].includes(mode)){
+      assert.equal(transport.requests.length,0);assert.equal(!!state.processing_versions[state.processing.version].exhausted,mode==='exhausted');
+      assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[r.id])).rows[0],original);continue;
+    }
+    assert.equal(transport.requests.length,2);
+    assert.equal(state.processing.version,source.parsed.document.processing.version);
+    assert.equal(result.created,accepted?1:0);assert.equal(result.state,accepted?'complete':'failed');
+    if(accepted){const record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.starts_at,null);assert.equal(record.ends_at,null);assert.equal(record.status,null);}
+    else assert.equal(state.processing_versions[state.processing.version].exhausted,true);
+    options.source=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];
+    await processDocument(db,options);assert.equal(transport.requests.length,2,'Completed or exhausted source cannot call again');
+    for(const retained of saved.sources.slice(1)){
+      const complete=(await db.query('select * from scout.evidence where id=$1',[retained.id])).rows[0];
+      const context=await supportDocuments(db,{source:complete,prepared:complete.parsed.document.prepared_versions['bluesky-author-documents-v3'],trace});
+      assert.equal((await processDocument(db,{...options,source:complete,prepared:context})).state,'complete');
+    }
+    assert.equal(transport.requests.length,2);assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[r.id])).rows[0],original);
+    assert.equal((await db.query('select stats from scout.collection_runs where id=$1',[run])).rows[0].stats.model_attempts.length,2);
+    const details=(await db.query('select report from scout.collection_runs where id=$1',[run])).rows[0].report;
+    const rounds=Object.values(details.operations).filter(o=>o.stage==='extract'&&o.step==='generate').map(o=>o.repair);
+    assert.deepEqual(rounds,accepted?[1]:[1,2]);
+  }finally{await db.close();}}
+});
+
 test('same source identity with changed URL, factual context or omissions must not reuse completed processing',async()=>{
   const db=await database();try{
     const tracker=(await db.query('select * from scout.trackers limit 1')).rows[0];let calls=0;

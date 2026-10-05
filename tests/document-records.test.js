@@ -149,15 +149,34 @@ test('grounding rejects invented values and imprecise/invalid dates; time deferr
   }finally{await db.close();}
 });
 
-test('retained complete=false refusal stays unresolved until a new valid unit response is supplied',async()=>{
-  const live=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/gfw-live-extraction.json.gz',import.meta.url)))),db=await setup();
-  try{
-    const refused=JSON.parse(JSON.parse(live.artifacts.a17.data.body).candidates[0].content.parts[0].text);
-    const source=runner(db,()=>refused),failed=await source.run();
-    assert.equal(failed.processed,0);assert.equal(source.requests.length,1);assert.ok(failed.warnings.some(w=>w.includes('Unresolved extraction context')));
-    const state=Object.values((await progress(db)).processing_versions)[0];assert.equal(state.cursor,0);assert.equal(state.state,'failed');
-    const zero=runner(db,()=>answer([]));assert.equal((await zero.run()).processed,1);assert.equal((await current(db)).length,0);
-  }finally{await db.close();}
+test('retained complete=false uses two resumable repairs, preserves incremental findings and stops unchanged exhaustion',async()=>{
+  const live=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/gfw-live-extraction.json.gz',import.meta.url))));
+  const refused=JSON.parse(JSON.parse(live.artifacts.a17.data.body).candidates[0].content.parts[0].text);
+  for(const partial of [false,true,'persistent','final-round']){const db=await setup();try{
+    if(typeof partial==='string'){
+      const order=[];let extracts=0;
+      const source=runner(db,input=>{order.push(input.stage);if(input.stage==='resolve')return resolution(input);
+        extracts++;return {...refused,findings:partial==='persistent'||extracts===3?[proposal()]:[]};});
+      const failed=await source.run();assert.equal(failed.created,1);assert.equal((await current(db)).length,1);
+      assert.deepEqual(order,partial==='persistent'?['extract','resolve','extract','extract']:['extract','extract','extract','resolve']);
+      const state=Object.values((await progress(db)).processing_versions)[0];assert.equal(state.exhausted,true);assert.equal(state.cursor,0);assert.ok(state.findings[0].resolution);
+      await source.run();assert.equal(source.requests.length,4);continue;
+    }
+    const source=runner(db,()=>partial?{...refused,findings:[proposal()]}:refused,{runLimit:1}),failed=await source.run();
+    assert.equal(failed.processed,0);assert.equal(source.requests.length,1);
+    let state=Object.values((await progress(db)).processing_versions)[0];assert.equal(state.cursor,0);assert.equal(state.pending.round,1);
+    assert.equal(state.findings.length,partial?1:0);assert.equal(state.pending.repair.rejected.complete,false);
+    if(partial){
+      const recovery=runner(db,input=>{if(input.stage==='resolve')return resolution(input);assert.equal(input.repair.rejected.complete,false);return answer([proposal()]);});
+      const recovered=await recovery.run();assert.equal(recovered.processed,1);assert.equal(recovery.requests.length,2);assert.equal((await current(db)).length,1);
+      assert.equal((await recovery.run()).created,0);assert.equal(recovery.requests.length,2);
+    }else{
+      await source.run();state=Object.values((await progress(db)).processing_versions)[0];assert.equal(state.pending.round,2);
+      await source.run();state=Object.values((await progress(db)).processing_versions)[0];assert.equal(state.exhausted,true);assert.equal(source.requests.length,3);
+      await source.run();assert.equal(source.requests.length,3);assert.equal((await current(db)).length,0);
+    }
+    assert.equal((await db.query("select count(*)::int n from scout.collection_runs cross join lateral jsonb_array_elements(coalesce(stats->'model_attempts','[]')) a")).rows[0].n,3);
+  }finally{await db.close();}}
 });
 
 test('only renderer-inserted links may be omitted from anchors; literal URL prose and exact citations remain intact',async()=>{
