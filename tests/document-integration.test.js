@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,UN_SIDE_EVENTS,CBD_REGISTRY,SYMPOSIUM,BLUE_MARINE,GOF,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,UN_SIDE_EVENTS,CBD_REGISTRY,SYMPOSIUM,BLUE_MARINE,GOF,OCEANCARE,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {collectDocuments,prepareDocument,supportDocuments} from '../collector/octo-documents.js';
@@ -479,6 +479,51 @@ test('GOF whole homepage resumes native pending resolution through an RSS outage
     assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
     const last=(await db.query('select stats from scout.collection_runs where id=$1',[repeated.run_id])).rows[0];assert.equal(last.stats.document_source.progress.articles.length,10);assert.equal(last.stats.document_source.pending.length,10);
     context.diagnostic(JSON.stringify({whole_homepage_characters:31624,injected_calls:2,simulated_records:1,repeat_calls:0,missing_article_bodies:10,requests:[first.requests,resumed.requests,repeated.requests]}));
+  }finally{await db.close();}
+});
+
+test('OceanCare whole English story resumes native pending resolution through a listing outage and repeats without model calls',async context=>{
+  const saved=await fixture('oceancare-website.json.gz'),db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[OCEANCARE])).rows[0],reads=[],inputs=[];
+    const listing={...saved.list,body:saved.list.body.replace(/<a\b[^>]*>[\s\S]*?<\/a>/g,item=>item.includes('class="headline"')&&!item.includes(saved.detail2.url)?'':item)}; // One observed story card; detail stays whole.
+    const title='Third Session of the Preparatory Commission (PrepCom 3)';
+    const description='The Third Session of the Preparatory Commission (PrepCom 3) is more than a procedural milestone; it is a critical moment to ensure that the institutions, tools, and processes created under the Agreement are ready to translate global ambition into real protection for the ocean.';
+    const transport=runModel(db,async input=>{
+      inputs.push(input);if(input.stage==='resolve')return resolve(input); // Injected response tests mechanics, not semantic acceptance.
+      const source=(await db.query('select * from scout.evidence where id=$1',[input.source_id])).rows[0],prepared=source.parsed.document.prepared_versions['octo-documents-v6'];
+      assert.equal(source.content,saved.detail2.body);assert.equal(source.parsed.document.identity,'oceancare:post:222223:en');
+      assert.deepEqual(input.range,[0,prepared.text.length]);assert.deepEqual(input.omitted_ranges,[]);assert.equal(input.segments.map(s=>s.text).join(''),prepared.text);
+      assert.equal(prepared.text.length,12727);for(const quote of [title,description,'OceanCare at PrepCom 3','JSON-LD'])assert.ok(prepared.text.includes(quote),quote);
+      assert.ok(prepared.links.some(l=>l.context==='Publisher language alternate'&&l.state==='unfetched'));
+      const finding=base(title,[{doc:'P',quote:title},{doc:'P',quote:description}]);finding.candidate.description=description;
+      finding.reason='BBNJ preparatory meeting on implementation institutions, tools and processes.';finding.evidence={kind:[1],title:[0],description:[1],priority:[1]};return answer([finding]);
+    },true);
+    let remaining=1,listingAvailable=true,dispatches=0;
+    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:(...args)=>{const model=transport.makeModel(...args);return(...input)=>{
+      dispatches++;if(remaining--<=0)throw new Error('Model quota reached');return model(...input);
+    };},read:async url=>{
+      reads.push(url);assert.ok([saved.list.url,saved.detail2.url].includes(url),'Support/translation must remain unfetched: '+url);
+      return url===saved.list.url?{...listing,status:listingAvailable?200:503}:saved.detail2;
+    }};
+    await assert.rejects(collectHSA(db,{...options,sourceId:'00000000-0000-4000-8000-000000000000'}),{status:400});assert.equal(reads.length,0);
+    const first=await collectHSA(db,options);assert.equal(first.documents,1);assert.equal(first.created,0);assert.equal(transport.requests.length,1);
+    const pending=(await db.query('select parsed from scout.evidence where tracker_id=$1 and record_id is null',[tracker.id])).rows[0];
+    assert.equal(pending.parsed.document.id,'222223');assert.equal(Object.values(pending.parsed.document.processing_versions)[0].findings.length,1);
+    listingAvailable=false;remaining=1;const resumed=await collectHSA(db,options);assert.equal(resumed.created,1,resumed.warnings.join(';'));
+    assert.deepEqual(inputs.map(i=>i.stage),['extract','resolve']);assert.equal(transport.requests.length,2);
+    const prior=(await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0];
+    assert.equal(prior.report.path,'oceancare-records');assert.deepEqual(prior.stats.document_source.known,[{url:saved.detail2.url,id:'222223'}]);
+    assert.equal(prior.stats.document_source.progress.after_url,saved.detail2.url);
+    const records=(await db.query('select * from scout.records')).rows;assert.equal(records.length,1);assert.equal(records[0].title,title);assert.equal(records[0].description,description);
+    for(const field of CONTENT_FIELDS.filter(k=>!['kind','title','description'].includes(k)))assert.equal(records[0][field],null);
+    const sources=(await db.query("select id,content,parsed#>'{document,prepared_versions}' prepared,parsed#>'{document,processing_versions}' processing from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows;
+    listingAvailable=true;const beforeRepeat=dispatches,repeated=await collectHSA(db,options);assert.equal(repeated.documents,1);assert.equal(repeated.processed,1);assert.equal(dispatches,beforeRepeat);assert.equal(transport.requests.length,2);
+    assert.deepEqual(reads,[saved.list.url,saved.detail2.url,saved.list.url,saved.detail2.url,saved.list.url,saved.detail2.url]);
+    assert.deepEqual((await db.query('select * from scout.records')).rows,records);
+    assert.deepEqual((await db.query("select id,content,parsed#>'{document,prepared_versions}' prepared,parsed#>'{document,processing_versions}' processing from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows,sources);
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0],prior);
+    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+    context.diagnostic(JSON.stringify({whole_story_characters:12727,native_identity:'oceancare:post:222223:en',injected_calls:2,simulated_records:1,repeat_calls:0,requests:[first.requests,resumed.requests,repeated.requests]}));
   }finally{await db.close();}
 });
 
