@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA} from '../collector/hsa.js';
+import {collectHSA,sourceURL,LIMITS} from '../collector/hsa.js';
 import {gemini,MODEL_LIMITS} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
-import {prepareDocument,PREPARATION_VERSION} from '../collector/octo-documents.js';
-import {packDocument,validateFinding,candidatesFor,DOCUMENT_VERSION} from '../collector/document-records.js';
+import {prepareDocument,supportDocuments,PREPARATION_VERSION} from '../collector/octo-documents.js';
+import {startReport} from '../collector/report.js';
+import {packDocument,validateFinding as validateCitedFinding,candidatesFor as findCandidates,DOCUMENT_VERSION} from '../collector/document-records.js';
 import {stepState} from '../src/runs.js';
 
 const fixture=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));
@@ -27,10 +28,31 @@ async function setup(){
   await db.query("insert into scout.trackers(id,name,url,collector,cadence,enabled) values($1,'OCTO','https://octogroup.org/webinars/','web','7 days',false)",[fixture.tracker.id]);
   return db;
 }
-function runner(db,respond,{post=article,advance=true,runLimit=10}={}){
+function cited(p,input){
+  if(p.citations)return p;
+  const citations=[],evidence={};
+  for(const [k,quote]of Object.entries(p.evidence).filter(([k])=>k!=='authority')){
+    const doc=input.segments.find(s=>s.text.includes(quote))?.doc??Object.entries(input.documents).find(([,d])=>d.url===quote||d.title?.includes(quote))?.[0]??'P';
+    evidence[k]={refs:[citations.length],rationale:'Supported by the cited passage.'};citations.push({doc,quote});
+  }
+  // Literal test labels also provide identity/distinction context to resolution.
+  if(!citations.some(c=>c.quote===p.anchor)){const doc=input.segments.find(s=>s.text.includes(p.anchor))?.doc??'P';citations.push({doc,quote:p.anchor});}
+  const dates={};
+  for(const k of ['starts_at','ends_at'])if(p.candidate[k])dates[k]={local:p.candidate[k].slice(0,19),zone:'UTC',parts:Object.fromEntries(['year','date','time','zone'].map(part=>[part,evidence[k]?.refs??[]]))};
+  return {...p,citations,evidence,dates};
+}
+function reviewed(out,input){
+  if(input.stage==='extract')return out?.findings?{...out,findings:out.findings.map(p=>cited(p,input))}:out;
+  if(!out?.outcome)return out;
+  const evidence=Object.fromEntries(Object.entries(out.evidence).filter(([k])=>k!=='authority').map(([k,q])=>[k,Array.isArray(q)?q:input.finding.citations.flatMap((c,i)=>c.quote.includes(q)?[i]:[])]));
+  return {facts:Object.fromEntries([...CONTENT_FIELDS.filter(k=>input.finding.candidate[k]!==null),'priority'].map(k=>[k,'supported'])),
+    conflict:out.outcome==='update'?'correction':'none',...out,evidence};
+}
+function runner(db,respond,{post=article,advance=true,runLimit=10,supports={}}={}){
   const requests=[];let calls=0;
   const options={trackerId:fixture.tracker.id,validate:true,documents:'process',read:async(url,budget)=>{
     budget.requests++;
+    if(url!==feedURL&&!url.includes('/wp-json/wp/v2/posts/')){if(!supports[url])throw new Error('Unavailable support fixture');return typeof supports[url]==='function'?supports[url]():supports[url];}
     if(url!==feedURL&&!url.endsWith('/'+post.id)){
       const known=(await db.query("select content::jsonb->'article' article from scout.evidence where record_id is null and parsed#>>'{document,id}'=$1 order by last_seen_at desc limit 1",[url.split('/').at(-1)])).rows[0];
       if(known)return known.article;
@@ -40,7 +62,7 @@ function runner(db,respond,{post=article,advance=true,runLimit=10}={}){
     const actual=gemini({apiKey:'test-key',ledger:db,runId,deadline,trace,runLimit,fetch:async(_url,request)=>{
       requests.push(request.body);assert.ok(Buffer.byteLength(request.body)<=MODEL_LIMITS.input);
       const input=JSON.parse(JSON.parse(request.body).contents[0].parts[0].text)[0];
-      const out=await respond(input,++calls);
+      const out=reviewed(await respond(input,++calls),input);
       return out instanceof Response?out:Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(out)}]}}],usageMetadata:{promptTokenCount:200,candidatesTokenCount:100}});
     }});
     return async(...args)=>{
@@ -51,6 +73,8 @@ function runner(db,respond,{post=article,advance=true,runLimit=10}={}){
   }};
   return {requests,run:(extra={})=>collectHSA(db,{...options,...extra})};
 }
+const validateFinding=(p,input)=>validateCitedFinding(cited(p,input),input);
+const candidatesFor=(db,source,p)=>findCandidates(db,source,p.citations?p:{...p,citations:Object.values(p.evidence).filter(Boolean).map(quote=>({doc:'P',quote})),evidence:Object.fromEntries(Object.keys(p.evidence).filter(k=>p.evidence[k]).map((k,i)=>[k,{refs:[i],rationale:'Cited fact.'}]))});
 const report=async(db,id)=>(await db.query('select report,stats from scout.collection_runs where id=$1',[id])).rows[0];
 
 
@@ -89,7 +113,7 @@ test('generic enclosing titles retrieve the same finding BEFORE resolution; corr
     const reconsider=runner(db,stages([{...release,priority:'normal'}],input=>resolution(input,'evidence',old.id)),{post:digest});
     await reconsider.run({documentVersion:'rating-review'});
     const original=(await db.query('select parsed from scout.evidence where record_id=$1 and url=$2',[old.id,digest.link])).rows[0].parsed;
-    assert.equal(original.authority,true);assert.equal(original.assessment.priority,'high');assert.equal(original.finding.priority,'normal');
+    assert.equal(original.authority,undefined);assert.equal(original.accepted_fields.title.rank,0);assert.equal(original.assessment.priority,'high');assert.equal(original.finding.priority,'normal');
   }finally{await db.close();}
 });
 
@@ -188,15 +212,15 @@ test('disputed dates/organizers cannot create duplicates or false merges; uncert
   }
 });
 
-test('evidenced corrections update only authoritative findings, preserve unknowns and reject source authority laundering',async()=>{
+test('changed same-source facts permit explicit corrections; corroboration cannot launder another source into authority',async()=>{
   const db=await setup();try{
     await runner(db,stages([proposal()])).run();const old=(await current(db))[0];
     const date='2026-11-21T10:00:00Z',change='First session rescheduled to '+date,authority='Ocean Institute announces this correction.';
     const p={...proposal('First session',date),candidate:{...proposal('First session',date).candidate,description:null,organization:null},evidence:{...proposal('First session',date).evidence,change,authority}};
     const post={...article,content:{rendered:article.content.rendered+'<p>'+change+'</p><p>'+authority+'</p>'}};
     const corrected=await runner(db,stages([p],input=>{
-      assert.equal(input.candidates[0].authoritative_source,true);
-      return {...resolution(input,'update',old.id),evidence:{identity:p.anchor,change,authority}};
+      assert.equal(input.candidates[0].field_authority.starts_at.rank,0);
+      return {...resolution(input,'update',old.id),evidence:{identity:p.anchor,change:date}};
     }),{post}).run();
     assert.equal(corrected.processed,1,corrected.warnings.join(';'));assert.equal(corrected.changed,1);
     const updated=(await current(db))[0];assert.equal(new Date(updated.starts_at).toISOString(),new Date(date).toISOString());
@@ -206,8 +230,8 @@ test('evidenced corrections update only authoritative findings, preserve unknown
     const disputed={...p,candidate:{...p.candidate,starts_at:'2026-12-21T10:00:00Z'},evidence:{...p.evidence,starts_at:'2026-12-21T10:00:00Z',change:'First session rescheduled to 2026-12-21T10:00:00Z'}};
     other.content.rendered+='<p>'+disputed.evidence.change+'</p>';
     const blocked=await runner(db,stages([disputed],input=>{
-      assert.equal(input.candidates[0].same_source,true);assert.equal(input.candidates[0].authoritative_source,false);
-      return input.repair?resolution(input,'uncertain'):{...resolution(input,'update',old.id),evidence:{identity:p.anchor,change:disputed.evidence.change,authority}};
+      assert.equal(input.candidates[0].same_source,true);assert.equal(input.candidates[0].field_authority.starts_at.sources[0].url,article.link);
+      return input.repair?resolution(input,'uncertain'):{...resolution(input,'update',old.id),evidence:{identity:p.anchor,change:disputed.candidate.starts_at}};
     }),{post:other}).run();
     assert.equal(blocked.processed,1);assert.deepEqual(await current(db),[updated]);
   }finally{await db.close();}
@@ -390,8 +414,7 @@ test('MPAtlas complete text and long table context reach extraction; lookup neve
         assert.ok(inputs.slice(1).every(i=>i.segments.some(s=>s.text.includes('Data workshops'))));
         assert.ok(inputs.some(i=>i.segments.some(s=>s.text.includes('https://octogroup.org/register'))));
       }else{
-        assert.equal(inputs.length,1);assert.deepEqual(inputs[0].omitted_ranges,[]);
-        assert.match(inputs[0].segments.map(s=>s.text).join('\n'),/allows users to complete MPA Guide assessments and submit additional data/);
+        assert.match(inputs.flatMap(i=>i.segments.map(s=>s.text)).join('\n'),/allows users to complete MPA Guide assessments and submit additional data/);
       }
       assert.ok(source.requests.every(r=>Buffer.byteLength(r)<=8000));
     }finally{await db.close();}
@@ -403,9 +426,12 @@ test('grounding rejects invented values and imprecise/invalid dates; time deferr
   const input=packDocument({id:'source'},prepared,0,DOCUMENT_VERSION),p=proposal();
   assert.throws(()=>validateFinding({...p,candidate:{...p.candidate,location:'Invented room'}},input),/location/);
   assert.throws(()=>validateFinding({...p,urls:['https://invented.example/']},input),/finding URLs/);
-  assert.throws(()=>validateFinding({...p,candidate:{...p.candidate,starts_at:'2026-10-21T00:00:00Z'},evidence:{...p.evidence,starts_at:'2026-10-21'}},input),/date, clock and zone/);
-  const dated={...input,segments:[{text:'2026-02-30T10:00:00Z '+input.segments[0].text}]};
-  assert.throws(()=>validateFinding({...p,candidate:{...p.candidate,starts_at:'2026-02-30T10:00:00Z'},evidence:{...p.evidence,starts_at:'2026-02-30T10:00:00Z'}},dated),/date, clock and zone/);
+  for(const part of ['year','time','zone']){
+    const missing=cited(p,input);missing.dates.starts_at.parts[part]=[];
+    assert.throws(()=>validateCitedFinding(missing,input),/year\/date\/clock\/zone/);
+  }
+  const dated={...input,segments:[{...input.segments[0],text:'2026-02-30T10:00:00Z '+input.segments[0].text}]};
+  assert.throws(()=>validateFinding({...p,candidate:{...p.candidate,starts_at:'2026-02-30T10:00:00Z'},evidence:{...p.evidence,starts_at:'2026-02-30T10:00:00Z'}},dated),/year\/date\/clock\/zone/);
   const db=await setup(),source=runner(db,stages([]));try{
     const run=await source.run({deadline:Date.now()+900});assert.equal(run.processed,0);assert.equal(source.requests.length,0);
     assert.equal(stepState((await report(db,run.run_id)).report,'validate'),'Not reached');
@@ -426,5 +452,151 @@ test('older preparation artifacts keep their captured version after newer prepar
     assert.deepEqual((await db.query('select scout.run_artifact($1,$2) a',[first.run_id,key])).rows[0].a,old);
     const latest=(await db.query('select scout.run_artifact($1,$2) a',[current.run_id,currentKey])).rows[0].a;
     assert.equal(latest.version,PREPARATION_VERSION);assert.match(latest.text,/First session/);assert.notEqual(latest.text,old.text);
+  }finally{await db.close();}
+});
+
+test('one-hop support retains payloads/relationships and reports deduplicated, failed, unsupported and deferred coverage',async()=>{
+  const db=await setup();try{
+    const source=runner(db,()=>answer([]));await source.run({documents:true});
+    const primary=(await db.query('select * from scout.evidence where record_id is null')).rows[0];
+    const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[fixture.tracker.id])).rows[0];
+    const trace=await startReport(db,run.id,'support-test'),cache=new Map(),calls=[];
+    const prepared=prepareDocument({title:'First session',url:article.link,html:
+      '<p>Register <a href="https://events.example/register?utm_source=mail">here</a></p><p><a href="https://events.example/register">Again</a></p>'+
+      '<a href="https://events.example/fail">Other</a><a href="https://events.example/binary">Other</a><a href="https://events.example/later">Later</a>'+
+      '<a href="http://127.0.0.1/">Private</a><img src="https://events.example/image.png"><a href="https://events.example/agenda.pdf">PDF</a>'});
+    const budget={requests:0,deadline:Date.now()+100000};
+    const read=async url=>{
+      calls.push(url);if(url.endsWith('/fail'))throw new Error('Fixture network failure');
+      return {url,status:200,headers:{'content-type':url.endsWith('/binary')?'application/octet-stream':'text/html','set-cookie':'not retained'},
+        body:'<h1>First session</h1><p>2026-10-21T10:00:00Z</p><a href="https://events.example/second-hop">Second hop</a>'};
+    };
+    const args={source:primary,prepared,read,sourceURL,budget,limits:LIMITS,trace,cache};
+    const combined=await supportDocuments(db,args);
+    assert.deepEqual(calls,['https://events.example/register','https://events.example/fail','https://events.example/binary']);
+    assert.equal(combined.documents.length,2);assert.equal(combined.documents[1].relationship,'registration');
+    assert.equal(combined.documents[1].via.from,primary.id);assert.match(combined.text,/Second hop/);
+    assert.deepEqual(combined.coverage.map(l=>l.state).sort(),['deferred','failed','fetched','unsupported','unsupported','unsupported','unsupported'].sort());
+    assert.ok(combined.coverage.find(l=>l.url?.endsWith('/binary')).capture_id);
+    const captured=(await db.query("select content,parsed from scout.evidence where parsed#>>'{document,identity}' like 'support:%'")).rows;
+    assert.equal(captured.length,2);assert.ok(captured.every(e=>!e.content.includes('not retained')));
+    assert.ok(captured.some(e=>e.parsed.document.prepared_versions?.[PREPARATION_VERSION]));
+    assert.equal((await supportDocuments(db,args)).context,combined.context);assert.equal(calls.length,3);
+    for(const [limit,spent,expired]of [[0,0,false],[6,24,false],[6,0,true]]){
+      const bounded=await supportDocuments(db,{...args,cache:new Map(),limits:{...LIMITS,pages:limit},budget:{requests:spent,deadline:expired?Date.now()-1:Date.now()+10000}});
+      assert.equal(bounded.documents.length,1);assert.ok(bounded.coverage.some(l=>l.state==='deferred'));assert.equal(calls.length,3);
+    }
+    const oversized=await supportDocuments(db,{...args,cache:new Map(),limits:{...LIMITS,bytes:5}});
+    assert.equal(oversized.documents.length,1);assert.ok(oversized.coverage.some(l=>l.state==='failed'&&/byte/.test(l.reason)));
+  }finally{await db.close();}
+});
+
+test('registration can complete or correct a secondary-first finding; support-only changes reassess and stale refetch cannot reverse',async()=>{
+  for(const initial of [null,'2026-10-21T10:00:00Z']){
+    const db=await setup();try{
+      const url='https://events.example/register',post={...article,content:{rendered:article.content.rendered+'<p>Register <a href="'+url+'">here</a></p>'}};
+      let date=initial,available=false,fetches=0,minor='';
+      const extract=input=>{
+        const p=proposal('First session',date);if(!date)delete p.evidence.starts_at;
+        const result=cited(p,input),support=input.segments.find(s=>s.doc!=='P'&&s.text.includes('First session'));
+        if(support)result.citations.push({doc:support.doc,quote:'First session'});
+        return [result];
+      };
+      const source=runner(db,stages(extract,input=>{
+        const old=input.candidates[0];if(!old)return resolution(input);
+        if(old.starts_at===new Date(date).toISOString())return resolution(input,'evidence',old.id);
+        if(input.repair){assert.match(input.repair.errors.join(),/unchanged or superseded/);return {...resolution(input,'uncertain'),conflict:'unresolved'};}
+        return {...resolution(input,'update',old.id),conflict:old.starts_at?'correction':'completion',evidence:{identity:'First session',change:date}};
+      }),{post,supports:{[url]:()=>{fetches++;if(!available)throw new Error('Unavailable');return {url,status:200,body:'<h1>First session</h1><p>'+date+'</p>'+minor};}}});
+      const first=await source.run();assert.equal(first.created,1,first.warnings.join(';'));
+      const old=(await current(db))[0];assert.equal(old.starts_at===null,initial===null);
+      available=true;date='2026-11-21T10:00:00Z';const completed=await source.run();
+      assert.equal(completed.changed,1,completed.warnings.join(';'));assert.equal(completed.created,0);
+      let found=await candidatesFor(db,{url:post.link,parsed:{document:{identity:'octo:post:99'}}},proposal('First session',date));
+      assert.equal(found.rows[0].fact_evidence.starts_at.rank,2);assert.equal(found.rows[0].fact_evidence.starts_at.sources[0].relationship,'registration');
+      const count=source.requests.length;await source.run();assert.equal(source.requests.length,count);assert.equal(fetches,3);
+      minor='<p>More details coming soon.</p>';const sameFact=await source.run();assert.equal(sameFact.changed,0);assert.equal(sameFact.processed,1,sameFact.warnings.join(';'));
+      date='2026-12-21T10:00:00Z';const corrected=await source.run();assert.equal(corrected.changed,1,corrected.warnings.join(';'));
+      found=await candidatesFor(db,{url:post.link,parsed:{document:{identity:'octo:post:99'}}},proposal('First session',date));
+      assert.equal(found.rows[0].fact_evidence.starts_at.superseded.filter(s=>s.url===url).length,2);
+      date='2026-11-21T10:00:00Z';const stale=await source.run({documentVersion:'reconsider-stale-support'});
+      assert.equal(stale.uncertain,1,stale.warnings.join(';'));assert.equal(stale.changed,0);
+      const rows=await current(db);assert.equal(rows.length,1);assert.equal(rows[0].id,old.id);assert.equal(new Date(rows[0].starts_at).toISOString(),'2026-12-21T10:00:00.000Z');
+      assert.equal((await db.query("select count(*)::int n from scout.evidence where record_id is null and parsed#>>'{document,id}'='99'")).rows[0].n,1);
+      assert.ok((await db.query('select url,parsed from scout.evidence where record_id=$1',[old.id])).rows.some(e=>e.url===url&&e.parsed.document.primary_capture_id));
+    }finally{await db.close();}
+  }
+});
+
+test('saved MPAtlas and Zoom payloads jointly supply normalized schedule, faithful summary and linked authority',async()=>{
+  const db=await setup(),inputs=[],url=fixture['zoom-mpatlas'].url;
+  const title=mp.title.rendered,date='2026-10-20T16:00:00Z';
+  const source=runner(db,stages(input=>{
+    inputs.push(input);
+    const schedule=input.segments.find(s=>s.doc!=='P'&&s.text.includes('Oct 20, 2026 12:00 PM Eastern Time (US and Canada)'));
+    if(!schedule)return [];
+    const p={...proposal(title,date),candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'event',title,
+      description:'Introduction to the MPAtlas Assessment Portal.',event_url:mp.link,registration_url:url,starts_at:date},citations:[
+        {doc:'P',quote:title},{doc:'P',quote:mp.link},{doc:schedule.doc,quote:url},
+        {doc:schedule.doc,quote:'Oct 20, 2026 12:00 PM Eastern Time (US and Canada)'},
+        {doc:schedule.doc,quote:title},{doc:'P',quote:'Tuesday, October 20'},{doc:'P',quote:'4 pm UTC'}
+      ],evidence:{},dates:{starts_at:{local:'2026-10-20T16:00:00',zone:'UTC',parts:{year:[3],date:[5],time:[6],zone:[6]}}}};
+    for(const [key,refs]of Object.entries({kind:[0,4],title:[0,4],description:[0,4],event_url:[1],registration_url:[2],starts_at:[3,5,6],priority:[0]}))
+      p.evidence[key]={refs,rationale:key==='starts_at'?'Registration supplies year; article supplies day and UTC clock. Both describe the same event.':'Faithful concise wording of the cited event title.'};
+    return [p];
+  }),{post:mp,supports:{[url]:fixture['zoom-mpatlas']}});
+  try{
+    const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));assert.equal(run.created,1);
+    const row=(await current(db))[0];assert.equal(new Date(row.starts_at).toISOString(),new Date(date).toISOString());assert.equal(row.description,'Introduction to the MPAtlas Assessment Portal.');
+    assert.ok(inputs.some(i=>i.segments.some(s=>s.doc==='P')&&i.segments.some(s=>s.doc==='S1')));
+    const captures=(await db.query('select * from scout.evidence where record_id is null')).rows;
+    const registration=captures.find(e=>e.url===url);assert.equal(JSON.parse(registration.content).body,fixture['zoom-mpatlas'].body);
+    const clean=registration.parsed.document.prepared_versions[PREPARATION_VERSION];assert.match(clean.text,/America\/New_York/);assert.match(clean.text,/Oct 20, 2026/);
+    assert.ok(inputs.flatMap(i=>i.segments).some(s=>s.doc==='S1'&&s.text.includes('Oct 20, 2026')));
+    const primary=captures.find(e=>e.url===mp.link),association=(await db.query('select parsed from scout.evidence where record_id=$1 and url=$2',[row.id,mp.link])).rows[0].parsed;
+    assert.equal(association.accepted_fields.starts_at.rank,2);assert.equal(association.document.capture_id,primary.id);
+    const consumed=inputs.map(i=>i.range);assert.equal(consumed[0][0],0);assert.ok(consumed.slice(1).every((range,index)=>range[0]===consumed[index][1]));
+    assert.equal(consumed.at(-1)[1],primary.parsed.document.prepared_versions[PREPARATION_VERSION].text.length+2+clean.text.length);
+  }finally{await db.close();}
+});
+
+test('combined component evidence allows normalization but invalid citations, unsupported additions and conflicts cannot save',async()=>{
+  const prepared=prepareDocument({title:'Workshop',url:article.link,html:'<p>First session</p><p>October 21</p><p>Event year: 2026</p><p>Starts at 10:00 UTC</p><p>Ocean Institute</p><p>Marine data standards workshop.</p>'});
+  const input=packDocument({id:'source'},prepared,0,DOCUMENT_VERSION),p=cited(proposal(),input);
+  p.citations[p.evidence.starts_at.refs[0]]={doc:'P',quote:'October 21'};
+  const year=p.citations.push({doc:'P',quote:'Event year: 2026'})-1,clock=p.citations.push({doc:'P',quote:'Starts at 10:00 UTC'})-1;
+  p.evidence.starts_at={refs:[...p.evidence.starts_at.refs,year,clock],rationale:'Combine explicit event year, date and UTC clock.'};
+  p.dates.starts_at.parts={year:[year],date:[p.evidence.starts_at.refs[0]],time:[clock],zone:[clock]};
+  p.candidate.description='Workshop on marine data standards.';p.evidence.description.rationale='Faithful concise paraphrase.';
+  p.candidate.organization='Ocean institute';p.evidence.organization.rationale='Normalize capitalization.';
+  assert.equal(validateCitedFinding(p,input),p);
+  const invented=structuredClone(p);invented.citations[year].quote='Event year: 2027';assert.throws(()=>validateCitedFinding(invented,input),/resolve/);
+  const wrong=structuredClone(p);wrong.candidate.starts_at='2026-10-21T11:00:00Z';assert.throws(()=>validateCitedFinding(wrong,input),/conflicts with local/);
+  const precision=structuredClone(p);precision.candidate.starts_at='2026-10-21T10:00:00.123Z';assert.throws(()=>validateCitedFinding(precision,input),/year\/date\/clock\/zone/);
+  const missingYear=structuredClone(p);missingYear.dates.starts_at.parts.year=[p.evidence.starts_at.refs[0]];assert.throws(()=>validateCitedFinding(missingYear,input),/year\/date\/clock\/zone/);
+  for(const verdict of ['unsupported','conflict']){
+    const db=await setup();try{
+      const finding=proposal();if(verdict==='unsupported')finding.candidate.description='Accredited workshop with paid travel grants.';
+      const source=runner(db,stages([finding],input=>{
+        const facts=Object.fromEntries([...CONTENT_FIELDS.filter(k=>input.finding.candidate[k]!==null),'priority'].map(k=>[k,k===(verdict==='unsupported'?'description':'starts_at')?verdict:'supported']));
+        if(input.repair)assert.match(input.repair.errors.join(),/Unsupported\/conflicting/);
+        return {...resolution(input,input.repair?'uncertain':'new'),facts,conflict:input.repair?'unresolved':'none'};
+      }));
+      const run=await source.run();assert.equal(run.uncertain,1,run.warnings.join(';'));assert.equal((await current(db)).length,0);assert.equal(source.requests.length,3);
+    }finally{await db.close();}
+  }
+});
+
+test('newer observed support blocks a concurrent save without turning a shared URL into finding identity',async()=>{
+  const db=await setup(),url='https://events.example/register';try{
+    const post={...article,content:{rendered:article.content.rendered+'<p>Register <a href="'+url+'">here</a></p>'}};
+    const source=runner(db,stages([proposal()],async input=>{
+      if(input.repair){assert.match(input.repair.errors.join(),/observation is stale/);return resolution(input,'uncertain');}
+      await db.query("insert into scout.evidence(tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,'concurrent-support','changed',$3,clock_timestamp()+interval '1 second')",
+        [fixture.tracker.id,url,{document:{identity:'support:'+url}}]);
+      return resolution(input);
+    }),{post,supports:{[url]:{url,status:200,body:'<h1>First session</h1><p>2026-10-21T10:00:00Z</p>'}}});
+    const run=await source.run();assert.equal(run.uncertain,1,run.warnings.join(';'));assert.equal(run.created,0);assert.equal((await current(db)).length,0);
+    assert.equal((await db.query('select count(*)::int n from scout.evidence where record_id is not null')).rows[0].n,0);
   }finally{await db.close();}
 });

@@ -432,7 +432,7 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const octo=tracker.collector==='web' && tracker.url===OCTO;
   if(documents!==false){
     if(![true,'process'].includes(documents)||!octo||!validate||assessOnly||sourceId)throw Object.assign(new Error('Document preparation requires explicit OCTO validation without assessment/source selection'),{status:400});
-    return collectOCTODocuments(db,{tracker,read,now,deadline,limits:LIMITS,process:documents==='process',model,makeModel,documentVersion});
+    return collectOCTODocuments(db,{tracker,read,sourceURL,now,deadline,limits:LIMITS,process:documents==='process',model,makeModel,documentVersion});
   }
   const explorers=tracker.collector==='web' && tracker.url===EXPLORERS;
   const discovery=tracker.collector==='bluesky_search' && tracker.url==='https://bsky.app/search?q=BBNJ';
