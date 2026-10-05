@@ -88,7 +88,7 @@ test('actual 25-plus-pin author response preserves all captures, preparation, ex
       assert.equal(captures.length,26);
       for(const [position,item] of feed.feed.entries()){
         const raw=JSON.stringify(item),capture=captures.find(c=>c.content===raw);assert.ok(capture);
-        assert.equal(capture.parsed.document.identity,item.post.uri);assert.equal(capture.parsed.document.prepared_versions[AUTHOR_PREPARATION_VERSION].text,raw);
+        assert.equal(capture.parsed.document.identity,item.post.uri);assert.ok(capture.parsed.document.prepared_versions[AUTHOR_PREPARATION_VERSION].text.startsWith(item.post.record.text));
         const occurrences=Object.values(report.artifacts).find(a=>a.kind==='provenance'&&a.source_id===capture.id).data.provenance;
         assert.deepEqual(occurrences,[{page:0,position,feed_url:saved.response.url}]);
       }
@@ -154,6 +154,110 @@ test('conflicting repeated author identities retain both payloads without model 
     assert.ok(Object.values((await detail(db,first.run_id)).report.operations).some(o=>o.state==='uncertain'));
     items=[variant];const next=await collectHSA(db,{...options,read:async url=>url.includes('getAuthorFeed')?response(url,{feed:items}):Promise.reject(new Error('Support unavailable'))});
     assert.equal(next.processed,1,next.warnings.join(';'));assert.ok(model.requests.length);assert.equal((await stored(db)).length,0);
+  }finally{await db.close();}
+});
+
+test('retained HSA bodies preserve refusals and old versions, resume a counted bounded repair, save and repeat',async context=>{
+  const live=await fixture('hsa-social-preparation.json.gz'),db=await database();try{
+    const t=await tracker(db,'https://bsky.app/profile/'+HSA);
+    const fetched=await collectHSA(db,{trackerId:t.id,validate:true,documents:true,read:async url=>{
+      const feed=live.feeds.find(f=>f.url===url);assert.ok(feed);return response(url,feed.body);
+    }});
+    assert.equal(fetched.prepared,51);assert.equal(fetched.requests,2);
+    const receipts=Object.values((await detail(db,fetched.run_id)).report.artifacts).filter(a=>a.kind==='fetch_response');
+    assert.deepEqual(receipts.map(a=>a.data.body),live.feeds.map(f=>f.body));
+    const captures=async()=>(await db.query('select * from scout.evidence where tracker_id=$1 and record_id is null',[t.id])).rows;
+    const ids=[];
+    for(const saved of live.sources){
+      const source=(await captures()).find(s=>s.content_hash===saved.content_hash);assert.equal(source.content,saved.content);ids.push(source.id);
+      await db.query('update scout.evidence set parsed=$2::jsonb where id=$1',[source.id,JSON.stringify(saved.parsed)]);
+    }
+    const options={trackerId:t.id,validate:true,documents:'process',read:async url=>{
+      if(url.includes('getAuthorFeed'))return response(url,{feed:live.sources.map(s=>JSON.parse(s.content))});
+      throw new Error('Support unavailable in retained-item replay');
+    }};
+    const refusals=runModel(db,input=>new Response(live.artifacts[ids.indexOf(input.source_id)?'a19':'a10'].data.body,{headers:{'content-type':'application/json'}}));
+    const refused=await collectHSA(db,{...options,makeModel:refusals.makeModel});
+    assert.equal(refusals.requests.length,2);assert.equal(refused.processed,0);assert.equal((await stored(db)).length,0);
+    assert.equal((await detail(db,refused.run_id)).stats.model_attempts.length,2);
+    const responses=Object.values((await detail(db,refused.run_id)).report.artifacts).filter(a=>a.kind==='model_response');
+    assert.deepEqual(responses.map(a=>a.data.body),['a10','a19'].map(id=>live.artifacts[id].data.body));
+    const keys=[];
+    for(const [index,id] of ids.entries()){
+      const source=(await captures()).find(s=>s.id===id),doc=source.parsed.document;
+      keys.push(Object.keys(doc.processing_versions).find(k=>k.startsWith(DOCUMENT_VERSION+'/'+AUTHOR_PREPARATION_VERSION+'/')));
+      assert.equal(doc.processing_versions[keys[index]].cursor,0);assert.match(doc.processing_versions[keys[index]].error,/Unresolved extraction context/);
+      assert.ok(refusals.inputs[index].segments.some(s=>s.text.includes(JSON.parse(source.content).post.record.text)));
+    }
+    const titles=['Celebrating the Entry into Force of the High Seas Treaty','Science for BBNJ Implementation in Africa'];
+    const finding=index=>{const p=base(titles[index],[{doc:'P',quote:titles[index]}]);if(index)p.candidate.kind='event';return p;};
+    const invalid=answer([finding(0)]);invalid.findings[0].citations[0].quote+=' invented words';
+    const rejected=runModel(db,()=>invalid,{runLimit:1});
+    const first=await collectHSA(db,{...options,makeModel:rejected.makeModel});
+    assert.equal(rejected.requests.length,1);assert.equal(first.processed,0);assert.equal((await stored(db)).length,0);
+    assert.ok(first.warnings.some(w=>/quota/.test(w)));assert.ok(!first.warnings.some(w=>/Repair request exceeds/.test(w)));
+    const pending=(await captures()).find(s=>s.id===ids[0]).parsed.document.processing_versions[keys[0]];
+    assert.equal(pending.cursor,0);assert.equal(pending.pending.round,1);assert.deepEqual(pending.pending.repair.rejected,invalid);
+    const repair=runModel(db,()=>answer([finding(0)]),{runLimit:1});
+    const repaired=await collectHSA(db,{...options,makeModel:repair.makeModel});
+    assert.equal(repair.requests.length,1);assert.equal(repaired.processed,0);assert.equal((await stored(db)).length,0);
+    assert.deepEqual(repair.inputs[0].repair.rejected,invalid);assert.deepEqual(repair.inputs[0].segments,pending.pending.input.segments);
+    assert.match(repair.inputs[0].repair.errors.join(';'),/citation|quote/i);
+    assert.equal((await detail(db,repaired.run_id)).stats.model_attempts.length,1);
+    const after=(await captures()).find(s=>s.id===ids[0]).parsed.document.processing_versions[keys[0]];
+    assert.equal(after.cursor,pending.pending.input.range[1],repaired.warnings.join(';'));assert.equal(after.pending,undefined);assert.equal(after.findings.length,1);
+    const remaining=runModel(db,input=>{
+      if(input.stage==='resolve')return {...resolve(input),outcome:'new',record_id:null};
+      const index=ids.indexOf(input.source_id);return answer(input.segments.some(s=>s.text.includes(titles[index]))?[finding(index)]:[]);
+    });
+    let completed;for(let i=0;i<4;i++){completed=await collectHSA(db,{...options,makeModel:remaining.makeModel});if(completed.processed===2)break;}
+    assert.equal(completed.processed,2,completed.warnings.join(';'));
+    const records=await stored(db);assert.deepEqual(records.map(r=>r.title).sort(),titles.toSorted());
+    assert.ok(records.every(r=>r.starts_at===null),'Poster clock without zone cannot become a fabricated instant');
+    for(const [index,id] of ids.entries()){
+      const source=(await captures()).find(s=>s.id===id),doc=source.parsed.document,old=live.sources[index].parsed.document;
+      assert.equal(source.content,live.sources[index].content);assert.equal(source.content_hash,live.sources[index].content_hash);
+      for(const [v,p] of Object.entries(old.prepared_versions))assert.deepEqual(doc.prepared_versions[v],p);
+      for(const [v,p] of Object.entries(old.processing_versions))assert.deepEqual(doc.processing_versions[v],p);
+      assert.equal(doc.processing_versions[keys[index]].cursor,doc.prepared_versions[AUTHOR_PREPARATION_VERSION].text.length);
+    }
+    const count=remaining.requests.length,repeat=await collectHSA(db,{...options,makeModel:remaining.makeModel});
+    assert.equal(repeat.processed,2);assert.equal(remaining.requests.length,count);assert.equal((await stored(db)).length,2);
+    context.diagnostic(JSON.stringify({retained_initial_bytes:refusals.requests.map(r=>Buffer.byteLength(r)),rejected_bytes:Buffer.byteLength(rejected.requests[0]),repair_bytes:Buffer.byteLength(repair.requests[0]),remaining_bytes:remaining.requests.map(r=>Buffer.byteLength(r))}));
+  }finally{await db.close();}
+});
+
+test('long social fields traverse later Unicode, multiple findings and another author quote before completion',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,'https://bsky.app/profile/'+HSA),post=structuredClone(hsa);
+    post.post.record.text='Session Alpha. Session Beta.\n'+'Contexte français 🌊, full public text.\n'.repeat(80)+'Later Session Gamma.';
+    delete post.post.record.embed;delete post.post.record.facets;
+    post.post.embed={record:{uri:'at://did:plc:other/app.bsky.feed.post/quoted',author:{handle:'other.bsky.social'},value:{text:'Quoted Session Delta.'}}};
+    const titles=['Session Alpha','Session Beta','Session Gamma','Session Delta'],units=[];
+    const transport=runModel(db,input=>{
+      if(input.stage==='resolve')return {...resolve(input),outcome:'new',record_id:null};
+      units.push(input);const findings=[];
+      for(const title of titles){
+        const s=input.segments.find(s=>s.text.includes(title));if(!s)continue;
+        const at=s.range[0]+s.text.indexOf(title);if(at<input.range[0]||at>=input.range[1])continue;
+        findings.push(base(title,[{doc:'P',quote:title}]));
+      }
+      return answer(findings);
+    });
+    const options={trackerId:t.id,validate:true,documents:'process',makeModel:transport.makeModel,read:async url=>{
+      if(url.includes('getAuthorFeed'))return response(url,{feed:[post]});throw new Error('Quote thread not fetched');
+    }};
+    let run;for(let i=0;i<4;i++){run=await collectHSA(db,options);if(run.processed)break;}
+    assert.equal(run.processed,1,run.warnings.join(';'));assert.deepEqual((await stored(db)).map(r=>r.title).sort(),titles.toSorted());
+    const capture=(await db.query('select * from scout.evidence where tracker_id=$1 and record_id is null',[t.id])).rows[0];
+    const prepared=capture.parsed.document.prepared_versions[AUTHOR_PREPARATION_VERSION];
+    assert.equal(capture.content,JSON.stringify(post));assert.ok(units.length>2);
+    assert.equal(units[0].range[0],0);for(let i=1;i<units.length;i++)assert.equal(units[i].range[0],units[i-1].range[1]);
+    assert.equal(units.at(-1).range[1],prepared.text.length);
+    assert.equal(units.map(i=>prepared.text.slice(...i.range)).join(''),prepared.text);
+    const quote=units.flatMap(i=>i.segments.flatMap(s=>s.source_fields??[])).find(f=>f.attribution.relationship==='quote'&&f.field==='text');
+    assert.equal(quote.attribution.author,'other.bsky.social');assert.ok(units.some(i=>i.segments.some(s=>s.source_fields?.some(f=>f.source_range[1]<f.source_length))));
+    const count=transport.requests.length;await collectHSA(db,options);assert.equal(transport.requests.length,count);assert.equal((await stored(db)).length,4);
   }finally{await db.close();}
 });
 
@@ -248,7 +352,7 @@ test('real discovery captures every URI/CID payload with query provenance and bo
     for(const capture of captures){
       assert.ok(payloads.has(capture.content));const post=JSON.parse(capture.content).post;
       assert.equal(capture.parsed.document.identity,post.uri);
-      assert.equal(capture.parsed.document.prepared_versions[capture.parsed.document.version].text,capture.content);
+      assert.ok(capture.parsed.document.prepared_versions[capture.parsed.document.version].text.startsWith(post.record.text));
       const occurrences=Object.values(report.artifacts).find(a=>a.kind==='provenance'&&a.source_id===capture.id).data.provenance;
       const expected=discovery.queries.flatMap(q=>JSON.parse(q.body).posts.filter(p=>JSON.stringify({post:p})===capture.content));
       assert.equal(occurrences.length,expected.length);assert.ok(occurrences.every(p=>p.q&&p.search_url&&Number.isInteger(p.position)));

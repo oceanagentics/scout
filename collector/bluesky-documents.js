@@ -1,4 +1,4 @@
-export const PREPARATION_VERSION = 'bluesky-author-documents-v2';
+export const PREPARATION_VERSION = 'bluesky-author-documents-v3';
 const endpoint = 'https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed';
 
 // URI identity and source relationships only: finding count and fields belong to
@@ -13,29 +13,47 @@ export function prepareAuthorItem(item, { actor, sourceURL }) {
   if (post.author.handle!==actor && !(repost && item.reason.by?.handle===actor))
     throw new Error('Post/repost does not identify the requested feed actor');
   const url=sourceURL(`https://bsky.app/profile/${identity[1]}/post/${identity[2]}`), raw=JSON.stringify(item);
-  // JSON already has structural boundaries: HTML whitespace cleanup would alter
-  // literal text (including bilingual context and external descriptions).
-  const prepared={version:PREPARATION_VERSION,title:'',url,input:'author-feed-item',text:raw,
-    blocks:[{id:0,tag:'structured-data',start:0,end:raw.length,headings:[]}],
-    chunks:[{start:0,end:raw.length,block_ids:[0],context_block_ids:[],preceding_context:null}],links:[],omissions:[]};
-  const coverage=[];
-  function link(target, relationship, path) {
-    const position=post.record.text.indexOf(target),prefix=position<0?'':post.record.text.slice(0,position).split('\n').at(-1);
+  // Literal content fields, not serialized transport JSON. Offsets refer to
+  // decoded source strings (UTF-16); every original value remains in raw.
+  const prepared={version:PREPARATION_VERSION,title:'',url,input:'author-feed-item',text:'',blocks:[],chunks:[],links:[],omissions:[]};
+  const coverage=[],rendered=new Set(),fields=new Map();
+  function content(text,path,field,context) {
+    if(typeof text!=='string'||rendered.has(path))return;
+    rendered.add(path);
+    const attribution={relationship:context.relationship,author:context.author,uri:context.uri};
+    const key=JSON.stringify([field,attribution,text]),existing=fields.get(key);
+    if(existing){existing.source_paths.push(path);return;}
+    if(prepared.blocks.length)prepared.text+='\n\n';
+    const start=prepared.text.length;prepared.text+=text;
+    const block={id:prepared.blocks.length,tag:'source-field',field,attribution,source_paths:[path],start,end:prepared.text.length,headings:[]};
+    prepared.blocks.push(block);fields.set(key,block);
+  }
+  function link(target, relationship, path,context) {
+    const position=context.text?.indexOf(target)??-1,prefix=position<0?'':context.text.slice(0,position).split('\n').at(-1);
     // An explicit adjacent label establishes the link relationship. A URL's
     // hostname/path and feed ownership never establish publisher authority.
     if(/\b(?:register|registration)\s*:\s*$/i.test(prefix))relationship='registration';
     try {prepared.links.push({target:sourceURL(target),label:target,tag:'a',relationship,context:path+' '+prefix,state:'unfetched'});}
     catch {coverage.push({target,relationship,path,state:'unsupported',reason:'Public HTTPS support URL required'});}
   }
-  function walk(value,path) {
+  function walk(value,path,context,technical=false) {
     if (!value || typeof value!=='object') return;
-    if (value.$type==='app.bsky.richtext.facet#link') link(value.uri,'support',path);
-    if (value.external?.uri) link(value.external.uri,'support',path+'.external');
+    if(!Object.keys(value).length)prepared.omissions.push({path,reason:'Empty structural value retained in raw item'});
+    const record=value.record?.text!=null?value.record:value.value?.text!=null?value.value:null;
+    if(!technical&&value.uri?.startsWith('at://')){
+      context={uri:value.uri,author:value.author?.handle??null,text:record?.text,
+        relationship:value===post?'post':path.includes('.reply.root')?'reply-root':path.includes('.reply.parent')?'reply-parent':'quote'};
+      if(record)content(record.text,path+(record===value.record?'.record.text':'.value.text'),'text',context);
+      else content(value.uri,path+'.uri','reference',context);
+    }
+    if(!technical&&path.endsWith('.external'))context={...context,uri:value.uri??null,author:null,relationship:'external'};
+    if (value.$type==='app.bsky.richtext.facet#link') link(value.uri,'support',path,context);
+    if (value.external?.uri) link(value.external.uri,'support',path+'.external',context);
     if (value.uri?.startsWith('at://')) {
       const quote=value.uri.match(/^at:\/\/(did:[^/]+)\/app\.bsky\.feed\.post\/([a-zA-Z0-9_-]+)$/);
       if (quote && value.uri!==post.uri) {
         const target=sourceURL(`https://bsky.app/profile/${quote[1]}/post/${quote[2]}`);
-        coverage.push({target,path,state:value.value?'embedded':'unfetched',relationship:path.includes('.reply')?'reply':'quote',
+        coverage.push({target,path,state:record?'embedded':'unfetched',relationship:path.includes('.reply')?'reply':'quote',
           reason:'Only returned context retained; full thread/quoted post has not been fetched'});
         prepared.links.push({target,label:target,tag:'a',relationship:'support',context:path,state:'unfetched'});
       }
@@ -43,11 +61,21 @@ export function prepareAuthorItem(item, { actor, sourceURL }) {
     for (const key of ['fullsize','thumb','playlist']) if (typeof value[key]==='string')
       coverage.push({target:value[key],path:path+'.'+key,relationship:'media',state:'unfetched',reason:'Media bytes/transcription not retrieved; supplied alt text retained'});
     if (value.$type==='blob') coverage.push({path,relationship:'media',state:'unfetched',reason:'Blob bytes not retrieved; supplied metadata retained'});
-    for (const [key,child] of Object.entries(value)) walk(child,path+'.'+key);
+    for (const [key,child] of Object.entries(value)) {
+      const sourcePath=path+'.'+key,excluded=technical||['author','by','reason','viewer','labels','image','thumb','aspectRatio'].includes(key)||value.$type==='blob';
+      if(child&&typeof child==='object')walk(child,sourcePath,context,excluded);
+      else if(!excluded&&typeof child==='string'&&(['text','title','description','alt','createdAt'].includes(key)||key==='uri'&&/^https?:/.test(child)))
+        content(child,sourcePath,key,key==='alt'?{...context,relationship:context.relationship+'-image-alt'}:context);
+      else if(!rendered.has(sourcePath))prepared.omissions.push({path:sourcePath,reason:'Non-content/profile/transport field excluded from model text; exact value retained in raw item'});
+    }
   }
-  walk(item,'item');
+  const primary={uri:post.uri,author:post.author.handle,text:post.record.text,relationship:'post'};
+  content(post.record.text,'item.post.record.text','text',primary);
+  walk(item,'item',primary);
+  for(const block of prepared.blocks)prepared.chunks.push({start:prepared.chunks.at(-1)?.end??0,end:block.end,block_ids:[block.id],context_block_ids:[],preceding_context:null});
   // Plain-text links are retained even when a facet is absent; no prefix clipping.
-  for (const match of post.record.text.matchAll(/https:\/\/[^\s<>]+/g)) link(match[0],'support','item.post.record.text');
+  for(const block of prepared.blocks)if(block.field==='text')for(const match of prepared.text.slice(block.start,block.end).matchAll(/https:\/\/[^\s<>]+/g))
+    link(match[0],'support',block.source_paths[0],{text:prepared.text.slice(block.start,block.end)});
   coverage.push({relationship:'reply',state:item.reply||post.record.reply?'partial':'unfetched',reason:'Feed-returned reply context only; complete thread not retrieved'},
     {relationship:'repost',state:repost?'retained':'absent',reason:'Returned feed reason retained without publisher authority inference'});
   prepared.coverage=coverage;

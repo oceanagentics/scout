@@ -36,9 +36,12 @@ const exactKeys=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(val
 // Context selection is structural; all excluded ranges are disclosed.
 export function packDocument(source,prepared,start,version) {
   const documents=prepared.documents??[{id:'P',url:prepared.url,prepared,start:0,end:prepared.text.length}];
+  const fields=prepared.blocks.filter(b=>b.tag==='source-field');
   for(const reserve of [2200,1000]){
   let end=start,bytes=0;
   for(const char of prepared.text.slice(start)){if(bytes+Buffer.byteLength(char)>4000)break;bytes+=Buffer.byteLength(char);end+=char.length;}
+  const firstField=fields.find(b=>b.end>start),wholeFirst=firstField&&firstField.end<=end;
+  if(fields.some(b=>b.start<end&&b.end>start))end=fields.filter(b=>b.end>start&&b.end<=end).at(-1)?.end??end;
   while(end>start){
     const included=prepared.blocks.filter(b=>b.end>start&&b.start<end),ids=new Set(included.flatMap(b=>b.headings)),ranges=[[start,end]];
     for(const b of prepared.blocks)if(ids.has(b.id))ranges.push([b.start,b.end]);
@@ -48,9 +51,17 @@ export function packDocument(source,prepared,start,version) {
     const previous=prepared.blocks.filter(b=>b.end<=start).at(-1),next=prepared.blocks.find(b=>b.start>=end);
     if(previous&&start-previous.end<=256&&previous.end-previous.start<=700)before=previous.start;
     if(next&&next.start-end<=256&&next.end-next.start<=700)after=next.end;
+    const fieldStart=fields.find(b=>b.start<=start&&b.end>start),fieldEnd=fields.find(b=>b.start<end&&b.end>=end);
+    if(fieldStart)before=Math.max(fieldStart.start,before);
+    if(fieldEnd)after=Math.min(fieldEnd.end,after);
     ranges.push([before,start],[end,after]);
+    if(fields.length&&start>=fields[0].end){
+      let contextEnd=fields[0].end-fields[0].start<=700?fields[0].end:fields[0].start+400;
+      if(/[\uDC00-\uDFFF]/.test(prepared.text[contextEnd]??''))contextEnd++;
+      ranges.push([fields[0].start,contextEnd]);
+    }
     if(start>=documents[0].end){
-      ranges.push([0,Math.min(documents[0].end,400)]);
+      ranges.push([0,Math.min(fields[0]?.end??documents[0].end,400)]);
       for(const doc of documents.filter(d=>d.start<end&&d.end>start&&d.via)){
         const at=documents[0].prepared.text.indexOf(doc.via.url);
         if(at>=0){let a=Math.max(0,at-256);if(/[\uDC00-\uDFFF]/.test(prepared.text[a]??''))a--;ranges.push([a,Math.min(documents[0].end,at+doc.via.url.length)]);}
@@ -61,7 +72,11 @@ export function packDocument(source,prepared,start,version) {
       if(merged.length&&a<=merged.at(-1)[1])merged.at(-1)[1]=Math.max(b,merged.at(-1)[1]);else merged.push([a,b]);
     }
     const omitted=[];let cursor=0;for(const [a,b]of merged){if(a>cursor)omitted.push([cursor,a]);cursor=b;}if(cursor<prepared.text.length)omitted.push([cursor,prepared.text.length]);
-    const segments=merged.flatMap(([a,b])=>documents.filter(d=>d.start<b&&d.end>a).map(d=>({doc:d.id,range:[Math.max(a,d.start),Math.min(b,d.end)],text:prepared.text.slice(Math.max(a,d.start),Math.min(b,d.end))})));
+    const segments=merged.flatMap(([a,b])=>documents.filter(d=>d.start<b&&d.end>a).map(d=>{
+      const from=Math.max(a,d.start),to=Math.min(b,d.end),sourceFields=fields.filter(f=>f.start<to&&f.end>from).map(f=>({field:f.field,attribution:f.attribution,source_paths:f.source_paths,
+        range:[Math.max(from,f.start),Math.min(to,f.end)],source_range:[Math.max(from,f.start)-f.start,Math.min(to,f.end)-f.start],source_length:f.end-f.start}));
+      return {doc:d.id,range:[from,to],text:prepared.text.slice(from,to),...sourceFields.length?{source_fields:sourceFields}:{}};
+    }));
     const includedDocs=new Set(segments.map(s=>s.doc));
     const input={stage:'extract',source_id:source.id,version,repair_reserve:reserve,
       documents:Object.fromEntries(documents.filter(d=>includedDocs.has(d.id)).map(d=>[d.id,{url:d.url,title:d.prepared.title,relationship:d.relationship??'primary',via:d.via?{label:d.via.label,from:'P'}:null}])),
@@ -73,8 +88,13 @@ export function packDocument(source,prepared,start,version) {
     // context cannot fit the larger reserve. Both include complete JSON escaping.
     // Unvisited documents remain in prepared storage and the explicit range queue.
     // Large rejected outputs still defer intact at the hard request bound.
-    if(bodyBytes(input)<=MODEL_LIMITS.input-reserve)return input;
-    end=Math.max(start,end-100);if(/[\uDC00-\uDFFF]/.test(prepared.text[end]??''))end--;
+    const bytes=bodyBytes(input);
+    if(bytes<=MODEL_LIMITS.input-reserve)return input;
+    if(fields.length&&reserve===2200&&bytes<=MODEL_LIMITS.input-1000)return {...input,repair_reserve:1000};
+    // Try the smaller repair reserve before fragmenting a complete short field.
+    if(reserve===2200&&wholeFirst&&end===firstField.end)break;
+    end=fields.filter(b=>b.end>start&&b.end<end).at(-1)?.end??Math.max(start,end-100);
+    if(/[\uDC00-\uDFFF]/.test(prepared.text[end]??''))end--;
   }
   }
   throw new Error('Document context cannot fit the bounded request; deferred without omission');

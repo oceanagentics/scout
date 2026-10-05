@@ -1,7 +1,7 @@
 import { prepareAuthorItem } from './bluesky-documents.js';
 
 export const DISCOVERY_QUERIES = Object.freeze(['BBNJ','"High Seas Treaty"','"traité sur la haute mer"','BBNJCOP1']);
-export const PREPARATION_VERSION = 'bluesky-discovery-documents-v1';
+export const PREPARATION_VERSION = 'bluesky-discovery-documents-v2';
 const endpoint='https://api.bsky.app/xrpc/app.bsky.feed.searchPosts';
 
 // Source-only search. Query/window constraints describe retrieval coverage;

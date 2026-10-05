@@ -27,10 +27,10 @@ test('real search fixture retains every returned post, exact response, bilingual
     for(const [position,post] of JSON.parse(saved.body).posts.entries()){
       const doc=result.documents.find(d=>d.id===post.uri);
       const version=variants(doc).find(v=>v.cid===post.cid&&v.raw===JSON.stringify({post}));
-      assert.ok(version);assert.deepEqual(JSON.parse(version.prepared.text),{post});
+      assert.ok(version);assert.ok(version.prepared.text.startsWith(post.record.text));
       assert.ok(version.provenance.some(p=>p.q===q&&p.position===position&&p.search_url===page.url));
-      assert.equal(version.prepared.blocks[0].end,version.prepared.text.length);
-      assert.equal(version.prepared.omissions.length,0);
+      assert.equal(version.prepared.blocks[0].end,post.record.text.length);
+      assert.ok(version.prepared.omissions.some(o=>o.path==='item.post.cid'));
       for(const key of ['kind','organization','title','date','findings','candidate'])assert.equal(Object.hasOwn(version,key),false);
     }
   }
@@ -109,7 +109,7 @@ test('returned old/empty/unrelated/long text remains source evidence, without po
   const post=structuredClone(sample);post.record.text='Sans rapport avec la requête  🌊.\n'.repeat(1000);
   post.record.createdAt='2001-01-01T00:00:00Z';
   const result=await retrieve(async url=>response(url,[post]),{since:'2026-09-01T00:00:00Z',until:fixture.collected_at});
-  assert.deepEqual(JSON.parse(result.documents[0].prepared.text),{post});
+  assert.ok(result.documents[0].prepared.text.startsWith(post.record.text));
   assert.ok(result.documents[0].prepared.text.length>8000);
   assert.ok(result.documents[0].prepared.links.length>0); // Original facets survive changed text.
   post.record.text='';
@@ -122,7 +122,7 @@ test('discovery keeps quoted/reply/media metadata and marks full context unfetch
   post.record.reply={root:{uri,cid:'bafquote'},parent:{uri,cid:'bafquote'}};
   post.embed={record:{uri,value:{text:'Texte cité  intégral 🌊.'}},external:{uri:'https://example.org/support',description:'Complete external description'},images:[{fullsize:'https://example.org/media',alt:'Caption'}]};
   const result=await retrieve(async url=>response(url,[post]));
-  const doc=result.documents[0];assert.deepEqual(JSON.parse(doc.prepared.text),{post});
+  const doc=result.documents[0];assert.ok(doc.prepared.text.startsWith(post.record.text));
   assert.ok(doc.prepared.links.some(l=>l.target==='https://example.org/support'));
   assert.ok(doc.coverage.some(c=>c.relationship==='quote'&&c.state==='embedded'));
   assert.ok(doc.coverage.some(c=>c.relationship==='reply'&&c.state==='partial'));
