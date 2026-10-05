@@ -8,6 +8,8 @@ At the **2026-10-04 23:46 AST checkpoint**, private collector **v64 is ACTIVE**,
 
 **Current implementation scope — 2026-10-04:** the rebuilt document pipeline extracts events from each announcement itself. Missing details stay unknown; incidental hyperlinks are metadata, not research targets. The announcement-only section controls over older checkpoints.
 
+**Local evidence-contract correction, pending review — 2026-10-04:** `announcement-events-2/resolve-2/rubric-1` enumerates evidence/date keys, requires kind/title/priority proofs and nonempty citation refs, and reports missing field proofs plus date errors together. Unknown-zone timestamps must remain null. Compact repairs retain the evidence/date contract and complete rejected output. Exact HSA local replay measures **5,973 / 7,778 / 7,823 bytes** for initial extraction and two repairs; same-version exhausted work makes no further model call. Ten focused checks pass; provider acceptance remains unverified. This correction is not deployed.
+
 ## Original documentation
 
 The original documents are the source of truth for product direction. They are living documents and may change the app's scope, behavior, or service choices. This README summarizes the current plan; [tasks.md](tasks.md) tracks implementation work.

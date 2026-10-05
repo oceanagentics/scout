@@ -185,3 +185,65 @@ test('HSA processing saves a stated event or no event without following links; r
     }finally{await db.close();}
   }
 });
+
+test('exact HSA failures report every missing proof and date error; a new contract retries once without erasing history',async context=>{
+  const saved=(await fixture('hsa-social-preparation.json.gz')).announcement_contract;
+  const outputs=saved.responses.map(raw=>JSON.parse(JSON.parse(raw).candidates[0].content.parts.find(p=>p.text).text));
+  const input=JSON.parse(JSON.parse(saved.requests[0]).contents[0].parts[0].text)[0];
+  for(const [i,response]of outputs.entries()){
+    const original=JSON.stringify(response);
+    assert.throws(()=>validateFinding(response.findings[0],input),error=>{
+      assert.match(error.message,/Missing field evidence: kind, title, description, location, priority/);
+      for(const field of ['starts_at','ends_at'])assert.ok(error.message.includes(field+': explicit cited year/date/clock/zone'));
+      assert.match(error.message,/if absent use null/);
+      if(i===2)for(const field of ['kind','title'])assert.ok(error.message.includes('evidence.candidate.'+field));
+      return true;
+    });
+    assert.equal(JSON.stringify(response),original,'Validation must not rewrite real output');
+  }
+  const db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',['https://bsky.app/profile/'+HSA])).rows[0];
+    const options={trackerId:tracker.id,validate:true,read:async url=>{
+      assert.ok(url.startsWith('https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed'));
+      return {url,status:200,headers:{'content-type':'application/json'},body:JSON.stringify({feed:[JSON.parse(saved.source.content)]})};
+    }};
+    const observed=await collectHSA(db,{...options,documents:true});
+    const source=(await db.query('select * from scout.evidence where tracker_id=$1',[tracker.id])).rows[0];
+    await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,processing_versions}',$2::jsonb) where id=$1",
+      [source.id,JSON.stringify({[saved.previous.version]:saved.previous.state})]);
+    const oldStats={model_attempts:[{at:new Date(Date.now()-61000).toISOString(),input_bound:5099,output_bound:1024,model:'gemini-3.5-flash-lite'}]};
+    await db.query('update scout.collection_runs set stats=$2::jsonb where id=$1',[observed.run_id,JSON.stringify(oldStats)]);
+    let calls=0;
+    const transport=runModel(db,supplied=>{
+      assert.equal(supplied.stage,'extract');assert.ok(calls<outputs.length);
+      if(calls){
+        assert.deepEqual(supplied.repair.rejected,outputs[calls-1]);
+        assert.match(supplied.repair.errors.join(';'),/Missing field evidence: kind, title, description, location, priority/);
+        for(const field of ['starts_at','ends_at'])assert.ok(supplied.repair.errors.join(';').includes(field+': explicit cited year/date/clock/zone'));
+      }
+      return structuredClone(outputs[calls++]);
+    });
+    options.documents='process';options.makeModel=transport.makeModel;
+    const first=await collectHSA(db,options);assert.equal(first.created,0);assert.equal(calls,2);assert.match(first.warnings.join(';'),/quota/);
+    // Move only this isolated test's new reservations out of the minute window.
+    await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{model_attempts}',(select jsonb_agg(a||jsonb_build_object('at',(a->>'at')::timestamptz-interval '61 seconds')) from jsonb_array_elements(stats->'model_attempts') a)) where id=$1",[first.run_id]);
+    const resumed=await collectHSA(db,options);assert.equal(resumed.created,0);assert.equal(calls,3);
+    assert.match(resumed.warnings.join(';'),/Two extract repair attempts exhausted/);
+    const repeated=await collectHSA(db,options);assert.equal(repeated.created,0);assert.equal(calls,3);
+    assert.match(repeated.warnings.join(';'),/Two extract repair attempts exhausted/);
+    const versions=(await db.query('select parsed from scout.evidence where id=$1',[source.id])).rows[0].parsed.document.processing_versions;
+    assert.deepEqual(versions[saved.previous.version],saved.previous.state);
+    assert.ok(Object.entries(versions).some(([key,state])=>key.startsWith(DOCUMENT_VERSION+'/')&&state.exhausted));
+    assert.deepEqual((await db.query('select stats from scout.collection_runs where id=$1',[observed.run_id])).rows[0].stats,oldStats);
+    const ledger=(await db.query('select stats from scout.collection_runs where id=any($1::uuid[])',[[first.run_id,resumed.run_id,repeated.run_id]])).rows;
+    assert.equal(ledger.reduce((sum,r)=>sum+(r.stats.model_attempts?.length??0),0),3);
+    assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+    for(const body of transport.requests){
+      const schema=JSON.parse(body).generationConfig.responseJsonSchema,evidence=schema.properties.findings.items.properties.evidence;
+      assert.equal(evidence.additionalProperties,false);assert.deepEqual(evidence.required,['kind','title','priority']);
+      assert.equal(evidence.properties['candidate.kind'],undefined);assert.ok(schema.$defs.proof);
+      assert.equal(schema.$defs.proof.properties.refs.minItems,1);assert.equal(schema.$defs.calendar.properties.parts.properties.zone.minItems,1);
+    }
+    context.diagnostic(JSON.stringify({source:'HSA exact invalid outputs',previous_bytes:saved.requests.map(b=>Buffer.byteLength(b)),request_bytes:transport.requests.map(b=>Buffer.byteLength(b)),repeat_calls:0,records:0}));
+  }finally{await db.close();}
+});
