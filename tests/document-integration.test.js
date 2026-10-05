@@ -234,6 +234,11 @@ test('exact HSA failures report every missing proof and date error; a new contra
   const outputs=saved.responses.map(raw=>JSON.parse(JSON.parse(raw).candidates[0].content.parts.find(p=>p.text).text));
   const input=JSON.parse(JSON.parse(saved.requests[0]).contents[0].parts[0].text)[0];
   const repairBytes=[];
+  for(const actual of saved.octo_url_dates){
+    const supplied=JSON.parse(JSON.parse(actual.request).contents[0].parts[0].text)[0];
+    const rejected=JSON.parse(JSON.parse(actual.response).candidates[0].content.parts.find(p=>p.text).text);
+    assert.throws(()=>validateFinding(rejected.findings[0],supplied),/cite the exact supplied HTTPS URL, not its title, or use null/);
+  }
   for(const actual of saved.explicit_proof){
     const input=JSON.parse(JSON.parse(actual.request).contents[0].parts[0].text)[0];
     const rejected=JSON.parse(JSON.parse(actual.response).candidates[0].content.parts.find(p=>p.text).text);
