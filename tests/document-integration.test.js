@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,UN_SIDE_EVENTS,CBD_REGISTRY,SYMPOSIUM,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,UN_SIDE_EVENTS,CBD_REGISTRY,SYMPOSIUM,BLUE_MARINE,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {collectDocuments,prepareDocument,supportDocuments} from '../collector/octo-documents.js';
@@ -385,6 +385,53 @@ test('Symposium whole pages resume native pending findings through a home outage
     assert.equal(inputs.filter(i=>i.stage==='extract').length,3);assert.equal(inputs.filter(i=>i.stage==='resolve').length,1);
     assert.ok(reads.every(url=>[SYMPOSIUM,...['2025','2026','satellite-events','satellite-events-2026','session_recordings','session_recordings_2026'].map(p=>SYMPOSIUM+p)].includes(url)));
     context.diagnostic(JSON.stringify({whole_sources:3,injected_calls:4,simulated_records:1,repeat_calls:0,missing_route_bodies:4,requests:[first.requests,resumed.requests,repeated.requests]}));
+  }finally{await db.close();}
+});
+
+test('Blue Marine whole announcement resumes native pending resolution through a listing outage and repeats without model calls',async context=>{
+  const saved=await fixture('bluemarine-website.json.gz'),db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[BLUE_MARINE])).rows[0],reads=[],inputs=[];
+    const listing={...saved.home,body:saved.home.body.replace(/<article\b[^>]*>[\s\S]*?<\/article>/g,item=>item.includes(saved.wildlabs.url)?item:'')}; // One observed card; its announcement remains whole.
+    const title='The MPA Technology Workshop: Channelling conservation technology into marine protected area design and management';
+    const occurrence='Blue Marine Foundation hosted a workshop alongside the event on 17 February: ‘'+title+'‘.';
+    const description='The workshop brought together over 70 participants, including marine protected area specialists and conservation technology experts to explore how we can embed technology into MPA design and management.';
+    const transport=runModel(db,async input=>{
+      inputs.push(input);if(input.stage==='resolve')return resolve(input); // Injected decisions establish shared mechanics only.
+      const source=(await db.query('select * from scout.evidence where id=$1',[input.source_id])).rows[0],prepared=source.parsed.document.prepared_versions['bluemarine-documents-v1'];
+      assert.equal(source.content,saved.wildlabs.body);assert.equal(source.parsed.document.identity,'bluemarine:document:14884');
+      assert.deepEqual(input.range,[0,prepared.text.length]);assert.deepEqual(input.omitted_ranges,[]);assert.equal(input.segments.map(s=>s.text).join(''),prepared.text);
+      for(const quote of [title,occurrence,description,'Facilitators','JSON-LD'])assert.ok(prepared.text.includes(quote),quote);
+      assert.ok(!prepared.text.includes('Related events'));assert.ok(prepared.links.some(l=>l.target.endsWith('Technology-for-MPA-monitoring.pdf')));
+      const finding=base(title,[{doc:'P',quote:title},{doc:'P',quote:occurrence},{doc:'P',quote:description}]);
+      finding.candidate.description=description;finding.priority='high';finding.reason='Technical workshop on integrating conservation technology into MPA design and management.';
+      finding.evidence={kind:[1],title:[0],description:[2],priority:[2]};return answer([finding]);
+    },true);
+    let remaining=1,listingAvailable=true,dispatches=0;
+    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:(...args)=>{const model=transport.makeModel(...args);return(...input)=>{
+      dispatches++;if(remaining--<=0)throw new Error('Model quota reached');return model(...input);
+    };},read:async url=>{
+      reads.push(url);assert.ok([BLUE_MARINE,saved.wildlabs.url].includes(url),'Incidental support must remain unfetched: '+url);
+      return url===BLUE_MARINE?{...listing,status:listingAvailable?200:503}:saved.wildlabs;
+    }};
+    await assert.rejects(collectHSA(db,{...options,sourceId:'00000000-0000-4000-8000-000000000000'}),{status:400});assert.equal(reads.length,0);
+    const first=await collectHSA(db,options);assert.equal(first.documents,1);assert.equal(first.created,0);assert.equal(transport.requests.length,1);
+    const pending=(await db.query('select parsed from scout.evidence where tracker_id=$1 and record_id is null',[tracker.id])).rows[0];
+    assert.equal(pending.parsed.document.id,'14884');assert.equal(Object.values(pending.parsed.document.processing_versions)[0].findings.length,1);
+    listingAvailable=false;remaining=1;const resumed=await collectHSA(db,options);assert.equal(resumed.created,1,resumed.warnings.join(';'));
+    assert.deepEqual(inputs.map(i=>i.stage),['extract','resolve']);assert.equal(transport.requests.length,2);
+    const prior=(await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0];
+    assert.equal(prior.report.path,'bluemarine-records');assert.deepEqual(prior.stats.document_source.known,[{url:saved.wildlabs.url,id:'14884'}]);
+    assert.equal(prior.stats.document_source.progress.after_url,saved.wildlabs.url);
+    const records=(await db.query('select * from scout.records')).rows;assert.equal(records.length,1);assert.equal(records[0].title,title);assert.equal(records[0].description,description);
+    for(const field of CONTENT_FIELDS.filter(k=>!['kind','title','description'].includes(k)))assert.equal(records[0][field],null);
+    const sources=(await db.query("select id,content,parsed#>'{document,prepared_versions}' prepared,parsed#>'{document,processing_versions}' processing from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows;
+    listingAvailable=true;const beforeRepeat=dispatches,repeated=await collectHSA(db,options);assert.equal(repeated.documents,1);assert.equal(repeated.processed,1);assert.equal(dispatches,beforeRepeat);assert.equal(transport.requests.length,2);
+    assert.deepEqual(reads,[BLUE_MARINE,saved.wildlabs.url,BLUE_MARINE,saved.wildlabs.url,BLUE_MARINE,saved.wildlabs.url]);
+    assert.deepEqual((await db.query('select * from scout.records')).rows,records);
+    assert.deepEqual((await db.query("select id,content,parsed#>'{document,prepared_versions}' prepared,parsed#>'{document,processing_versions}' processing from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows,sources);
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0],prior);
+    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+    context.diagnostic(JSON.stringify({whole_announcement_characters:sources[0].prepared['bluemarine-documents-v1'].text.length,injected_calls:2,simulated_records:1,repeat_calls:0,requests:[first.requests,resumed.requests,repeated.requests]}));
   }finally{await db.close();}
 });
 
