@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,sourceURL,HSA,GFW_WEB,IUCN,LIMITS} from '../collector/hsa.js';
+import {collectHSA,sourceURL,HSA,GFW_WEB,IUCN,DOSI_WEB,IDDRI,LIMITS} from '../collector/hsa.js';
 import {DISCOVERY_QUERIES} from '../collector/bluesky-discovery-documents.js';
 import {gemini} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
@@ -11,10 +11,13 @@ import {PREPARATION_VERSION,supportDocuments} from '../collector/octo-documents.
 import {DOCUMENT_VERSION} from '../collector/document-records.js';
 import {startReport} from '../collector/report.js';
 import {PREPARATION_VERSION as AUTHOR_PREPARATION_VERSION} from '../collector/bluesky-documents.js';
+import {PREPARATION_VERSION as DOSI_PREPARATION_VERSION} from '../collector/dosi-documents.js';
+import {IDDRI_LISTINGS} from '../collector/iddri-documents.js';
 
 const fixture=async name=>{const raw=await readFile(new URL('./fixtures/'+name,import.meta.url));return JSON.parse(name.endsWith('.gz')?gunzipSync(raw):raw);};
 const hsa=await fixture('hsa-webinar-time.json'),gaps=await fixture('scout16-gaps.json.gz'),gfw=await fixture('gfw-website.json.gz'),expansion=await fixture('expansion-feeds.json');
 const discovery=await fixture('bluesky-discovery.json.gz'),iucn=await fixture('iucn-website.json.gz');
+const dosi=await fixture('dosi-website.json.gz'),iddri=await fixture('iddri-website.json.gz');
 const article=JSON.parse(gfw['partnership-api'].body);
 const response=(url,body,mime='application/json')=>({url,status:200,headers:{'content-type':mime,'set-cookie':'never-store-response-headers'},body:typeof body==='string'?body:JSON.stringify(body)});
 const answer=findings=>({complete:true,reason:'Supplied range considered.',findings});
@@ -216,7 +219,7 @@ test('source limits/failures stay inspectable; unsupported or unscoped document 
     const failed=await collectHSA(db,{...options,read:async()=>{throw new Error('Feed failure');}});assert.equal(failed.documents,0);assert.ok(failed.failed);
     assert.ok(Object.values((await detail(db,failed.run_id)).report.operations).some(o=>o.step==='prepare'&&o.state==='fail'));
     const rows=(await db.query('select count(*)::int n from scout.collection_runs')).rows[0].n;
-    const other=await tracker(db,'https://www.dosi-project.org/biodiversity-beyond-national-jurisdiction-bbnj/');
+    const other=await tracker(db,'https://www.un.org/bbnjagreement/en');
     for(const change of [{validate:false},{trackerId:other.id},{sourceId:'00000000-0000-4000-8000-000000000001'},{documents:'all'}])
       await assert.rejects(collectHSA(db,{...options,...change,read:()=>{throw new Error('Must not read');}}),e=>e.status===400);
     assert.equal((await db.query('select count(*)::int n from scout.collection_runs')).rows[0].n,rows);
@@ -480,5 +483,202 @@ test('real Ai2 taxonomy metadata frees support capacity while retaining HTTP lin
     assert.ok(combined.coverage.some(l=>l.url==='https://globalfishingwatch.org/'&&l.relationship==='support'&&l.state==='fetched'));
     assert.ok(combined.coverage.some(l=>l.url==='https://skylight.global/'&&l.state==='fetched'));
     assert.ok(combined.coverage.some(l=>l.state==='deferred'));assert.equal(calls.length,3);
+  }finally{await db.close();}
+});
+
+
+test('DOSI persists whole configured/article/newsletter captures and bounded pending/known work across unlisting and failures',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,DOSI_WEB),before=(await db.query('select * from scout.trackers order by id')).rows;
+    const requested=new Set();let unlisted=false,changed=false;
+    const options={trackerId:t.id,validate:true,documents:true,read:async url=>{
+      requested.add(url);
+      if(unlisted&&url===DOSI_WEB)return response(url,'<html><div class="entry-content">Configured page unchanged finding scope.</div></html>','text/html');
+      const saved=Object.values(dosi).find(r=>r?.url===url&&r.body);if(!saved)throw new Error('Unsaved response');
+      return {...saved,body:changed&&url===dosi.newsletter.url?saved.body.replace('</td>','<p>Later complete issue appendix.</p></td>'):saved.body,
+        headers:{...saved.headers,'set-cookie':'never-store-response-headers'}};
+    }};
+    let run,state;const reports=[];
+    for(let i=0;i<6;i++){run=await collectHSA(db,options);const row=await detail(db,run.run_id);reports.push(row.report);state=row.stats.document_source;assert.ok(run.requests<=8);}
+    const captures=(await db.query("select * from scout.evidence where tracker_id=$1 and record_id is null",[t.id])).rows;
+    for(const key of ['home','guide','roundup','newsletter']){
+      const capture=captures.find(c=>c.url===dosi[key].url);assert.ok(capture,key);assert.equal(capture.content,dosi[key].body);
+      assert.equal(capture.parsed.document.identity,'dosi:page:'+capture.url);
+    }
+    const issue=captures.find(c=>c.url===dosi.newsletter.url),clean=issue.parsed.document.prepared_versions[DOSI_PREPARATION_VERSION];
+    assert.ok(clean.text.length>30000);assert.ok(clean.text.includes('And Finally...'));
+    const artifacts=reports.flatMap(r=>Object.values(r.artifacts));
+    assert.ok(artifacts.some(a=>a.kind==='fetch_response'&&a.data.body===dosi.feed.body));
+    assert.ok(artifacts.some(a=>a.kind==='provenance'&&a.source_id===issue.id&&a.data.provenance.some(p=>p.via?.some(v=>v.relationship==='newsletter-link'&&v.parent_url===dosi.roundup.url))));
+    assert.ok(artifacts.some(a=>a.kind==='provenance'&&a.data.provenance.some(p=>p.via?.some(v=>v.relationship==='rss-item'&&v.raw.includes('<item>')))));
+    assert.ok(!JSON.stringify(reports).includes('never-store-response-headers'));
+    assert.ok(state.pending.length);assert.ok(state.known.some(k=>k.url===dosi.newsletter.url));
+    const knownURLs=state.known.map(k=>k.url),pendingSize=JSON.stringify(state.pending).length;
+    unlisted=true;changed=true;requested.clear();
+    for(let i=0;i<8;i++){run=await collectHSA(db,options);state=(await detail(db,run.run_id)).stats.document_source;}
+    for(const url of knownURLs)assert.ok(requested.has(url),'Unlisted known URL not revisited: '+url);
+    assert.ok(state.pending.some(p=>p.state==='failed'));assert.ok(JSON.stringify(state.pending).length<pendingSize*2);
+    assert.ok((await db.query("select * from scout.evidence where tracker_id=$1 and url=$2",[t.id,dosi.newsletter.url])).rows.some(c=>c.content.includes('Later complete issue appendix.')));
+    const progress=state.progress;
+    const expired=await collectHSA(db,{...options,deadline:Date.now()-1,read:()=>assert.fail('Expired read')});
+    assert.equal(expired.requests,0);assert.deepEqual((await detail(db,expired.run_id)).stats.document_source.progress,progress);
+    assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,before);assert.equal((await stored(db)).length,0);
+  }finally{await db.close();}
+});
+
+test('whole saved DOSI newsletter traverses bounded requests, cited save and unchanged repeat without scripted findings',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,DOSI_WEB),title='Unlocking Dataset Value for AI-Enabled Scientific Discovery';
+    await db.query("insert into scout.collection_runs(tracker_id,started_at,finished_at,outcome,stats) values($1,clock_timestamp()-interval '1 minute',clock_timestamp(),'partial',$2)",[t.id,{document_source:{known:[{id:'page:'+dosi.newsletter.url,url:dosi.newsletter.url}],pending:[],progress:{}}}]);
+    const transport=runModel(db,input=>{
+      if(input.stage==='resolve')return resolve(input);
+      const segment=input.segments.find(s=>s.doc==='P'&&s.text.includes(title)),at=segment?segment.range[0]+segment.text.indexOf(title):-1;
+      return answer(at>=input.range[0]&&at<input.range[1]?[base(title,[{doc:'P',quote:title}])]:[]);
+    });
+    const options={trackerId:t.id,validate:true,documents:'process',makeModel:transport.makeModel,read:async url=>{
+      if(url===dosi.newsletter.url)return dosi.newsletter;throw new Error('Unsaved source/support');
+    }};
+    let run=await collectHSA(db,options);
+    for(let i=0;i<12&&!run.processed;i++)run=await collectHSA(db,options);
+    assert.equal(run.processed,1,run.warnings.join(';'));
+    const capture=(await db.query("select * from scout.evidence where tracker_id=$1 and record_id is null and url=$2",[t.id,dosi.newsletter.url])).rows[0];
+    const clean=capture.parsed.document.prepared_versions[DOSI_PREPARATION_VERSION],inputs=transport.inputs.filter(i=>i.stage==='extract');
+    assert.equal(inputs.map(i=>clean.text.slice(...i.range)).join(''),clean.text);
+    assert.ok(inputs.length>10);assert.ok(inputs.some(i=>i.segments.some(s=>s.text.includes('And Finally...'))));
+    const records=await stored(db);assert.equal(records.length,1);assert.equal(records[0].title,title);assert.equal(records[0].starts_at,null);
+    const n=transport.requests.length,repeat=await collectHSA(db,options);assert.equal(repeat.processed,1);assert.equal(transport.requests.length,n);assert.equal((await stored(db)).length,1);
+    const report=(await detail(db,run.run_id)).report;assert.equal(report.path,'dosi-records');
+    assert.ok(Object.values(report.artifacts).some(a=>a.kind==='model_request'));
+    assert.ok(Object.values(report.artifacts).some(a=>a.kind==='support_coverage'&&a.data.links.some(l=>['deferred','unsupported','failed'].includes(l.state))));
+  }finally{await db.close();}
+});
+
+test('DOSI observed registration/organizer/support relationships and support-only changes reach shared processing',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,DOSI_WEB),urls=['https://example.org/register','https://example.org/organizer','https://example.org/context'];
+    const home=response(DOSI_WEB,'<html><div class="entry-content"><h1>Public implementation briefing</h1>'+
+      '<p>Register here: <a rel="registration" href="'+urls[0]+'">Book a place</a></p>'+
+      '<p>Publisher details: <a rel="author" href="'+urls[1]+'">Named organizer</a></p>'+
+      '<p>Background: <a href="'+urls[2]+'">Complete context</a></p></div></html>','text/html');
+    let edition='Original complete support';const transport=runModel(db,()=>answer([]));
+    const options={trackerId:t.id,validate:true,documents:'process',makeModel:transport.makeModel,read:async url=>url===DOSI_WEB?home:
+      response(url,'<html><title>Public implementation briefing</title><p>'+edition+'</p></html>','text/html')};
+    let run=await collectHSA(db,options);assert.equal(run.processed,1,run.warnings.join(';'));
+    const capture=(await db.query("select * from scout.evidence where url=$1",[DOSI_WEB])).rows[0],count=transport.requests.length;
+    run=await collectHSA(db,options);assert.equal(transport.requests.length,count);
+    edition='Changed support-only context with later bilingual détails';run=await collectHSA(db,options);
+    assert.equal(run.processed,1,run.warnings.join(';'));assert.ok(transport.requests.length>count);
+    assert.equal((await db.query("select count(*)::int n from scout.evidence where url=$1",[DOSI_WEB])).rows[0].n,1);
+    assert.equal((await db.query('select content_hash from scout.evidence where id=$1',[capture.id])).rows[0].content_hash,capture.content_hash);
+    const coverage=Object.values((await detail(db,run.run_id)).report.artifacts).find(a=>a.kind==='support_coverage').data;
+    assert.deepEqual(coverage.documents.map(d=>d.relationship),['primary','registration','organizer','support']);
+    assert.ok(transport.inputs.some(i=>i.segments.some(s=>s.text.includes(edition))));
+    assert.equal((await stored(db)).length,0);
+  }finally{await db.close();}
+});
+
+test('whole saved IDDRI bilingual editions traverse processing separately with alternate-link evidence and repeat/change handling',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,IDDRI),before=await tracker(db,IDDRI);let changed=false;
+    const transport=runModel(db,input=>{
+      if(input.stage==='resolve')return resolve(input);
+      const title=input.documents.P?.title;
+      return answer(input.range[0]===0&&input.documents.P.url===iddri.brief.url?[base(title,[{doc:'P',quote:title}])]:[]);
+    });
+    const options={trackerId:t.id,validate:true,documents:'process',makeModel:transport.makeModel,read:async url=>{
+      if(IDDRI_LISTINGS.includes(url)){
+        const doc=url===IDDRI?iddri.brief:iddri['brief-fr'];
+        return response(url,'<html><link rel="alternate" href="'+url.replace('?page=0','')+'"><main><article class="line-teaser"><a href="'+doc.url+'"><h3>Observed edition</h3></a></article></main></html>','text/html');
+      }
+      const saved=[iddri.brief,iddri['brief-fr']].find(d=>d.url===url);if(!saved)throw new Error('Unsaved support');
+      return {...saved,body:changed&&url===iddri['brief-fr'].url?saved.body.replace('</article>','<p>Annexe complète nouvelle.</p></article>'):saved.body};
+    }};
+    let run=await collectHSA(db,options);for(let i=0;i<10&&run.processed!==2;i++)run=await collectHSA(db,options);
+    assert.equal(run.processed,2,run.warnings.join(';'));
+    const captures=(await db.query("select * from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like 'iddri:%'",[t.id])).rows;
+    assert.equal(captures.length,2);assert.deepEqual(captures.map(c=>c.parsed.document.identity).sort(),['iddri:node:27692:en','iddri:node:27692:fr']);
+    for(const capture of captures){
+      const saved=capture.url===iddri.brief.url?iddri.brief:iddri['brief-fr'];assert.equal(capture.content,saved.body);
+      const clean=capture.parsed.document.prepared_versions[PREPARATION_VERSION],inputs=transport.inputs.filter(i=>i.stage==='extract'&&i.source_id===capture.id&&i.range[0]<clean.text.length);
+      assert.equal(inputs.map(i=>clean.text.slice(i.range[0],Math.min(i.range[1],clean.text.length))).join(''),clean.text);
+      assert.ok(clean.links.some(l=>l.context==='Publisher language alternate'&&l.relationship==='support'));
+    }
+    assert.equal((await stored(db)).length,1);const count=transport.requests.length;
+    run=await collectHSA(db,options);assert.equal(run.processed,2);assert.equal(transport.requests.length,count);
+    const state=(await detail(db,run.run_id)).stats.document_source;assert.equal(state.known.filter(k=>k.id==='27692').length,2);
+    const report=(await detail(db,run.run_id)).report;assert.equal(report.path,'iddri-records');
+    assert.ok(Object.values(report.artifacts).some(a=>a.kind==='provenance'&&a.data.provenance.some(p=>p.metadata?.length&&p.alternates?.length===2)));
+    assert.ok(Object.values(report.artifacts).some(a=>a.kind==='support_coverage'&&a.data.links.some(l=>l.url===iddri['brief-fr'].url&&l.state==='deferred')));
+    const inputCount=transport.inputs.length,english=captures.find(c=>c.url===iddri.brief.url);
+    changed=true;run=await collectHSA(db,options);for(let i=0;i<10&&run.processed!==2;i++)run=await collectHSA(db,options);
+    assert.equal(run.processed,2,run.warnings.join(';'));assert.ok(transport.requests.length>count);
+    assert.ok(!transport.inputs.slice(inputCount).some(i=>i.stage==='extract'&&i.source_id===english.id),'Deferred alternate does not claim a fetched-support change');
+    assert.equal((await db.query('select content_hash from scout.evidence where id=$1',[english.id])).rows[0].content_hash,english.content_hash);
+    assert.equal((await stored(db)).length,1);assert.deepEqual(await tracker(db,IDDRI),before);
+  }finally{await db.close();}
+});
+
+test('IDDRI keeps failed/unlisted language URLs and cursor; node conflicts retain raw response without model selection',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,IDDRI),attempted=new Set();let absent=false,conflict=false;
+    const options={trackerId:t.id,validate:true,documents:true,read:async url=>{
+      attempted.add(url);const saved=Object.values(iddri).find(r=>r?.url===url&&r.body);
+      if(absent&&IDDRI_LISTINGS.includes(url))throw new Error('Listing inaccessible');
+      if(!saved)throw new Error('Unsaved edition');
+      return conflict&&url===iddri.brief.url?{...saved,body:saved.body.replace('en/node/27692','en/node/99')}:saved;
+    }};
+    const first=await collectHSA(db,options),initial=(await detail(db,first.run_id)).stats.document_source;
+    assert.equal(initial.known.length,24);absent=true;
+    let run,state;
+    for(let i=0;i<5;i++){run=await collectHSA(db,options);state=(await detail(db,run.run_id)).stats.document_source;assert.equal(state.known.length,24);}
+    for(const k of initial.known)assert.ok(attempted.has(k.url),k.url);
+    assert.equal(state.known.filter(k=>k.id==='27692').length,2);
+    const bounded=await collectHSA(db,{...options,read:async(url,budget)=>{budget.requests=LIMITS.requests;throw new Error('Quota');}});
+    assert.deepEqual((await detail(db,bounded.run_id)).stats.document_source.progress,state.progress);
+    conflict=true;let found;
+    for(let i=0;i<5&&!found;i++){
+      run=await collectHSA(db,options);const report=(await detail(db,run.run_id)).report;
+      found=Object.values(report.artifacts).find(a=>a.kind==='coverage'&&a.data.coverage?.some(c=>c.url===iddri.brief.url&&/node identity/.test(c.reason)));
+      if(found)assert.ok(Object.values(report.artifacts).some(a=>a.kind==='fetch_response'&&a.data.body.includes('/en/node/99')));
+    }
+    assert.ok(found);assert.equal((await stored(db)).length,0);
+  }finally{await db.close();}
+});
+
+test('conflicting IDDRI payloads cannot select one node edition or merge records from shared publisher identity',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,IDDRI),alias='https://www.iddri.org/en/publications-and-events/policy-brief/alternate-route';
+    const alternate={...iddri.brief,url:alias,body:iddri.brief.body.replaceAll(iddri.brief.url,alias)};
+    await db.query("insert into scout.collection_runs(tracker_id,started_at,finished_at,outcome,stats) values($1,clock_timestamp()-interval '1 minute',clock_timestamp(),'partial',$2)",[t.id,{document_source:{known:[{id:'27692',url:iddri.brief.url},{id:'27692',url:alias}],progress:{}}}]);
+    const run=await collectHSA(db,{trackerId:t.id,validate:true,documents:'process',model:()=>assert.fail('Conflicting source must not call model'),read:async url=>{
+      if(url===alias)return alternate;if(url===iddri.brief.url)return iddri.brief;throw new Error('Unlisted');
+    }});
+    assert.equal(run.documents,2);assert.equal(run.uncertain,2);assert.equal((await stored(db)).length,0);
+    const captures=(await db.query("select * from scout.evidence where tracker_id=$1",[t.id])).rows;
+    assert.equal(captures.length,2);assert.ok(captures.every(c=>c.parsed.document.identity==='iddri:node:27692:en'));
+    assert.ok(Object.values((await detail(db,run.run_id)).report.operations).some(o=>o.state==='uncertain'));
+  }finally{await db.close();}
+});
+
+test('DOSI/IDDRI require explicit validation, preserve config/access and stop on shared quota without an unreserved save',async()=>{
+  const db=await database();try{
+    const before=(await db.query('select * from scout.trackers order by id')).rows;
+    for(const url of [DOSI_WEB,IDDRI]){
+      const t=await tracker(db,url),runs=(await db.query('select count(*)::int n from scout.collection_runs')).rows[0].n;
+      for(const change of [{validate:false},{documents:'all'},{sourceId:'00000000-0000-4000-8000-000000000001'},{assessOnly:true}]){
+        await assert.rejects(collectHSA(db,{trackerId:t.id,validate:true,documents:'process',...change,read:()=>assert.fail('Unscoped source call')}),e=>e.status===400);
+      }
+      assert.equal((await db.query('select count(*)::int n from scout.collection_runs')).rows[0].n,runs);
+    }
+    const t=await tracker(db,DOSI_WEB),title='Public source implementation briefing';let requests=0;
+    const run=await collectHSA(db,{trackerId:t.id,validate:true,documents:'process',
+      read:async url=>response(url,'<html><div class="entry-content"><h1>'+title+'</h1><p>Public methods announcement.</p></div></html>','text/html'),
+      makeModel:(runId,deadline,trace)=>gemini({apiKey:'fixture-test-key',ledger:db,runId,deadline,trace,runLimit:1,fetch:async(_url,request)=>{
+        requests++;assert.ok(Buffer.byteLength(request.body)<=8000);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(answer([base(title,[{doc:'P',quote:title}])]))}]}}]});
+      }})});
+    assert.equal(requests,1);assert.equal((await detail(db,run.run_id)).stats.model_attempts.length,1);
+    assert.ok(run.warnings.some(w=>/quota/i.test(w)));assert.equal((await stored(db)).length,0);
+    assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,before);
+    await db.exec("set role anon");await assert.rejects(db.query('select report from scout.collection_runs'),/permission denied/);
   }finally{await db.close();}
 });
