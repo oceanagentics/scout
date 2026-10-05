@@ -149,6 +149,46 @@ test('Harvest configured primary and observed index reach full model input with 
   }finally{await db.close();}
 });
 
+test('HUB calendar, whole item and associated ICS use shared resolution and unchanged-repeat progress',async()=>{
+  const saved=await fixture('hub-calendar.json'),db=await database();try{
+    const home='https://www.hubocean.earth/events-calendar',item=saved.upcoming[0],url=new URL(item.fullUrl,home).href;
+    const tracker=(await db.query("insert into scout.trackers(name,url,collector,cadence) values('HUB Ocean',$1,'web','7 days') returning *",[home])).rows[0],reads=[],inputs=[];
+    const responses=new Map([[home+'?format=json',{body:JSON.stringify(saved),mime:'application/json'}],
+      [url+'?format=json',{body:JSON.stringify({item}),mime:'application/json'}],[url+'?format=ical',{body:saved.calendar,mime:'text/calendar'}]]);
+    const transport=runModel(db,async input=>{
+      if(input.stage==='resolve')return resolve(input); // Injected identities exercise shared saving, not provider correctness.
+      inputs.push(input);const source=(await db.query('select * from scout.evidence where id=$1',[input.source_id])).rows[0];
+      const prepared=source.parsed.document.prepared_versions['hub-documents-v1'];
+      assert.deepEqual(input.range,[0,prepared.text.length]);assert.deepEqual(input.omitted_ranges,[]);
+      assert.equal(input.segments.map(s=>s.text).join(''),prepared.text);assert.deepEqual(Object.keys(input.documents),['P']);
+      assert.equal(source.content,input.documents.P.url===url?JSON.stringify(item):responses.get(input.documents.P.url).body);
+      const finding=base(item.title,[{doc:'P',quote:item.title}]);finding.priority='high';
+      return answer([finding]);
+    },true);
+    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:transport.makeModel,read:async target=>{
+      reads.push(target);assert.ok(responses.has(target),'Incidental links/media must not be fetched: '+target);
+      const r=responses.get(target);return {url:target,status:200,headers:{'content-type':r.mime},body:r.body};
+    }};
+    await assert.rejects(collectHSA(db,{...options,sourceId:'00000000-0000-4000-8000-000000000000'}),{status:400});assert.equal(reads.length,0);
+    const first=await collectHSA(db,options);assert.equal(first.documents,3);assert.equal(first.processed,3,first.warnings.join(';'));
+    assert.equal(first.created,1);assert.equal(first.requests,2);assert.equal(transport.requests.length,6);
+    assert.deepEqual(inputs.map(p=>p.documents.P.url),[home+'?format=json',url,url+'?format=ical']);
+    const rows=(await db.query('select * from scout.records')).rows;assert.equal(rows.length,1);assert.equal(rows[0].title,item.title);
+    for(const key of CONTENT_FIELDS.filter(k=>!['kind','title'].includes(k)))assert.equal(rows[0][key],null);
+    assert.equal((await db.query('select count(*)::int n from scout.evidence where record_id=$1',[rows[0].id])).rows[0].n,3);
+    const prior=(await db.query('select * from scout.collection_runs where id=$1',[first.run_id])).rows[0];
+    assert.equal(prior.stats.model_attempts.length,6);assert.equal(prior.report.path,'hub-records');
+    assert.equal(prior.stats.document_source.known.length,3);assert.equal(prior.stats.document_source.pending.length,0);
+    const repeat=await collectHSA(db,options);assert.equal(repeat.processed,3);assert.equal(repeat.created,0);assert.equal(repeat.requests,3);
+    assert.equal(transport.requests.length,6);assert.equal(inputs.length,3);
+    assert.deepEqual((await db.query('select * from scout.records')).rows,rows);
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[first.run_id])).rows[0],prior);
+    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+    const report=(await db.query('select report from scout.collection_runs where id=$1',[repeat.run_id])).rows[0].report;
+    assert.equal(Object.values(report.operations).filter(o=>['generate','validate','save'].includes(o.step)&&o.state==='skipped').length,9);
+  }finally{await db.close();}
+});
+
 test('saved UNOC announcement retains separate session labels without borrowing the parent schedule',async()=>{
   const saved=(await fixture('iddri-website.json.gz')).unoc;
   const prepared=prepareDocument({title:'IDDRI at UNOC',url:saved.url,html:saved.body});
