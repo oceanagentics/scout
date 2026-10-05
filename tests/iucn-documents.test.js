@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { parseDocument, DomUtils } from 'htmlparser2';
-import { retrieveIUCNDocuments, IUCN_LISTING } from '../collector/iucn-documents.js';
+import { retrieveIUCNDocuments, IUCN_LISTING, PREPARATION_VERSION } from '../collector/iucn-documents.js';
 import { prepareDocument } from '../collector/octo-documents.js';
 
 const fixture=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/iucn-website.json.gz',import.meta.url))));
@@ -12,12 +12,12 @@ const sourceURL=value=>{
   if(url.protocol!=='https:'||url.username||url.password)throw new Error('Unsupported source URL');
   return url.href;
 };
-async function collect({home=fixture.home,overrides={},knownDocuments=[],progress,limits={},budget}={}){
+async function collect({home=fixture.home,overrides={},knownDocuments=[],pending=[],progress,limits={},budget}={}){
   const responses=new Map(Object.values(fixture).filter(v=>v?.url&&typeof v.body==='string').map(v=>[v.url,v]));
   responses.set(IUCN_LISTING,home);
   for(const [url,response] of Object.entries(overrides))responses.set(url,response);
   const requests=[];
-  const result=await retrieveIUCNDocuments({sourceURL,knownDocuments,progress,
+  const result=await retrieveIUCNDocuments({sourceURL,knownDocuments,pending,progress,
     limits:{documents:20,requests:25,bytes:2_000_000,...limits},budget:budget??{requests:0,deadline:Date.now()+20_000},
     read:async url=>{requests.push(url);const response=responses.get(url);if(!response)throw new Error('Unsaved response');return response;}});
   return {...result,requests};
@@ -31,15 +31,27 @@ test('real fixture preserves whole articles, metadata, featured/listing identiti
   for(const doc of run.documents){
     const response=Object.values(fixture).find(v=>v?.url===doc.url);
     assert.equal(doc.raw,response.body);assert.ok(doc.metadata.length);assert.equal(doc.identity,'iucn:node:'+doc.id);
+    assert.equal(doc.prepared.version,PREPARATION_VERSION);
+    assert.equal(doc.html,doc.regions.map(r=>response.body.slice(r.start,r.end)).join('\n'));
     assert.equal(doc.prepared.chunks.map(c=>doc.prepared.text.slice(c.start,c.end)).join(''),doc.prepared.text);
     const node=parseDocument(doc.html,{withStartIndices:true});
     const body=DomUtils.findAll(n=>(n.attribs?.class??'').split(/\s+/).includes('field--name-field-body'),node.children)[0];
     const expected=prepareDocument({title:'',url:doc.url,html:DomUtils.getOuterHTML(body)}).text;
     assert.ok(doc.prepared.text.includes(expected));
+    const original=parseDocument(response.body);
+    for(const region of DomUtils.findAll(n=>(n.attribs?.class??'').split(/\s+/).some(c=>
+      ['content-title','content-lead','content-author-info','content-media-image','content-paragraphs','main-section'].includes(c)),original.children)){
+      if(!DomUtils.textContent(region).trim())continue;
+      const expected=prepareDocument({title:'',url:doc.url,html:DomUtils.getOuterHTML(region)});
+      assert.ok(doc.prepared.text.includes(expected.text));
+    }
     assert.ok(!Object.hasOwn(doc,'kind'));assert.ok(!Object.hasOwn(doc,'organization'));assert.ok(!Object.hasOwn(doc,'findings'));
   }
   const blog=run.documents.find(d=>d.url===fixture.blog.url);
   assert.ok(blog.prepared.text.length>4000);assert.ok(blog.prepared.links.length);
+  assert.ok(blog.raw.includes('IUCN Food and Agricultural Systems'));
+  assert.ok(!blog.prepared.text.includes('IUCN Food and Agricultural Systems'));
+  assert.ok(!blog.html.includes('comp-featured-content'));
   assert.ok(run.documents.some(d=>d.url===fixture.dataset.url));
   assert.ok(run.coverage.some(c=>c.reason.includes('archives/pagination')));
   assert.ok(run.coverage.some(c=>c.state==='failed'));assert.ok(!JSON.stringify(run.fetches).includes('set-cookie'));
@@ -58,10 +70,23 @@ test('structural listing reorder and duplicate cards preserve identities and bou
 });
 
 test('known changed document is independently rechecked behind unchanged or failed listing',async()=>{
-  const changed={...fixture.blog,body:fixture.blog.body.replace('</article>','<section><p>New implementation appendix.</p></section></article>')};
+  const body=DomUtils.findAll(n=>(n.attribs?.class??'').split(/\s+/).includes('field--name-field-body'),parseDocument(fixture.blog.body,{withStartIndices:true}).children)[0];
+  const start=fixture.blog.body.indexOf('>',body.startIndex)+1;
+  const changed={...fixture.blog,body:fixture.blog.body.slice(0,start)+'<p>New implementation appendix.</p>'+fixture.blog.body.slice(start)};
   for(const home of [fixture.home,{...fixture.home,status:503}]){
     const run=await collect({home,knownDocuments:[{id:'45913',url:fixture.blog.url}],overrides:{[fixture.blog.url]:changed}});
     const doc=run.documents.find(d=>d.id==='45913');assert.match(doc.prepared.text,/New implementation appendix/);
+  }
+});
+
+test('pending model work leads known/listed documents without admitting unobserved URLs',async()=>{
+  const pending=[{url:fixture.forum.url,state:'model-pending'},{url:fixture.blog.url,state:'model-repair'},
+    {url:'https://iucn.org/story/unobserved',state:'model-repair'}];
+  for(const home of [fixture.home,{...fixture.home,status:503}]){
+    const run=await collect({home,pending,knownDocuments:[{id:'45913',url:fixture.blog.url},{id:'46802',url:fixture.forum.url}],
+      progress:{after_url:fixture.blog.url},limits:{documents:2}});
+    assert.deepEqual(run.requests,[IUCN_LISTING,fixture.blog.url,fixture.forum.url]);
+    assert.equal(run.progress.after_url,fixture.forum.url);
   }
 });
 
@@ -88,6 +113,8 @@ test('cursor progresses across new/deferred/failed and no-longer-listed known do
 test('unsupported media, failed details, identity mismatch and excerpt-only body stay honest',async()=>{
   for(const response of [{...fixture.blog,status:403},{...fixture.blog,headers:{'content-type':'application/pdf'},body:'Saved PDF bytes'},
     {...fixture.blog,body:fixture.blog.body.replaceAll('field--name-field-body','removed-body-field')},
+    {...fixture.blog,body:fixture.blog.body.replaceAll('class="content-body"','class="unknown-body"')},
+    {...fixture.blog,body:fixture.blog.body.replace('</article>','<div class="content-body">Another region</div></article>')},
     {...fixture.blog,body:fixture.blog.body.replace('data-history-node-id="45913"','data-history-node-id="99"')}]){
     const run=await collect({home:{...fixture.home,status:503},knownDocuments:[{id:'45913',url:fixture.blog.url}],overrides:{[fixture.blog.url]:response}});
     assert.equal(run.documents.length,0);assert.equal(run.fetches.at(-1).body,response.body);

@@ -3,11 +3,12 @@ import { parseDocument, DomUtils } from 'htmlparser2';
 import { prepareDocument } from './octo-documents.js';
 
 export const IUCN_LISTING='https://iucn.org/our-work/topic/high-seas';
+export const PREPARATION_VERSION='iucn-documents-v1';
 const hasClass=(node,name)=>(node.attribs?.class??'').split(/\s+/).includes(name);
 
 // Source-only adapter; the caller owns captures, reporting and model stages.
 // Persist progress after failures too, and keep unlisted known URLs supplied.
-export async function retrieveIUCNDocuments({read,sourceURL,budget,limits,knownDocuments=[],progress={}}){
+export async function retrieveIUCNDocuments({read,sourceURL,budget,limits,knownDocuments=[],pending=[],progress={}}){
   const result={source:IUCN_LISTING,inventory:[],documents:[],fetches:[],coverage:[],limits:{...limits},progress:{...progress}};
   const publisherURL=value=>{
     if(typeof value!=='string'||!value.trim())throw new Error('IUCN source URL unavailable');
@@ -65,6 +66,8 @@ export async function retrieveIUCNDocuments({read,sourceURL,budget,limits,knownD
   }
   const ordered=[...candidates.values()].sort((a,b)=>a.url<b.url?-1:a.url>b.url?1:0);
   const queue=typeof progress.after_url==='string'?[...ordered.filter(d=>d.url>progress.after_url),...ordered.filter(d=>d.url<=progress.after_url)]:ordered;
+  const priority=new Map(pending.filter(d=>['model-repair','model-pending'].includes(d.state)).map(d=>[d.url,d.state==='model-repair'?0:1]));
+  queue.sort((a,b)=>(priority.get(a.url)??2)-(priority.get(b.url)??2)); // Prioritize only existing known/listed candidates.
   let selected=0;
   for(const item of queue){
     if(selected++>=limits.documents){result.coverage.push({url:item.url,state:'deferred',reason:'Document limit'});continue;}
@@ -80,12 +83,21 @@ export async function retrieveIUCNDocuments({read,sourceURL,budget,limits,knownD
       if(!shortlinks.some(n=>publisherURL(n.attribs.href).endsWith('/node/'+id)))throw new Error('Detail shortlink/node identity disagreement');
       const title=DomUtils.textContent(DomUtils.getElementsByTagName('h1',node.children)[0]??{children:[]}).trim();
       const bodies=DomUtils.findAll(n=>hasClass(n,'field--name-field-body'),node.children);
-      if(!title||!bodies.some(n=>DomUtils.textContent(n).trim()))throw new Error('Full readable detail body unavailable; listing/lead excerpt is insufficient');
-      const html=response.entry.body.slice(node.startIndex,node.endIndex+1);
+      if(!title||bodies.length!==1||!DomUtils.textContent(bodies[0]).trim())throw new Error('Full readable detail body unavailable; listing/lead excerpt is insufficient');
+      const containers=DomUtils.findAll(n=>hasClass(n,'content-body'),node.children),primary=containers.length===1?containers[0].parent:null;
+      if(!primary||!(hasClass(node,'node--type-article')&&hasClass(primary,'col-md-10')||hasClass(node,'node--type-resource')&&hasClass(primary,'main-section'))||
+        DomUtils.getElementsByTagName('h1',primary.children).length!==1||
+        !DomUtils.findAll(n=>n===bodies[0],primary.children).length||DomUtils.findAll(n=>hasClass(n,'comp-featured-content'),primary.children).length)
+        throw new Error('Primary body/header boundary unavailable or ambiguous');
+      const sections=[primary,...DomUtils.findAll(n=>hasClass(n,'article-interactive-story')||hasClass(n,'resource-interactive-component'),node.children)
+        .filter(n=>n.startIndex>primary.endIndex||n.endIndex<primary.startIndex)].sort((a,b)=>a.startIndex-b.startIndex);
+      const regions=sections.map(n=>({start:n.startIndex,end:n.endIndex+1}));
+      const html=regions.map(r=>response.entry.body.slice(r.start,r.end)).join('\n');
       const metadata=DomUtils.getElementsByTagName('meta',response.dom.children).map(n=>({...n.attribs}));
-      const prepared=prepareDocument({title,url:item.url,html});
-      result.documents.push({id,identity:'iucn:node:'+id,url:item.url,raw:response.entry.body,html,metadata,node_attributes:{...node.attribs},listing:item,prepared});
-      result.coverage.push({url:item.url,identity:'iucn:node:'+id,state:'prepared',reason:'Whole readable article retained; embedded support/media links unfetched',links:prepared.links});
+      const prepared=prepareDocument({title,url:item.url,html});prepared.version=PREPARATION_VERSION;
+      prepared.omissions.push({reason:'Primary header, lead, body, media and resource metadata retained; breadcrumbs, sharing, taxonomy and related cards excluded; full response retained',regions});
+      result.documents.push({id,identity:'iucn:node:'+id,url:item.url,raw:response.entry.body,html,regions,metadata,node_attributes:{...node.attribs},listing:item,prepared});
+      result.coverage.push({url:item.url,identity:'iucn:node:'+id,state:'prepared',reason:'Whole primary announcement retained; related cards excluded and embedded links unfetched',links:prepared.links});
     }catch(error){result.coverage.push({url:item.url,state:'failed',reason:error.message});}
   }
   return result;
