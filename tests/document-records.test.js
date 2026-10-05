@@ -4,11 +4,11 @@ import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
 import {collectHSA,sourceURL,LIMITS} from '../collector/hsa.js';
-import {gemini,MODEL_LIMITS} from '../collector/model.js';
+import {gemini,MODEL_LIMITS,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {prepareDocument,supportDocuments,PREPARATION_VERSION} from '../collector/octo-documents.js';
 import {startReport} from '../collector/report.js';
-import {packDocument,validateFinding as validateCitedFinding,candidatesFor as findCandidates,DOCUMENT_VERSION} from '../collector/document-records.js';
+import {packDocument,validateFinding as validateCitedFinding,candidatesFor as findCandidates,DOCUMENT_VERSION,DOCUMENT_INSTRUCTION,DOCUMENT_SCHEMA} from '../collector/document-records.js';
 import {stepState} from '../src/runs.js';
 
 const fixture=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));
@@ -313,6 +313,8 @@ test('malformed outputs in either stage repair with redacted text; intact oversi
     const huge=runner(db,()=>({bad:'X'.repeat(9000)}));const failed=await huge.run({documentVersion:'oversized-output'});
     assert.equal(huge.requests.length,1);assert.equal(failed.processed,0);assert.ok(failed.warnings.some(w=>w.includes('Repair request exceeds')));
     assert.ok(Object.values((await report(db,failed.run_id)).report.artifacts).some(a=>a.kind==='validation_errors'&&a.data.response.bad.length===9000));
+    const repeat=await huge.run({documentVersion:'oversized-output'});assert.equal(huge.requests.length,1);assert.equal(repeat.processed,0);
+    assert.ok(repeat.warnings.some(w=>/Repair request exceeds 8000 bytes \(\d+\)/.test(w)));
   }finally{await db.close();}
 });
 
@@ -598,5 +600,46 @@ test('newer observed support blocks a concurrent save without turning a shared U
     }),{post,supports:{[url]:{url,status:200,body:'<h1>First session</h1><p>2026-10-21T10:00:00Z</p>'}}});
     const run=await source.run();assert.equal(run.uncertain,1,run.warnings.join(';'));assert.equal(run.created,0);assert.equal((await current(db)).length,0);
     assert.equal((await db.query('select count(*)::int n from scout.evidence where record_id is not null')).rows[0].n,0);
+  }finally{await db.close();}
+});
+
+
+test('retained COFI rejection fits a complete bounded repair with exact evidence and unchanged grounding guards',async()=>{
+  const live=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/gfw-live-extraction.json.gz',import.meta.url))));
+  const original=JSON.parse(live.artifacts.a31.data.body),oldInput=JSON.parse(original.contents[0].parts[0].text)[0];
+  const rejected=live.artifacts.a34.data.response,errors=live.artifacts.a34.data.errors;
+  assert.equal(Buffer.byteLength(live.artifacts.a31.data.body),6618);
+  assert.ok(Buffer.byteLength(requestBody(original.systemInstruction.parts[0].text,[{...oldInput,repair:{rejected,errors}}],original.generationConfig.responseJsonSchema))>8000);
+  const post=JSON.parse(live.artifacts.a3.data.body),prepared=prepareDocument({title:post.title.rendered,url:post.link,html:post.content.rendered});
+  const input=packDocument(live.source,prepared,0,DOCUMENT_VERSION+'/'+prepared.version+'/primary');
+  const wire=requestBody(DOCUMENT_INSTRUCTION,[{...input,repair:{rejected,errors}}],DOCUMENT_SCHEMA);
+  assert.ok(Buffer.byteLength(wire)<=8000);assert.deepEqual(JSON.parse(JSON.parse(wire).contents[0].parts[0].text)[0].repair.rejected,rejected);
+  assert.equal(input.documents.P.url,oldInput.documents.P.url);assert.equal(input.source_id,oldInput.source_id);
+  const text=input.segments[0].text,quote=text.slice(text.indexOf('At the 37th Session'),text.indexOf('(IUU) fishing.')+'(IUU) fishing.'.length);
+  assert.ok(quote.includes('\u00a0'));assert.ok(quote.includes('<https://globalfishingwatch.org/transparency/>'));
+  assert.throws(()=>validateCitedFinding(rejected.findings[0],input),/Every citation/);
+  const p={anchor:'37th Session of the U.N. Food and Agriculture Organization’s Committee on Fisheries (COFI)',urls:[post.link],
+    candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'announcement',title:'COFI recognizes transparency and technology against illegal fishing'},
+    priority:'normal',reason:'Substantive fisheries policy announcement.',citations:[{doc:'P',quote}],
+    evidence:Object.fromEntries(['title','kind','priority'].map(k=>[k,{refs:[0],rationale:'Cited session outcome.'}])),dates:{}};
+  assert.equal(validateCitedFinding(p,input),p);
+  const altered=structuredClone(p);altered.citations[0].quote=rejected.findings[0].citations[0].quote;assert.throws(()=>validateCitedFinding(altered,input),/Every citation/);
+  const missing=structuredClone(p);delete missing.evidence.priority;assert.throws(()=>validateCitedFinding(missing,input),/priority/);
+  const wrongKeys=structuredClone(p);wrongKeys.evidence['candidate.title']=wrongKeys.evidence.title;delete wrongKeys.evidence.title;assert.throws(()=>validateCitedFinding(wrongKeys,input),/Evidence/);
+  const dated=structuredClone(p);dated.candidate.kind='event';dated.candidate.starts_at='2026-09-11T00:00:00Z';dated.evidence.starts_at={refs:[0],rationale:'Publication date'};dated.dates=rejected.findings[0].dates;
+  assert.throws(()=>validateCitedFinding(dated,input),/year\/date\/clock\/zone/);
+  dated.dates.starts_at.parts={year:[0],date:[0],time:[],zone:[]};assert.throws(()=>validateCitedFinding(dated,input),/year\/date\/clock\/zone/);
+  assert.ok(input.range[1]<prepared.text.length);assert.ok(input.omitted_ranges.length);
+});
+
+
+test('retained complete=false refusal stays unresolved until a new valid unit response is supplied',async()=>{
+  const live=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/gfw-live-extraction.json.gz',import.meta.url)))),db=await setup();
+  try{
+    const refused=JSON.parse(JSON.parse(live.artifacts.a17.data.body).candidates[0].content.parts[0].text);
+    const source=runner(db,()=>refused),failed=await source.run();
+    assert.equal(failed.processed,0);assert.equal(source.requests.length,1);assert.ok(failed.warnings.some(w=>w.includes('Unresolved extraction context')));
+    const state=Object.values((await progress(db)).processing_versions)[0];assert.equal(state.cursor,0);assert.equal(state.state,'failed');
+    const zero=runner(db,()=>answer([]));assert.equal((await zero.run()).processed,1);assert.equal((await current(db)).length,0);
   }finally{await db.close();}
 });

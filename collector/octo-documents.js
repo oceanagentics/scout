@@ -6,7 +6,7 @@ import { processDocument } from './document-records.js';
 
 const digest = text => createHash('sha256').update(text).digest('hex');
 const FEED = 'https://octogroup.org/feed/';
-export const PREPARATION_VERSION = 'octo-documents-v4';
+export const PREPARATION_VERSION = 'octo-documents-v5';
 export const CHUNK_BYTES = 4000; // Source text only; the future model stage must bound its entire request.
 const framing = new Set(['head','script','style','nav','noscript','template']);
 const blocks = new Set(['p','h1','h2','h3','h4','h5','h6','li','blockquote','pre','table','figcaption']);
@@ -26,7 +26,8 @@ export function prepareDocument({title,html,url}) {
       if(raw){let target;try{target=new URL(raw,url).href;}catch{target=raw;}
         const label=value||node.attribs.alt||node.attribs.title||target;
         const context=DomUtils.textContent(node.parent??node).trim();
-        const relationship=node.name==='a'&&(/\bregistration\b/.test(node.attribs.rel??'')||/^(?:register|registration)\b/i.test(context))?'registration':
+        const relationship=node.name==='a'&&(/\b(?:category|tag)\b/.test(node.attribs.rel??'')||(node.attribs.class??'').split(/\s+/).includes('elementor-post-info__terms-list-item'))?'taxonomy':
+          node.name==='a'&&(/\bregistration\b/.test(node.attribs.rel??'')||/^(?:register|registration)\b/i.test(context))?'registration':
           node.name==='a'&&(/\bauthor\b/.test(node.attribs.rel??'')||/^(?:organizer|organiser|official event)\b/i.test(context))?'organizer':'support';
         result.links.push({label,target,tag:node.name,relationship,context,start:node.startIndex,end:node.endIndex+1,state:'unfetched'});
         value=label+' <'+target+'>';
@@ -116,6 +117,7 @@ function feedItems(body) {
 export async function supportDocuments(db,{source,prepared,read,sourceURL,budget,limits,trace,cache}){
   const links=new Map(),coverage=[],documents=[{id:'P',capture_id:source.id,hash:source.content_hash,url:prepared.url,relationship:'primary',preparation_version:prepared.version,prepared}];
   for(const link of prepared.links){
+    if(link.relationship==='taxonomy'){coverage.push({...link,state:'skipped',reason:'Publisher taxonomy link retained without support fetching'});continue;}
     let url;try{url=sourceURL(link.target);}catch{coverage.push({...link,state:'unsupported',reason:'Public HTTPS document URL required'});continue;}
     if(link.tag!=='a'||/\.(?:pdf|png|jpe?g|gif|webp|mp4|mp3|zip)(?:$|\?)/i.test(url)){coverage.push({...link,url,state:'unsupported',reason:'Only linked HTML/text/JSON documents in this one-hop pass'});continue;}
     if(url===sourceURL(prepared.url)){coverage.push({...link,url,state:'skipped',reason:'Primary document already retained'});continue;}

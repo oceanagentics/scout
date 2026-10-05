@@ -28,7 +28,7 @@ async function collect({home=fixture.home,overrides={},knownArticles=[],linkedEv
 test('saved full articles retain technical prose, raw payload and all context beyond legacy clipping',async()=>{
   const result=await collect({linkedEvidence:[{from:identity,target:'https://buff.ly/l7e7st4',relationship:'support',
     observed_destination:'https://skylight.global/news/ai2-gfw',via:'retained-post'}]});
-  assert.equal(result.documents.length,4);assert.equal(result.inventory.filter(i=>i.state==='listed').length,29);
+  assert.equal(result.documents.length,4);assert.equal(result.inventory.filter(i=>i.state==='listed').length,28);
   const doc=result.documents.find(d=>d.identity===identity);
   assert.equal(doc.raw,fixture['partnership-api'].body);assert.equal(doc.html,article.content.rendered);
   assert.equal(doc.metadata.date_gmt,article.date_gmt);
@@ -54,6 +54,25 @@ test('listing reorder keeps identities and bounded selection stable; duplicates 
   assert.deepEqual(second.documents.map(d=>d.identity),first.documents.map(d=>d.identity));
   const duplicate=await collect({home:{...fixture.home,body:fixture.home.body.replace('</body>',rows[0]+'</body>')}});
   assert.equal(duplicate.documents.length,4);assert.ok(duplicate.coverage.some(c=>c.state==='duplicate'));
+});
+
+test('retained live listing separates its page wrapper from 28 owned cards and keeps the exclusion across failed listings',async()=>{
+  const live=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/gfw-live-extraction.json.gz',import.meta.url))));
+  const home={...live.artifacts.a1.data,headers:{'content-type':'text/html'}};
+  const knownArticles=[{id:'58367',url:article.link},{id:'1',url:'https://globalfishingwatch.org/unlisted/article/'}];
+  const first=await collect({home,knownArticles});
+  assert.equal(first.inventory.length,28);assert.equal(first.inventory.filter(i=>i.state==='listed').length,28);
+  assert.deepEqual(first.inventory.filter(i=>i.url===article.link).map(i=>i.id),['81556']);
+  assert.deepEqual(first.progress.wrapper_ids,['58367']);assert.ok(first.coverage.some(c=>c.identity==='gfw:post:58367'&&c.state==='unsupported'));
+  const known=[...knownArticles,...first.inventory.map(({id,url})=>({id,url}))],attempted=new Set();let progress=first.progress;
+  for(let i=0;i<8;i++){
+    const next=await collect({home:{...home,status:503},knownArticles:known,progress});progress=next.progress;
+    next.requests.slice(1).forEach(url=>attempted.add(url));assert.deepEqual(progress.wrapper_ids,['58367']);
+  }
+  assert.ok(!attempted.has('https://globalfishingwatch.org/wp-json/wp/v2/posts/58367'));
+  for(const {id} of known.filter(k=>k.id!=='58367'))assert.ok(attempted.has('https://globalfishingwatch.org/wp-json/wp/v2/posts/'+id));
+  const nested={...home,body:home.body.replace('</body>','<article id="post-999"><article id="post-998"><h3 class="post-title"><a href="https://globalfishingwatch.org/nested/">Own title</a></h3></article></article></body>')};
+  const guarded=await collect({home:nested});assert.equal(guarded.inventory.find(i=>i.id==='999').state,'failed');assert.equal(guarded.inventory.find(i=>i.id==='998').state,'listed');
 });
 
 test('known article is rechecked with unchanged or unavailable listing and retains changed full body',async()=>{

@@ -7,7 +7,9 @@ import {collectHSA,sourceURL,HSA,GFW_WEB,IUCN,LIMITS} from '../collector/hsa.js'
 import {DISCOVERY_QUERIES} from '../collector/bluesky-discovery-documents.js';
 import {gemini} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
-import {PREPARATION_VERSION} from '../collector/octo-documents.js';
+import {PREPARATION_VERSION,supportDocuments} from '../collector/octo-documents.js';
+import {DOCUMENT_VERSION} from '../collector/document-records.js';
+import {startReport} from '../collector/report.js';
 import {PREPARATION_VERSION as AUTHOR_PREPARATION_VERSION} from '../collector/bluesky-documents.js';
 
 const fixture=async name=>{const raw=await readFile(new URL('./fixtures/'+name,import.meta.url));return JSON.parse(name.endsWith('.gz')?gunzipSync(raw):raw);};
@@ -29,14 +31,14 @@ async function database(){
 const tracker=async(db,url)=>(await db.query('select * from scout.trackers where url=$1',[url])).rows[0];
 const stored=async db=>(await db.query('select * from scout.records')).rows;
 const detail=async(db,id)=>(await db.query('select * from scout.collection_runs where id=$1',[id])).rows[0];
-function runModel(db,respond){
+function runModel(db,respond,{runLimit=10}={}){
   const inputs=[],requests=[];
   const makeModel=(runId,deadline,trace)=>{
-    const model=gemini({apiKey:'fixture-test-key',ledger:db,runId,deadline,trace,fetch:async(_url,request)=>{
+    const model=gemini({apiKey:'fixture-test-key',ledger:db,runId,deadline,trace,runLimit,fetch:async(_url,request)=>{
       requests.push(request.body);assert.ok(Buffer.byteLength(request.body)<=8000);
       const input=JSON.parse(JSON.parse(request.body).contents[0].parts[0].text)[0];inputs.push(input);
       const out=await respond(input);
-      return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(out)}]}}],usageMetadata:{promptTokenCount:200,candidatesTokenCount:100}});
+      return out instanceof Response?out:Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(out)}]}}],usageMetadata:{promptTokenCount:200,candidatesTokenCount:100}});
     }});
     return async(...args)=>{
       await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{model_attempts}',(select jsonb_agg(a||jsonb_build_object('at',(a->>'at')::timestamptz-interval '61 seconds')) from jsonb_array_elements(stats->'model_attempts') a)) where jsonb_array_length(coalesce(stats->'model_attempts','[]'))>0");
@@ -160,7 +162,7 @@ test('GFW full body reaches shared requests/save; unchanged, source-change and f
       if(input.stage==='resolve')return resolve(input);
       inputs.push(input);const segment=input.segments.find(s=>s.text.includes('jointly develop machine learning models'));
       if(!segment)return answer([]);
-      const p=base(input.title,[{doc:'P',quote:input.title},{doc:'P',quote:'jointly develop machine learning models'}]);
+      const p=base(input.documents.P.title,[{doc:'P',quote:input.documents.P.title},{doc:'P',quote:'jointly develop machine learning models'}]);
       p.candidate.description='A partnership to develop machine learning models for ocean monitoring.';p.evidence.description={refs:[1],rationale:'Concise summary of the cited technical partnership.'};
       p.priority='high';p.evidence.priority={refs:[1],rationale:'Concrete ocean-data methods partnership.'};return answer([p]);
     });
@@ -194,12 +196,12 @@ test('GFW persists failed/deferred/unlisted identities and attempt cursor across
       const found=Object.values(gfw).find(v=>v?.url===url&&v.body);if(found)return found;throw new Error('Detail unavailable');
     }};
     const first=await collectHSA(db,options),firstState=(await detail(db,first.run_id)).stats.document_source;
-    assert.equal(first.documents,4);assert.equal(firstState.known.length,29);
+    assert.equal(first.documents,4);assert.equal(firstState.known.length,28);
     calls.length=0;const second=await collectHSA(db,options),secondState=(await detail(db,second.run_id)).stats.document_source;
     assert.equal(second.documents,0);assert.equal(calls.length,5);assert.notEqual(secondState.progress.after_id,firstState.progress.after_id);
-    assert.equal(secondState.known.length,29);
+    assert.equal(secondState.known.length,28);
     home=null;calls.length=0;const third=await collectHSA(db,options),thirdState=(await detail(db,third.run_id)).stats.document_source;
-    assert.equal(calls.length,5);assert.equal(thirdState.known.length,29);assert.notEqual(thirdState.progress.after_id,secondState.progress.after_id);
+    assert.equal(calls.length,5);assert.equal(thirdState.known.length,28);assert.notEqual(thirdState.progress.after_id,secondState.progress.after_id);
     assert.ok(Object.values((await detail(db,third.run_id)).report.artifacts).some(a=>a.kind==='coverage'&&a.data.coverage?.some(c=>c.state==='failed')));
   }finally{await db.close();}
 });
@@ -337,7 +339,7 @@ test('whole real IUCN article traverses shared extraction/save, repeat/change an
     let article=iucn.blog,fail=false;const inputs=[];
     const model=runModel(db,input=>{
       if(input.stage==='resolve')return resolve(input);
-      inputs.push(input);return answer(input.range[0]===0?[base(input.title,[{doc:'P',quote:input.title}])]:[]);
+      inputs.push(input);return answer(input.range[0]===0?[base(input.documents.P.title,[{doc:'P',quote:input.documents.P.title}])]:[]);
     });
     const options={trackerId:t.id,validate:true,documents:'process',makeModel:model.makeModel,read:async u=>{
       if(u===IUCN)return home;if(u===url)return fail?{...article,status:503}:article;throw new Error('Support unavailable');
@@ -382,5 +384,101 @@ test('IUCN persists known URL/node IDs and failed/unlisted rotation; request/tim
     assert.equal(expired.requests,0);assert.deepEqual((await detail(db,expired.run_id)).stats.document_source.progress,latest.progress);
     assert.equal((await detail(db,expired.run_id)).stats.document_source.known.length,13);
     assert.equal((await stored(db)).length,0);assert.equal((await tracker(db,IUCN)).enabled,false);
+  }finally{await db.close();}
+});
+
+
+test('GFW retains the live rejected output, resumes a bounded counted repair and processes omitted ranges under a new version',async()=>{
+  const live=await fixture('gfw-live-extraction.json.gz'),post=JSON.parse(live.artifacts.a3.data.body),db=await database();
+  try{
+    const t=await tracker(db,GFW_WEB),card=live.artifacts.a1.data.body.match(/<article id="post-81277"[\s\S]*?<\/article>/)[0];
+    const listing='<html><head><link rel="canonical" href="'+GFW_WEB+'"><link rel="https://api.w.org/" href="https://globalfishingwatch.org/wp-json/"></head><body>'+card+'</body></html>';
+    const read=async url=>{
+      if(url===GFW_WEB)return response(url,listing,'text/html');
+      if(url===live.artifacts.a3.data.url)return response(url,live.artifacts.a3.data.body);
+      throw new Error('Support unavailable in this replay');
+    };
+    const options={trackerId:t.id,validate:true,documents:'process',read};
+    await collectHSA(db,{...options,documents:true});
+    const capture=async()=>(await db.query("select * from scout.evidence where tracker_id=$1 and parsed#>>'{document,id}'='81277'",[t.id])).rows[0];
+    const source=await capture(),older=live.source.parsed.document.processing_versions;
+    assert.ok(Object.keys(older).some(k=>k.startsWith('document-extract-4/')));
+    await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,processing_versions}',$2::jsonb) where id=$1",[source.id,JSON.stringify(older)]);
+    const rejected=runModel(db,()=>new Response(live.artifacts.a32.data.body,{headers:{'content-type':'application/json'}}),{runLimit:1});
+    const first=await collectHSA(db,{...options,makeModel:rejected.makeModel});
+    assert.equal(rejected.requests.length,1);assert.equal(first.processed,0);assert.equal((await stored(db)).length,0);
+    assert.ok(first.warnings.some(w=>/quota/.test(w)));assert.ok(!first.warnings.some(w=>/Repair request exceeds/.test(w)));
+    const firstDetail=await detail(db,first.run_id);assert.equal(firstDetail.stats.model_attempts.length,1);
+    assert.ok(Object.values(firstDetail.report.artifacts).some(a=>a.kind==='model_response'&&a.data.body===live.artifacts.a32.data.body));
+    const key=Object.keys((await capture()).parsed.document.processing_versions).find(k=>k.startsWith(DOCUMENT_VERSION+'/'));
+    const pending=(await capture()).parsed.document.processing_versions[key];
+    assert.equal(pending.cursor,0);assert.equal(pending.pending.round,1);assert.deepEqual(pending.pending.repair.rejected,live.artifacts.a34.data.response);
+    const repair=runModel(db,input=>{
+      assert.deepEqual(input.repair.rejected,live.artifacts.a34.data.response);assert.deepEqual(input.segments,pending.pending.input.segments);
+      assert.equal(input.documents.P.url,post.link);
+      const text=input.segments[0].text,quote=text.slice(text.indexOf('At the 37th Session'),text.indexOf('(IUU) fishing.')+'(IUU) fishing.'.length);
+      assert.ok(quote.includes('<https://globalfishingwatch.org/transparency/>'));assert.ok(quote.includes('\u00a0'));
+      const p=base('COFI recognizes transparency and technology against illegal fishing',[{doc:'P',quote}]);
+      p.anchor='37th Session of the U.N. Food and Agriculture Organization’s Committee on Fisheries (COFI)';
+      return answer([p]);
+    },{runLimit:1});
+    const second=await collectHSA(db,{...options,makeModel:repair.makeModel});
+    assert.equal(repair.requests.length,1);assert.ok(Buffer.byteLength(repair.requests[0])<=8000);assert.equal(second.processed,0);
+    const after=(await capture()).parsed.document.processing_versions[key];
+    assert.equal(after.cursor,pending.pending.input.range[1]);assert.equal(after.pending,undefined);assert.equal(after.findings.length,1);
+    assert.ok(after.cursor<(await capture()).parsed.document.prepared_versions[PREPARATION_VERSION].text.length);assert.equal((await stored(db)).length,0);
+    const remaining=runModel(db,input=>{
+      if(input.stage==='extract'){assert.ok(input.range[0]>=after.cursor);return answer([]);}
+      assert.equal(input.finding.candidate.starts_at,null);assert.deepEqual(input.finding.dates,{});return resolve(input);
+    });
+    let completed;
+    for(let i=0;i<4;i++){completed=await collectHSA(db,{...options,makeModel:remaining.makeModel});if(completed.processed)break;}
+    assert.equal(completed.processed,1,completed.warnings.join(';'));assert.equal((await stored(db)).length,1);
+    assert.equal((await stored(db))[0].starts_at,null);assert.equal((await stored(db))[0].kind,'announcement');
+    const final=(await capture()).parsed.document;
+    for(const [version,state] of Object.entries(older))assert.deepEqual(final.processing_versions[version],state);
+    assert.equal(final.processing_versions[key].cursor,final.prepared_versions[PREPARATION_VERSION].text.length);
+    const calls=remaining.requests.length;const repeat=await collectHSA(db,{...options,makeModel:remaining.makeModel});
+    assert.equal(repeat.processed,1);assert.equal(remaining.requests.length,calls);assert.equal((await stored(db)).length,1);
+  }finally{await db.close();}
+});
+
+test('GFW wrapper exclusion persists alongside legitimate known identities without resetting run accounting',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,GFW_WEB),known=[{id:'58367',url:article.link},{id:'1',url:'https://globalfishingwatch.org/unlisted/'}];
+    const historical=(await db.query("insert into scout.collection_runs(tracker_id,outcome,finished_at,stats) values($1,'partial',clock_timestamp(),$2) returning *",[t.id,
+      {document_source:{known,progress:{after_id:'58368'}},model_attempts:[{at:'2026-10-01T00:00:00Z',input_bound:6618}]}])).rows[0];
+    let listing=true;const calls=[];
+    const options={trackerId:t.id,validate:true,documents:true,read:async url=>{
+      calls.push(url);if(listing&&url===GFW_WEB)return gfw.home;throw new Error('Retained unavailable detail/listing');
+    }};
+    const first=await collectHSA(db,options),state=(await detail(db,first.run_id)).stats.document_source;
+    assert.deepEqual(state.progress.wrapper_ids,['58367']);assert.equal(state.known.length,30);
+    for(const item of known)assert.ok(state.known.some(k=>k.id===item.id&&k.url===item.url));
+    listing=false;
+    for(let i=0;i<8;i++)await collectHSA(db,options);
+    assert.ok(!calls.some(url=>url.endsWith('/posts/58367')));assert.ok(calls.some(url=>url.endsWith('/posts/1')));
+    for(const {id} of state.known.filter(k=>k.id!=='58367'))assert.ok(calls.some(url=>url.endsWith('/posts/'+id)));
+    assert.deepEqual((await detail(db,historical.id)).stats,historical.stats);
+  }finally{await db.close();}
+});
+
+test('real Ai2 taxonomy metadata frees support capacity while retaining HTTP links and the inline publisher homepage',async()=>{
+  const db=await database();try{
+    const t=await tracker(db,GFW_WEB);
+    await collectHSA(db,{trackerId:t.id,validate:true,documents:true,read:async url=>{
+      const saved=Object.values(gfw).find(v=>v?.url===url&&v.body);if(!saved)throw new Error('Unsaved detail');return saved;
+    }});
+    const source=(await db.query("select * from scout.evidence where tracker_id=$1 and parsed#>>'{document,id}'='81556'",[t.id])).rows[0];
+    const prepared=source.parsed.document.prepared_versions[PREPARATION_VERSION],links=structuredClone(prepared.links);
+    const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[t.id])).rows[0],trace=await startReport(db,run.id,'support-test'),calls=[];
+    const combined=await supportDocuments(db,{source,prepared,trace,sourceURL,limits:LIMITS,cache:new Map(),budget:{requests:0,deadline:Date.now()+10000},
+      read:async url=>{calls.push(url);if(url==='https://allenai.org/about')throw new Error('Observed unavailable support');return response(url,'<p>Retained support fixture.</p>','text/html');}});
+    assert.deepEqual(calls,['https://allenai.org/about','https://globalfishingwatch.org/','https://skylight.global/']);
+    assert.deepEqual(prepared.links,links);assert.ok(combined.coverage.some(l=>l.relationship==='taxonomy'&&l.state==='skipped'));
+    assert.ok(combined.coverage.some(l=>l.target==='http://skylight.global/'&&l.state==='unsupported'));
+    assert.ok(combined.coverage.some(l=>l.url==='https://globalfishingwatch.org/'&&l.relationship==='support'&&l.state==='fetched'));
+    assert.ok(combined.coverage.some(l=>l.url==='https://skylight.global/'&&l.state==='fetched'));
+    assert.ok(combined.coverage.some(l=>l.state==='deferred'));assert.equal(calls.length,3);
   }finally{await db.close();}
 });

@@ -9,6 +9,7 @@ const origin = 'https://globalfishingwatch.org';
 // processing belong to the shared document pipeline.
 export async function retrieveGFWDocuments({read,sourceURL,budget,limits,knownArticles=[],linkedEvidence=[],progress={}}) {
   const result={source:GFW_LISTING,documents:[],inventory:[],fetches:[],coverage:[],limits:{...limits},progress:{...progress}};
+  const wrappers=new Set(progress.wrapper_ids??[]);
   const publisherURL=value=>{
     const url=sourceURL(value);
     if(new URL(url).origin!==origin)throw new Error('GFW publisher identity unavailable');
@@ -39,13 +40,19 @@ export async function retrieveGFWDocuments({read,sourceURL,budget,limits,knownAr
         !links.some(n=>n.attribs.rel==='https://api.w.org/'&&n.attribs.href===origin+'/wp-json/'))throw new Error('Listing publisher/API identity unavailable');
       for(const node of DomUtils.getElementsByTagName('article',dom.children)){
         const id=node.attribs.id?.match(/^post-(\d+)$/)?.[1];
-        const heading=DomUtils.getElementsByTagName('h3',node.children).find(n=>(n.attribs.class??'').split(/\s+/).includes('post-title'));
+        if(id&&(node.attribs.class??'').split(/\s+/).includes('type-page')&&DomUtils.getElementsByTagName('article',node.children).length){
+          wrappers.add(id);continue; // A WordPress page wrapper is not one of its descendant cards.
+        }
+        const heading=DomUtils.getElementsByTagName('h3',node.children).find(n=>{
+          let parent=n.parent;while(parent&&parent.name!=='article')parent=parent.parent;
+          return parent===node&&(n.attribs.class??'').split(/\s+/).includes('post-title');
+        });
         const anchor=heading&&DomUtils.getElementsByTagName('a',heading.children)[0];
         const item={id,identity:id?'gfw:post:'+id:null,raw:listing.body.slice(node.startIndex,node.endIndex+1),via:GFW_LISTING};
         try{
           if(!id||!anchor)throw new Error('Listing article identity unavailable');
           item.url=publisherURL(anchor.attribs.href);item.title=DomUtils.textContent(heading).trim();
-          item.state='listed';
+          item.state='listed';wrappers.delete(id);
         }catch(error){item.state='failed';item.reason=error.message;}
         result.inventory.push(item);
       }
@@ -53,9 +60,11 @@ export async function retrieveGFWDocuments({read,sourceURL,budget,limits,knownAr
         links:prepareDocument({title:'Media centre',html:listing.body,url:GFW_LISTING}).links});
     }catch(error){result.coverage.push({url:GFW_LISTING,state:'failed',reason:error.message});listing.state='failed';listing.reason=error.message;}
   }
+  result.progress.wrapper_ids=[...wrappers];
+  for(const id of wrappers)result.coverage.push({identity:'gfw:post:'+id,url:GFW_LISTING,state:'unsupported',reason:'Listing page wrapper; descendant card identity must not be borrowed. Known mapping retained but excluded from detail rotation.'});
   const candidates=new Map();
   for(const item of [...knownArticles.map(a=>({...a,id:String(a.id),identity:'gfw:post:'+a.id,via:'known',state:'listed'})),...result.inventory]){
-    if(item.state!=='listed')continue;
+    if(item.state!=='listed'||wrappers.has(item.id))continue;
     try{
       if(!/^\d+$/.test(item.id))throw new Error('Invalid known article ID');
       item.url=publisherURL(item.url);
