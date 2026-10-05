@@ -9,6 +9,8 @@ import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {prepareDocument} from '../collector/octo-documents.js';
 import {packDocument,validateFinding as validateCitedFinding,DOCUMENT_VERSION} from '../collector/document-records.js';
 import {stepState} from '../src/runs.js';
+import {filterRecords} from '../src/records.js';
+import {eligibleRecords} from '../notifications/slack.js';
 
 const fixture=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));
 const mp=JSON.parse(fixture.posts.body).find(p=>p.id===16281);
@@ -84,6 +86,44 @@ const release={...proposal(),anchor:'Ocean Data Workshop',candidate:{...Object.f
   evidence:{kind:'Ocean Data Workshop',title:'Ocean Data Workshop',organization:'Ocean Institute',description:'A workshop on ocean data standards.',priority:'A workshop on ocean data standards.'}};
 const digest={...article,title:{rendered:'Weekly digest'},content:{rendered:'<h2>Ocean Data Workshop</h2><p>Ocean Institute</p><p>A workshop on ocean data standards.</p>'}};
 const seed=async(db,p=release,key='fixture')=>(await db.query('insert into scout.records('+CONTENT_FIELDS.join(',')+',priority,identity_key) values('+CONTENT_FIELDS.map((_,i)=>'$'+(i+1)).join(',')+',$11,$12) returning *',[...CONTENT_FIELDS.map(k=>p.candidate[k]),p.priority,key])).rows[0];
+
+test('completed Low findings retain reader-visible sources and reasons; uncertain findings and repeat calls stay excluded',async()=>{
+  const db=await setup(),title='Ocean film screening',description='A public screening of an ocean film.';
+  const low={anchor:title,urls:[],candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'event',title,description},
+    priority:'low',reason:'General public film promotion.',evidence:{kind:title,title,description,priority:description}};
+  const uncertain={...low,anchor:'Audience discussion',candidate:{...low.candidate,title:'Audience discussion'},
+    evidence:{...low.evidence,kind:'Audience discussion',title:'Audience discussion'}};
+  const source=runner(db,stages([low]),
+    {post:{...article,title:{rendered:title},content:{rendered:'<h1>'+title+'</h1><p>'+description+'</p>'}}});
+  try{
+    const run=await source.run();assert.equal(run.created,1,run.warnings.join(';'));assert.equal(source.requests.length,2);
+    const records=await current(db);assert.equal(records.length,1);assert.equal(records[0].priority,'low');
+    assert.deepEqual(filterRecords(records,{priority:'low'}),records);
+    const [association]=(await db.query('select * from scout.evidence where record_id=$1',[records[0].id])).rows;
+    assert.equal(association.url,article.link);assert.equal(association.parsed.finding.reason,low.reason);
+    assert.equal(association.parsed.assessment.priority_accepted,true);assert.equal(association.parsed.accepted_fields.priority.value,'low');
+    const state=Object.values((await progress(db)).processing_versions)[0];
+    assert.equal(state.state,'complete');assert.equal(state.findings[0].record_id,records[0].id);
+    const reader='00000000-0000-0000-0000-000000000001';
+    await db.query('insert into auth.users(id) values($1)',[reader]);
+    await db.query("insert into auth.identities values($1,'google',$2)",[reader,{iss:'https://accounts.google.com',email_verified:true,custom_claims:{hd:'oceanagentics.com'}}]);
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)",[reader]);await db.exec('set role authenticated');
+    const visible=(await db.query('select * from scout.source_details')).rows;
+    assert.equal(visible.length,1);assert.equal(visible[0].record_id,records[0].id);
+    assert.equal(visible[0].url,article.link);assert.equal(visible[0].priority_reason,low.reason);
+    await db.exec('reset role');
+    for(const kind of ['findings','digest'])assert.deepEqual(eligibleRecords(records,{kind,from:'2026-10-01',through:'2026-10-31'}),[]);
+    const repeat=await source.run();assert.equal(repeat.created,0);assert.equal(source.requests.length,2);
+    assert.deepEqual(await current(db),records);assert.deepEqual(Object.values((await progress(db)).processing_versions)[0],state);
+    const unresolved=runner(db,stages([uncertain],input=>({...resolution(input,'uncertain'),
+      facts:{kind:'supported',title:'supported',description:'supported',priority:'unsupported'}})),
+      {post:{...article,id:100,link:'https://octogroup.org/discussion/',content:{rendered:'<h1>Audience discussion</h1><p>'+description+'</p>'}}});
+    assert.equal((await unresolved.run()).created,0);assert.equal(unresolved.requests.length,2);
+    assert.equal(Object.values((await progress(db,100)).processing_versions)[0].findings[0].resolution.outcome,'uncertain');
+    assert.deepEqual(await current(db),records);
+    assert.equal((await db.query('select count(*)::int n from scout.evidence where record_id is not null')).rows[0].n,1);
+  }finally{await db.close();}
+});
 
 test('both stages share durable minute/run limits, counted transient retry and resumable repair state',async()=>{
   const db=await setup();try{

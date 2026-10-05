@@ -243,7 +243,7 @@ async function saveResolution(db,source,entry,decision,candidates,version,state)
       if((await tx.query('select evidence_at>(select last_seen_at from scout.evidence where id=$2) stale from scout.records where id=$1',[record.id,source.id])).rows[0].stale)throw new Error('Newer record evidence blocks a stale overwrite');
       const updates=[...CONTENT_FIELDS.filter(k=>c[k]!=null&&(!record[k]||!equal(k,c[k],record[k]))),...record.priority!==p.priority?['priority']:[]];
       if(updates.length){record=(await tx.query('update scout.records set '+updates.map((k,i)=>k+'=$'+(i+2)).join(',')+' where id=$1 returning *',[record.id,...updates.map(k=>k==='priority'?p.priority:c[k])])).rows[0];changed=1;}
-    }else if(decision.outcome==='new'&&p.priority!=='low'){
+    }else if(decision.outcome==='new'){
       record=(await tx.query('insert into scout.records('+CONTENT_FIELDS.join(',')+',priority,identity_key) values('+
         CONTENT_FIELDS.map((_,i)=>'$'+(i+1)).join(',')+',$'+(CONTENT_FIELDS.length+1)+',$'+(CONTENT_FIELDS.length+2)+') on conflict(identity_key) do nothing returning *',
         [...CONTENT_FIELDS.map(k=>c[k]),p.priority,'finding:'+hash([source.id,entry.key])])).rows[0];
@@ -423,7 +423,7 @@ export async function processDocument(db,{source,prepared,trace,model,deadline,v
                 phase='save';active=await trace.start('save',{source_ids:[source.id],stage,artifacts:[returned]});
                 const saved=await saveResolution(db,source,entry,response,candidates,version,state);state=saved.state;
                 counts.created+=saved.created;counts.changed+=saved.changed;
-                await trace.finish(active,'pass',{record_ids:saved.record_id?[saved.record_id]:[],note:saved.record_id?'Resolution, association and progress committed together.':'New Low assessment retained without creating a record.'});
+                await trace.finish(active,'pass',{record_ids:saved.record_id?[saved.record_id]:[],note:'Resolution, association and progress committed together.'});
               }
             }catch(error){errors.push(error.message);await trace.finish(active,'fail',{note:error.message});}
           }
