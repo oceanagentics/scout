@@ -139,6 +139,9 @@ test('saved UNOC announcement retains separate session labels without borrowing 
   assert.equal(validateResolution(review,findings[1],[existing],prepared).outcome,'new');
   assert.throws(()=>validateResolution(review,findings[0],[existing],prepared),/distinct cited label/);
   assert.throws(()=>validateResolution({...review,facts:{...review.facts,title:'unsupported'}},findings[1],[],prepared),/Unsupported\/conflicting/);
+  const rejectedKind={...review,facts:{...review.facts,kind:'unsupported'}};
+  assert.throws(()=>validateResolution(rejectedKind,findings[1],[],prepared),/Unsupported\/conflicting/);
+  assert.equal(validateResolution({...rejectedKind,outcome:'uncertain'},findings[1],[],prepared).outcome,'uncertain');
   const actual=(await fixture('hsa-social-preparation.json.gz')).announcement_contract.distinction_failure;
   const {finding,candidates}=actual.input;
   assert.ok(finding.anchor.endsWith('.'));assert.ok(!finding.citations[0].quote.endsWith('.'));
