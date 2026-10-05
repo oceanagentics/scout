@@ -8,7 +8,7 @@ At the **2026-10-04 23:46 AST checkpoint**, private collector **v64 is ACTIVE**,
 
 **Current implementation scope — 2026-10-04:** the rebuilt document pipeline extracts events from each announcement itself. Missing details stay unknown; incidental hyperlinks are metadata, not research targets. The announcement-only section controls over older checkpoints.
 
-**Local evidence-contract correction, pending review — 2026-10-04:** `announcement-events-2/resolve-2/rubric-1` enumerates evidence/date keys, requires kind/title/priority proofs and nonempty citation refs, and reports missing field proofs plus date errors together. Unknown-zone timestamps must remain null. Compact repairs retain the evidence/date contract and complete rejected output. Exact HSA local replay measures **5,973 / 7,778 / 7,823 bytes** for initial extraction and two repairs; same-version exhausted work makes no further model call. Ten focused checks pass; provider acceptance remains unverified. This correction is not deployed.
+**Evidence-contract deployment follow-up — 2026-10-05:** v65 deployed `dde6c69`, but Gemini returned HTTP 400 INVALID_ARGUMENT for both reference-based schemas; no output/record was produced. Local `announcement-events-3/resolve-2/rubric-1` removes schema references, retaining explicit bare evidence keys and exact runtime proof/date validation. Complete HSA request measurements are **5,547 / 7,775 / 7,820 bytes**; ten focused checks pass. The inline correction is ready for deployment under the user's standing authorization; real provider acceptance remains to be checked.
 
 ## Original documentation
 

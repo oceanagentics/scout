@@ -241,8 +241,9 @@ test('exact HSA failures report every missing proof and date error; a new contra
     for(const body of transport.requests){
       const schema=JSON.parse(body).generationConfig.responseJsonSchema,evidence=schema.properties.findings.items.properties.evidence;
       assert.equal(evidence.additionalProperties,false);assert.deepEqual(evidence.required,['kind','title','priority']);
-      assert.equal(evidence.properties['candidate.kind'],undefined);assert.ok(schema.$defs.proof);
-      assert.equal(schema.$defs.proof.properties.refs.minItems,1);assert.equal(schema.$defs.calendar.properties.parts.properties.zone.minItems,1);
+      assert.equal(evidence.properties['candidate.kind'],undefined);assert.equal(evidence.properties.kind.type,'object');
+      assert.ok(!JSON.stringify(schema).includes('$ref'));assert.equal(schema.$defs,undefined);
+      assert.equal(schema.properties.findings.items.properties.dates.additionalProperties.properties.parts.properties.zone.minItems,1);
     }
     context.diagnostic(JSON.stringify({source:'HSA exact invalid outputs',previous_bytes:saved.requests.map(b=>Buffer.byteLength(b)),request_bytes:transport.requests.map(b=>Buffer.byteLength(b)),repeat_calls:0,records:0}));
   }finally{await db.close();}

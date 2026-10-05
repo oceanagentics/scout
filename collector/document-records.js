@@ -3,29 +3,29 @@ import {Buffer} from 'node:buffer';
 import {CONTENT_FIELDS} from './assessment.js';
 import {requestBody,MODEL_LIMITS} from './model.js';
 
-export const DOCUMENT_VERSION='announcement-events-2/resolve-2/rubric-1';
+export const DOCUMENT_VERSION='announcement-events-3/resolve-2/rubric-1';
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const normalized=value=>typeof value==='string'?value.normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase():value;
 const nullable={type:['string','null']},refs={type:'array',minItems:1,items:{type:'integer',minimum:0}};
 const fields=Object.fromEntries(CONTENT_FIELDS.map(k=>[k,k==='kind'?{type:'string',enum:['event']}:k==='title'?{type:'string'}:nullable]));
 const factKeys=[...CONTENT_FIELDS,'priority'];
-const explanation={type:'object',additionalProperties:false,required:['refs','rationale'],properties:{refs,rationale:{type:'string'}}};
 const calendar={type:'object',additionalProperties:false,required:['local','zone','parts'],properties:{
   local:{type:'string'},zone:{type:'string'},parts:{type:'object',additionalProperties:false,required:['year','date','time','zone'],properties:{year:refs,date:refs,time:refs,zone:refs}}}};
-export const DOCUMENT_SCHEMA={type:'object',$defs:{proof:explanation,calendar},additionalProperties:false,required:['complete','reason','findings'],properties:{
+export const DOCUMENT_SCHEMA={type:'object',additionalProperties:false,required:['complete','reason','findings'],properties:{
   complete:{type:'boolean'},reason:{type:'string'},findings:{type:'array',maxItems:4,items:{type:'object',additionalProperties:false,
     required:['anchor','urls','candidate','priority','reason','citations','evidence','dates'],properties:{
       anchor:{type:'string'},urls:{type:'array',items:{type:'string'}},
       candidate:{type:'object',additionalProperties:false,required:CONTENT_FIELDS,properties:fields},
       priority:{type:'string',enum:['high','normal','low']},reason:{type:'string'},
       citations:{type:'array',items:{type:'object',additionalProperties:false,required:['doc','quote'],properties:{doc:{type:'string'},quote:{type:'string'}}}},
+      // Inline keys avoid schema references; proof shape and refs are checked below.
       evidence:{type:'object',additionalProperties:false,required:['kind','title','priority'],
-        properties:Object.fromEntries([...factKeys,'identity','distinction','change'].map(k=>[k,{$ref:'#/$defs/proof'}]))},
-      dates:{type:'object',additionalProperties:false,properties:{starts_at:{$ref:'#/$defs/calendar'},ends_at:{$ref:'#/$defs/calendar'}}}
+        properties:Object.fromEntries([...factKeys,'identity','distinction','change'].map(k=>[k,{type:'object'}]))},
+      dates:{type:'object',additionalProperties:calendar}
     }}}}};
 // A complete rejected finding already supplies its nested field names/values.
 // For an oversized repair only, omit repeated candidate field descriptions;
-// keep the complete envelope/evidence/date contract. Runtime validation is exact.
+// keep the envelope, evidence keys and calendar shape. Runtime validation is exact.
 export const DOCUMENT_REPAIR_SCHEMA={...DOCUMENT_SCHEMA,properties:{...DOCUMENT_SCHEMA.properties,
   findings:{...DOCUMENT_SCHEMA.properties.findings,items:{...DOCUMENT_SCHEMA.properties.findings.items,
     properties:{...DOCUMENT_SCHEMA.properties.findings.items.properties,candidate:{type:'object'}}}}}};
