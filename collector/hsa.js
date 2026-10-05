@@ -9,6 +9,7 @@ import { retrieveDosiDocuments } from './dosi-documents.js';
 import { retrieveIDDRIDocuments } from './iddri-documents.js';
 import { retrieveHarvestDocuments } from './harvest-documents.js';
 import { retrieveHubDocuments } from './hub-documents.js';
+import { retrieveHSAWebDocuments } from './hsa-web-documents.js';
 import { Buffer } from 'node:buffer';
 import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
@@ -441,10 +442,10 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const discovery=tracker.collector==='bluesky_search' && tracker.url==='https://bsky.app/search?q=BBNJ';
   if(documents!==false){
     const author=[HSA,'deepstewardship.bsky.social','globalfishingwatch.org','iddri.bsky.social'].includes(actor);
-    if(![true,'process'].includes(documents)||!(octo||author||gfw||discovery||iucn||dosiWeb||iddri||harvest||hub)||!validate||assessOnly||sourceId)throw Object.assign(new Error('Document processing requires explicit supported tracker validation without assessment/source selection'),{status:400});
+    if(![true,'process'].includes(documents)||!(octo||author||gfw||discovery||iucn||dosiWeb||iddri||harvest||hub||hsaWeb)||!validate||assessOnly||sourceId)throw Object.assign(new Error('Document processing requires explicit supported tracker validation without assessment/source selection'),{status:400});
     return collectDocuments(db,{tracker,read,sourceURL,now,since,deadline,limits:LIMITS,process:documents==='process',model,makeModel,documentVersion,
-      path:octo?'octo':author?'author':gfw?'gfw':discovery?'discovery':iucn?'iucn':dosiWeb?'dosi':iddri?'iddri':hub?'hub':'harvest',
-      retrieve:author?retrieveAuthorDocuments:gfw?retrieveGFWDocuments:discovery?retrieveDiscoveryDocuments:iucn?retrieveIUCNDocuments:dosiWeb?retrieveDosiDocuments:iddri?retrieveIDDRIDocuments:harvest?retrieveHarvestDocuments:hub?retrieveHubDocuments:undefined});
+      path:octo?'octo':author?'author':gfw?'gfw':discovery?'discovery':iucn?'iucn':dosiWeb?'dosi':iddri?'iddri':hub?'hub':hsaWeb?'hsa':'harvest',
+      retrieve:author?retrieveAuthorDocuments:gfw?retrieveGFWDocuments:discovery?retrieveDiscoveryDocuments:iucn?retrieveIUCNDocuments:dosiWeb?retrieveDosiDocuments:iddri?retrieveIDDRIDocuments:harvest?retrieveHarvestDocuments:hub?retrieveHubDocuments:hsaWeb?retrieveHSAWebDocuments:undefined});
   }
   const explorers=tracker.collector==='web' && tracker.url===EXPLORERS;
   if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo && !explorers && !discovery) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });

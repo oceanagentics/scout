@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,GFW_WEB,HARVEST,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {collectDocuments,prepareDocument,supportDocuments} from '../collector/octo-documents.js';
@@ -187,6 +187,52 @@ test('HUB calendar, whole item and associated ICS use shared resolution and unch
     const report=(await db.query('select report from scout.collection_runs where id=$1',[repeat.run_id])).rows[0].report;
     assert.equal(Object.values(report.operations).filter(o=>['generate','validate','save'].includes(o.step)&&o.state==='skipped').length,9);
   }finally{await db.close();}
+});
+
+test('HSA whole HTML and same-ID API fallback resume pending resolution and skip unchanged completed findings',async context=>{
+  const saved=await fixture('hsa-web-full-api.json.gz'),feed=(await fixture('hsa-website.json.gz')).feed,article=JSON.parse(saved.api.body);
+  const listing={...feed,body:feed.body.replace(/<item>[\s\S]*?<\/item>/g,item=>item.includes('<link>'+article.link+'</link>')?item:'')}; // One observed listing; announcement bodies stay whole.
+  for(const route of ['html','api']){const db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[HSA_WEB])).rows[0],reads=[],inputs=[];
+    const description='Join the first session of the webinar series on designing the Clearing-House Mechanism under the BBNJ Agreement, also known as the High Seas Treaty.';
+    const finding=base(article.title.rendered,[{doc:'P',quote:article.title.rendered},{doc:'P',quote:description},{doc:'P',quote:'https://bit.ly/clhmreg1'}]);
+    Object.assign(finding.candidate,{description,registration_url:'https://bit.ly/clhmreg1'});
+    Object.assign(finding.evidence,{kind:[1],description:[1],priority:[1],registration_url:[2]});
+    const transport=runModel(db,async input=>{
+      inputs.push(input);if(input.stage==='resolve')return resolve(input); // Injected reply checks shared mechanics, not provider accuracy.
+      const source=(await db.query('select * from scout.evidence where id=$1',[input.source_id])).rows[0],prepared=Object.values(source.parsed.document.prepared_versions)[0];
+      assert.equal(source.content,saved[route].body);assert.equal(source.parsed.document.identity,'hsa:document:6800');
+      assert.deepEqual(input.range,[0,prepared.text.length]);assert.deepEqual(input.omitted_ranges,[]);
+      assert.equal(input.segments.map(s=>s.text).join(''),prepared.text);assert.deepEqual(Object.keys(input.documents),['P']);
+      assert.ok(prepared.text.includes('9PM UTC+8'));assert.ok(prepared.text.includes('https://bit.ly/clhmreg1'));
+      return answer([finding]);
+    });
+    let remaining=1,feedAvailable=true;
+    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:(...args)=>{const model=transport.makeModel(...args);return(...input)=>{
+      if(remaining--<=0)throw new Error('Model quota reached');return model(...input);
+    };},read:async url=>{
+      reads.push(url);assert.ok([feed.url,saved.html.url,saved.api.url].includes(url),'Incidental URL must remain unfetched: '+url);
+      return url===feed.url?{...listing,status:feedAvailable?200:503}:url===saved.html.url?{...saved.html,status:route==='html'?200:400}:saved.api;
+    }};
+    await assert.rejects(collectHSA(db,{...options,sourceId:'00000000-0000-4000-8000-000000000000'}),{status:400});assert.equal(reads.length,0);
+    const first=await collectHSA(db,options),requests=[feed.url,saved.html.url,...route==='api'?[saved.api.url]:[]];
+    assert.equal(first.documents,1);assert.equal(first.created,0);assert.deepEqual(reads,requests);assert.equal(transport.requests.length,1);
+    const prior=(await db.query('select * from scout.collection_runs where id=$1',[first.run_id])).rows[0];
+    assert.equal(prior.report.path,'hsa-records');assert.deepEqual(prior.stats.document_source.known,[{url:article.link,id:'6800'}]);
+    assert.equal(prior.stats.model_attempts.length,1);remaining=1;feedAvailable=false;
+    const resumed=await collectHSA(db,options);assert.equal(resumed.created,1,resumed.warnings.join(';'));
+    assert.equal(transport.requests.length,2);assert.deepEqual(inputs.map(i=>i.stage),['extract','resolve']);assert.deepEqual(reads,[...requests,...requests]);
+    const rows=(await db.query('select * from scout.records')).rows;assert.equal(rows.length,1);assert.equal(rows[0].description,description);
+    assert.equal(rows[0].registration_url,'https://bit.ly/clhmreg1');
+    for(const key of ['organization','location','status','starts_at','ends_at','event_url'])assert.equal(rows[0][key],null);
+    const repeat=await collectHSA(db,options);assert.equal(repeat.processed,1);assert.equal(repeat.created,0);assert.equal(transport.requests.length,2);
+    assert.deepEqual(reads,[...requests,...requests,...requests]);assert.deepEqual((await db.query('select * from scout.records')).rows,rows);
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[first.run_id])).rows[0],prior);
+    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+    const report=(await db.query('select report from scout.collection_runs where id=$1',[repeat.run_id])).rows[0].report;
+    assert.equal(Object.values(report.operations).filter(o=>['generate','validate','save'].includes(o.step)&&o.state==='skipped').length,3);
+    context.diagnostic(JSON.stringify({route,requests_per_run:requests.length,model_calls:transport.requests.length,records:rows.length,repeat_model_calls:0}));
+  }finally{await db.close();}}
 });
 
 test('saved UNOC announcement retains separate session labels without borrowing the parent schedule',async()=>{
