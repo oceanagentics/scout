@@ -292,18 +292,21 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
           // a real content/context change must not resurrect older completion or repair state.
           // The upsert just refreshed source.last_seen_at, so an older revisited source cannot certify its own progress.
           const prior=previous?.parsed.document.prepared_versions?.[preparationVersion]??previous?.parsed.document.prepared,prefix=documentVersion+'/'+prepared.version+'/';
-          const omissions=prepared.omissions.map(({regions,...entry})=>entry);
-          const equivalent=prior&&isDeepStrictEqual({...prior,omissions:prior.omissions.map(({regions,...entry})=>entry)},{...prepared,omissions})?
-            (await db.query("with captures as (select e.id,e.last_seen_at,p.version,p.state,coalesce((p.prepared-'omissions')=($5::jsonb-'omissions')"+
-              " and (select jsonb_agg(o-'regions') from jsonb_array_elements(p.prepared->'omissions') o) is not distinct from $6::jsonb,false) equivalent"+
+          const [priorInput,input]=[prior,prepared].map(p=>p&&({...p,links:p.links.map(({start,end,...link})=>link),
+            blocks:p.blocks.map(({html_start,html_end,...block})=>block),omissions:p.omissions.map(({regions,start,end,...omission})=>omission)}));
+          const equivalent=prior&&isDeepStrictEqual(priorInput,input)?
+            (await db.query("with captures as (select e.id,e.last_seen_at,p.version,p.state,coalesce((p.prepared-array['links','blocks','omissions'])=($5::jsonb-array['links','blocks','omissions'])"+
+              " and (select coalesce(jsonb_agg(v-'start'-'end' order by n),'[]'::jsonb) from jsonb_array_elements(p.prepared->'links') with ordinality a(v,n))=$5::jsonb->'links'"+
+              " and (select coalesce(jsonb_agg(v-'html_start'-'html_end' order by n),'[]'::jsonb) from jsonb_array_elements(p.prepared->'blocks') with ordinality a(v,n))=$5::jsonb->'blocks'"+
+              " and (select coalesce(jsonb_agg(v-'regions'-'start'-'end' order by n),'[]'::jsonb) from jsonb_array_elements(p.prepared->'omissions') with ordinality a(v,n))=$5::jsonb->'omissions',false) equivalent"+
               " from scout.evidence e cross join lateral (select e.parsed#>>'{document,processing,version}' version,"+
               " e.parsed#>array['document','processing_versions',e.parsed#>>'{document,processing,version}'] state,"+
               " coalesce(e.parsed#>array['document','prepared_versions',$4],e.parsed#>'{document,prepared}') prepared) p"+
               " where e.tracker_id=$1 and e.record_id is null and e.parsed#>>'{document,identity}'=$2)"+
               " select id,version,state from captures where equivalent and starts_with(version,$3) and state is not null"+
-              " and (id<>$7::uuid or id=$8::uuid)"+
+              " and (id<>$6::uuid or id=$7::uuid)"+
               " and last_seen_at>coalesce((select max(last_seen_at) from captures where not equivalent),'-infinity'::timestamptz)"+
-              " order by (state->>'state'='complete') desc,last_seen_at desc,id limit 1",[tracker.id,identity,prefix,prepared.version,JSON.stringify(prepared),omissions.length?JSON.stringify(omissions):null,source.id,previous.id])).rows[0]:null;
+              " order by (state->>'state'='complete') desc,last_seen_at desc,id limit 1",[tracker.id,identity,prefix,prepared.version,JSON.stringify(input),source.id,previous.id])).rows[0]:null;
           if(equivalent&&equivalent.id!==source.id){
             const state=structuredClone(equivalent.state);if(state.pending?.input)state.pending.input.source_id=source.id;
             source.parsed.document={...source.parsed.document,processing:{state:state.state,version:equivalent.version},
@@ -311,7 +314,7 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
             await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document}',$2::jsonb) where id=$1",[source.id,JSON.stringify(source.parsed.document)]);
           }
           const context=await supportDocuments(db,{source,prepared,trace,context:equivalent?.version.slice(prefix.length),
-            reuse:equivalent&&equivalent.id!==source.id?{capture_id:equivalent.id,version:equivalent.version,comparison:'Exact prepared document including URL/context/structure and omissions; only raw structural region offsets excluded.'}:undefined});
+            reuse:equivalent&&equivalent.id!==source.id?{capture_id:equivalent.id,version:equivalent.version,comparison:'Exact prepared document including URL/context/structure, text ranges and omissions; only raw HTML link/block/omission positions and region offsets excluded.'}:undefined});
           const result=await processDocument(db,{source,prepared:context,trace,model,deadline:budget.deadline,version:documentVersion,
             changed:Boolean(previous&&previous.content_hash!==hash&&!equivalent)});
           stats.created+=result.created;stats.changed+=result.changed;

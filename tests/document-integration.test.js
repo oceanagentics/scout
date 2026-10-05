@@ -359,6 +359,50 @@ test('actual DOSI unknown-clock refusal resumes at repair one, can save null dat
   }finally{await db.close();}}
 });
 
+test('actual Harvest HTML offset changes preserve completed, pending and exhausted progress without discarding provenance',async()=>{
+  const {offset_churn:{sources,records}}=await fixture('harvest-website.json.gz');
+  const prepared=sources.map(s=>s.parsed.document.prepared_versions['octo-documents-v6']);
+  assert.equal(prepared[0].text,prepared[1].text);assert.notDeepEqual(prepared[0],prepared[1]);
+  for(const mode of ['complete','pending','exhausted']){const db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[HARVEST])).rows[0];
+    for(const r of records)await db.query('insert into scout.records('+Object.keys(r).join(',')+') values('+Object.keys(r).map((_,i)=>'$'+(i+1)).join(',')+')',
+      Object.values(r).map(v=>v&&typeof v==='object'?JSON.stringify(v):v));
+    const recordBefore=(await db.query('select * from scout.records order by id')).rows;
+    const first=structuredClone(sources[0]),version=first.parsed.document.processing.version;
+    if(mode!=='complete')first.parsed.document.processing_versions[version]={state:'failed',cursor:0,findings:[],revision:0,
+      ...mode==='exhausted'?{exhausted:true,error:'Two extract repair attempts exhausted: injected retained rejection'}:
+        {pending:{round:1,input:packDocument(first,prepared[0],0,DOCUMENT_VERSION),repair:{rejected:'Injected retained rejection',errors:['Invalid JSON']}}}};
+    for(const s of mode==='complete'?[first,sources[1]]:[first])await db.query('insert into scout.evidence(id,tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,$6,$7)',
+      [s.id,tracker.id,s.url,s.content_hash,s.content,JSON.stringify(s.parsed),s.last_seen_at]);
+    const inputs=[];let item={id:first.parsed.document.id,identity:first.parsed.document.identity,url:first.url,raw:sources[1].content,prepared:prepared[1]};
+    const options={tracker,sourceURL,now:()=>new Date().toISOString(),deadline:Date.now()+100000,limits:{seconds:100,requests:4,pages:4},process:true,path:'harvest',
+      retrieve:async()=>({documents:[item],coverage:[]}),model:async(_,supplied)=>{inputs.push(supplied[0]);return answer([]);}};
+    const result=await collectDocuments(db,options);assert.equal(inputs.length,mode==='pending'?1:0,result.warnings.join(';'));
+    assert.equal(result.processed,mode==='exhausted'?0:1);
+    const latest=(await db.query('select * from scout.evidence where record_id is null order by last_seen_at desc,id limit 1')).rows[0];
+    assert.equal(latest.parsed.document.processing.version,version);assert.equal(latest.content,sources[1].content);
+    assert.deepEqual(latest.parsed.document.prepared_versions['octo-documents-v6'],prepared[1]);
+    if(mode==='pending')assert.deepEqual(inputs[0],{...first.parsed.document.processing_versions[version].pending.input,source_id:latest.id,
+      repair:first.parsed.document.processing_versions[version].pending.repair});
+    if(mode==='exhausted')assert.equal(latest.parsed.document.processing_versions[version].exhausted,true);
+    const repeat=await collectDocuments(db,options);assert.equal(inputs.length,mode==='pending'?1:0);assert.equal(repeat.processed,mode==='exhausted'?0:1);
+    assert.deepEqual((await db.query('select * from scout.records order by id')).rows,recordBefore);
+    assert.deepEqual((await db.query('select parsed from scout.evidence where id=$1',[first.id])).rows[0].parsed,first.parsed);
+    if(mode==='complete'){
+      assert.deepEqual(latest.parsed.document.processing_versions[sources[1].parsed.document.processing.version],sources[1].parsed.document.processing_versions[sources[1].parsed.document.processing.version]);
+      for(const [index,change]of [
+        p=>p.links[0].target+='?meaningful-change',p=>p.links[0].context+='Changed activity',p=>p.links.reverse(),
+        p=>p.blocks[0].start++,p=>p.blocks[1].headings=[],p=>p.chunks[0].end--,p=>p.omissions[0].reason+=' Changed omission'
+      ].entries()){
+        item={...item,raw:'<!-- context '+index+' -->'+sources[1].content,prepared:structuredClone(prepared[1])};change(item.prepared);
+        await collectDocuments(db,options);assert.equal(inputs.length,index+1,'Semantic context/ranges/order must remain exact');
+      }
+      item={...item,raw:sources[0].content,prepared:prepared[0]};await collectDocuments(db,options);assert.equal(inputs.length,8,'A → B → old A cannot reuse stale completion');
+      item={...item,raw:sources[1].content,prepared:prepared[1]};await collectDocuments(db,options);assert.equal(inputs.length,8,'Equivalent current A reuses current completion');
+    }
+  }finally{await db.close();}}
+});
+
 test('same source identity with changed URL, factual context or omissions must not reuse completed processing',async()=>{
   const db=await database();try{
     const tracker=(await db.query('select * from scout.trackers limit 1')).rows[0];let calls=0;
