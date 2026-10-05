@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { startReport } from './report.js';
-import { collectOCTODocuments } from './octo-documents.js';
+import { collectDocuments } from './octo-documents.js';
+import { retrieveAuthorDocuments } from './bluesky-documents.js';
+import { retrieveGFWDocuments } from './publisher-documents.js';
 import { Buffer } from 'node:buffer';
 import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
@@ -431,8 +433,10 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const cbd=tracker.collector==='web' && tracker.url===CBD_REGISTRY;
   const octo=tracker.collector==='web' && tracker.url===OCTO;
   if(documents!==false){
-    if(![true,'process'].includes(documents)||!octo||!validate||assessOnly||sourceId)throw Object.assign(new Error('Document preparation requires explicit OCTO validation without assessment/source selection'),{status:400});
-    return collectOCTODocuments(db,{tracker,read,sourceURL,now,deadline,limits:LIMITS,process:documents==='process',model,makeModel,documentVersion});
+    const author=[HSA,'deepstewardship.bsky.social','globalfishingwatch.org','iddri.bsky.social'].includes(actor);
+    if(![true,'process'].includes(documents)||!(octo||author||gfw)||!validate||assessOnly||sourceId)throw Object.assign(new Error('Document processing requires explicit supported tracker validation without assessment/source selection'),{status:400});
+    return collectDocuments(db,{tracker,read,sourceURL,now,deadline,limits:LIMITS,process:documents==='process',model,makeModel,documentVersion,
+      path:octo?'octo':author?'author':'gfw',retrieve:author?retrieveAuthorDocuments:gfw?retrieveGFWDocuments:undefined});
   }
   const explorers=tracker.collector==='web' && tracker.url===EXPLORERS;
   const discovery=tracker.collector==='bluesky_search' && tracker.url==='https://bsky.app/search?q=BBNJ';

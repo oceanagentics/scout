@@ -3,7 +3,7 @@ import {Buffer} from 'node:buffer';
 import {CONTENT_FIELDS} from './assessment.js';
 import {requestBody,MODEL_LIMITS} from './model.js';
 
-export const DOCUMENT_VERSION='document-extract-3/resolve-2/rubric-1';
+export const DOCUMENT_VERSION='document-extract-4/resolve-2/rubric-1';
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const normalized=value=>typeof value==='string'?value.normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase():value;
 const nullable={type:['string','null']},refs={type:'array',items:{type:'integer'}};
@@ -48,7 +48,13 @@ export function packDocument(source,prepared,start,version) {
     if(previous&&start-previous.end<=256&&previous.end-previous.start<=700)before=previous.start;
     if(next&&next.start-end<=256&&next.end-next.start<=700)after=next.end;
     ranges.push([before,start],[end,after]);
-    if(start>=documents[0].end)ranges.push([0,Math.min(documents[0].end,400)]);
+    if(start>=documents[0].end){
+      ranges.push([0,Math.min(documents[0].end,400)]);
+      for(const doc of documents.filter(d=>d.start<end&&d.end>start&&d.via)){
+        const at=documents[0].prepared.text.indexOf(doc.via.url);
+        if(at>=0){let a=Math.max(0,at-256);if(/[\uDC00-\uDFFF]/.test(prepared.text[a]??''))a--;ranges.push([a,Math.min(documents[0].end,at+doc.via.url.length)]);}
+      }
+    }
     const merged=[];
     for(const [a,b]of ranges.filter(([a,b])=>a<b).sort((a,b)=>a[0]-b[0])){
       if(merged.length&&a<=merged.at(-1)[1])merged.at(-1)[1]=Math.max(b,merged.at(-1)[1]);else merged.push([a,b]);
@@ -58,7 +64,8 @@ export function packDocument(source,prepared,start,version) {
       documents:Object.fromEntries(documents.map(d=>[d.id,{url:d.url,title:d.prepared.title,relationship:d.relationship??'primary',via:d.via?{label:d.via.label,from:'P'}:null}])),
       range:[start,end],segments:merged.flatMap(([a,b])=>documents.filter(d=>d.start<b&&d.end>a).map(d=>({doc:d.id,range:[Math.max(a,d.start),Math.min(b,d.end)],text:prepared.text.slice(Math.max(a,d.start),Math.min(b,d.end))}))),
       table_headers:[...new Set(included.map(b=>b.table_context).filter(Boolean))],omitted_ranges:omitted,
-      supporting_links:prepared.coverage?.map(l=>({url:l.url??l.target,state:l.state}))??[]};
+      // Targets remain in source text; full per-link coverage is a run artifact.
+      supporting_links:Object.fromEntries([...new Set((prepared.coverage??[]).map(l=>l.state))].map(state=>[state,prepared.coverage.filter(l=>l.state===state).length]))};
     // Leave 1,000 bytes for a small repair while retaining cross-document context.
     // Large rejected outputs still defer intact at the hard request bound.
     if(bodyBytes(input)<=MODEL_LIMITS.input-1000)return input;

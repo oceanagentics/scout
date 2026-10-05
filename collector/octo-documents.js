@@ -6,7 +6,7 @@ import { processDocument } from './document-records.js';
 
 const digest = text => createHash('sha256').update(text).digest('hex');
 const FEED = 'https://octogroup.org/feed/';
-export const PREPARATION_VERSION = 'octo-documents-v3';
+export const PREPARATION_VERSION = 'octo-documents-v4';
 export const CHUNK_BYTES = 4000; // Source text only; the future model stage must bound its entire request.
 const framing = new Set(['head','script','style','nav','noscript','template']);
 const blocks = new Set(['p','h1','h2','h3','h4','h5','h6','li','blockquote','pre','table','figcaption']);
@@ -61,6 +61,11 @@ export function prepareDocument({title,html,url}) {
       if(retained.timezoneVO){retained.timezoneVO={...retained.timezoneVO};delete retained.timezoneVO.timezones;}
       structured.push({label:'Zoom registration payload',body:JSON.stringify(retained)});
       result.omissions.push({reason:'Zoom UI/auth/tracking configuration and timezone selection catalogue excluded; registration payload retained; full response captured.'});
+    }else{
+      // Older public Zoom pages expose an object literal rather than JSON.
+      // Preserve that complete data envelope as source text; never evaluate it.
+      const literal=html.match(/\bwindow\.dataModel\s*=\s*(\{[\s\S]*?\n\})\s*(?:;|(?=window\.domainFromServer))/)?.[1];
+      if(literal)result.blocks.push({id:result.blocks.length,tag:'structured-data',headings:[],text:'Zoom registration data literal\n'+literal});
     }
   }
   for(const data of structured){
@@ -109,7 +114,7 @@ function feedItems(body) {
 // One hop from retained primary links: three destinations/article, six/run.
 // Registration/organizer relationships are link metadata, never arrival order.
 export async function supportDocuments(db,{source,prepared,read,sourceURL,budget,limits,trace,cache}){
-  const links=new Map(),coverage=[],documents=[{id:'P',capture_id:source.id,hash:source.content_hash,url:prepared.url,relationship:'primary',prepared}];
+  const links=new Map(),coverage=[],documents=[{id:'P',capture_id:source.id,hash:source.content_hash,url:prepared.url,relationship:'primary',preparation_version:prepared.version,prepared}];
   for(const link of prepared.links){
     let url;try{url=sourceURL(link.target);}catch{coverage.push({...link,state:'unsupported',reason:'Public HTTPS document URL required'});continue;}
     if(link.tag!=='a'||/\.(?:pdf|png|jpe?g|gif|webp|mp4|mp3|zip)(?:$|\?)/i.test(url)){coverage.push({...link,url,state:'unsupported',reason:'Only linked HTML/text/JSON documents in this one-hop pass'});continue;}
@@ -159,9 +164,11 @@ export async function supportDocuments(db,{source,prepared,read,sourceURL,budget
     }
     coverage.push({...relation,...Object.fromEntries(Object.entries(result).filter(([k])=>k!=='prepared'))});
     if(result.state==='fetched'&&!documents.some(d=>d.capture_id===result.capture_id))
-      documents.push({id:'S'+documents.length,capture_id:result.capture_id,hash:result.hash,url:result.url,relationship:link.relationship,via:relation,prepared:result.prepared});
+      documents.push({id:'S'+documents.length,capture_id:result.capture_id,hash:result.hash,url:result.url,relationship:link.relationship,via:relation,preparation_version:result.prepared.version,prepared:result.prepared});
   }
-  const context=digest(JSON.stringify({primary:source.content_hash,coverage,documents:documents.map(({prepared,...d})=>d)}));
+  // JSONB changes object-key order on readback; coverage ordering is mechanical,
+  // not a support change. Source payload hashes themselves remain exact.
+  const context=digest(JSON.stringify({primary:source.content_hash,coverage:coverage.map(link=>Object.fromEntries(Object.entries(link).sort(([a],[b])=>a.localeCompare(b)))),documents:documents.map(({prepared,...d})=>d)}));
   const combined={...prepared,text:'',blocks:[],documents,context,coverage};
   for(const doc of documents){
     if(combined.text)combined.text+='\n\n';
@@ -176,24 +183,56 @@ export async function supportDocuments(db,{source,prepared,read,sourceURL,budget
 
 // Opt-in fetch/prepare route. No call into the legacy scripted assessment/save
 // path: every ready document, including unchanged pending work, is returned.
-export async function collectOCTODocuments(db,{tracker,read,sourceURL,now,deadline,limits,process=false,model,makeModel,documentVersion}) {
+export async function collectDocuments(db,{tracker,read,sourceURL,now,deadline,limits,process=false,model,makeModel,documentVersion,retrieve,path='octo'}) {
   const run=(await db.query('insert into scout.collection_runs(tracker_id,started_at,stats) values($1,$2,$3::jsonb) returning id',[tracker.id,now(),JSON.stringify({validation:true,documents_only:!process})])).rows[0];
-  const trace=await startReport(db,run.id,process?'octo-records':'octo-documents');
+  const trace=await startReport(db,run.id,path+(process?'-records':'-documents'));
   const budget={requests:0,deadline:Math.min(deadline,Date.now()+limits.seconds*1000)};
-  const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,uncertain:0,unfetched:0,processed:0,created:0,changed:0,warnings:[...process?[]:['Fetch/prepare only: generation, validation/repair and record saving are not implemented.'],process?'One RSS page; one-hop support limited to three destinations/article and six/run; archives, media and further hops remain unfetched.':'One RSS page; archive pages and all supporting links/media remain unfetched.']};
+  const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,uncertain:0,unfetched:0,processed:0,created:0,changed:0,warnings:[...process?[]:['Fetch/prepare only; generation, validation/repair and record saving are not requested.'],path==='octo'?'One RSS page; archives/media remain unfetched.':'Bounded source retrieval; inspect source coverage for failed/deferred items and unvisited pages.',process?'One-hop support limited to three destinations/document and six/run.':'Supporting links/media remain unfetched.']};
   const ready=[],inventory=[],supportCache=new Map();
-  async function fetchDocument(url){
+  async function fetchDocument(url,withHeaders=false){
     const op=await trace.start('fetch',{url});
     if(budget.requests>=limits.requests||Date.now()>=budget.deadline){await trace.finish(op,'skipped',{note:'Shared request/time bound; document not fetched.'});return {op,error:'Shared request/time bound'};}
     const before=budget.requests;
     try{
       const response=await read(url,budget);
       if(budget.requests===before)budget.requests++;
-      if(response.status!==200||typeof response.body!=='string'||Buffer.byteLength(response.body)>limits.bytes)throw new Error('Response status/byte bound');
-      return {op,response:{url:response.url,status:response.status,body:response.body}}; // Never retain headers.
+      if(!withHeaders&&response.status!==200||typeof response.body!=='string'||Buffer.byteLength(response.body)>limits.bytes)throw new Error('Response status/byte bound');
+      return {op,response:{url:response.url,status:response.status,body:response.body,...withHeaders?{headers:response.headers}:{}}}; // Headers are for parser checks only.
     }catch{if(budget.requests===before)budget.requests++;await trace.finish(op,'fail',{note:'Source retrieval failed or exceeded a guard; no response retained.'});return {op,error:'Source retrieval failed or exceeded a guard'};}
   }
   try{
+    let selected,plan,retrievalFailed=false;
+    if(retrieve){
+      const previous=(await db.query("select stats->'document_source' state from scout.collection_runs where tracker_id=$1 and stats ? 'document_source' order by started_at desc,id desc limit 1",[tracker.id])).rows[0]?.state??{};
+      const captured=(await db.query("select distinct parsed#>>'{document,id}' id,url from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like 'gfw:post:%'",[tracker.id])).rows;
+      const known=new Map([...(previous.known??[]),...captured].map(item=>[String(item.id),item]));
+      const result=await retrieve({tracker,sourceURL,budget,limits:{...limits,articles:4},knownArticles:[...known.values()],progress:previous.progress??{},read:async url=>{
+        const fetched=await fetchDocument(url,true);if(!fetched.response)throw new Error(fetched.error);
+        const {headers,...payload}=fetched.response;
+        const artifact=await trace.artifact('fetch_response','Source response',payload);
+        await trace.finish(fetched.op,payload.status===200?'pass':'fail',{artifacts:[artifact],note:'Safe response body retained; adapter validates source identity/structure.'});
+        if(payload.status!==200)throw new Error('Source response status '+payload.status);
+        return fetched.response;
+      }});
+      for(const item of result.inventory??[])if(item.id&&item.url)known.set(String(item.id),{id:String(item.id),url:item.url});
+      if(result.progress){
+        stats.document_source={known:[...known.values()],progress:result.progress};
+        await db.query("update scout.collection_runs set stats=stats||$2::jsonb where id=$1",[run.id,JSON.stringify({document_source:stats.document_source})]);
+      }
+      const grouped=new Map(),versions=new Map();
+      for(const item of result.documents){
+        const identity=item.identity??item.id,key=identity+':'+digest(item.raw),prior=grouped.get(key);
+        const provenance=item.provenance??{listing:item.listing,api_url:item.api_url};
+        if(prior)prior.provenance.push(provenance);
+        else grouped.set(key,{...item,identity,provenance:[provenance]});
+        if(!versions.has(identity))versions.set(identity,new Set());versions.get(identity).add(key);
+      }
+      selected=[...grouped.values()].map(item=>({...item,conflicted:versions.get(item.identity).size>1}));
+      stats.failed+=(result.coverage??[]).filter(c=>c.state==='failed').length;
+      retrievalFailed=stats.failed>0;
+      stats.unfetched+=(result.coverage??[]).filter(c=>['deferred','unfetched'].includes(c.state)).length;
+      plan=await trace.artifact('coverage','Source documents and retrieval coverage',{documents:selected.map(({id,url,identity,provenance,conflicted})=>({id,url,identity,provenance,conflicted})),coverage:result.coverage,pagination:result.pagination,progress:result.progress});
+    }else{
     const known=(await db.query(`select distinct on(parsed#>>'{document,id}') content::jsonb->'feed' as feed,last_seen_at
       from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like 'octo:post:%'
       order by parsed#>>'{document,id}',last_seen_at desc,id`,[tracker.id])).rows;
@@ -214,32 +253,36 @@ export async function collectOCTODocuments(db,{tracker,read,sourceURL,now,deadli
     // Previously known documents are rechecked even if the feed is unchanged or
     // no longer contains them. Least-recently observed first avoids starvation.
     const checked=new Map(known.map(row=>[row.feed.id,Date.parse(row.last_seen_at)]));
-    const selected=[...candidates.values()].sort((a,b)=>(checked.get(a.id)??0)-(checked.get(b.id)??0));
-    const plan=await trace.artifact('coverage','Document retrieval plan',{feed:FEED,documents:selected.map(i=>({id:i.id,url:i.url})),invalid:inventory,article_limit:limits.requests-1,supporting_links:process?'One hop; three/article, six/run within shared request/byte/redirect/time guards':'Not fetched; full targets retained in preparation'});
-    const selection=await trace.start('prepare',{checkpoint:true,artifacts:[plan]});await trace.finish(selection,'pass',{note:'Document identities selected without topic, category, date or finding filters.'});
+    selected=[...candidates.values()].sort((a,b)=>(checked.get(a.id)??0)-(checked.get(b.id)??0));
+    plan=await trace.artifact('coverage','Document retrieval plan',{feed:FEED,documents:selected.map(i=>({id:i.id,url:i.url})),invalid:inventory,article_limit:limits.requests-1,supporting_links:process?'One hop; three/article, six/run within shared request/byte/redirect/time guards':'Not fetched; full targets retained in preparation'});
+    }
+    const selection=await trace.start('prepare',{checkpoint:true,artifacts:[plan]});await trace.finish(selection,retrievalFailed?'fail':'pass',{note:'Document identities selected without topic, category, date or finding filters; source failures remain in coverage.'});
     for(const [index,entry] of selected.entries()){
       // Stable serialization also when known feed metadata was read from JSONB.
-      const item={id:entry.id,url:entry.url,title:entry.title,published:entry.published,description:entry.description,raw:entry.raw,offsets:entry.offsets};
-      if(index>=limits.requests-1){inventory.push({id:item.id,url:item.url,state:'unfetched',reason:'Article count bound'});stats.unfetched++;continue;}
+      const item=retrieve?entry:{id:entry.id,url:entry.url,title:entry.title,published:entry.published,description:entry.description,raw:entry.raw,offsets:entry.offsets};
+      if(!retrieve&&index>=limits.requests-1){inventory.push({id:item.id,url:item.url,state:'unfetched',reason:'Article count bound'});stats.unfetched++;continue;}
       const apiURL='https://octogroup.org/wp-json/wp/v2/posts/'+item.id;
-      const fetched=await fetchDocument(apiURL);
-      const content=JSON.stringify({feed:item,article:fetched.response??null});
+      const fetched=retrieve?{}:await fetchDocument(apiURL);
+      const content=retrieve?item.raw:JSON.stringify({feed:item,article:fetched.response??null});
       const {offsets,...payload}=item; // Enclosing-feed location is provenance, not document content.
-      const hash=digest(JSON.stringify({feed:payload,article:fetched.response??null}));
+      const hash=digest(retrieve?item.raw:JSON.stringify({feed:payload,article:fetched.response??null}));
+      const identity=item.identity??'octo:post:'+item.id,preparationVersion=item.prepared?.version??PREPARATION_VERSION;
       const detect=await trace.start('detect',{url:item.url});
-      const previous=(await db.query("select id,url,content_hash from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,id}'=$2 order by last_seen_at desc,id limit 1",[tracker.id,item.id])).rows[0];
+      const previous=(await db.query("select id,url,content_hash from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}'=$2 order by last_seen_at desc,id limit 1",[tracker.id,identity])).rows[0];
       const source=(await db.query(`insert into scout.evidence(tracker_id,url,content_hash,content,parsed,last_seen_at)
         values($1,$2,$3,$4,$5,clock_timestamp()) on conflict(record_id,tracker_id,url,content_hash) do update set last_seen_at=excluded.last_seen_at returning *`,
-      [tracker.id,item.url,hash,content,JSON.stringify({document:{version:PREPARATION_VERSION,id:item.id,identity:'octo:post:'+item.id,preparation:{state:'pending'},processing:{state:'pending'}}})])).rows[0];
+      [tracker.id,item.url,hash,content,JSON.stringify({document:{version:preparationVersion,id:item.id,identity,preparation:{state:'pending'},processing:{state:'pending'}}})])).rows[0];
       const capture=await trace.capture(source),refs=[capture];if(previous&&previous.id!==source.id)refs.push(await trace.capture(previous));
       if(fetched.response)await trace.finish(fetched.op,'pass',{artifacts:[capture],final_url:fetched.response.url,bytes:Buffer.byteLength(fetched.response.body),note:'Linked WordPress document captured; structural validation follows.'});
-      await trace.finish(detect,previous?.content_hash===hash?'skipped':'pass',{source_ids:[source.id],artifacts:refs,note:'SHA-256 of exact article response plus retained feed item, excluding enclosing-feed offsets; observation does not mark processing complete.'});
+      if(retrieve)refs.push(await trace.artifact('provenance','Source item occurrences and coverage',{identity,provenance:item.provenance,coverage:item.coverage,conflicted:item.conflicted},{source_id:source.id}));
+      await trace.finish(detect,previous?.content_hash===hash?'skipped':'pass',{source_ids:[source.id],artifacts:refs,note:retrieve?'SHA-256 of exact item/article payload; listing positions and response framing are separate provenance.':'SHA-256 of exact article response plus retained feed item, excluding enclosing-feed offsets; observation does not mark processing complete.'});
       const op=await trace.start('prepare',{source_ids:[source.id],artifacts:[capture]});stats.documents++;
       try{
-        let prepared=source.parsed.document.prepared_versions?.[PREPARATION_VERSION]??source.parsed.document.prepared,feedOnly=source.parsed.document.feed_only;
-        const reused=source.parsed.document.preparation.state==='complete'&&prepared?.version===PREPARATION_VERSION;
+        let prepared=source.parsed.document.prepared_versions?.[preparationVersion]??source.parsed.document.prepared,feedOnly=source.parsed.document.feed_only;
+        const reused=source.parsed.document.preparation.state==='complete'&&prepared?.version===preparationVersion;
         if(!reused){
           if(Date.now()>=budget.deadline)throw new Error('Preparation time bound');
+          if(retrieve){prepared=item.prepared;feedOnly=false;}else{
           let post;
           try{
             post=JSON.parse(fetched.response?.body??'null');
@@ -250,8 +293,9 @@ export async function collectOCTODocuments(db,{tracker,read,sourceURL,now,deadli
           prepared=prepareDocument({url:post?.link??item.url,title:post?.title.rendered??item.title,html:post?.content.rendered??item.description});
           prepared.input=feedOnly?'feed-only':'linked-article';prepared.feed_metadata={title:item.title,published:item.published,url:item.url,offsets:item.offsets,
             offset_basis:'Original RSS response where this retained item was observed; metadata may precede this article check.'};
+          }
           const document={...source.parsed.document,
-            prepared_versions:{...source.parsed.document.prepared_versions,[PREPARATION_VERSION]:prepared},feed_only:feedOnly,preparation:{state:'complete',version:PREPARATION_VERSION}};
+            prepared_versions:{...source.parsed.document.prepared_versions,[preparationVersion]:prepared},feed_only:feedOnly,preparation:{state:'complete',version:preparationVersion}};
           await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document}',$2::jsonb) where id=$1",[source.id,JSON.stringify(document)]);
           source.parsed.document=document;
         }
@@ -259,6 +303,11 @@ export async function collectOCTODocuments(db,{tracker,read,sourceURL,now,deadli
         await trace.finish(op,reused?'skipped':'pass',{artifacts:[capture,artifact],note:(reused?'Identical successfully prepared input reused. ':'Full document prepared. ')+(feedOnly?'Feed-only: linked article unavailable or invalid. ':'')+'Downstream processing remains separate; ready inputs are returned even when unchanged.'});
         stats[reused?'reused':'prepared']++;if(feedOnly)stats.feed_only++;
         ready.push(source.id);inventory.push({id:item.id,url:item.url,source_id:source.id,state:feedOnly?'feed-only':'prepared',reused});
+        if(item.conflicted){
+          stats.uncertain++;inventory.at(-1).processing='uncertain';
+          const conflict=await trace.start('validate',{source_ids:[source.id],artifacts:refs});
+          await trace.finish(conflict,'uncertain',{note:'Conflicting payloads for one source identity in this retrieval; retain all versions without choosing observation order.'});continue;
+        }
         if(process){
           model??=makeModel?.(run.id,budget.deadline,trace);
           const context=await supportDocuments(db,{source,prepared,read,sourceURL,budget,limits,trace,cache:supportCache});
@@ -275,8 +324,8 @@ export async function collectOCTODocuments(db,{tracker,read,sourceURL,now,deadli
       }
     }
     if(!selected.length)await trace.skip('prepare','No structurally usable document identities found.');
-    const coverage=await trace.artifact('coverage','Document outcomes',{documents:inventory,unvisited:process?'RSS archives, unsupported/deferred support and further hops; inspect support coverage':'RSS archive pages and supporting links/media'});
-    await trace.finish(selection,'pass',{artifacts:[plan,coverage],note:'Document identities selected without topic, category, date or finding filters; inspect bounded retrieval outcomes.'});
+    const coverage=await trace.artifact('coverage','Document outcomes',{documents:inventory,unvisited:'Source bounds in retrieval coverage; unsupported/deferred support, media and further hops remain unvisited.'});
+    await trace.finish(selection,retrievalFailed?'fail':'pass',{artifacts:[plan,coverage],note:'Document identities selected without topic, category, date or finding filters; inspect bounded retrieval outcomes and failures.'});
     stats.requests=budget.requests;stats.pending=ready.length-stats.processed;
     // A successful preparation is not an end-to-end successful collection.
     const outcome=ready.length||!stats.failed?'partial':'failed';

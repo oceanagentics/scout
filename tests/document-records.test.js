@@ -402,7 +402,7 @@ test('MPAtlas complete text and long table context reach extraction; lookup neve
   for(const long of [false,true]){
     const db=await setup(),inputs=[];
     const row='<tr><td>First session</td><td>2026-10-21T10:00:00Z</td><td>Ocean Institute</td><td>Marine data standards workshop.</td></tr>';
-    const post=long?{...article,content:{rendered:'<h1>Data workshops</h1><h2>First session</h2><table><caption>Schedule</caption><tr><th>Session</th><th>UTC date</th><th>Organizer</th><th>Context</th></tr>'+row.repeat(25)+'</table><p><a href="/register">Register</a></p>'}}:mp;
+    const post=long?{...article,content:{rendered:'<h1>Data workshops</h1><h2>First session</h2><table><caption>Schedule</caption><tr><th>Session</th><th>UTC date</th><th>Organizer</th><th>Context</th></tr>'+row.repeat(50)+'</table><p><a href="/register">Register</a></p>'}}:mp;
     const source=runner(db,stages(input=>{inputs.push(input);return long?[proposal()]:[];}),{post});
     try{
       const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));

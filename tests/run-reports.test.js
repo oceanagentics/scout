@@ -259,6 +259,10 @@ test('run view navigates on demand, renders artifacts as text, and discards late
     assert.ok(!root.textContent.includes('Legacy scripted collector'));closeDocument();
     const closeRecords=mountRunDetail(root,{...api,detail:async()=>({id:'0',outcome:'partial',report:{version:1,path:'octo-records',operations:{v1:{step:'validate',state:'fail',recovered_by:'v2'},v2:{step:'validate',state:'pass'}},artifacts:{}}})},{id:'tracker',name:'OCTO'},()=>{});
     await tick();assert.match(root.textContent,/OCTO document processing/);assert.match(root.textContent,/Validate and repair · Pass/);assert.match(root.textContent,/Recovered by later operation v2/);closeRecords();
+    for(const [path,label]of [['author-records','Author feed'],['gfw-records','GFW']]){
+      const closeIntegrated=mountRunDetail(root,{...api,detail:async()=>({id:'0',outcome:'partial',report:{version:1,path,operations:{},artifacts:{}}})},{id:'tracker',name:label},()=>{});
+      await tick();assert.ok(root.textContent.includes(label+' document processing'));assert.match(root.textContent,/support coverage/);assert.ok(!root.textContent.includes('Legacy scripted collector'));closeIntegrated();
+    }
     const closeUncertain=mountRunDetail(root,{...api,detail:async()=>({id:'0',outcome:'partial',counts:{uncertain:1},report:{version:1,path:'octo-records',operations:{v1:{step:'validate',state:'uncertain',note:'Identity remains unresolved.'}},artifacts:{}}})},{id:'tracker',name:'OCTO'},()=>{});
     await tick();assert.match(root.textContent,/Validate and repair · Uncertain/);assert.match(root.textContent,/uncertain: 1/);assert.match(root.textContent,/Identity remains unresolved/);closeUncertain();
   }finally{if(old===undefined)delete globalThis.document;else globalThis.document=old;}

@@ -29,7 +29,7 @@ test('missing, invalid, publishable, other secret and valid user JWT never open 
 
 test('invalid authenticated requests do no database work', async () => {
   let connects = 0;
-  for (const req of [request(undefined, '', 'GET'), request(undefined, '?since=2026-02-30'),
+  for (const req of [request(),request(undefined, '', 'GET'), request(undefined, '?since=2026-02-30'),
     request(undefined, '?since=2026-09-01&since=2026-10-01'), request(undefined, '?sql=delete'),
     request(undefined, '?source_id=invalid'), request(undefined, '?source_id=00000000-0000-0000-0000-000000000001&source_id=00000000-0000-0000-0000-000000000002'),
     request(undefined, '?tracker_id=invalid'), request(undefined, '?tracker_id=00000000-0000-0000-0000-000000000001&tracker_id=00000000-0000-0000-0000-000000000002'),
@@ -37,10 +37,18 @@ test('invalid authenticated requests do no database work', async () => {
     request(undefined, '?validate=false&tracker_id=00000000-0000-0000-0000-000000000001'),
     request(undefined, '?validate=true&tracker_id=all'),
     request(undefined, '?documents=true&validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d'),
+    request(undefined, '?validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d'),
+    ...['','&validate=true','&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d',
+      '&validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d&documents=process',
+      '&validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d&source_id=00000000-0000-0000-0000-000000000001',
+      '&validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d&assess_only=true']
+      .map(suffix=>request(undefined,'?documents=process'+suffix)),
     request(undefined, '?validate=true&validate=true&tracker_id=00000000-0000-0000-0000-000000000001'),
     ...['true','false','','true&assess_only=true'].map(value=>request(undefined, `?assess_only=${value}`)),
     request(undefined, '?assess_only=true&validate=true&tracker_id=00000000-0000-0000-0000-000000000001'),
     ...['-1','11','1.2','','2&max_attempts=3'].map(value=>request(undefined, `?max_attempts=${value}`)),
+    ...['since=2026-02-30','max_attempts=11','max_attempts=1&max_attempts=2','validate=false','sql=delete']
+      .map(value=>request(undefined,'?documents=process&validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d&'+value)),
     new Request('https://example.test', { method: 'POST', headers: { apikey: secret }, body: '{}' })]) {
     const response = await hostedHSA(req, { env, databaseURL: 'unused', connect: () => { connects++; } });
     assert.ok([400, 405].includes(response.status));
@@ -54,7 +62,7 @@ test('overlap skips collection; authorized work uses parameters/transactions and
     let collected = 0, closed = 0, transactions = 0;
     const tx = { unsafe: async (query, params) => { queries.push({ query, params }); if(query==='begin') transactions++; return [{ acquired }]; },
       release() {} };
-    const req = new Request('https://example.test/collect?assess_only=true&validate=true&since=2026-09-01&max_attempts=0&source_id=00000000-0000-0000-0000-000000000001&tracker_id=00000000-0000-0000-0000-000000000002', {
+    const req = new Request('https://example.test/collect?documents=process&validate=true&since=2026-09-01&max_attempts=0&tracker_id=00000000-0000-0000-0000-000000000002', {
       method: 'POST', headers: { apikey: secret }, body: new ReadableStream({ start(controller) { controller.close(); } }), duplex: 'half' });
     const response = await hostedHSA(req, { env, databaseURL: 'unused',
       connect: (_url, options) => {
@@ -65,10 +73,11 @@ test('overlap skips collection; authorized work uses parameters/transactions and
       }, collect: async (db, options) => {
         collected++;
         assert.equal(options.since, '2026-09-01T00:00:00Z');
-        assert.equal(options.sourceId, '00000000-0000-0000-0000-000000000001');
+        assert.equal(options.sourceId, null);
         assert.equal(options.trackerId, '00000000-0000-0000-0000-000000000002');
         assert.equal(options.validate, true);
-        assert.equal(options.assessOnly, true);
+        assert.equal(options.assessOnly, false);
+        assert.equal(options.documents, 'process');
         await assert.rejects(options.makeModel('unused')(), /Observation-only run/);
         assert.ok(options.deadline <= Date.now() + 100000);
         await db.transaction(inner => inner.query('select $1::jsonb, $2::text', [{ proof: true }, "quote'; --"]));
@@ -85,7 +94,7 @@ test('overlap skips collection; authorized work uses parameters/transactions and
 test('database failure rolls back through the driver without returning connection details', async () => {
   let closed = 0, rolledBack = 0;
   const tx = { unsafe: async query => { if(query==='rollback') rolledBack++; return [{ acquired:true }]; }, release() {} };
-  const response = await hostedHSA(request(), { env, databaseURL: 'unused',
+  const response = await hostedHSA(request(undefined,'?documents=process&validate=true&tracker_id=00000000-0000-0000-0000-000000000002'), { env, databaseURL: 'unused',
     connect: () => ({ reserve: async () => tx,
       end: async () => { closed++; } }),
     collect: async db => db.transaction(async () => { throw new Error('private connection details'); }) });
