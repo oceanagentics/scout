@@ -165,8 +165,10 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
       const captured=(await db.query("select distinct on(parsed#>>'{document,identity}') parsed#>>'{document,id}' id,url,"+
         " parsed#>>'{document,processing,version}' version,parsed#>array['document','processing_versions',parsed#>>'{document,processing,version}'] progress"+
         " from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like $2 order by parsed#>>'{document,identity}',last_seen_at desc,scout.evidence.id",[tracker.id,path+':%'])).rows;
-      const pending=captured.filter(d=>process&&d.version?.startsWith(documentVersion+'/')&&d.progress&&!['complete','uncertain'].includes(d.progress.state)&&!d.progress.exhausted)
-        .map(d=>({id:d.id,url:d.url,state:d.progress.pending||d.progress.findings?.some(f=>f.pending)?'model-repair':'model-pending'}));
+      const pending=captured.filter(d=>process&&d.version?.startsWith(documentVersion+'/')&&d.progress&&!['complete','uncertain'].includes(d.progress.state)&&
+        (!d.progress.exhausted||d.progress.state==='failed'&&d.progress.error?.startsWith('Two resolve repair attempts exhausted: ')&&
+          d.progress.findings?.filter(f=>!f.resolution&&!f.exhausted).length>1))
+        .map(d=>({id:d.id,url:d.url,state:d.progress.exhausted||d.progress.pending||d.progress.findings?.some(f=>f.pending)?'model-repair':'model-pending'}));
       const knownKey=['iucn','dosi','iddri'].includes(path)?'url':'id',known=new Map([...(previous.known??[]),...captured.map(({id,url})=>({id,url}))].map(item=>[String(item[knownKey]),item]));
       const result=await retrieve({tracker,sourceURL,budget,
         limits:{...limits,articles:4,documents:limits.pages-1,...path==='discovery'?{searchPages:1,postsPerPage:5,requests:4}:path==='dosi'?{documents:4,requests:8}:{}},

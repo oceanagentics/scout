@@ -438,6 +438,61 @@ test('actual DOSI exhausted resolution stays stopped while later findings save, 
   }finally{await db.close();}}
 });
 
+test('DOSI legacy recovery reaches the ordinary bounded acquisition queue without reopening exhausted work',async()=>{
+  const f=await fixture('dosi-website.json.gz'),saved=f.retained_resolution_exhaustion;
+  const responses=new Map([...f.retained_resume.runs,saved.run].flatMap(r=>Object.values(r.report.artifacts)
+    .filter(a=>a.kind==='fetch_response').map(a=>[a.data.url,{...a.data,headers:{'content-type':a.data.url.endsWith('/feed/')?'application/rss+xml':'text/html'}}])));
+  for(const mode of ['recoverable','unsupported-history','complete','extract-exhausted','all-findings-exhausted','no-later-finding','old-version']){const db=await database();try{
+    const s=structuredClone(saved.source),r=structuredClone(saved.run),version=s.parsed.document.processing.version,prior=s.parsed.document.processing_versions[version];
+    if(mode==='unsupported-history')r.report.artifacts.a24.data.errors=['Unrelated rejection'];
+    if(mode==='complete')prior.state='complete';
+    if(mode==='extract-exhausted')prior.error=prior.error.replace('Two resolve','Two extract');
+    if(mode==='all-findings-exhausted')for(const entry of prior.findings)if(!entry.resolution)entry.exhausted=true;
+    if(mode==='no-later-finding')for(const entry of prior.findings.slice(2))entry.exhausted=true;
+    if(mode==='old-version')s.parsed.document.processing.version=version.replace(DOCUMENT_VERSION,'announcement-events-old');
+    await db.query('update scout.trackers set id=$1 where url=$2',[r.tracker_id,f.home.url]);
+    const tracker=(await db.query('select * from scout.trackers where id=$1',[r.tracker_id])).rows[0];
+    await db.query('insert into scout.evidence(id,tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,$6,$7)',
+      [s.id,tracker.id,s.url,s.content_hash,s.content,JSON.stringify(s.parsed),s.last_seen_at]);
+    await db.query('insert into scout.collection_runs(id,tracker_id,started_at,finished_at,outcome,stats,report) values($1,$2,$3,$4,$5,$6,$7)',
+      [r.id,tracker.id,r.started_at,r.finished_at,r.outcome,JSON.stringify(r.stats),JSON.stringify(r.report)]);
+    // Rotate through retained responses that fill all four slots before the known October 1 newsletter unless repair priority admits it.
+    const acquisition=structuredClone(r.stats.document_source);acquisition.progress.after_url='https://www.dosi-project.org/dosi-deep-sea-round-up-108/';
+    await db.query('insert into scout.collection_runs(tracker_id,stats) values($1,$2)',[tracker.id,JSON.stringify({document_source:acquisition})]);
+    const originalRun=(await db.query('select * from scout.collection_runs where id=$1',[r.id])).rows[0],reads=[];
+    const transport=runModel(db,input=>{
+      assert.equal(mode,'recoverable');assert.equal(input.source_id,s.id);assert.equal(input.stage,'resolve','No newsletter extraction replay');
+      assert.deepEqual(input.finding,prior.findings[2].finding,'The exhausted science finding must receive zero attempts');
+      return {...resolve(input),outcome:'new',record_id:null};
+    });
+    let pending;
+    const result=await collectDocuments(db,{tracker,sourceURL,now:()=>new Date().toISOString(),deadline:Date.now()+100000,
+      limits:{seconds:100,requests:8,pages:10,bytes:2_000_000},process:true,path:'dosi',
+      retrieve:async options=>{pending=options.pending;return retrieveDosiDocuments(options);},
+      read:async url=>{reads.push(url);assert.ok(responses.has(url),url);return responses.get(url);},
+      makeModel:(...args)=>{const model=transport.makeModel(...args);return async(...call)=>{
+        if(call[1][0].source_id!==s.id||transport.requests.length)throw new Error('Model quota reached');
+        return model(...call);
+      };}});
+    const admitted=['recoverable','unsupported-history'].includes(mode);
+    assert.equal(pending.some(p=>p.url===s.url&&p.state==='model-repair'),admitted,mode);
+    assert.equal(reads.includes(s.url),admitted,mode);if(admitted)assert.deepEqual(reads.slice(0,3),[f.home.url,f.feed.url,s.url]);
+    assert.equal(result.documents,4,JSON.stringify({mode,reads,warnings:result.warnings}));assert.equal(reads.length,5);assert.equal(result.requests,5);
+    assert.equal(transport.requests.length,mode==='recoverable'?1:0);assert.equal(result.created,mode==='recoverable'?1:0);
+    const document=(await db.query('select parsed from scout.evidence where id=$1',[s.id])).rows[0].parsed.document,state=document.processing_versions[version];
+    if(mode==='recoverable'){
+      assert.equal(state.exhausted,undefined);assert.equal(state.cursor,prior.cursor);assert.equal(state.findings[1].exhausted,true);
+      assert.deepEqual(state.findings[1].pending,{round:3,repair:{rejected:r.report.artifacts.a23.data.response,errors:r.report.artifacts.a24.data.errors}});
+      assert.deepEqual(state.findings[1].exhaustion_evidence,{run_id:r.id,artifact_id:'a24'});
+      assert.ok(state.findings[2].record_id);assert.equal(state.findings[3].resolution,undefined);
+      assert.equal((await db.query('select stats from scout.collection_runs where id=$1',[result.run_id])).rows[0].stats.model_attempts.length,1);
+    }else assert.deepEqual(state,{...prior,revision:prior.revision+(mode==='unsupported-history'?1:0)});
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[r.id])).rows[0],originalRun);
+    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+    assert.deepEqual(document.prepared_versions,s.parsed.document.prepared_versions);
+  }finally{await db.close();}}
+});
+
 test('actual Harvest HTML offset changes preserve completed, pending and exhausted progress without discarding provenance',async()=>{
   const {offset_churn:{sources,records}}=await fixture('harvest-website.json.gz');
   const prepared=sources.map(s=>s.parsed.document.prepared_versions['octo-documents-v6']);
