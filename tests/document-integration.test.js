@@ -359,6 +359,85 @@ test('actual DOSI unknown-clock refusal resumes at repair one, can save null dat
   }finally{await db.close();}}
 });
 
+test('actual DOSI exhausted resolution stays stopped while later findings save, with exact legacy recovery and no extraction replay',async()=>{
+  const saved=(await fixture('dosi-website.json.gz')).retained_resolution_exhaustion;
+  for(const mode of ['retained','fresh','wrong-source','wrong-version','wrong-finding','wrong-error','ambiguous','extract-exhausted']){const db=await database();try{
+    const r=structuredClone(saved.run),s=structuredClone(saved.source),version=s.parsed.document.processing.version,prior=s.parsed.document.processing_versions[version];
+    const failed=prior.findings[1],next=prior.findings[2];assert.equal(prior.findings.length,7);assert.equal(prior.cursor,37407);
+    if(mode==='fresh'){delete prior.exhausted;failed.pending={round:1,repair:r.report.artifacts.a12.data.repair};}
+    if(mode==='wrong-source')r.report.operations.o22.source_ids=['00000000-0000-0000-0000-000000000000'];
+    if(mode==='wrong-version')r.report.artifacts.a19.data.version+='-different';
+    if(mode==='wrong-finding')r.report.artifacts.a19.data.finding=structuredClone(next.finding);
+    if(mode==='wrong-error')r.report.artifacts.a24.data.errors=['Unrelated rejection'];
+    if(mode==='ambiguous'){
+      r.report.artifacts.a999=structuredClone(r.report.artifacts.a24);r.report.operations.o21.artifacts.push('a999');
+    }
+    if(mode==='extract-exhausted')prior.error=prior.error.replace('Two resolve','Two extract');
+    await db.query('update scout.trackers set id=$1 where url=$2',[r.tracker_id,'https://www.dosi-project.org/biodiversity-beyond-national-jurisdiction-bbnj/']);
+    await db.query('insert into scout.evidence(id,tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,$6,$7)',
+      [s.id,r.tracker_id,s.url,s.content_hash,s.content,JSON.stringify(s.parsed),s.last_seen_at]);
+    await db.query('insert into scout.collection_runs(id,tracker_id,started_at,finished_at,outcome,stats,report) values($1,$2,$3,$4,$5,$6,$7)',
+      [r.id,r.tracker_id,r.started_at,r.finished_at,r.outcome,JSON.stringify(r.stats),JSON.stringify(r.report)]);
+    const originalRun=(await db.query('select * from scout.collection_runs where id=$1',[r.id])).rows[0];
+    const old=r.report.artifacts.a12.data.candidates.find(c=>c.id==='442dce02-cdf6-471f-9d91-69fbd3d6e79b');
+    await db.query('insert into scout.records(id,'+CONTENT_FIELDS.join(',')+',priority) values('+Array.from({length:CONTENT_FIELDS.length+2},(_,i)=>'$'+(i+1)).join(',')+')',
+      [old.id,...CONTENT_FIELDS.map(k=>old[k]??null),old.priority]);
+    const originalRecord=(await db.query('select * from scout.records where id=$1',[old.id])).rows[0];
+    const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[r.tracker_id])).rows[0].id;
+    const trace=await startReport(db,run),deadline=Date.now()+100000;
+    const source=(await db.query('select * from scout.evidence where id=$1',[s.id])).rows[0];
+    const prepared=await supportDocuments(db,{source,prepared:s.parsed.document.prepared_versions['dosi-documents-v2'],trace});
+    assert.equal(DOCUMENT_VERSION+'/'+prepared.version+'/'+prepared.context,version);
+    for(const key of ['a16','a23'])assert.throws(()=>validateResolution(r.report.artifacts[key].data.response,failed.finding,r.report.artifacts.a12.data.candidates,prepared),/Unsupported\/conflicting factual evidence/);
+    let scienceCalls=0,remaining=mode==='retained'?1:Infinity;
+    const transport=runModel(db,input=>{
+      assert.equal(input.stage,'resolve','Extraction must never reopen');
+      if(input.finding.anchor===failed.finding.anchor){
+        assert.equal(mode,'fresh','Retained exhausted finding must not run');scienceCalls++;
+        return r.report.artifacts[scienceCalls===1?'a16':'a23'].data.response;
+      }
+      assert.notEqual(input.finding.anchor,prior.findings[0].finding.anchor,'Existing uncertain resolution remains retained');
+      return input.finding.anchor===next.finding.anchor?{...resolve(input),outcome:'new',record_id:null}:
+        {...resolve(input),outcome:'uncertain',record_id:null,reason:'Injected unresolved identity; no speculative save.'};
+    });
+    const model=transport.makeModel(run,deadline,trace);
+    const options={source,prepared,trace,deadline,model:async(...args)=>{
+      if(remaining--<=0)throw new Error('Model quota reached');
+      await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{model_attempts}',(select jsonb_agg(a||jsonb_build_object('at',(a->>'at')::timestamptz-interval '61 seconds')) from jsonb_array_elements(stats->'model_attempts') a)) where id=$1 and jsonb_array_length(coalesce(stats->'model_attempts','[]'))>0",[run]);
+      return model(...args);
+    }},result=await processDocument(db,options);
+    assert.equal(result.state,'failed');
+    if(mode==='retained'){
+      assert.equal(result.created,1);assert.equal(transport.requests.length,1);assert.match(result.error,/quota/);
+      options.source=(await db.query('select * from scout.evidence where id=$1',[s.id])).rows[0];
+      const partial=options.source.parsed.document.processing_versions[version];assert.equal(partial.exhausted,undefined);
+      assert.equal(partial.findings[1].exhausted,true);assert.ok(partial.findings[2].record_id);assert.equal(partial.findings[3].resolution,undefined);
+      remaining=Infinity;const resumed=await processDocument(db,options);assert.equal(resumed.state,'failed');assert.equal(resumed.created,0);
+    }
+    const document=(await db.query('select parsed from scout.evidence where id=$1',[s.id])).rows[0].parsed.document,state=document.processing_versions[version];
+    assert.equal(document.processing.version,version);
+    if(!['retained','fresh'].includes(mode)){
+      assert.equal(transport.requests.length,0);assert.equal(result.created,0);assert.equal(state.exhausted,true);assert.equal(state.findings[1].exhausted,undefined);
+    }else{
+      assert.equal(result.created,1,result.error);assert.equal(transport.requests.length,mode==='fresh'?7:5);assert.equal(scienceCalls,mode==='fresh'?2:0);
+      assert.equal(state.exhausted,true);assert.equal(state.cursor,prior.cursor);assert.equal(state.findings[1].exhausted,true);assert.equal(state.findings[1].resolution,undefined);
+      assert.deepEqual(state.findings[1].pending,{round:3,repair:{rejected:r.report.artifacts.a23.data.response,errors:r.report.artifacts.a24.data.errors}});
+      if(mode==='retained')assert.deepEqual(state.findings[1].exhaustion_evidence,{run_id:r.id,artifact_id:'a24'});
+      assert.deepEqual(state.findings[0],prior.findings[0]);assert.ok(state.findings.slice(2).every(f=>f.resolution));
+      const created=(await db.query('select * from scout.records where id<>$1',[old.id])).rows;assert.equal(created.length,1);assert.equal(created[0].title,next.finding.candidate.title);
+      assert.deepEqual((await db.query('select * from scout.records where id=$1',[old.id])).rows[0],originalRecord);
+      const request=JSON.parse(transport.requests[0]);assert.match(request.generationConfig.responseJsonSchema.properties.outcome.description,/ANY facts value/);
+      assert.match(request.systemInstruction.parts[0].text,/outcome MUST be uncertain/);
+      assert.equal((await db.query('select stats from scout.collection_runs where id=$1',[run])).rows[0].stats.model_attempts.length,transport.requests.length);
+    }
+    options.source=(await db.query('select * from scout.evidence where id=$1',[s.id])).rows[0];
+    const before=transport.requests.length,again=await processDocument(db,options);assert.equal(again.state,'failed');assert.equal(transport.requests.length,before);
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[r.id])).rows[0],originalRun);
+    for(const [key,value]of Object.entries(s.parsed.document.processing_versions))if(key!==version)assert.deepEqual(document.processing_versions[key],value);
+    assert.deepEqual(document.prepared_versions,s.parsed.document.prepared_versions);
+  }finally{await db.close();}}
+});
+
 test('actual Harvest HTML offset changes preserve completed, pending and exhausted progress without discarding provenance',async()=>{
   const {offset_churn:{sources,records}}=await fixture('harvest-website.json.gz');
   const prepared=sources.map(s=>s.parsed.document.prepared_versions['octo-documents-v6']);
