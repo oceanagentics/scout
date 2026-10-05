@@ -437,6 +437,21 @@ test('exact HSA failures report every missing proof and date error; a new contra
   const outputs=saved.responses.map(raw=>JSON.parse(JSON.parse(raw).candidates[0].content.parts.find(p=>p.text).text));
   const input=JSON.parse(JSON.parse(saved.requests[0]).contents[0].parts[0].text)[0];
   const repairBytes=[];
+  for(const actual of (await fixture('iddri-website.json.gz')).field_proof_v74){
+    const request=JSON.parse(actual.request),supplied=JSON.parse(request.contents[0].parts[0].text)[0];
+    const rejected=JSON.parse(JSON.parse(actual.response).candidates[0].content.parts.find(p=>p.text).text),original=JSON.stringify(rejected);
+    assert.deepEqual(rejected,actual.extracted.response);
+    const old=request.generationConfig.responseJsonSchema.properties.findings.items.properties.evidence;
+    assert.deepEqual(old.required,['kind','title','priority']);assert.equal(old.properties.priority.minItems,undefined);
+    for(const [index,p] of rejected.findings.entries()){
+      const expected=actual.request_artifact==='a15'?/citations\[0\]/:index===1?/anchor must be/:/Missing field evidence: description, location.*Invalid evidence for priority/;
+      assert.throws(()=>validateFinding(p,supplied),expected);
+    }
+    assert.equal(JSON.stringify(rejected),original,'Actual IDDRI replies remain unchanged and rejected');
+    const body=requestBody(DOCUMENT_INSTRUCTION,[supplied],DOCUMENT_SCHEMA);
+    assert.deepEqual(JSON.parse(JSON.parse(body).contents[0].parts[0].text),[supplied]);
+    context.diagnostic(JSON.stringify({source:'IDDRI actual v74 '+actual.request_artifact,previous_bytes:Buffer.byteLength(actual.request),request_bytes:Buffer.byteLength(body)}));
+  }
   for(const actual of saved.octo_url_dates){
     const supplied=JSON.parse(JSON.parse(actual.request).contents[0].parts[0].text)[0];
     const rejected=JSON.parse(JSON.parse(actual.response).candidates[0].content.parts.find(p=>p.text).text);
@@ -510,10 +525,12 @@ test('exact HSA failures report every missing proof and date error; a new contra
       const schema=JSON.parse(body).generationConfig.responseJsonSchema,evidence=schema.properties.findings.items.properties.evidence;
       assert.equal(evidence.additionalProperties,false);assert.deepEqual(evidence.required,['kind','title','priority']);
       assert.equal(evidence.properties['candidate.kind'],undefined);
-      for(const field of [...CONTENT_FIELDS,'priority','identity','distinction','change'])assert.deepEqual(evidence.properties[field],{type:'array',items:{type:'integer'}});
+      for(const field of [...CONTENT_FIELDS,'priority','identity','distinction','change'])assert.deepEqual(evidence.properties[field],{type:'array',minItems:1,items:{type:'integer',minimum:0}});
+      assert.match(evidence.description,/EVERY non-null candidate field and priority/);
       assert.equal(schema.properties.findings.maxItems,undefined);
       assert.ok(!JSON.stringify(schema).includes('$ref'));assert.equal(schema.$defs,undefined);
       const properties=schema.properties.findings.items.properties;
+      assert.equal(properties.citations.minItems,1);
       for(const field of ['starts_at','ends_at'])assert.equal(properties.dates.properties[field].properties.parts.properties.zone.minItems,1);
       assert.equal(properties.dates.additionalProperties,false);
       assert.deepEqual(properties.candidate.properties.status.enum,['scheduled','rescheduled','cancelled',null]);
