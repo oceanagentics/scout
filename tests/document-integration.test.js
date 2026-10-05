@@ -271,6 +271,19 @@ test('same source identity with changed URL, factual context or omissions must n
     }
     item.prepared=original;item.raw='original';await collectDocuments(db,options);
     assert.equal(calls,5,'Returning to earlier content after a real change is reassessed');
+    item.raw='equivalent A2';await collectDocuments(db,options);assert.equal(calls,5);
+    item.prepared={...original,title:'Different context B'};item.raw='B';await collectDocuments(db,options);assert.equal(calls,6);
+    item.prepared=original;item.raw='original';
+    let attempts=0;options.model=async()=>{calls++;if(attempts++===0)throw Object.assign(new Error('Invalid JSON'),{rejected:'retained new-epoch failure'});throw new Error('Model quota reached');};
+    await collectDocuments(db,options);assert.equal(calls,8);
+    const failed=(await db.query("select parsed#>array['document','processing_versions',parsed#>>'{document,processing,version}'] progress from scout.evidence where content='original'")).rows[0].progress;
+    assert.equal(failed.state,'failed');assert.equal(failed.pending.round,1);
+    item.raw='equivalent A3';const after=await collectDocuments(db,options);
+    assert.equal(calls,9);assert.equal(after.processed,0,'Earlier A2 completion cannot cross the intervening B context');
+    const latest=(await db.query("select parsed#>array['document','processing_versions',parsed#>>'{document,processing,version}'] progress from scout.evidence where content='equivalent A3'")).rows[0].progress;
+    assert.equal(latest.pending.round,1);assert.deepEqual(latest.pending.repair,failed.pending.repair);assert.equal(latest.state,'failed');
+    item.raw='equivalent A2';const revisited=await collectDocuments(db,options);
+    assert.equal(revisited.processed,0,'Reobserving old A2 must not make its stale completion appear current');assert.equal(calls,10);
   }finally{await db.close();}
 });
 

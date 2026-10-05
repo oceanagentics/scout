@@ -287,15 +287,20 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
           model??=makeModel?.(run.id,budget.deadline,trace);
           // Raw captures remain exact. Reuse only consecutive equivalent prepared inputs;
           // a real content/context change must not resurrect older completion or repair state.
+          // The upsert just refreshed source.last_seen_at, so an older revisited source cannot certify its own progress.
           const prior=previous?.parsed.document.prepared_versions?.[preparationVersion]??previous?.parsed.document.prepared,prefix=documentVersion+'/'+prepared.version+'/';
           const omissions=prepared.omissions.map(({regions,...entry})=>entry);
           const equivalent=prior&&isDeepStrictEqual({...prior,omissions:prior.omissions.map(({regions,...entry})=>entry)},{...prepared,omissions})?
-            (await db.query("select e.id,p.version,p.state from scout.evidence e cross join lateral (select e.parsed#>>'{document,processing,version}' version,"+
-              " e.parsed#>array['document','processing_versions',e.parsed#>>'{document,processing,version}'] state) p"+
-              " where e.tracker_id=$1 and e.record_id is null and e.parsed#>>'{document,identity}'=$2 and starts_with(p.version,$3) and p.state is not null"+
-              " and (coalesce(e.parsed#>array['document','prepared_versions',$4],e.parsed#>'{document,prepared}')-'omissions')=($5::jsonb-'omissions')"+
-              " and (select jsonb_agg(o-'regions') from jsonb_array_elements(coalesce(e.parsed#>array['document','prepared_versions',$4],e.parsed#>'{document,prepared}')->'omissions') o) is not distinct from $6::jsonb"+
-              " order by (p.state->>'state'='complete') desc,e.last_seen_at desc,e.id limit 1",[tracker.id,identity,prefix,prepared.version,JSON.stringify(prepared),omissions.length?JSON.stringify(omissions):null])).rows[0]:null;
+            (await db.query("with captures as (select e.id,e.last_seen_at,p.version,p.state,coalesce((p.prepared-'omissions')=($5::jsonb-'omissions')"+
+              " and (select jsonb_agg(o-'regions') from jsonb_array_elements(p.prepared->'omissions') o) is not distinct from $6::jsonb,false) equivalent"+
+              " from scout.evidence e cross join lateral (select e.parsed#>>'{document,processing,version}' version,"+
+              " e.parsed#>array['document','processing_versions',e.parsed#>>'{document,processing,version}'] state,"+
+              " coalesce(e.parsed#>array['document','prepared_versions',$4],e.parsed#>'{document,prepared}') prepared) p"+
+              " where e.tracker_id=$1 and e.record_id is null and e.parsed#>>'{document,identity}'=$2)"+
+              " select id,version,state from captures where equivalent and starts_with(version,$3) and state is not null"+
+              " and (id<>$7::uuid or id=$8::uuid)"+
+              " and last_seen_at>coalesce((select max(last_seen_at) from captures where not equivalent),'-infinity'::timestamptz)"+
+              " order by (state->>'state'='complete') desc,last_seen_at desc,id limit 1",[tracker.id,identity,prefix,prepared.version,JSON.stringify(prepared),omissions.length?JSON.stringify(omissions):null,source.id,previous.id])).rows[0]:null;
           if(equivalent&&equivalent.id!==source.id){
             const state=structuredClone(equivalent.state);if(state.pending?.input)state.pending.input.source_id=source.id;
             source.parsed.document={...source.parsed.document,processing:{state:state.state,version:equivalent.version},
