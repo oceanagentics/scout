@@ -218,6 +218,10 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
     }
     const selection=await trace.start('prepare',{checkpoint:true,artifacts:[plan]});await trace.finish(selection,retrievalFailed?'fail':'pass',{note:'Document identities selected without topic, category, date or finding filters; source failures remain in coverage.'});
     for(const [index,entry] of selected.entries()){
+      if(Date.now()+5000>=budget.deadline){
+        inventory.push(...selected.slice(index).map(d=>({id:d.id,url:d.url,state:'deferred',reason:'Collection runtime budget'})));
+        stats.warnings.push('Collection runtime reached; remaining documents deferred');break;
+      }
       // Stable serialization also when known feed metadata was read from JSONB.
       const item=retrieve?entry:{id:entry.id,url:entry.url,title:entry.title,published:entry.published,description:entry.description,raw:entry.raw,offsets:entry.offsets};
       if(!retrieve&&index>=limits.requests-1){inventory.push({id:item.id,url:item.url,state:'unfetched',reason:'Article count bound'});stats.unfetched++;continue;}

@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,GFW_WEB} from '../collector/hsa.js';
+import {collectHSA,HSA,GFW_WEB,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
-import {prepareDocument} from '../collector/octo-documents.js';
-import {packDocument,validateFinding,validateResolution,DOCUMENT_VERSION,DOCUMENT_SCHEMA,DOCUMENT_INSTRUCTION} from '../collector/document-records.js';
+import {prepareDocument,supportDocuments} from '../collector/octo-documents.js';
+import {prepareDosiDocument} from '../collector/dosi-documents.js';
+import {startReport} from '../collector/report.js';
+import {packDocument,processDocument,validateFinding,validateResolution,DOCUMENT_VERSION,DOCUMENT_SCHEMA,DOCUMENT_INSTRUCTION} from '../collector/document-records.js';
 
 const fixture=async name=>{const raw=await readFile(new URL('./fixtures/'+name,import.meta.url));return JSON.parse(name.endsWith('.gz')?gunzipSync(raw):raw);};
 
@@ -25,22 +27,26 @@ async function database(){
   await db.exec(await readFile(new URL('../supabase/seeds/trackers.sql',import.meta.url),'utf8'));return db;
 }
 
-function runModel(db,respond){
+function runModel(db,respond,advance=false){
   const requests=[];
   const makeModel=(runId,deadline,trace)=>{
-    const model=gemini({apiKey:'fixture-test-key',ledger:db,runId,deadline,trace,fetch:async(_url,request)=>{
-      requests.push(request.body);assert.ok(Buffer.byteLength(request.body)<=8000);
+    const model=gemini({apiKey:'fixture-test-key',ledger:db,runId,deadline,trace,fetch:async(url,request)=>{
+      if(url.endsWith(':countTokens'))return Response.json({totalTokens:200});
+      requests.push(request.body);assert.equal(JSON.parse(request.body).generationConfig.maxOutputTokens,65536);
       const input=JSON.parse(JSON.parse(request.body).contents[0].parts[0].text)[0];
       const out=await respond(input);
       return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(out)}]}}]});
     }});
-    return model;
+    return async(...args)=>{
+      if(advance)await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{model_attempts}',(select jsonb_agg(a||jsonb_build_object('at',(a->>'at')::timestamptz-interval '61 seconds')) from jsonb_array_elements(stats->'model_attempts') a)) where jsonb_array_length(coalesce(stats->'model_attempts','[]'))>0");
+      return model(...args);
+    };
   };
   return {makeModel,requests};
 }
 
 const base=(title,citations)=>({anchor:title,urls:[],candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'event',title},
-  priority:'normal',reason:'Substantive public source finding.',citations,evidence:Object.fromEntries(['kind','title','priority'].map(k=>[k,{refs:[0],rationale:'Cited source finding.'}])),dates:{}});
+  priority:'normal',reason:'Substantive public source finding.',citations,evidence:Object.fromEntries(['kind','title','priority'].map(k=>[k,[0]])),dates:{}});
 
 test('saved webinar and conference passages require literal evidence and leave missing details unknown',async()=>{
   const octo=await fixture('octo-webinars.json.gz'),gfw=await fixture('gfw-live-repair.json.gz');
@@ -61,13 +67,13 @@ test('saved webinar and conference passages require literal evidence and leave m
     assert.throws(()=>validateFinding(invented,input),/citation/);
     const dated=structuredClone(finding);
     dated.candidate.starts_at='2026-10-20T16:00:00Z';
-    dated.evidence.starts_at={refs:[0],rationale:'Assumed year.'};
+    dated.evidence.starts_at=[0];
     dated.dates.starts_at={local:'2026-10-20T16:00:00',zone:'UTC',parts:{year:[],date:[0],time:[0],zone:[0]}};
     assert.throws(()=>validateFinding(dated,input),/year\/date\/clock\/zone/);
   }
 });
 
-test('retained GFW event saves before the final range, resumes under quota, and keeps an oversized repair intact',async context=>{
+test('whole GFW announcement saves in two calls; retained invalid output repairs exceed the old byte cap intact',async context=>{
   const saved=await fixture('gfw-live-repair.json.gz'),post=JSON.parse(saved.artifacts.a2.data.body);
   const card=saved.artifacts.a1.data.body.match(/<article id="post-74977"[\s\S]*?<\/article>/)[0];
   const listing='<html><head><link rel="canonical" href="'+GFW_WEB+'"><link rel="https://api.w.org/" href="https://globalfishingwatch.org/wp-json/"></head><body>'+card+'</body></html>';
@@ -76,7 +82,7 @@ test('retained GFW event saves before the final range, resumes under quota, and 
       const tracker=(await db.query('select * from scout.trackers where url=$1',[GFW_WEB])).rows[0],reads=[];
       const decision=structuredClone(saved.artifacts.a24.data.response);
       if(!rejected){
-        decision.findings[0].evidence=Object.fromEntries(Object.entries(decision.findings[0].evidence).map(([k,v])=>[k.replace(/^candidate\./,''),v]));
+        decision.findings[0].evidence=Object.fromEntries(Object.entries(decision.findings[0].evidence).map(([k,v])=>[k.replace(/^candidate\./,''),v.refs]));
         for(const field of ['organization','description']){decision.findings[0].candidate[field]=null;delete decision.findings[0].evidence[field];}
       }
       const transport=runModel(db,input=>input.stage==='resolve'?resolve(input):input.range[0]?answer([]):decision);
@@ -86,35 +92,27 @@ test('retained GFW event saves before the final range, resumes under quota, and 
         return {url,status:200,headers:{'content-type':url===GFW_WEB?'text/html':'application/json'},body:url===GFW_WEB?listing:saved.artifacts.a2.data.body};
       }};
       const first=await collectHSA(db,options);
-      assert.equal(first.processed,0);assert.equal(reads.length,2);assert.equal(first.requests,2);
+      assert.equal(reads.length,2);assert.equal(first.requests,2);
       const source=(await db.query('select * from scout.evidence where tracker_id=$1 and record_id is null',[tracker.id])).rows[0];
       const state=Object.values(source.parsed.document.processing_versions)[0];
       if(rejected){
-        assert.equal(transport.requests.length,1);assert.equal(first.created,0);assert.equal(state.cursor,0);
+        assert.equal(first.processed,0);assert.equal(transport.requests.length,2);assert.equal(first.created,0);assert.equal(state.cursor,0);
         assert.deepEqual(state.pending.repair.rejected,saved.artifacts.a24.data.response);
-        assert.match(first.warnings.join(';'),/Repair request exceeds 8000 bytes/);
-        const repeated=await collectHSA(db,options);
-        assert.equal(repeated.processed,0);assert.equal(transport.requests.length,1);
+        assert.ok(Buffer.byteLength(transport.requests[1])>8000);
+        assert.deepEqual(JSON.parse(JSON.parse(transport.requests[1]).contents[0].parts[0].text)[0].repair.rejected,saved.artifacts.a24.data.response);
+        const repeated=await collectHSA(db,options);assert.equal(repeated.processed,0);assert.equal(transport.requests.length,2);
         assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
-        context.diagnostic(JSON.stringify({source:'GFW retained rejection',request_bytes:transport.requests.map(b=>Buffer.byteLength(b)),deferred:first.warnings.find(w=>w.includes('Repair request'))}));
       }else{
-        assert.equal(first.created,1);assert.equal(transport.requests.length,2);assert.match(first.warnings.join(';'),/quota/);
+        assert.equal(first.processed,1,first.warnings.join(';'));assert.equal(first.created,1);assert.equal(transport.requests.length,2);
         const prepared=Object.values(source.parsed.document.prepared_versions)[0];
-        assert.ok(state.cursor>0&&state.cursor<prepared.text.length);assert.ok(state.findings[0].record_id);
+        assert.equal(state.cursor,prepared.text.length);assert.ok(state.findings[0].record_id);
         const record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.title,decision.findings[0].candidate.title);
         assert.equal(record.starts_at,null);assert.equal(record.organization,null);
-        // Simulate the next minute only in this isolated ledger; keep both reservations.
-        await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{model_attempts}',(select jsonb_agg(a||jsonb_build_object('at',(a->>'at')::timestamptz-interval '61 seconds')) from jsonb_array_elements(stats->'model_attempts') a)) where id=$1",[first.run_id]);
-        const resumed=await collectHSA(db,options);assert.equal(resumed.processed,1,resumed.warnings.join(';'));assert.equal(resumed.created,0);
-        assert.equal(transport.requests.length,3);
-        const lastInput=JSON.parse(JSON.parse(transport.requests.at(-1)).contents[0].parts[0].text)[0];assert.equal(lastInput.range[0],state.cursor);
-        const repeated=await collectHSA(db,options);assert.equal(repeated.processed,1);assert.equal(transport.requests.length,3);
+        const repeated=await collectHSA(db,options);assert.equal(repeated.processed,1);assert.equal(transport.requests.length,2);
         assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
-        const ledger=(await db.query('select stats from scout.collection_runs where id=any($1::uuid[])',[ [first.run_id,resumed.run_id] ])).rows;
-        assert.equal(ledger.reduce((sum,r)=>sum+r.stats.model_attempts.length,0),3);
-        context.diagnostic(JSON.stringify({source:'GFW injected event',request_bytes:transport.requests.map(b=>Buffer.byteLength(b)),saved_at_cursor:state.cursor,primary_characters:prepared.text.length}));
       }
-      assert.equal(reads.length,rejected?4:6);
+      assert.equal(reads.length,4);
+      context.diagnostic(JSON.stringify({source:rejected?'GFW retained rejection':'GFW injected event',request_bytes:transport.requests.map(b=>Buffer.byteLength(b)),cursor:state.cursor}));
     }finally{await db.close();}
   }
 });
@@ -141,6 +139,40 @@ test('saved UNOC announcement retains separate session labels without borrowing 
   assert.equal(validateResolution(review,findings[1],[existing],prepared).outcome,'new');
   assert.throws(()=>validateResolution(review,findings[0],[existing],prepared),/distinct cited label/);
   assert.throws(()=>validateResolution({...review,facts:{...review.facts,title:'unsupported'}},findings[1],[],prepared),/Unsupported\/conflicting/);
+});
+
+test('retained whole newsletter accepts six injected events and repeats without another call',async context=>{
+  const saved=await fixture('dosi-website.json.gz'),db=await database();
+  const titles=['Science for BBNJ Implementation in Africa: Closing Knowledge Gaps and Building Partnerships for the High Seas',
+    'Marine Minerals and the Media','International Marine Wood Borer Network Inaugural Symposium',
+    'SEAMOUNTS: Building an International Science Seamounts','DSBS Seminar: Physiology of deep-sea cnidarians','ArtSea Matchmaking Online Exhibition & Event'];
+  try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[saved.home.url])).rows[0];
+    let newsletter;
+    const transport=runModel(db,input=>{
+      if(input.stage==='resolve')return {...resolve(input),outcome:'new',record_id:null};
+      if(input.documents.P.url!==saved.newsletter.url)return answer([]);
+      newsletter=input;assert.equal(input.range[0],0);assert.equal(input.segments.length,1);
+      assert.equal(input.range[1],39565);assert.deepEqual(input.omitted_ranges,[]);
+      return answer(titles.map(title=>base(title,[{doc:'P',quote:title}])));
+    },true);
+    const doc=prepareDosiDocument(saved.newsletter,{sourceURL});
+    const source=(await db.query('insert into scout.evidence(tracker_id,url,content,content_hash,parsed) values($1,$2,$3,md5($3),$4) returning *',
+      [tracker.id,doc.url,doc.raw,JSON.stringify({document:{identity:doc.identity}})])).rows[0];
+    const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[tracker.id])).rows[0].id;
+    const trace=await startReport(db,run),deadline=Date.now()+100000;
+    const prepared=await supportDocuments(db,{source,prepared:doc.prepared,trace});
+    const options={source,prepared,trace,deadline,model:transport.makeModel(run,deadline,trace)};
+    const result=await processDocument(db,options);assert.equal(result.created,6,result.error);assert.equal(result.state,'complete');assert.ok(newsletter);
+    const rows=(await db.query('select * from scout.records order by title')).rows;assert.equal(rows.length,6);
+    for(const row of rows)assert.equal(row.starts_at,null);
+    options.source=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];
+    const before=transport.requests.length,repeat=await processDocument(db,options);
+    assert.equal(repeat.created,0);assert.equal(transport.requests.length,before);
+    assert.deepEqual((await db.query('select * from scout.records order by title')).rows,rows);
+    const body=transport.requests.find(b=>JSON.parse(JSON.parse(b).contents[0].parts[0].text)[0].documents?.P.url===saved.newsletter.url);
+    context.diagnostic(JSON.stringify({source:'DOSI retained newsletter, injected decisions',whole_chars:newsletter.range[1],request_bytes:Buffer.byteLength(body),records:6,repeat_calls:0}));
+  }finally{await db.close();}
 });
 
 test('HSA processing saves a stated event or no event without following links; repeat adds no calls or duplicate writes',async context=>{
@@ -191,11 +223,19 @@ test('exact HSA failures report every missing proof and date error; a new contra
   const outputs=saved.responses.map(raw=>JSON.parse(JSON.parse(raw).candidates[0].content.parts.find(p=>p.text).text));
   const input=JSON.parse(JSON.parse(saved.requests[0]).contents[0].parts[0].text)[0];
   const repairBytes=[];
+  for(const actual of saved.explicit_proof){
+    const input=JSON.parse(JSON.parse(actual.request).contents[0].parts[0].text)[0];
+    const rejected=JSON.parse(JSON.parse(actual.response).candidates[0].content.parts.find(p=>p.text).text);
+    let message;assert.throws(()=>validateFinding(rejected.findings[0],input),error=>{message=error.message;return /Missing field evidence/.test(message);});
+    const body=requestBody(DOCUMENT_INSTRUCTION,[{...input,repair:{rejected,errors:['finding 0: '+message]}}],DOCUMENT_SCHEMA);
+    assert.deepEqual(JSON.parse(JSON.parse(body).contents[0].parts[0].text)[0].repair.rejected,rejected);
+    context.diagnostic(JSON.stringify({source:actual.source+' exact v67 rejection',repair_bytes:Buffer.byteLength(body)}));
+  }
   for(const raw of saved.nested_proof.responses){
     const rejected=JSON.parse(JSON.parse(raw).candidates[0].content.parts.find(p=>p.text).text),original=JSON.stringify(rejected);
     let message;assert.throws(()=>validateFinding(rejected.findings[0],input),error=>{message=error.message;return /Invalid evidence for kind, title/.test(message);});
     const body=requestBody(DOCUMENT_INSTRUCTION,[{...input,repair:{rejected,errors:['finding 0: '+message]}}],DOCUMENT_SCHEMA);
-    repairBytes.push(Buffer.byteLength(body));assert.ok(Buffer.byteLength(body)<=8000);
+    repairBytes.push(Buffer.byteLength(body));assert.deepEqual(JSON.parse(JSON.parse(body).contents[0].parts[0].text)[0].repair.rejected,rejected);
     assert.equal(JSON.stringify(rejected),original,'Real failed output must remain intact');
   }
   context.diagnostic(JSON.stringify({source:'HSA exact empty proofs',repair_bytes:repairBytes}));
@@ -249,11 +289,15 @@ test('exact HSA failures report every missing proof and date error; a new contra
     assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
     for(const body of transport.requests){
       const schema=JSON.parse(body).generationConfig.responseJsonSchema,evidence=schema.properties.findings.items.properties.evidence;
-      assert.deepEqual(evidence.additionalProperties,evidence.properties.kind);assert.deepEqual(evidence.required,['kind','title','priority']);
-      assert.equal(evidence.properties['candidate.kind'],undefined);assert.equal(evidence.properties.kind.type,'object');
-      assert.deepEqual(evidence.properties.kind.required,['refs','rationale']);assert.equal(evidence.properties.kind.properties.refs.items.type,'integer');
+      assert.equal(evidence.additionalProperties,false);assert.deepEqual(evidence.required,['kind','title','priority']);
+      assert.equal(evidence.properties['candidate.kind'],undefined);
+      for(const field of [...CONTENT_FIELDS,'priority','identity','distinction','change'])assert.deepEqual(evidence.properties[field],{type:'array',items:{type:'integer'}});
+      assert.equal(schema.properties.findings.maxItems,undefined);
       assert.ok(!JSON.stringify(schema).includes('$ref'));assert.equal(schema.$defs,undefined);
-      assert.equal(schema.properties.findings.items.properties.dates.additionalProperties.properties.parts.properties.zone.minItems,1);
+      const properties=schema.properties.findings.items.properties;
+      for(const field of ['starts_at','ends_at'])assert.equal(properties.dates.properties[field].properties.parts.properties.zone.minItems,1);
+      assert.equal(properties.dates.additionalProperties,false);
+      assert.deepEqual(properties.candidate.properties.status.enum,['scheduled','rescheduled','cancelled',null]);
     }
     context.diagnostic(JSON.stringify({source:'HSA exact invalid outputs',previous_bytes:saved.requests.map(b=>Buffer.byteLength(b)),request_bytes:transport.requests.map(b=>Buffer.byteLength(b)),repeat_calls:0,records:0}));
   }finally{await db.close();}

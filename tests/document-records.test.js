@@ -32,12 +32,12 @@ function cited(p,input){
   const citations=[],evidence={};
   for(const [k,quote]of Object.entries(p.evidence).filter(([k])=>k!=='authority')){
     const doc=input.segments.find(s=>s.text.includes(quote))?.doc??Object.entries(input.documents).find(([,d])=>d.url===quote||d.title?.includes(quote))?.[0]??'P';
-    evidence[k]={refs:[citations.length],rationale:'Supported by the cited passage.'};citations.push({doc,quote});
+    evidence[k]=[citations.length];citations.push({doc,quote});
   }
   // Literal test labels also provide identity/distinction context to resolution.
   if(!citations.some(c=>c.quote===p.anchor)){const doc=input.segments.find(s=>s.text.includes(p.anchor))?.doc??'P';citations.push({doc,quote:p.anchor});}
   const dates={};
-  for(const k of ['starts_at','ends_at'])if(p.candidate[k])dates[k]={local:p.candidate[k].slice(0,19),zone:'UTC',parts:Object.fromEntries(['year','date','time','zone'].map(part=>[part,evidence[k]?.refs??[]]))};
+  for(const k of ['starts_at','ends_at'])if(p.candidate[k])dates[k]={local:p.candidate[k].slice(0,19),zone:'UTC',parts:Object.fromEntries(['year','date','time','zone'].map(part=>[part,evidence[k]??[]]))};
   return {...p,citations,evidence,dates};
 }
 function reviewed(out,input){
@@ -47,15 +47,16 @@ function reviewed(out,input){
   return {facts:Object.fromEntries([...CONTENT_FIELDS.filter(k=>input.finding.candidate[k]!==null),'priority'].map(k=>[k,'supported'])),
     conflict:out.outcome==='update'?'correction':'none',...out,evidence};
 }
-function runner(db,respond,{post=article,advance=true,runLimit=10}={}){
+function runner(db,respond,{post=article,advance=true,runLimit=10,tokens=()=>200}={}){
   const requests=[];let calls=0;
   const options={trackerId:fixture.tracker.id,validate:true,documents:'process',read:async(url,budget)=>{
     budget.requests++;
     if(url!==feedURL&&!url.includes('/wp-json/wp/v2/posts/'))throw new Error('Only the announcement is supplied');
     return {url,status:200,body:url===feedURL?'<rss><channel><item><guid>https://octogroup.org/?p='+post.id+'</guid><link>'+post.link+'</link><title>'+post.title.rendered+'</title><description>Feed excerpt.</description></item></channel></rss>':JSON.stringify(post)};
   },makeModel:(runId,deadline,trace)=>{
-    const actual=gemini({apiKey:'test-key',ledger:db,runId,deadline,trace,runLimit,fetch:async(_url,request)=>{
-      requests.push(request.body);assert.ok(Buffer.byteLength(request.body)<=MODEL_LIMITS.input);
+    const actual=gemini({apiKey:'test-key',ledger:db,runId,deadline,trace,runLimit,fetch:async(url,request)=>{
+      if(url.endsWith(':countTokens'))return Response.json({totalTokens:tokens()});
+      requests.push(request.body);assert.equal(JSON.parse(request.body).generationConfig.maxOutputTokens,MODEL_LIMITS.output);
       const input=JSON.parse(JSON.parse(request.body).contents[0].parts[0].text)[0];
       const out=reviewed(await respond(input,++calls),input);
       return out instanceof Response?out:Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(out)}]}}],usageMetadata:{promptTokenCount:200,candidatesTokenCount:100}});
@@ -95,6 +96,26 @@ test('both stages share durable minute/run limits, counted transient retry and r
     const recovered=await recovery.run();assert.equal(recovered.processed,1,recovered.warnings.join(';'));assert.equal(recovery.requests.length,1);
     assert.equal((await current(db)).length,1);
   }finally{await db.close();}
+  for(const capacity of ['input','output','runtime']){
+    const db=await setup();try{
+      const prepared=prepareDocument({title:article.title.rendered,html:article.content.rendered,url:article.link});
+      const source=runner(db,()=>{
+        if(capacity==='runtime')throw new DOMException('Injected request timeout','TimeoutError');
+        return Response.json({candidates:[{finishReason:'MAX_TOKENS',content:{parts:[{text:'{"findings":['}]}}],usageMetadata:{candidatesTokenCount:65536}});
+      },{runLimit:1,tokens:()=>capacity==='input'?MODEL_LIMITS.input+1:200});
+      const failed=await source.run(),state=Object.values((await progress(db)).processing_versions)[0];
+      assert.equal(failed.created,0);assert.equal(state.capacity.kind,capacity);assert.equal(state.cursor,0);
+      assert.ok(state.end>0&&state.end<prepared.text.length);assert.equal(state.pending,undefined);
+      assert.equal(source.requests.length,capacity==='input'?0:1);
+      const ledger=(await report(db,failed.run_id)).stats;
+      assert.equal(ledger.model_attempts.length,1);assert.equal(ledger.model_attempts[0].output_bound,65536);
+      if(capacity==='output')assert.equal(ledger.model_usage[0].finishReason,'MAX_TOKENS');
+      const resumed=runner(db,input=>{assert.equal(input.repair,undefined);return answer([]);});
+      assert.equal((await resumed.run()).processed,1);assert.equal(resumed.requests.length,2);
+      assert.equal(JSON.parse(JSON.parse(resumed.requests[0]).contents[0].parts[0].text)[0].range[1],state.end);
+      assert.equal((await resumed.run()).processed,1);assert.equal(resumed.requests.length,2);
+    }finally{await db.close();}
+  }
 });
 
 test('concurrent matching insert refreshes actual candidates before resolution; no duplicate is created',async()=>{
@@ -150,7 +171,7 @@ test('only renderer-inserted links may be omitted from anchors; literal URL pros
   }
   assert.equal(prepared.insertions.length,3);
   const p={...release,anchor:'14th Meeting of the Commission',candidate:{...release.candidate,title:'14th Meeting of the Commission',organization:null,description:null},
-    citations:[{doc:'P',quote:'14th Meeting <'+url+'> of the Commission.'}],evidence:Object.fromEntries(['kind','title','priority'].map(k=>[k,{refs:[0],rationale:'Retained meeting text.'}])),dates:{}};
+    citations:[{doc:'P',quote:'14th Meeting <'+url+'> of the Commission.'}],evidence:Object.fromEntries(['kind','title','priority'].map(k=>[k,[0]])),dates:{}};
   assert.equal(validateCitedFinding(p,input),p);
   const unmarked={...input,segments:input.segments.map(({inserted_links,...s})=>s)};assert.throws(()=>validateCitedFinding(p,unmarked),/anchor/);
   const literal={...p,anchor:'Literal Meeting of the Commission',citations:[{doc:'P',quote:'Literal Meeting <'+url+'> of the Commission.'}]};
