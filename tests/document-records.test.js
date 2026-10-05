@@ -120,11 +120,14 @@ test('both stages share durable minute/run limits, counted transient retry and r
 
 test('concurrent matching insert refreshes actual candidates before resolution; no duplicate is created',async()=>{
   const db=await setup();let old;
-  const source=runner(db,stages([release],async input=>{
-    if(!input.repair){assert.equal(input.candidates.length,0);old=await seed(db);return resolution(input);}
+  const occurrence='Ocean Data Workshop is the data standards session at the 2026 Atlantic Forum.';
+  const finding={...release,candidate:{...release.candidate,description:occurrence},evidence:{...release.evidence,description:occurrence,identity:occurrence}};
+  const source=runner(db,stages([finding],async input=>{
+    if(!input.repair){assert.equal(input.candidates.length,0);old=await seed(db,finding);return resolution(input);}
     assert.match(input.repair.errors.join(),/changed after input/);assert.equal(input.candidates[0].id,old.id);
-    return resolution(input,'evidence',old.id);
-  }),{post:digest});
+    return {...resolution(input,'evidence',old.id),evidence:{identity:occurrence},comparisons:[{record_id:old.id,relation:'possible_match',
+      citations:input.finding.evidence.identity,reason:'Both identify the data standards session at the 2026 Atlantic Forum.'}]};
+  }),{post:{...digest,content:{rendered:digest.content.rendered+'<p>'+occurrence+'</p>'}}});
   try{
     const run=await source.run();assert.equal(run.processed,1,run.warnings.join(';'));assert.equal(run.created,0);
     assert.equal(source.requests.length,3);assert.equal((await current(db)).length,1);

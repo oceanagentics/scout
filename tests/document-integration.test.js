@@ -340,6 +340,106 @@ test('UN side-event whole sources resume native pending sessions through a listi
   }finally{await db.close();}
 });
 
+test('retained UN wrong match requires occurrence proof while same-title new remains unresolved',async()=>{
+  const actual=await fixture('un-side-identity-failures.json.gz'),before=JSON.stringify(actual);
+  const {input,response}=actual.wrong_match,{finding,candidates}=input;
+  assert.equal(actual.wrong_match.run_id,'40cc4275-ad9f-4c63-8c03-6ed704779e47');
+  assert.equal(response.record_id,'6c839b7d-cfd5-4eba-8ae8-5cde08b46097');
+  assert.equal(finding.candidate.starts_at,null);assert.deepEqual(response.evidence.identity,[0]);
+  assert.throws(()=>validateResolution(response,finding,candidates,{}),/extracted occurrence passage/);
+  const comparison={record_id:response.record_id,relation:'possible_match',citations:[0],reason:'The titles match.'};
+  const compared={...response,comparisons:[comparison]};
+  assert.throws(()=>validateResolution(compared,finding,candidates,{}),/extracted occurrence passage/);
+  const taggedTitle={...finding,evidence:{...finding.evidence,identity:[0]}};
+  assert.throws(()=>validateResolution(compared,taggedTitle,candidates,{}),/title-only evidence/);
+  for(const outcome of ['evidence','update'])assert.throws(()=>validateResolution({...compared,outcome},taggedTitle,candidates,{}),/title-only evidence/);
+  const uncertain={...compared,outcome:'uncertain',record_id:null};
+  assert.equal(validateResolution(uncertain,finding,candidates,{}).outcome,'uncertain');
+  const distinct=actual.distinct_edition;
+  assert.throws(()=>validateResolution(distinct.response,distinct.input.finding,distinct.input.candidates,{}),/distinct cited label/,
+    'The genuine same-title edition remains a disclosed false negative; no permissive context heuristic');
+  const iddri=actual.iddri_distinct;
+  assert.equal(validateResolution(iddri.response,iddri.input.finding,iddri.input.candidates,{}).outcome,'new');
+  const framed=actual.framed_title,p=framed.response.findings[0];
+  assert.equal(framed.run_id,'afe85427-d9e5-4b1e-9fe5-1d2d9cc388a3');
+  assert.equal(validateFinding(p,framed.extract_input),p);
+  assert.equal(p.citations[0].quote,framed.prepared.text.slice(36,204));
+  const titleOnly={...resolve({finding:p,candidates:framed.candidates}),record_id:response.record_id,
+    comparisons:[comparison],evidence:{identity:[0]}};
+  assert.throws(()=>validateResolution(titleOnly,p,framed.candidates,{documents:[{id:'P',prepared:framed.prepared}]}),/title-only evidence/,
+    'Actual generated field framing cannot turn its unchanged title value into occurrence evidence');
+  assert.equal(JSON.stringify(actual),before,'Exact retained findings, candidates and replies are not repaired in the fixture');
+  const db=await database();try{
+    const tracker=(await db.query('select id from scout.trackers where url=$1',[UN_SIDE_EVENTS])).rows[0];
+    const old=candidates.find(r=>r.id===response.record_id);
+    await db.query('insert into scout.records(id,'+CONTENT_FIELDS.join(',')+',priority) values('+Array.from({length:CONTENT_FIELDS.length+2},(_,i)=>'$'+(i+1)).join(',')+')',
+      [old.id,...CONTENT_FIELDS.map(k=>old[k]??null),old.priority]);
+    const rows=(await db.query('select * from scout.records')).rows;
+    // Retained resolution lifecycle only; whole API acquisition is not simulated here.
+    const source=(await db.query('insert into scout.evidence(tracker_id,url,content,content_hash,parsed) values($1,$2,$3,md5($3),$4) returning *',
+      [tracker.id,input.url,finding.citations.map(c=>c.quote).join('\n'),JSON.stringify({document:{identity:'un-side:session:5378'}})])).rows[0];
+    const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[tracker.id])).rows[0].id,trace=await startReport(db,run);
+    const prepared=await supportDocuments(db,{source,prepared:prepareDocument({title:finding.candidate.title,url:source.url,html:source.content}),trace});
+    const version=DOCUMENT_VERSION+'/'+prepared.version+'/'+prepared.context;
+    const state={state:'failed',revision:0,cursor:prepared.text.length,findings:[{key:'retained',finding,pending:{round:2,repair:{rejected:response,errors:['Retained identity failure']}}}]};
+    await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,processing_versions}',$2::jsonb) where id=$1",[source.id,JSON.stringify({[version]:state})]);
+    const transport=runModel(db,supplied=>{assert.deepEqual(supplied.finding,finding);return response;});
+    const options={source:(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0],prepared,trace,deadline:Date.now()+100000,model:transport.makeModel(run,Date.now()+100000,trace)};
+    assert.equal((await processDocument(db,options)).state,'failed');assert.equal(transport.requests.length,1);
+    options.source=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];
+    const entry=options.source.parsed.document.processing_versions[version].findings[0];
+    assert.equal(entry.exhausted,true);assert.equal(entry.pending.round,3);assert.deepEqual(entry.pending.repair.rejected,response);
+    const exhausted=JSON.stringify(entry);await processDocument(db,options);assert.equal(transport.requests.length,1);
+    assert.equal(JSON.stringify(Object.values((await db.query('select parsed from scout.evidence where id=$1',[source.id])).rows[0].parsed.document.processing_versions)[0].findings[0]),exhausted);
+    assert.deepEqual((await db.query('select * from scout.records')).rows,rows);
+    assert.equal((await db.query('select count(*)::int n from scout.evidence where record_id is not null')).rows[0].n,0);
+    assert.equal((await db.query('select stats from scout.collection_runs where id=$1',[run])).rows[0].stats.model_attempts.length,1);
+  }finally{await db.close();}
+});
+
+test('selected occurrence and alias passages preserve genuine matches and correction guards',()=>{
+  const title='Ocean Data Workshop',alias='Atlantic Data Lab',occurrence=title+', the session at the 2026 Atlantic Forum.';
+  const aliasProof=title+' at the 2026 Atlantic Forum is also called '+alias+'.';
+  const sourceURL='https://example.org/atlantic-forum/session';
+  const prepared={documents:[{id:'P',url:sourceURL,hash:'new',capture_id:'capture',relationship:'primary'}]};
+  const finding=base(title,[{doc:'P',quote:title},{doc:'P',quote:occurrence},{doc:'P',quote:'Room B'}]);
+  finding.candidate.description=occurrence;finding.evidence.description=[1];finding.evidence.identity=[1];
+  const old={...finding.candidate,id:'existing',anchors:[title],same_source:true,fact_evidence:{}};
+  const comparison={record_id:old.id,relation:'possible_match',citations:[1],reason:'Both refer to the named session at the 2026 Atlantic Forum.'};
+  const decision={...resolve({finding,candidates:[old]}),evidence:{identity:[1]},comparisons:[comparison]};
+  assert.equal(validateResolution(decision,finding,[old],prepared).outcome,'evidence');
+  for(const value of [occurrence,sourceURL,title]){
+    const text='Recorded value: '+value;
+    const field={tag:'source-field',start:0,end:text.length,value_range:[16,text.length]};
+    const wrapped={...finding,citations:[finding.citations[0],{doc:'P',quote:text}]};
+    const structured={documents:[{...prepared.documents[0],prepared:{text,blocks:[field]}}]};
+    if(value===occurrence)assert.equal(validateResolution(decision,wrapped,[old],structured).outcome,'evidence');
+    else assert.throws(()=>validateResolution(decision,wrapped,[old],structured),/title-only evidence/);
+  }
+  for(const proof of [undefined,[0]])assert.throws(()=>validateResolution(decision,{...finding,evidence:{...finding.evidence,identity:proof}},[old],prepared),/extracted occurrence passage/);
+  assert.throws(()=>validateResolution({...decision,comparisons:[{...comparison,citations:[0]}]},finding,[old],prepared),/extracted occurrence passage/);
+  assert.throws(()=>validateResolution(decision,{...finding,citations:[finding.citations[0],{doc:'P',quote:sourceURL}]},[old],prepared),/extracted occurrence passage/);
+  const aliased={...finding,anchor:alias,candidate:{...finding.candidate,title:alias},citations:[{doc:'P',quote:alias},{doc:'P',quote:aliasProof}]};
+  assert.equal(validateResolution(decision,aliased,[old],prepared).outcome,'evidence');
+  assert.throws(()=>validateResolution(decision,{...aliased,citations:[aliased.citations[0],{doc:'P',quote:occurrence}]},[old],prepared),/Target lacks supported finding identity/);
+  assert.throws(()=>validateResolution(decision,finding,[{...old,kind:'announcement'}],prepared),/Target lacks supported finding identity/);
+  assert.throws(()=>validateResolution(decision,finding,[old,{...old,id:'other'}],prepared),/Ambiguous finding identity/);
+  const generic={...finding,candidate:{...finding.candidate,organization:'Ocean Institute',description:'A workshop on ocean data standards.'},evidence:{kind:[0],title:[0],priority:[0],organization:[1],description:[1]}};
+  const genericOld={...old,...generic.candidate};
+  const genericDecision={...decision,facts:{...decision.facts,organization:'supported',description:'supported'}};
+  assert.throws(()=>validateResolution(genericDecision,generic,[genericOld],prepared),/extracted occurrence passage/,
+    'Matching generic fields and a shared title cannot substitute for selected occurrence evidence');
+  const moved={...finding,candidate:{...finding.candidate,location:'Room B'},evidence:{...finding.evidence,location:[2]}};
+  const previous={...old,location:'Room A',fact_evidence:{location:{rank:0,sources:[{url:sourceURL,hash:'old'}]}}};
+  const correction={...decision,outcome:'update',conflict:'correction',facts:{...decision.facts,location:'supported'},evidence:{identity:[1],change:[2]}};
+  assert.equal(validateResolution(correction,moved,[previous],prepared).outcome,'update');
+  assert.throws(()=>validateResolution({...correction,conflict:'completion'},moved,[previous],prepared),/correction decision/);
+  assert.throws(()=>validateResolution(correction,moved,[previous],{documents:[{...prepared.documents[0],url:'https://example.org/another-source'}]}),/correction authority/);
+  const unproven={...moved,evidence:{...moved.evidence,identity:[0]}};
+  assert.throws(()=>validateResolution({...correction,evidence:{identity:[0],change:[2]}},unproven,[previous],prepared),/title-only evidence/);
+  assert.throws(()=>validateResolution({...correction,outcome:'new',record_id:null,conflict:'none',evidence:{distinction:[0]},comparisons:[{...comparison,relation:'distinct'}]},unproven,[previous],prepared),/distinct cited label/);
+});
+
 test('retained HSA COP1 paraphrase requires candidate comparisons without forcing a merge',async()=>{
   const actual=await fixture('hsa-identity-failure.json.gz'),{finding,candidates,coverage}=actual.input,before=JSON.stringify(actual);
   assert.equal(actual.run_id,'f88603bc-83c9-4298-806c-018e96629f94');assert.equal(coverage.complete,true);assert.equal(candidates.length,10);
