@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {collectDocuments,prepareDocument,supportDocuments} from '../collector/octo-documents.js';
@@ -233,6 +233,53 @@ test('HSA whole HTML and same-ID API fallback resume pending resolution and skip
     assert.equal(Object.values(report.operations).filter(o=>['generate','validate','save'].includes(o.step)&&o.state==='skipped').length,3);
     context.diagnostic(JSON.stringify({route,requests_per_run:requests.length,model_calls:transport.requests.length,records:rows.length,repeat_model_calls:0}));
   }finally{await db.close();}}
+});
+
+test('DOALOS whole pages resume resolution, retain non-events and recheck known notices through a listing outage',async context=>{
+  const saved=await fixture('doalos-notices.json.gz'),db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[DOALOS])).rows[0],reads=[],inputs=[];
+    const listing=DOALOS+'/notifications',notices=[DOALOS+'/notification-2026-001',DOALOS+'/notification-2026-002'];
+    const mgr=DOALOS+'/mgr-notifications/bbnj-mgr-temp-2026-001',title='2026 International Conference on BBNJ: Science and Governance (5 November 2026)';
+    const transport=runModel(db,async input=>{
+      inputs.push(input);if(input.stage==='resolve'){
+        for(const field of CONTENT_FIELDS.filter(k=>!['kind','title'].includes(k)))assert.equal(input.finding.candidate[field],null);
+        return {...resolve(input),outcome:'uncertain',record_id:null,facts:{kind:'supported',title:'supported',priority:'unsupported'},reason:'The selected title alone does not establish the proposed substantive priority.'};
+      }
+      const url=input.documents.P.url,source=(await db.query('select * from scout.evidence where id=$1',[input.source_id])).rows[0];
+      const prepared=source.parsed.document.prepared_versions['doalos-documents-v1'];
+      assert.equal(source.content,saved[url].body);assert.equal(source.parsed.document.identity,'doalos:'+new URL(url).pathname);
+      assert.deepEqual(input.range,[0,prepared.text.length]);assert.deepEqual(input.omitted_ranges,[]);
+      assert.equal(input.segments.map(s=>s.text).join(''),prepared.text);assert.deepEqual(Object.keys(input.documents),['P']);
+      if(url===DOALOS)return answer([base(title,[{doc:'P',quote:title}])]); // Injected uncertainty preserves the gathering without accepting title-only priority.
+      assert.ok(prepared.text.includes(url===notices[1]?'No action required':'Action required by 16 March 2026'));
+      return answer([]); // Official notification/action dates are not gatherings.
+    },true);
+    let remaining=1,available=true;
+    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:(...args)=>{const model=transport.makeModel(...args);return(...input)=>{
+      if(remaining--<=0)throw new Error('Model quota reached');return model(...input);
+    };},read:async url=>{
+      reads.push(url);assert.ok([DOALOS,listing,...notices,mgr].includes(url),'Incidental destination must stay unfetched: '+url);
+      if(url===mgr)throw new Error('No retained MGR response');
+      return {...saved[url],status:!available&&[DOALOS,listing].includes(url)?503:200,headers:{'content-type':'text/html'}};
+    }};
+    await assert.rejects(collectHSA(db,{...options,sourceId:'00000000-0000-4000-8000-000000000000'}),{status:400});assert.equal(reads.length,0);
+    const first=await collectHSA(db,options);assert.equal(first.documents,4);assert.equal(first.created,0);assert.equal(transport.requests.length,1);
+    remaining=4;const resumed=await collectHSA(db,options);assert.equal(resumed.processed,3,resumed.warnings.join(';'));assert.equal(resumed.uncertain,1);
+    assert.deepEqual(inputs.map(i=>i.stage),['extract','resolve','extract','extract','extract']);assert.equal(transport.requests.length,5);
+    const prior=(await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0];
+    assert.equal(prior.report.path,'doalos-records');assert.equal(prior.stats.document_source.known.length,5);
+    assert.ok(prior.stats.document_source.pending.some(p=>p.url===mgr&&p.state==='failed'));
+    const coverage=Object.values(prior.report.artifacts).find(a=>a.kind==='coverage'&&a.data.documents?.some(d=>d.provenance));
+    assert.equal(coverage.data.complete,false);
+    const via=coverage.data.documents.find(d=>d.url===notices[0]).provenance.flatMap(p=>p.via);
+    assert.ok(via.some(v=>v.parent_url===DOALOS));assert.ok(via.some(v=>v.parent_url===listing));
+    available=false;const outage=await collectHSA(db,options);assert.equal(outage.documents,2);assert.equal(outage.processed,2);
+    available=true;const repeated=await collectHSA(db,options);assert.equal(repeated.processed,3);assert.equal(repeated.uncertain,1);assert.equal(transport.requests.length,5);
+    assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,0);
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0],prior);
+    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+    context.diagnostic(JSON.stringify({documents:4,injected_model_calls:5,records:0,uncertain_gatherings:1,known_notices_during_outage:2,repeat_model_calls:0}));
+  }finally{await db.close();}
 });
 
 test('saved UNOC announcement retains separate session labels without borrowing the parent schedule',async()=>{
