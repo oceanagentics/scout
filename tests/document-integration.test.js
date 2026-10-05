@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,UN_SIDE_EVENTS,CBD_REGISTRY,SYMPOSIUM,BLUE_MARINE,sourceURL} from '../collector/hsa.js';
+import {collectHSA,HSA,HSA_WEB,GFW_WEB,HARVEST,DOALOS,UN_SIDE_EVENTS,CBD_REGISTRY,SYMPOSIUM,BLUE_MARINE,GOF,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {collectDocuments,prepareDocument,supportDocuments} from '../collector/octo-documents.js';
@@ -432,6 +432,53 @@ test('Blue Marine whole announcement resumes native pending resolution through a
     assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0],prior);
     assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
     context.diagnostic(JSON.stringify({whole_announcement_characters:sources[0].prepared['bluemarine-documents-v1'].text.length,injected_calls:2,simulated_records:1,repeat_calls:0,requests:[first.requests,resumed.requests,repeated.requests]}));
+  }finally{await db.close();}
+});
+
+test('GOF whole homepage resumes native pending resolution through an RSS outage and keeps missing articles as gaps',async context=>{
+  const saved=await fixture('gof-website.json.gz'),db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[GOF])).rows[0],reads=[],inputs=[];
+    const title='Stakeholder Consultation on the Common Oceans Cross-sectoral Project (CSP)';
+    const occurrence='The CSP organized a side meeting during BBNJ PrepCom III on 26 March hosted by the Permanent Mission of Chile to the United Nations in New York.';
+    const description='This meeting served as an opportunity for BBNJ community stakeholders to discuss the CSP’s latest activities in its two pilot regions, the Southeast Pacific and Pacific Islands.';
+    const transport=runModel(db,async input=>{
+      inputs.push(input);if(input.stage==='resolve')return resolve(input); // One injected finding does not establish homepage completeness.
+      const source=(await db.query('select * from scout.evidence where id=$1',[input.source_id])).rows[0],prepared=source.parsed.document.prepared_versions['octo-documents-v6'];
+      assert.equal(source.content,saved.home.body);assert.equal(source.parsed.document.identity,'gof:document:1415');
+      assert.deepEqual(input.range,[0,prepared.text.length]);assert.deepEqual(input.omitted_ranges,[]);assert.equal(input.segments.map(s=>s.text).join(''),prepared.text);
+      assert.equal(prepared.text.length,31624);for(const quote of [title,occurrence,description,'Staying the Course and Stepping Up to New Challenges'])assert.ok(prepared.text.includes(quote));
+      assert.ok(prepared.links.some(l=>l.target.includes('/registration-form')));
+      const finding=base(title,[{doc:'P',quote:title},{doc:'P',quote:occurrence},{doc:'P',quote:description}]);
+      finding.candidate.description=description;finding.reason='BBNJ stakeholder meeting to discuss cross-sectoral project activities.';
+      finding.evidence={kind:[1],title:[0],description:[2],priority:[2]};return answer([finding]);
+    },true);
+    let remaining=1,feedAvailable=true,dispatches=0;
+    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:(...args)=>{const model=transport.makeModel(...args);return(...input)=>{
+      dispatches++;if(remaining--<=0)throw new Error('Model quota reached');return model(...input);
+    };},read:async url=>{
+      reads.push(url);if(url===GOF)return saved.home;if(url===saved.feed.url)return {...saved.feed,status:feedAvailable?200:503};
+      assert.ok(saved.feed.body.includes('<link>'+url+'</link>'),'Unassociated support must remain unfetched: '+url);throw new Error('Full RSS article absent from retained fixture');
+    }};
+    await assert.rejects(collectHSA(db,{...options,sourceId:'00000000-0000-4000-8000-000000000000'}),{status:400});assert.equal(reads.length,0);
+    const first=await collectHSA(db,options);assert.equal(first.documents,1);assert.equal(first.created,0);assert.equal(transport.requests.length,1);
+    const pending=(await db.query('select parsed from scout.evidence where tracker_id=$1 and record_id is null',[tracker.id])).rows[0];
+    assert.equal(pending.parsed.document.id,'1415');assert.equal(Object.values(pending.parsed.document.processing_versions)[0].findings.length,1);
+    feedAvailable=false;remaining=1;const resumed=await collectHSA(db,options);assert.equal(resumed.created,1,resumed.warnings.join(';'));
+    assert.deepEqual(inputs.map(i=>i.stage),['extract','resolve']);assert.equal(transport.requests.length,2);
+    const prior=(await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0];
+    assert.equal(prior.report.path,'gof-records');assert.ok(prior.stats.document_source.known.some(d=>d.url===GOF&&d.id==='1415'));
+    assert.equal(prior.stats.document_source.progress.articles.length,10);assert.equal(prior.stats.document_source.pending.length,10);
+    assert.ok(prior.stats.document_source.pending.some(d=>d.last_failure?.state==='failed'));assert.ok(prior.stats.document_source.progress.after_url);
+    const records=(await db.query('select * from scout.records')).rows;assert.equal(records.length,1);assert.equal(records[0].title,title);assert.equal(records[0].description,description);
+    for(const field of CONTENT_FIELDS.filter(k=>!['kind','title','description'].includes(k)))assert.equal(records[0][field],null);
+    const sources=(await db.query("select id,content,parsed#>'{document,prepared_versions}' prepared,parsed#>'{document,processing_versions}' processing from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows;
+    feedAvailable=true;const beforeRepeat=dispatches,repeated=await collectHSA(db,options);assert.equal(repeated.documents,1);assert.equal(repeated.processed,1);assert.equal(dispatches,beforeRepeat);assert.equal(transport.requests.length,2);
+    assert.deepEqual((await db.query('select * from scout.records')).rows,records);
+    assert.deepEqual((await db.query("select id,content,parsed#>'{document,prepared_versions}' prepared,parsed#>'{document,processing_versions}' processing from scout.evidence where tracker_id=$1 and record_id is null order by id",[tracker.id])).rows,sources);
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=$1',[resumed.run_id])).rows[0],prior);
+    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+    const last=(await db.query('select stats from scout.collection_runs where id=$1',[repeated.run_id])).rows[0];assert.equal(last.stats.document_source.progress.articles.length,10);assert.equal(last.stats.document_source.pending.length,10);
+    context.diagnostic(JSON.stringify({whole_homepage_characters:31624,injected_calls:2,simulated_records:1,repeat_calls:0,missing_article_bodies:10,requests:[first.requests,resumed.requests,repeated.requests]}));
   }finally{await db.close();}
 });
 
