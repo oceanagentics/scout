@@ -5,7 +5,7 @@ export const MODEL_LIMITS = { minute: 2, run: 10, input: 1048576, output: 65536,
 
 export const requestBody = (instruction,input,schema) => JSON.stringify({systemInstruction:{parts:[{text:instruction}]},
   contents:[{role:'user',parts:[{text:JSON.stringify(input)}]}],generationConfig:{maxOutputTokens:MODEL_LIMITS.output,
-    thinkingConfig:{thinkingLevel:'minimal'},responseMimeType:'application/json',responseJsonSchema:schema}});
+    thinkingConfig:{thinkingLevel:Array.isArray(input)&&input.length&&input.every(i=>['extract','resolve'].includes(i.stage))?'medium':'minimal'},responseMimeType:'application/json',responseJsonSchema:schema}});
 
 // One autocommitted statement. Never call this inside a collection transaction.
 // The same hosted collection_runs ledger is required for local and hosted calls.

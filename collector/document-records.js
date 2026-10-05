@@ -272,7 +272,9 @@ export async function processDocument(db,{source,prepared,trace,model,deadline,v
   try{
     if(state.exhausted)throw new Error(state.error);
     if(completed){
-      await db.query("update scout.evidence set last_seen_at=(select last_seen_at from scout.evidence where id=$1::uuid) where record_id is not null and parsed#>>'{document,capture_id}'=$1::uuid::text",[source.id]);
+      await db.query("update scout.evidence e set last_seen_at=s.last_seen_at from scout.evidence s,jsonb_array_elements($2::jsonb) f"+
+        " where s.id=$1 and e.tracker_id=s.tracker_id and e.parsed#>>'{document,identity}'=s.parsed#>>'{document,identity}'"+
+        " and e.record_id=(f->>'record_id')::uuid and e.parsed->'finding'=f->'finding'",[source.id,JSON.stringify(state.findings)]);
       for(const step of ['generate','validate','save']){const op=await trace.start(step,{source_ids:[source.id]});await trace.finish(op,'skipped',{note:'Identical completed capture and extraction/resolution/rubric/preparation versions.'});}
       return {...counts,state:'complete'};
     }

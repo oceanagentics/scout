@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
+import { isDeepStrictEqual } from 'node:util';
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { startReport } from './report.js';
-import { processDocument } from './document-records.js';
+import { processDocument, DOCUMENT_VERSION } from './document-records.js';
 
 const digest = text => createHash('sha256').update(text).digest('hex');
 const FEED = 'https://octogroup.org/feed/';
@@ -123,13 +124,13 @@ function feedItems(body) {
 
 // Incidental announcement links remain metadata; extraction uses only its own
 // retained primary body. No registration/organizer/topic destinations are opened.
-export async function supportDocuments(_db,{source,prepared,trace}){
+export async function supportDocuments(_db,{source,prepared,trace,context,reuse}){
   const coverage=prepared.links.map(link=>({...link,state:'unfetched',reason:'Citation/link metadata only; not opened for event extraction'}));
   const documents=[{id:'P',capture_id:source.id,hash:source.content_hash,url:prepared.url,relationship:'primary',
     preparation_version:prepared.version,prepared,start:0,end:prepared.text.length}];
-  const context=digest(JSON.stringify({primary:source.content_hash,mode:'announcement-events'}));
+  context??=digest(JSON.stringify({primary:source.content_hash,mode:'announcement-events'}));
   const artifact=await trace.artifact('support_coverage','Primary announcement and unopened citation links',
-    {context,documents:documents.map(({prepared,...d})=>d),links:coverage});
+    {context,documents:documents.map(({prepared,...d})=>d),links:coverage,...reuse?{reuse}:{}});
   const op=await trace.start('prepare',{source_ids:[source.id],artifacts:[artifact],note:'Independent primary announcement; incidental links retained without retrieval or concatenation.'});
   await trace.finish(op,'pass');
   return {...prepared,documents,context,coverage};
@@ -137,7 +138,7 @@ export async function supportDocuments(_db,{source,prepared,trace}){
 
 // Opt-in fetch/prepare route. No call into the legacy scripted assessment/save
 // path: every ready document, including unchanged pending work, is returned.
-export async function collectDocuments(db,{tracker,read,sourceURL,now,since,deadline,limits,process=false,model,makeModel,documentVersion,retrieve,path='octo'}) {
+export async function collectDocuments(db,{tracker,read,sourceURL,now,since,deadline,limits,process=false,model,makeModel,documentVersion=DOCUMENT_VERSION,retrieve,path='octo'}) {
   const run=(await db.query('insert into scout.collection_runs(tracker_id,started_at,stats) values($1,$2,$3::jsonb) returning id',[tracker.id,now(),JSON.stringify({validation:true,documents_only:!process})])).rows[0];
   const trace=await startReport(db,run.id,path+(process?'-records':'-documents'));
   const budget={requests:0,deadline:Math.min(deadline,Date.now()+limits.seconds*1000)};
@@ -158,12 +159,16 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
     let selected,plan,retrievalFailed=false;
     if(retrieve){
       const previous=(await db.query("select stats->'document_source' state from scout.collection_runs where tracker_id=$1 and stats ? 'document_source' order by started_at desc,id desc limit 1",[tracker.id])).rows[0]?.state??{};
-      const captured=(await db.query("select distinct parsed#>>'{document,id}' id,url from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like $2",[tracker.id,path+':%'])).rows;
-      const knownKey=['iucn','dosi','iddri'].includes(path)?'url':'id',known=new Map([...(previous.known??[]),...captured].map(item=>[String(item[knownKey]),item]));
+      const captured=(await db.query("select distinct on(parsed#>>'{document,identity}') parsed#>>'{document,id}' id,url,"+
+        " parsed#>>'{document,processing,version}' version,parsed#>array['document','processing_versions',parsed#>>'{document,processing,version}'] progress"+
+        " from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like $2 order by parsed#>>'{document,identity}',last_seen_at desc,scout.evidence.id",[tracker.id,path+':%'])).rows;
+      const pending=captured.filter(d=>process&&d.version?.startsWith(documentVersion+'/')&&d.progress&&!['complete','uncertain'].includes(d.progress.state)&&!d.progress.exhausted)
+        .map(d=>({id:d.id,url:d.url,state:d.progress.pending||d.progress.findings?.some(f=>f.pending)?'model-repair':'model-pending'}));
+      const knownKey=['iucn','dosi','iddri'].includes(path)?'url':'id',known=new Map([...(previous.known??[]),...captured.map(({id,url})=>({id,url}))].map(item=>[String(item[knownKey]),item]));
       const result=await retrieve({tracker,sourceURL,budget,
         limits:{...limits,articles:4,documents:limits.pages-1,...path==='discovery'?{searchPages:1,postsPerPage:5,requests:4}:path==='dosi'?{documents:4,requests:8}:{}},
         ...path==='discovery'?{since:new Date(since).toISOString(),until:now()}:{},
-        knownArticles:[...known.values()],knownDocuments:[...known.values()],known:[...known.values()],pending:previous.pending??[],progress:previous.progress??{},read:async url=>{
+        knownArticles:[...known.values()],knownDocuments:[...known.values()],known:[...known.values()],pending:[...pending,...(previous.pending??[])],progress:previous.progress??{},read:async url=>{
         const fetched=await fetchDocument(url,true);if(!fetched.response)throw new Error(fetched.error);
         const {headers,...payload}=fetched.response;
         const artifact=await trace.artifact('fetch_response','Source response',payload);
@@ -187,6 +192,8 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
         if(!versions.has(identity))versions.set(identity,new Set());versions.get(identity).add(key);
       }
       selected=[...grouped.values()].map(item=>({...item,conflicted:item.conflicted||versions.get(item.identity).size>1}));
+      const priority=new Map(pending.map(d=>[d.url,d.state==='model-repair'?0:1]));
+      selected.sort((a,b)=>(priority.get(a.url)??2)-(priority.get(b.url)??2));
       stats.failed+=(result.coverage??[]).filter(c=>c.state==='failed').length;
       retrievalFailed=stats.failed>0;
       stats.unfetched+=(result.coverage??[]).filter(c=>['deferred','unfetched'].includes(c.state)).length;
@@ -232,7 +239,7 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
       const hash=digest(retrieve?item.raw:JSON.stringify({feed:payload,article:fetched.response??null}));
       const identity=item.identity??'octo:post:'+item.id,preparationVersion=item.prepared?.version??PREPARATION_VERSION;
       const detect=await trace.start('detect',{url:item.url});
-      const previous=(await db.query("select id,url,content_hash from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}'=$2 order by last_seen_at desc,id limit 1",[tracker.id,identity])).rows[0];
+      const previous=(await db.query("select id,url,content_hash,parsed from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}'=$2 order by last_seen_at desc,id limit 1",[tracker.id,identity])).rows[0];
       const source=(await db.query(`insert into scout.evidence(tracker_id,url,content_hash,content,parsed,last_seen_at)
         values($1,$2,$3,$4,$5,clock_timestamp()) on conflict(record_id,tracker_id,url,content_hash) do update set last_seen_at=excluded.last_seen_at returning *`,
       [tracker.id,item.url,hash,content,JSON.stringify({document:{version:preparationVersion,id:item.id,identity,preparation:{state:'pending'},processing:{state:'pending'}}})])).rows[0];
@@ -278,9 +285,27 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
             stats.warnings.push('Full announcement unavailable; retained feed snippet is discovery only.');continue;
           }
           model??=makeModel?.(run.id,budget.deadline,trace);
-          const context=await supportDocuments(db,{source,prepared,trace});
+          // Raw captures remain exact. Reuse only consecutive equivalent prepared inputs;
+          // a real content/context change must not resurrect older completion or repair state.
+          const prior=previous?.parsed.document.prepared_versions?.[preparationVersion]??previous?.parsed.document.prepared,prefix=documentVersion+'/'+prepared.version+'/';
+          const omissions=prepared.omissions.map(({regions,...entry})=>entry);
+          const equivalent=prior&&isDeepStrictEqual({...prior,omissions:prior.omissions.map(({regions,...entry})=>entry)},{...prepared,omissions})?
+            (await db.query("select e.id,p.version,p.state from scout.evidence e cross join lateral (select e.parsed#>>'{document,processing,version}' version,"+
+              " e.parsed#>array['document','processing_versions',e.parsed#>>'{document,processing,version}'] state) p"+
+              " where e.tracker_id=$1 and e.record_id is null and e.parsed#>>'{document,identity}'=$2 and starts_with(p.version,$3) and p.state is not null"+
+              " and (coalesce(e.parsed#>array['document','prepared_versions',$4],e.parsed#>'{document,prepared}')-'omissions')=($5::jsonb-'omissions')"+
+              " and (select jsonb_agg(o-'regions') from jsonb_array_elements(coalesce(e.parsed#>array['document','prepared_versions',$4],e.parsed#>'{document,prepared}')->'omissions') o) is not distinct from $6::jsonb"+
+              " order by (p.state->>'state'='complete') desc,e.last_seen_at desc,e.id limit 1",[tracker.id,identity,prefix,prepared.version,JSON.stringify(prepared),omissions.length?JSON.stringify(omissions):null])).rows[0]:null;
+          if(equivalent&&equivalent.id!==source.id){
+            const state=structuredClone(equivalent.state);if(state.pending?.input)state.pending.input.source_id=source.id;
+            source.parsed.document={...source.parsed.document,processing:{state:state.state,version:equivalent.version},
+              processing_versions:{...source.parsed.document.processing_versions,[equivalent.version]:state}};
+            await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document}',$2::jsonb) where id=$1",[source.id,JSON.stringify(source.parsed.document)]);
+          }
+          const context=await supportDocuments(db,{source,prepared,trace,context:equivalent?.version.slice(prefix.length),
+            reuse:equivalent&&equivalent.id!==source.id?{capture_id:equivalent.id,version:equivalent.version,comparison:'Exact prepared document including URL/context/structure and omissions; only raw structural region offsets excluded.'}:undefined});
           const result=await processDocument(db,{source,prepared:context,trace,model,deadline:budget.deadline,version:documentVersion,
-            changed:Boolean(previous&&previous.content_hash!==hash)});
+            changed:Boolean(previous&&previous.content_hash!==hash&&!equivalent)});
           stats.created+=result.created;stats.changed+=result.changed;
           if(result.state==='complete')stats.processed++;else{stats[result.state==='uncertain'?'uncertain':'failed']++;stats.warnings.push(result.error);}
           inventory.at(-1).processing=result.state;

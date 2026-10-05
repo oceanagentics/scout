@@ -100,7 +100,9 @@ export async function retrieveDosiDocuments({tracker,read,sourceURL,budget,known
     enqueue(item.url,{relationship:'known'});
     for(const via of item.via??[])if(!['pending','known'].includes(via.relationship))enqueue(item.url,via);
   }
-  const priority=item=>item.via.some(v=>v.relationship==='pending'&&v.previous_state!=='failed')?(!progress.provenance[item.url]&&item.via.some(v=>v.relationship==='newsletter-link')?-1:0):
+  const priority=item=>item.via.some(v=>v.relationship==='pending'&&v.previous_state==='model-repair')?-3:
+    item.via.some(v=>v.relationship==='pending'&&v.previous_state==='model-pending')?-2:
+    item.via.some(v=>v.relationship==='pending'&&v.previous_state!=='failed')?(!progress.provenance[item.url]&&item.via.some(v=>v.relationship==='newsletter-link')?-1:0):
     item.via.some(v=>v.relationship==='pending')?2:knownURLs.has(item.url)?3:1;
   const ordered=queue.slice().sort((a,b)=>a.url<b.url?-1:a.url>b.url?1:0);
   const rotated=typeof progress.after_url==='string'?[...ordered.filter(i=>i.url>progress.after_url),...ordered.filter(i=>i.url<=progress.after_url)]:queue.slice();

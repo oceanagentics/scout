@@ -6,7 +6,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {collectHSA,HSA,GFW_WEB,sourceURL} from '../collector/hsa.js';
 import {gemini,requestBody} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
-import {prepareDocument,supportDocuments} from '../collector/octo-documents.js';
+import {collectDocuments,prepareDocument,supportDocuments} from '../collector/octo-documents.js';
 import {prepareDosiDocument} from '../collector/dosi-documents.js';
 import {startReport} from '../collector/report.js';
 import {packDocument,processDocument,validateFinding,validateResolution,DOCUMENT_VERSION,DOCUMENT_SCHEMA,DOCUMENT_INSTRUCTION} from '../collector/document-records.js';
@@ -33,6 +33,7 @@ function runModel(db,respond,advance=false){
     const model=gemini({apiKey:'fixture-test-key',ledger:db,runId,deadline,trace,fetch:async(url,request)=>{
       if(url.endsWith(':countTokens'))return Response.json({totalTokens:200});
       requests.push(request.body);assert.equal(JSON.parse(request.body).generationConfig.maxOutputTokens,65536);
+      assert.equal(JSON.parse(request.body).generationConfig.thinkingConfig.thinkingLevel,'medium');
       const input=JSON.parse(JSON.parse(request.body).contents[0].parts[0].text)[0];
       const out=await respond(input);
       return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(out)}]}}]});
@@ -196,6 +197,80 @@ test('retained whole newsletter accepts six injected events and repeats without 
     assert.deepEqual((await db.query('select * from scout.records order by title')).rows,rows);
     const body=transport.requests.find(b=>JSON.parse(JSON.parse(b).contents[0].parts[0].text)[0].documents?.P.url===saved.newsletter.url);
     context.diagnostic(JSON.stringify({source:'DOSI retained newsletter, injected decisions',whole_chars:newsletter.range[1],request_bytes:Buffer.byteLength(body),records:6,repeat_calls:0}));
+  }finally{await db.close();}
+});
+
+test('retained DOSI repair resumes before fresh articles; raw UI churn preserves completed progress and history',async context=>{
+  const saved=await fixture('dosi-website.json.gz'),{sources,runs}=saved.retained_resume,db=await database();
+  try{
+    const tracker=(await db.query('select * from scout.trackers where url=$1',[saved.home.url])).rows[0];
+    for(const s of sources)await db.query('insert into scout.evidence(id,tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,$6,$7)',
+      [s.id,tracker.id,s.url,s.content_hash,s.content,JSON.stringify(s.parsed),s.last_seen_at]);
+    for(const r of runs)await db.query('insert into scout.collection_runs(id,tracker_id,started_at,finished_at,outcome,stats,report) values($1,$2,$3,$4,$5,$6,$7)',
+      [r.id,tracker.id,r.started_at,r.finished_at,r.outcome,JSON.stringify(r.stats),JSON.stringify(r.report)]);
+    const historical=(await db.query('select * from scout.collection_runs order by id')).rows;
+    const [completed,churn,newsletter]=sources,retained=new Map(sources.map(s=>[s.url,s]));
+    const pending=newsletter.parsed.document.processing_versions[newsletter.parsed.document.processing.version].pending;
+    assert.equal(pending.round,1);assert.equal(pending.repair.rejected.findings.length,5);
+    const a=prepareDosiDocument({...saved.home,body:completed.content},{sourceURL}).prepared;
+    const b=prepareDosiDocument({...saved.home,body:churn.content},{sourceURL}).prepared;
+    assert.notEqual(completed.content_hash,churn.content_hash);assert.notDeepEqual(a.omissions,b.omissions);
+    assert.deepEqual({...a,omissions:undefined},{...b,omissions:undefined});
+    const title='Marine Minerals and the Media',reads=[];
+    let prefix='<!-- injected external UI framing -->';
+    const transport=runModel(db,input=>{
+      if(input.stage==='resolve')return resolve(input);
+      assert.equal(input.documents.P.url,newsletter.url);
+      assert.deepEqual(input,{...pending.input,source_id:input.source_id,repair:pending.repair});
+      assert.notEqual(input.source_id,newsletter.id,'Retained repair is rebound to the new raw capture');
+      return answer([base(title,[{doc:'P',quote:title}])]);
+    });
+    const options={trackerId:tracker.id,validate:true,documents:'process',makeModel:transport.makeModel,read:async url=>{
+      reads.push(url);if(url===saved.feed.url)return saved.feed;
+      const s=retained.get(url);if(!s)throw new Error('Fixture intentionally lacks other articles');
+      return {url,status:200,headers:{'content-type':'text/html'},body:prefix+s.content};
+    }};
+    const first=await collectHSA(db,options);
+    assert.deepEqual(reads.slice(0,3),[saved.home.url,saved.feed.url,newsletter.url]);
+    assert.equal(first.created,1,first.warnings.join(';'));assert.equal(transport.requests.length,2);
+    const records=(await db.query('select * from scout.records')).rows;assert.equal(records[0].title,title);assert.equal(records[0].starts_at,null);
+    const association=(await db.query('select * from scout.evidence where record_id is not null')).rows[0];
+    prefix='<!-- another injected UI framing change -->';
+    // Isolate completed-capture rechecks from the deliberately unavailable older articles above.
+    const repeat=await collectDocuments(db,{tracker,sourceURL,now:()=>new Date().toISOString(),deadline:Date.now()+100000,
+      limits:{seconds:100,requests:4,pages:4},process:true,path:'dosi',makeModel:transport.makeModel,
+      retrieve:async()=>({documents:[churn,newsletter].map(s=>prepareDosiDocument({url:s.url,status:200,headers:{'content-type':'text/html'},body:prefix+s.content},{sourceURL})),coverage:[]})});
+    assert.equal(repeat.created,0);assert.equal(transport.requests.length,2);
+    assert.deepEqual((await db.query('select * from scout.records')).rows,records);
+    const associations=(await db.query('select * from scout.evidence where record_id is not null')).rows;
+    assert.equal(associations.length,1);assert.ok(associations[0].last_seen_at>association.last_seen_at);
+    assert.deepEqual({...associations[0],last_seen_at:null},{...association,last_seen_at:null});
+    assert.deepEqual((await db.query('select * from scout.collection_runs where id=any($1::uuid[]) order by id',[runs.map(r=>r.id)])).rows,historical);
+    assert.deepEqual((await db.query('select id,record_id,url,content_hash,content,parsed,last_seen_at from scout.evidence where id=any($1::uuid[]) order by id',[sources.map(s=>s.id)])).rows,
+      [...sources].sort((a,b)=>a.id.localeCompare(b.id)).map(s=>({...s,last_seen_at:new Date(s.last_seen_at)})));
+    const report=(await db.query('select report from scout.collection_runs where id=$1',[first.run_id])).rows[0].report;
+    assert.ok(Object.values(report.operations).some(op=>op.stage==='extract'&&op.repair===1));
+    const resumed=(await db.query("select parsed from scout.evidence where record_id is null and url=$1 order by last_seen_at desc limit 1",[newsletter.url])).rows[0].parsed.document;
+    assert.equal(resumed.processing.version,newsletter.parsed.document.processing.version);
+    assert.equal(resumed.processing_versions[resumed.processing.version].state,'complete');
+    context.diagnostic(JSON.stringify({retained_repair_round:1,whole_chars:pending.input.range[1],model_calls:2,repeat_calls:0,historical_runs_unchanged:2}));
+  }finally{await db.close();}
+});
+
+test('same source identity with changed URL, factual context or omissions must not reuse completed processing',async()=>{
+  const db=await database();try{
+    const tracker=(await db.query('select * from scout.trackers limit 1')).rows[0];let calls=0;
+    const original=prepareDocument({title:'Source',url:'https://example.org/source',html:'<p>Public gathering.</p>'});
+    const item={id:'source',identity:'test:source',url:original.url,raw:'original',prepared:original};
+    const options={tracker,sourceURL,now:()=>new Date().toISOString(),since:Date.now()-86400000,deadline:Date.now()+100000,
+      limits:{seconds:100,requests:4,pages:4},process:true,path:'test',model:async()=>{calls++;return answer([]);},retrieve:async()=>({documents:[item],coverage:[]})};
+    await collectDocuments(db,options);assert.equal(calls,1);
+    for(const [key,value] of [['url','https://example.org/different-source'],['title','Changed factual context'],['omissions',[{reason:'Malformed JSON-LD could not be prepared; raw response retained.'}]]]){
+      item.prepared={...original,[key]:value};item.raw=key;
+      await collectDocuments(db,options);assert.equal(calls,['url','title','omissions'].indexOf(key)+2,key);
+    }
+    item.prepared=original;item.raw='original';await collectDocuments(db,options);
+    assert.equal(calls,5,'Returning to earlier content after a real change is reassessed');
   }finally{await db.close();}
 });
 

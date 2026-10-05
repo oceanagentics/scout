@@ -47,6 +47,7 @@ test('actual hosted database adapter commits reservations before rollback and re
         assert.equal(counted.model,'models/gemini-3.5-flash-lite');assert.ok(counted.systemInstruction);assert.ok(counted.generationConfig.responseJsonSchema);
         return Response.json({totalTokens:3000});
       }
+      assert.equal(JSON.parse(request.body).generationConfig.thinkingConfig.thinkingLevel,'minimal');
       assert.ok(Buffer.byteLength(request.body)>8000);return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});
     }});
     await large('test','x'.repeat(8001),{});
