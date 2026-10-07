@@ -260,3 +260,28 @@ test('only renderer-inserted links may be omitted from anchors; literal URL pros
     assert.throws(()=>validateCitedFinding({...finding,citations:[{doc:'P',quote:actual.input.documents.P.url},...finding.citations]},actual.input),/citations\[1\]/);
   }
 });
+
+
+test('webinar location Online retains webinar evidence and completed repeats without reprocessing',async()=>{
+  const db=await setup(),title='Ocean data webinar',description='A webinar on ocean data standards.';
+  const post={...article,title:{rendered:title},content:{rendered:'<h1>'+title+'</h1><p>'+description+'</p>'}};
+  const finding={anchor:title,urls:[],candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'event',title,description,location:'Online'},
+    priority:'high',reason:'Concrete ocean data standards webinar.',evidence:{kind:description,title,description,location:description,priority:description}};
+  const source=runner(db,stages([finding],input=>{
+    assert.deepEqual(input.field_audit.fields.location,{claim:'Online',quotes:[description]});
+    return resolution(input);
+  }),{post});
+  try{
+    const run=await source.run();assert.equal(run.created,1,run.warnings.join(';'));
+    const records=await current(db);assert.equal(records[0].location,'Online');
+    const evidence=(await db.query('select parsed from scout.evidence where record_id=$1',[records[0].id])).rows[0].parsed;
+    assert.equal(evidence.accepted_fields.location.value,'Online');
+    assert.equal(evidence.finding.citations[evidence.finding.evidence.location[0]].quote,description);
+    assert.equal(source.requests.length,2);
+    const [extract,resolve]=source.requests.map(request=>JSON.parse(request).systemInstruction.parts[0].text);
+    assert.match(extract,/source identifies as a webinar, set location="Online"/);
+    assert.match(resolve,/identifying this event as a webinar is sufficient support/);
+    const repeated=await source.run();assert.equal(repeated.created,0);assert.equal(repeated.changed,0);
+    assert.equal(source.requests.length,2);assert.deepEqual(await current(db),records);
+  }finally{await db.close();}
+});
