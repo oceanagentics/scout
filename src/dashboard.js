@@ -2,10 +2,10 @@ import { KINDS, sourceLink, stamp, eventLabel, eventTiming, filterRecords, track
 import { mountRunDetail } from './runs.js';
 
 const RECORD_FIELDS = [
-  ['title', 'Title'], ['kind', 'Type'], ['organization', 'Organization'], ['description', 'Description'],
-  ['priority','Priority'], ['priority_reason','Priority reason'], ['location', 'Location'], ['status', 'Status'],
-  ['starts_at', 'Starts at (UTC)'], ['ends_at', 'Ends at (UTC)'],
   ['event_url', 'Event URL'], ['registration_url', 'Registration URL'],
+  ['organization', 'Organization'], ['description', 'Description'], ['kind', 'Type'], ['priority','Priority'],
+  ['title', 'Title'], ['priority_reason','Priority reason'], ['location', 'Location'], ['status', 'Status'],
+  ['starts_at', 'Starts at (UTC)'], ['ends_at', 'Ends at (UTC)'],
   ['updated_at', 'Updated at (UTC)'], ['id', 'ID'], ['date_evidence', 'Date evidence'],
 ];
 const TRACKER_FIELDS = [
