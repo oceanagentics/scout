@@ -211,7 +211,7 @@ function structuredEvents(html, pageURL) {
   };
 }
 
-const fields = [...CONTENT_FIELDS, 'date_evidence', 'priority'];
+const fields = [...CONTENT_FIELDS, 'priority'];
 // Observed DOSI Mailchimp caption/button layout. The observed button URL keys
 // an item within its issue; it does not automatically identify an event page.
 function dosiNewsletter(html, url) {
@@ -318,11 +318,9 @@ async function save(db, identity, source, rank, observedAt, stats) {
   const references = existing ? (await db.query('select * from scout.current_evidence where record_id=$1', [existing.id])).rows : [];
   const previous = references.find(item => item.url === source.url);
   // Date-only values stay in captured sources, used here only to combine evidence.
-  const established = existing?.date_evidence.schedule_source ? (await db.query('select url,parsed from scout.evidence where id=$1 and record_id=$2',
-    [existing.date_evidence.schedule_source, existing.id])).rows[0] : null;
-  const schedule = established?.parsed ??
-    references.find(item => item.authoritative && (identity === `event:${item.url}` || existing?.event_url === item.url || existing?.registration_url === item.url))?.parsed ??
-    references.find(item => item.parsed?.starts_at && item.parsed.starts_at === existing?.starts_at)?.parsed;
+  const established = references.find(item => item.parsed?.starts_at && item.parsed.starts_at === existing?.starts_at) ??
+    references.find(item => item.authoritative && (identity === `event:${item.url}` || existing?.event_url === item.url || existing?.registration_url === item.url));
+  const schedule = established?.parsed;
   let calendarDay = existing?.status !== 'rescheduled' || existing?.starts_at ? schedule?.start_on : null;
   // First page snapshots have unknown chronology. Only a change in their facts
   // starts a new evidence time, including a return to an older source version.
@@ -332,7 +330,6 @@ async function save(db, identity, source, rank, observedAt, stats) {
   const baseline = !source.published_at && !evidenceAt;
   const accepted = record && (!existing || rank > existing.evidence_rank || (rank === existing.evidence_rank && (baseline || !existing.evidence_at || Date.parse(evidenceAt) >= Date.parse(existing.evidence_at))));
   const merged = Object.fromEntries(fields.map(field => [field, accepted ? record[field] ?? existing?.[field] ?? null : existing?.[field] ?? null]));
-  merged.date_evidence ??= {};
   if (merged.description && Array.from(merged.description).length > 280) merged.description = Array.from(merged.description).slice(0, 279).join('').trimEnd() + '…';
   if (accepted) {
     for (const field of record.assessment?.clear_fields ?? []) merged[field] = null;
@@ -347,7 +344,6 @@ async function save(db, identity, source, rank, observedAt, stats) {
     if ((record.start_on || record.starts_at) && !compatibleDay && !protectsCorrection) {
       calendarDay = record.start_on;
       for (const field of ['starts_at', 'ends_at']) merged[field] = record[field];
-      merged.date_evidence = record.starts_at ? { schedule_source: source.id } : {};
     } else if (compatibleDay || protectsCorrection) {
       for (const field of ['starts_at', 'ends_at']) merged[field] = existing[field];
     }
@@ -360,14 +356,13 @@ async function save(db, identity, source, rank, observedAt, stats) {
       if (record.status === 'rescheduled' && !after) {
         calendarDay = null;
         for (const field of ['starts_at', 'ends_at']) merged[field] = null;
-        merged.date_evidence = {};
       }
     }
   }
   // Combine only the observed Zoom schedule and matching HSA-authored components.
   const evidence = [...references.filter(item => item.url !== source.url), { ...source, authoritative: rank === 2 }];
   const page = evidence.find(item => item.parsed?.local_schedule && (identity === `event:${item.url}` || merged.event_url === item.url || merged.registration_url === item.url));
-  let timing=[];
+  let timing=[],combined=false;
   if (page) {
     // A retained HSA post can supply compatible clock/zone facts without a
     // second relevance call. Only the latest capture of each source may do so.
@@ -387,7 +382,7 @@ async function save(db, identity, source, rank, observedAt, stats) {
       if (calendarDay === schedule.date) {
         const timed = dates(`${schedule.date}T${wall(schedule)}:00${parts.offset}`);
         for (const field of ['starts_at', 'ends_at']) merged[field] = timed[field];
-        merged.date_evidence = { schedule_source: page.id, zone_source: post.id };
+        combined = true;
         dateWarning = null;
       }
     } else dateWarning = `Conflicting event schedule: registration ${schedule.date} ${wall(schedule)}; HSA post ${parts.month}/${parts.day} ${wall(parts)} ${parts.zone}`;
@@ -412,7 +407,7 @@ async function save(db, identity, source, rank, observedAt, stats) {
   }
   await db.query('update scout.evidence set record_id=$2,last_seen_at=clock_timestamp(),authoritative=$3,evidence_at=$4 where id=$1',
     [source.id, existing.id, rank === 2, evidenceAt]);
-  if (post && merged.date_evidence.zone_source === post.id && !post.record_id) {
+  if (combined && !post.record_id) {
     await db.query('update scout.evidence set record_id=$2,authoritative=true where id=$1 and record_id is null',[post.id,existing.id]);
   }
   return {warning:dateWarning,recordId:existing.id,sourceId:source.id};

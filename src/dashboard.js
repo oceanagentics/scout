@@ -6,7 +6,7 @@ const RECORD_FIELDS = [
   ['organization', 'Organization'], ['description', 'Description'], ['kind', 'Type'], ['priority','Priority'],
   ['title', 'Title'], ['priority_reason','Priority reason'], ['location', 'Location'], ['status', 'Status'],
   ['starts_at', 'Starts at (UTC)'], ['ends_at', 'Ends at (UTC)'],
-  ['updated_at', 'Updated at (UTC)'], ['id', 'ID'], ['date_evidence', 'Date evidence'],
+  ['updated_at', 'Updated at (UTC)'], ['id', 'ID'],
 ];
 const TRACKER_FIELDS = [
   ['name', 'Name'], ['url', 'URL'], ['coverage', 'Coverage'], ['collector', 'Collector'],
@@ -126,7 +126,7 @@ export function mountDashboard(root, load, runs) {
           const value = record[field], cell = node('td', null, `field-${field}`);
           if (field.endsWith('_url') && value) cell.append(link(value, value));
           else cell.textContent = fieldLabel(record,field);
-          if (cell.textContent.length > 240 && ['description', 'date_evidence'].includes(field)) {
+          if (cell.textContent.length > 240 && field === 'description') {
             const text = node('div', cell.textContent, 'field-value'); text.tabIndex = 0; cell.replaceChildren(text);
           }
           article.append(cell);

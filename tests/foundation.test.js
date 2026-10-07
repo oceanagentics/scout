@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 
 const migration = await readFile(new URL('../supabase/migrations/20261001050000_scout_foundation.sql', import.meta.url), 'utf8');
@@ -52,6 +52,36 @@ const sharedState = `
     (select jsonb_agg(d) from pg_default_acl d where defaclnamespace = 'otherservice'::regnamespace) as defaults
   from pg_class c where c.relnamespace = 'otherservice'::regnamespace order by c.relname;
 `;
+
+test('date evidence column removal preserves event times, source proofs, accounting and access', async () => {
+  const db = new PGlite(), name = '20261007090000_scout_source_date_evidence.sql';
+  try {
+    await db.exec(auth + fixture);
+    for (const file of (await readdir(new URL('../supabase/migrations/', import.meta.url))).sort())
+      if (file !== name) await db.exec(await readFile(new URL('../supabase/migrations/' + file, import.meta.url), 'utf8'));
+    const tracker = (await db.query("insert into scout.trackers(name,url,collector,cadence) values('Source','https://example.org','web','1 day') returning *")).rows[0];
+    const record = (await db.query("insert into scout.records(kind,title,starts_at,ends_at) values('event','Supported webinar','2026-10-08T14:00Z','2026-10-08T15:00Z') returning *")).rows[0];
+    const source = (await db.query(`insert into scout.evidence(record_id,tracker_id,url,content_hash,content,parsed,last_seen_at)
+      values($1,$2,'https://example.org/event','source-version','Original schedule text',$3,clock_timestamp()) returning *`,
+      [record.id, tracker.id, { accepted_fields: { starts_at: { value: record.starts_at.toISOString(), sources: [{ url: 'https://example.org/event', hash: 'source-version' }] } } }])).rows[0];
+    await db.query('update scout.records set date_evidence=$2 where id=$1', [record.id, { schedule_source: source.id }]);
+    const run = (await db.query("insert into scout.collection_runs(tracker_id,outcome,finished_at,stats) values($1,'partial',clock_timestamp(),'{\"model_attempts\":[{\"at\":\"2026-10-07T12:00:00Z\"}]}') returning *", [tracker.id])).rows[0];
+    const shared = (await db.query(sharedState)).rows;
+    await db.exec(await readFile(new URL('../supabase/migrations/' + name, import.meta.url), 'utf8'));
+    const { date_evidence, ...expected } = record;
+    assert.deepEqual((await db.query('select * from scout.records')).rows, [expected]);
+    assert.deepEqual((await db.query('select * from scout.evidence')).rows, [source]);
+    assert.deepEqual((await db.query('select * from scout.trackers')).rows, [tracker]);
+    assert.deepEqual((await db.query('select * from scout.collection_runs')).rows, [run]);
+    assert.deepEqual((await db.query(sharedState)).rows, shared);
+    assert.equal((await db.query("select count(*)::int n from information_schema.columns where table_schema='scout' and table_name='records'")).rows[0].n, 17);
+    await db.exec('set role authenticated');
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [reader]);
+    assert.deepEqual((await db.query('select * from scout.records')).rows, [expected]);
+    assert.equal((await db.query('select * from scout.source_details')).rows[0].url, source.url);
+    await assert.rejects(db.query('select * from scout.evidence'), { code: '42501' });
+  } finally { await db.close(); }
+});
 
 test('unsafe global defaults stop the migration without changing another service', async () => {
   const db = new PGlite();

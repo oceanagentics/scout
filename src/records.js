@@ -2,7 +2,7 @@ export const KINDS = { event: 'Event', announcement: 'Announcement', treaty_stat
 export const PRIORITIES = { high:'High', normal:'Normal', low:'Low' };
 export function fieldLabel(record, field) {
   if (field==='priority') return PRIORITIES[record.priority]??'Not yet assessed';
-  if (record.kind!=='event'&&['location','status','starts_at','ends_at','event_url','registration_url','date_evidence'].includes(field)) return 'Not applicable';
+  if (record.kind!=='event'&&['location','status','starts_at','ends_at','event_url','registration_url'].includes(field)) return 'Not applicable';
   const value=record[field];
   if (value===null||value===undefined||value==='') return 'Unknown';
   return field.endsWith('_at')?stamp(value):field==='kind'?KINDS[value]??value:typeof value==='object'?JSON.stringify(value):String(value);

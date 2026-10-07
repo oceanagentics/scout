@@ -68,7 +68,7 @@ td a { font-weight: 600; }
 .data-table th[aria-sort="ascending"] button::after { content: ' ↑'; }
 .data-table th[aria-sort="descending"] button::after { content: ' ↓'; }
 .data-table th button:hover { text-decoration: underline; }
-.data-table :is(.field-title, .field-name, .field-description, .field-date_evidence, .field-coverage, .field-last_error) { min-width: 320px; white-space: pre-line; }
+.data-table :is(.field-title, .field-name, .field-description, .field-coverage, .field-last_error) { min-width: 320px; white-space: pre-line; }
 .data-table th:first-child, .data-table td:first-child { position: sticky; left: 0; background: #fff; box-shadow: 5px 0 8px -5px #18383933; }
 .data-table td:first-child { z-index: 1; }
 .data-table th:first-child { z-index: 3; background: #e8eee8; }

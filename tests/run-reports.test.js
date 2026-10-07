@@ -26,6 +26,31 @@ const decision=i=>({source_id:i.source_id,action:'new',record_id:null,priority:'
 const options={since:'2026-10-01',now:()=> '2026-10-04T12:00:00Z'};
 const read=texts=>async(url,b)=>{b.requests++;return{url,status:200,headers:{authorization:'must-not-enter-artifacts'},body:JSON.stringify(feed(texts))};};
 
+test('legacy schedule and zone captures retain UTC timing across source edits without record date evidence',async()=>{
+  const db=await database(),post=JSON.parse(await readFile(new URL('./fixtures/hsa-webinar-time.json',import.meta.url),'utf8'));
+  const zoom='https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ';
+  let html=await readFile(new URL('./fixtures/hsa-zoom.html',import.meta.url),'utf8');
+  const model=async(_instruction,inputs)=>inputs.map(input=>{
+    const existing=input.candidates.find(c=>input.exact_ids.includes(c.id));
+    if(input.url!==zoom)return {...decision(input),action:existing?'no_substantive_change':'uncertain',record_id:existing?.id??null,candidate:null,quotes:[]};
+    return {...decision(input),action:existing?'update':'new',record_id:existing?.id??null,
+      candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'event',title:input.scripted.title,description:input.scripted.description.slice(0,200),event_url:zoom,registration_url:zoom}};
+  });
+  const fixtureRead=async(url,budget)=>{budget.requests++;return{url,status:200,headers:{'content-type':url===zoom?'text/html':'application/json'},body:url===zoom?html:JSON.stringify({feed:[post]})};};
+  try{
+    const first=await collectHSA(db,{...options,since:'2026-09-01',read:fixtureRead,model});assert.equal(first.created,1,first.warnings.join(';'));
+    const record=(await db.query('select * from scout.records')).rows[0];assert.equal(Object.hasOwn(record,'date_evidence'),false);
+    assert.equal(record.starts_at.toISOString(),'2026-09-29T11:30:00.000Z');
+    const sources=(await db.query('select * from scout.evidence where record_id=$1',[record.id])).rows;
+    assert.ok(sources.some(s=>s.url===zoom&&s.parsed.local_schedule.date==='2026-09-29'));
+    assert.ok(sources.some(s=>s.parsed.date_parts?.zone==='EDT'));
+    html=html.replace('This webinar will unpack','This webinar will explore');
+    const edited=await collectHSA(db,{...options,since:'2026-09-01',read:fixtureRead,model});assert.equal(edited.created,0,edited.warnings.join(';'));
+    const updated=(await db.query('select * from scout.records')).rows;assert.equal(updated.length,1);
+    assert.equal(updated[0].starts_at.toISOString(),record.starts_at.toISOString());assert.match(updated[0].description,/will explore/);
+  }finally{await db.close();}
+});
+
 test('report migration preserves existing data, accounting and other-service access without backfilling history',async()=>{
   const db=await database({reports:false});
   try{

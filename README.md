@@ -58,15 +58,15 @@ The Letter mentions an optional weekly email digest; the confirmed POC uses a we
 
 ## Records and collection
 
-Records keep a title, type, organization, description of at most 280 characters, location, event/registration links, supported UTC start/end timestamps and status. Publication and collection timestamps belong to sources. Full text, date-only values and treaty details remain in captured source evidence; records no longer duplicate them in summary, date-only, publication, country, treaty-action, recorded-date or collection columns. `updated_at` remains the record version. Compact `date_evidence` references the schedule and zone captures used to establish a UTC instant; the component values stay in those captures. Calendar generation has been removed.
+Records keep a title, type, organization, description of at most 280 characters, location, event/registration links, supported UTC start/end timestamps and status. Publication and collection timestamps belong to sources. Full text, date-only values and treaty details remain in captured source evidence; records no longer duplicate them in summary, date-only, publication, country, treaty-action, recorded-date or collection columns. `updated_at` remains the record version. Date provenance belongs to source evidence, including accepted field proofs, cited calendar/time-zone components and captured source content. Calendar generation has been removed.
 
-The deployed schema through migration `20261004090000` has **four tables and 47 columns**. The report migration adds one nullable column with scoped reader RPCs; existing collector-proof permissions and trigger remain:
+The local schema through migration `20261007090000` has **four tables and 46 columns**. The migration drops `records.date_evidence`; collector, frontend and database deployment remain pending. The deployed schema through `20261004090000` still has 47 columns. Existing collector-proof permissions and trigger remain:
 
 | Table | Columns | Purpose |
 | --- | ---: | --- |
 | `trackers` | 8 | Source configuration: name, URL, coverage, collector, cadence, proven-collector enabled flag, ID and seed identity. |
 | `collection_runs` | 8 | Collection attempts, outcomes, coverage, statistics and nullable instrumented report, with warnings stored once. |
-| `records` | 18 | Current finding, priority, last communication time, supported event times, identity and evidence references. |
+| `records` | 17 | Current finding, priority, last communication time, supported event times, identity and evidence timing. |
 | `evidence` | 13 | Captured content and parsed facts, linked directly to a record and tracker, with source URL and observation times. |
 
 A tracker defines where to collect; evidence stores what its returned URLs contained; a record holds the current finding supported by those captures. One record can have many captures. Shared captures are copied per record, avoiding a separate source-link table. Captures without a record remain stored. `current_evidence` selects the most recently seen capture for each record/URL, including returns to older content. Capture time, last-seen time and fact-change evidence time remain distinct.

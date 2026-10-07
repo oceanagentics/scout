@@ -238,7 +238,6 @@ async function saveResolution(db,source,entry,decision,candidates,version,state)
     validateResolution(decision,entry.finding,current.rows,source.prepared);
     const p=entry.finding,c=p.candidate;let record=current.rows.find(r=>r.id===decision.record_id),created=0,changed=0;
     const previousFacts=record?.fact_evidence??{},proofs=fieldProofs(p,source.prepared),acceptedFields={};
-    const scheduleChanged=Boolean(c.starts_at&&(!record?.starts_at||!equal('starts_at',record.starts_at,c.starts_at)));
     if(record&&decision.outcome==='update'){
       if((await tx.query('select evidence_at>(select last_seen_at from scout.evidence where id=$2) stale from scout.records where id=$1',[record.id,source.id])).rows[0].stale)throw new Error('Newer record evidence blocks a stale overwrite');
       const updates=[...CONTENT_FIELDS.filter(k=>c[k]!=null&&(!record[k]||!equal(k,c[k],record[k]))),...record.priority!==p.priority?['priority']:[]];
@@ -261,14 +260,13 @@ async function saveResolution(db,source,entry,decision,candidates,version,state)
       const parsed={document:{identity:source.parsed.document.identity,capture_id:source.id,preparation_version:source.prepared.version,context:source.prepared.context,
         sources:source.prepared.documents.map(({prepared,...d})=>d)},finding:p,resolution:decision,accepted_fields:acceptedFields,
         assessment:{state:'complete',version,priority:p.priority,priority_accepted:p.priority===record.priority,reason:p.reason,accepted_at:new Date().toISOString()}};
-      const evidence=(await tx.query("insert into scout.evidence(record_id,tracker_id,url,content_hash,content,parsed,last_seen_at,evidence_at)"+
+      await tx.query("insert into scout.evidence(record_id,tracker_id,url,content_hash,content,parsed,last_seen_at,evidence_at)"+
         " select $2,tracker_id,url,content_hash,$3,$4,last_seen_at,last_seen_at from scout.evidence where id=$1"+
         " on conflict(record_id,tracker_id,url,content_hash) do update set parsed=excluded.parsed||jsonb_build_object('accepted_fields',coalesce(scout.evidence.parsed->'accepted_fields','{}')||(excluded.parsed->'accepted_fields'))"+
         " ||case when excluded.parsed#>>'{assessment,priority_accepted}'='false' then jsonb_build_object('assessment',scout.evidence.parsed->'assessment') else '{}'::jsonb end,"+
-        " last_seen_at=excluded.last_seen_at,evidence_at=excluded.evidence_at returning id",
-        [source.id,record.id,JSON.stringify({capture_id:source.id,preparation_version:source.prepared.version}),JSON.stringify(parsed)])).rows[0];
-      if(decision.outcome!=='evidence')await tx.query("update scout.records set evidence_at=(select last_seen_at from scout.evidence where id=$2),"+
-        " date_evidence=case when $3::boolean then jsonb_build_object('schedule_source',$4::text) else date_evidence end where id=$1",[record.id,source.id,scheduleChanged,evidence.id]);
+        " last_seen_at=excluded.last_seen_at,evidence_at=excluded.evidence_at",
+        [source.id,record.id,JSON.stringify({capture_id:source.id,preparation_version:source.prepared.version}),JSON.stringify(parsed)]);
+      if(decision.outcome!=='evidence')await tx.query("update scout.records set evidence_at=(select last_seen_at from scout.evidence where id=$2) where id=$1",[record.id,source.id]);
       for(const doc of source.prepared.documents.filter(d=>d.id!=='P'&&p.citations.some(c=>c.doc===d.id))){
         const support={...parsed,accepted_fields:{},document:{...parsed.document,identity:'support:'+doc.url,capture_id:doc.capture_id,primary_capture_id:source.id}};
         await tx.query("insert into scout.evidence(record_id,tracker_id,url,content_hash,content,parsed,last_seen_at,evidence_at) "+

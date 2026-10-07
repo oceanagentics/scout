@@ -87,6 +87,21 @@ const release={...proposal(),anchor:'Ocean Data Workshop',candidate:{...Object.f
 const digest={...article,title:{rendered:'Weekly digest'},content:{rendered:'<h2>Ocean Data Workshop</h2><p>Ocean Institute</p><p>A workshop on ocean data standards.</p>'}};
 const seed=async(db,p=release,key='fixture')=>(await db.query('insert into scout.records('+CONTENT_FIELDS.join(',')+',priority,identity_key) values('+CONTENT_FIELDS.map((_,i)=>'$'+(i+1)).join(',')+',$11,$12) returning *',[...CONTENT_FIELDS.map(k=>p.candidate[k]),p.priority,key])).rows[0];
 
+test('dated findings save and repeat using source proofs without a record date evidence column',async()=>{
+  const db=await setup(),source=runner(db,stages([proposal()]));
+  try{
+    const run=await source.run();assert.equal(run.created,1,run.warnings.join(';'));
+    const records=await current(db),record=records[0];assert.equal(Object.hasOwn(record,'date_evidence'),false);
+    assert.equal(record.starts_at.toISOString(),'2026-10-21T10:00:00.000Z');
+    const evidence=(await db.query('select parsed from scout.evidence where record_id=$1',[record.id])).rows[0].parsed;
+    assert.equal(evidence.accepted_fields.starts_at.value,'2026-10-21T10:00:00Z');
+    assert.equal(evidence.accepted_fields.starts_at.sources[0].capture_id,evidence.document.capture_id);
+    assert.deepEqual(evidence.finding.dates.starts_at,{local:'2026-10-21T10:00:00',zone:'UTC',parts:Object.fromEntries(['year','date','time','zone'].map(part=>[part,evidence.finding.evidence.starts_at]))});
+    const calls=source.requests.length;await source.run();assert.equal(source.requests.length,calls);
+    assert.deepEqual(await current(db),records);
+  }finally{await db.close();}
+});
+
 test('completed Low findings retain reader-visible sources and reasons; uncertain findings and repeat calls stay excluded',async()=>{
   const db=await setup(),title='Ocean film screening',description='A public screening of an ocean film.';
   const low={anchor:title,urls:[],candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'event',title,description},

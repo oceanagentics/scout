@@ -5,13 +5,13 @@ import { loadScout } from '../src/dashboard.js';
 
 const now = new Date('2026-10-01T12:00:00Z');
 const hsa = { id: 'hsa-webinar', kind: 'event', title: 'Unpacking Part II of BBNJ: Marine Genetic Resources and Digital Sequence Information', organization: 'High Seas Alliance',
-  starts_at: '2026-09-29T11:30:00Z', time_zone: '-04:00', updated_at: '2026-10-01T05:23:54Z', date_evidence: { time_zone: { value: 'EDT' } },
+  starts_at: '2026-09-29T11:30:00Z', time_zone: '-04:00', updated_at: '2026-10-01T05:23:54Z',
   sources: [{ url: 'https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ' }] };
 
 test('source dates, timezone boundaries, filters and past/cancelled/unknown states', () => {
   assert.match(eventLabel(hsa), /2026-09-29 · 11:30 UTC/);
   assert.equal(eventTiming(hsa, now), 'Past / started');
-  const boundary = { ...hsa, id: 'boundary', starts_at: '2026-10-02T00:30:00Z', time_zone: '-04:00', date_evidence: null };
+  const boundary = { ...hsa, id: 'boundary', starts_at: '2026-10-02T00:30:00Z', time_zone: '-04:00' };
   assert.deepEqual(recordDates(boundary), ['2026-10-02', '2026-10-02']);
   assert.match(eventLabel(boundary), /2026-10-02 · 00:30 UTC/);
   const workshop = { id: 'workshop', kind: 'event', title: 'BBNJ workshop', starts_at: '2026-10-03T12:00:00Z', ends_at: '2026-10-05T12:00:00Z', time_zone: 'UTC' };
@@ -55,7 +55,7 @@ test('member data reads load every page and surface errors instead of silently t
     assert.ok(!columns.includes('excerpt') && !columns.includes('content_hash'));
     if (table === 'records') {
       const fields = columns.split(',sources(')[0].split(',');
-      for (const removed of ['summary', 'start_on', 'end_on', 'published_on', 'country', 'treaty_action', 'recorded_on', 'collected_at']) assert.ok(!fields.includes(removed));
+      for (const removed of ['summary', 'start_on', 'end_on', 'published_on', 'country', 'treaty_action', 'recorded_on', 'collected_at', 'date_evidence']) assert.ok(!fields.includes(removed));
       assert.ok(fields.includes('starts_at') && fields.includes('ends_at'));
     }
     return { order() { return this; }, async range(from, through) { return fail ? { error: new Error('Unavailable') } : { data: inventory[table].slice(from, through + 1) }; } };
