@@ -79,6 +79,13 @@ export function mountDashboard(root, load, runs) {
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
   let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table', closeRun;
   const runDetail=node('section');runDetail.hidden=true;runDetail.setAttribute('aria-label','Run detail');root.append(runDetail);
+  const sourceDialog = node('dialog', null, 'source-dialog'), sourceContent = node('div');
+  sourceDialog.setAttribute('aria-labelledby', 'source-heading');
+  const sourceHeading = node('h2', 'Sources'); sourceHeading.id = 'source-heading';
+  const closeSources = node('button', 'Close', 'secondary'); closeSources.type = 'button'; closeSources.autofocus = true;
+  closeSources.addEventListener('click', () => sourceDialog.close());
+  const sourceHeader = node('div', null, 'workspace-heading'); sourceHeader.append(sourceHeading, closeSources);
+  sourceDialog.append(sourceHeader, sourceContent); root.append(sourceDialog);
   const sorts = { records: null, trackers: { field: 'name', direction: 'ascending' } };
 
   function renderRecords() {
@@ -137,27 +144,35 @@ export function mountDashboard(root, load, runs) {
         if (record.kind!=='event') article.append(node('p','Event date · Not applicable'));
         for (const field of ['event_url','registration_url']) if (!sourceLink(record[field])) article.append(node('p',`${field==='event_url'?'Event page':'Registration'} · ${fieldLabel(record,field)}`));
       }
-      const details = node('details'); details.append(node('summary', tableView ? 'View sources' : 'Sources & record details'));
+      const sourcesButton = node('button', tableView ? 'View sources' : 'Sources & record details', 'secondary'); sourcesButton.type = 'button';
+      sourcesButton.addEventListener('click', () => {
+        sourceContent.replaceChildren(node('h3', record.title), node('p', `Record updated · ${stamp(record.updated_at)}`, 'meta'));
+        if (!(record.sources ?? []).length) sourceContent.append(node('p', 'No supporting source links available.', 'hint'));
+        for (const [index, source] of (record.sources ?? []).entries()) {
+          const section = node('section', null, 'source-entry'), fields = node('dl');
+          section.append(node('h3', `Source ${index + 1}`), fields);
+          const tracker = trackers.get(source.tracker_id), state = tracker && trackerState(tracker);
+          for (const [label, value] of [
+            ['Source URL', source.url ? link(source.url, source.url) : 'Unknown'],
+            ['Tracker', tracker?.name || 'Unknown'], ['Authoritative', source.authoritative == null ? 'Unknown' : source.authoritative ? 'Yes' : 'No'],
+            ['Published', source.published_at ? stamp(source.published_at) : source.published_on || 'Unknown'],
+            ['Captured', stamp(source.collected_at)], ['Last seen', stamp(source.last_seen_at)],
+            ['Record priority reason', source.priority_reason || 'Unknown'], ['Record priority assessed', stamp(source.assessed_at)],
+            ['Last successful collection', state?.success || 'Unknown'], ['Last collection outcome', state?.outcome || 'Unknown'],
+            ['Collection error', tracker ? tracker.last_error || 'None recorded' : 'Unknown'],
+          ]) {
+            const detail = node('dd'); detail.append(value); fields.append(node('dt', label), detail);
+          }
+          sourceContent.append(section);
+        }
+        sourceDialog.showModal();
+      });
       const actions = node('div', null, 'actions');
       if (!tableView && sourceLink(record.registration_url)) actions.append(link(record.status === 'cancelled' ? 'Original registration' : 'Registration', record.registration_url));
       if (!tableView && sourceLink(record.event_url) && record.event_url !== record.registration_url) actions.append(link('Event page', record.event_url));
-      if (!tableView) details.append(node('p', `Record updated · ${stamp(record.updated_at)}`, 'meta'));
-      if (!(record.sources ?? []).length) details.append(node('p', 'No supporting source links available.', 'hint'));
-      const seen = new Set();
-      for (const source of record.sources ?? []) {
-        const href = sourceLink(source.url);
-        if (href) details.append(link(`Source · ${new URL(href).hostname}${source.authoritative ? ' · Authoritative' : ''}`, href));
-        details.append(node('p', `Source published · ${source.published_at ? stamp(source.published_at) : source.published_on || 'Unknown'} · Captured · ${stamp(source.collected_at)} · Last seen · ${stamp(source.last_seen_at)}`, 'meta'));
-        const tracker = trackers.get(source.tracker_id);
-        if (tracker && !seen.has(tracker.id)) {
-          seen.add(tracker.id);
-          const state = trackerState(tracker);
-          details.append(node('p', `${tracker.name} · Last successful collection: ${state.success} · Last outcome: ${state.outcome}${tracker.last_error ? ` · ${tracker.last_error}` : ''}`, 'meta'));
-        }
-      }
       if (tableView) {
-        const sources = node('td'); sources.append(details); article.append(sources);
-      } else article.append(actions, details);
+        const sources = node('td'); sources.append(sourcesButton); article.append(sources);
+      } else article.append(actions, sourcesButton);
       body.append(article);
     }
   }
@@ -250,5 +265,5 @@ export function mountDashboard(root, load, runs) {
   const timer = setInterval(tick, 30000);
   document.addEventListener('visibilitychange', tick);
   root.hidden = false; void reload();
-  return () => { active = false; closeRun?.();clearInterval(timer); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
+  return () => { active = false; closeRun?.();if (sourceDialog.open) sourceDialog.close();clearInterval(timer); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
 }
