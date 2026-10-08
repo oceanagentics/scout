@@ -27,7 +27,7 @@ end $$;
 create or replace function scout.loop_health() returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare control scout.collection_runs; issues jsonb:='[]'; backlog jsonb; response record;
-  latest_work timestamptz;
+  latest_work timestamptz; urgent text; dm jsonb; token text; request_id bigint;
 begin
   select * into control from scout.collection_runs where stats->>'purpose'='scheduler' order by started_at desc limit 1 for update;
   if control.id is null then return jsonb_build_object('state','not_installed'); end if;
@@ -51,6 +51,14 @@ begin
     if exists(select 1 from scout.collection_runs where outcome='running' and stats->>'rotation'='true'
       and (stats->>'turn_expires_at')::timestamptz<clock_timestamp()) then
       issues:=issues||jsonb_build_array('Expired collection claim awaiting recovery');
+    end if;
+    if issues ? 'Collection scheduler stopped' or
+      coalesce(latest_work,control.started_at)<clock_timestamp()-interval '10 minutes'
+      and response.mode='next' and (response.timed_out or response.error_msg is not null or response.status_code not in (200,409)) then
+      urgent:='Scout collection is stopped. Check the collection scheduler, backend credentials and latest worker errors.';
+    elsif exists(select 1 from scout.collection_runs where stats->>'model_blocker'='configuration'
+      and (stats->>'model_retry_at')::timestamptz>clock_timestamp()) then
+      urgent:='Scout cannot review new discoveries because its model credentials or configuration are invalid. Check the model configuration.';
     end if;
   end if;
   select issues||coalesce(jsonb_agg(problem order by problem),'[]'::jsonb) into issues from (
@@ -84,9 +92,37 @@ begin
     and started_at>clock_timestamp()-interval '30 minutes' and not (stats ? 'delivery')) then
     issues:=issues||jsonb_build_array('Finding notification selection/configuration failed; inspect retained notification run'); end if;
   if pg_database_size(current_database())>367001600 then issues:=issues||jsonb_build_array('Database storage exceeds 350 MiB; review storage capacity'); end if;
-  -- Health remains inspectable in the backend; Slack carries curated findings only.
+  -- Urgent DMs are opt-in through Vault. Reserve one attempt per persistent
+  -- incident; unknown delivery never retries. #scout remains announcements-only.
+  dm:=coalesce(control.stats->'urgent_dm','{}'::jsonb);
+  if dm ? 'request_id' and dm->>'status'='queued' then
+    select * into response from net._http_response where id=(dm->>'request_id')::bigint;
+    if found then
+      begin
+        dm:=dm||jsonb_build_object('status',case when response.timed_out or response.error_msg is not null then 'unknown'
+          when response.status_code=200 and response.content::jsonb->>'ok'='true' then 'sent' else 'failed' end);
+      exception when others then dm:=dm||jsonb_build_object('status','unknown'); end;
+    end if;
+  end if;
+  if urgent is null then dm:=dm-'incident'-'since'-'request_id'-'status';
+  else
+    if dm->>'incident' is distinct from urgent then
+      dm:=(dm-'request_id'-'status')||jsonb_build_object('incident',urgent,'since',clock_timestamp());
+    end if;
+    if not (dm ? 'request_id') and (dm->>'since')::timestamptz<clock_timestamp()-interval '15 minutes'
+      and coalesce((dm->>'last_attempt_at')::timestamptz,'-infinity')<clock_timestamp()-interval '6 hours' then
+      select decrypted_secret into token from vault.decrypted_secrets where name='scout_loop_slack_bot_token';
+      if token is not null then
+        request_id:=net.http_post(url:='https://slack.com/api/chat.postMessage',
+          headers:=jsonb_build_object('Authorization','Bearer '||token,'Content-Type','application/json'),
+          body:=jsonb_build_object('channel','U0AQY6J9SG7','text',urgent||' https://bbnj-scout.web.app',
+            'unfurl_links',false,'unfurl_media',false),timeout_milliseconds:=10000);
+        dm:=dm||jsonb_build_object('request_id',request_id,'status','queued','last_attempt_at',clock_timestamp());
+      end if;
+    end if;
+  end if;
   update scout.collection_runs set stats=stats||jsonb_build_object('health',jsonb_build_object('checked_at',clock_timestamp(),
-    'issues',issues,'backlog',backlog)) where id=control.id;
+    'issues',issues,'backlog',backlog),'urgent_dm',dm) where id=control.id;
   return jsonb_build_object('issues',issues,'backlog',backlog);
 end $$;
 

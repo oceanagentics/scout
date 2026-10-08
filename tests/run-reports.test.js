@@ -333,12 +333,12 @@ test('run view navigates on demand, renders artifacts as text, and discards late
   }finally{if(old===undefined)delete globalThis.document;else globalThis.document=old;}
 });
 
-test('independent health checks record failures and recovery without Slack posts, and compact only redundant success history',async()=>{
+test('health keeps routine issues quiet, DMs only persistent urgent incidents, and compacts redundant success history',async()=>{
   const db=await database();try{
     await db.exec(`create schema cron;create schema net;create schema vault;
       create table cron.job(jobid bigint primary key,jobname text,active boolean);
       create table cron.job_run_details(jobid bigint,end_time timestamptz);
-      create table net._http_response(id bigint primary key,status_code int,timed_out boolean,error_msg text);
+      create table net._http_response(id bigint primary key,status_code int,timed_out boolean,error_msg text,content text);
       create table net.requests(id bigserial primary key,url text,body jsonb,headers jsonb);
       create table vault.decrypted_secrets(name text,decrypted_secret text);
       insert into cron.job values(1,'scout-collection',true);
@@ -353,7 +353,7 @@ test('independent health checks record failures and recovery without Slack posts
     await db.query("select scout.loop_tick('next')");
     assert.equal((await db.query('select body from net.requests')).rows[0].body,null);
     assert.ok(!JSON.stringify((await db.query('select stats from scout.collection_runs where id=$1',[control])).rows).includes('fixture-key'));
-    await db.exec("insert into net._http_response values(1,401,false,null)");
+    await db.exec("insert into net._http_response values(1,401,false,null,null)");
     await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{dispatches,0,at}',to_jsonb((now()-interval '3 minutes')::text)) where id=$1",[control]);
     let health=(await db.query('select scout.loop_health() health')).rows[0].health;
     assert.ok(health.issues.includes('Worker HTTP failure: 401'));
@@ -371,6 +371,36 @@ test('independent health checks record failures and recovery without Slack posts
     await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{delivery,communicated}','1') where id=$1",[unstamped]);
     assert.ok(!(await db.query('select scout.loop_health() health')).rows[0].health.issues.some(issue=>issue.includes('Slack delivery uncertain')));
     assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,1);
+    await db.exec("insert into vault.decrypted_secrets values('scout_loop_slack_bot_token','fixture-bot-token');update cron.job set active=false");
+    await db.query('select scout.loop_health()');
+    assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,1,'transient outages stay quiet');
+    await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{urgent_dm,since}',to_jsonb((now()-interval '16 minutes')::text)) where id=$1",[control]);
+    await db.query('select scout.loop_health()');
+    const dm=(await db.query('select * from net.requests where id=2')).rows[0];
+    assert.equal(dm.url,'https://slack.com/api/chat.postMessage');assert.equal(dm.body.channel,'U0AQY6J9SG7');
+    assert.match(dm.body.text,/collection is stopped/);assert.ok(!JSON.stringify(dm.body).includes('source retrieval problems'));
+    assert.equal(dm.headers.Authorization,'Bearer fixture-bot-token');
+    assert.ok(!JSON.stringify((await db.query('select stats from scout.collection_runs where id=$1',[control])).rows).includes('fixture-bot-token'));
+    await db.exec(`insert into net._http_response values(2,200,false,null,'{"ok":false,"error":"missing_scope"}')`);
+    await db.query('select scout.loop_health()');
+    assert.equal((await db.query('select stats from scout.collection_runs where id=$1',[control])).rows[0].stats.urgent_dm.status,'failed');
+    assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,2,'failed or uncertain deliveries never automatically retry');
+    await db.exec('update cron.job set active=true');await db.query('select scout.loop_health()');
+    assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,2,'recovery stays quiet');
+    await db.query("update scout.collection_runs set stats=stats||jsonb_build_object('model_blocker','configuration','model_retry_at',now()+interval '1 hour') where id=$1",[unstamped]);
+    await db.query('select scout.loop_health()');
+    await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{urgent_dm,since}',to_jsonb((now()-interval '16 minutes')::text)) where id=$1",[control]);
+    await db.query('select scout.loop_health()');
+    assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,2,'flapping incidents are throttled');
+    await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{urgent_dm,last_attempt_at}',to_jsonb((now()-interval '7 hours')::text)) where id=$1",[control]);
+    await db.query('select scout.loop_health()');
+    assert.match((await db.query('select body from net.requests where id=3')).rows[0].body.text,/model credentials or configuration/);
+    await db.exec("insert into net._http_response values(3,null,true,null,null)");await db.query('select scout.loop_health()');
+    assert.equal((await db.query('select stats from scout.collection_runs where id=$1',[control])).rows[0].stats.urgent_dm.status,'unknown');
+    assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,3);
+    await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{enabled}','false') where id=$1",[control]);
+    await db.query('select scout.loop_health()');
+    assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,3,'intentional pauses stay quiet');
     await db.query(`insert into scout.collection_runs(tracker_id,started_at,finished_at,outcome,stats,report)
       select $1,now()-interval '40 days',now()-interval '40 days'+n*interval '1 second','no_change',
         '{"stage":"fetch","requests":2,"prepared":0}'::jsonb,'{"artifacts":{"duplicate_body":"safe public source"}}'::jsonb
