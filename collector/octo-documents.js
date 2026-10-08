@@ -197,7 +197,7 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
   const run=runId?{id:runId}:(await db.query('insert into scout.collection_runs(tracker_id,started_at,stats) values($1,$2,$3::jsonb) returning id',[tracker.id,now(),JSON.stringify({validation:!rotation,documents_only:!process})])).rows[0];
   const trace=await startReport(db,run.id,path+(process?'-records':'-documents'));
   const budget={requests:0,deadline:Math.min(deadline,Date.now()+limits.seconds*1000)};
-  const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,uncertain:0,unfetched:0,processed:0,created:0,changed:0,warnings:[...process?[]:['Fetch/prepare only; generation, validation/repair and record saving are not requested.'],path==='octo'?'One RSS page; archives/media remain unfetched.':'Bounded source retrieval; inspect source coverage for failed/deferred items and unvisited pages.','Incidental links retained as citations/metadata; no support expansion.']};
+  const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,fetch_failed:0,fetch_succeeded:0,uncertain:0,unfetched:0,processed:0,created:0,changed:0,warnings:[...process||rotation?[]:['Fetch/prepare only; generation, validation/repair and record saving are not requested.'],path==='octo'?'One RSS page; archives/media remain unfetched.':'Bounded source retrieval; inspect source coverage for failed/deferred items and unvisited pages.','Incidental links retained as citations/metadata; no support expansion.']};
   const ready=[],inventory=[];
   async function fetchDocument(url,withHeaders=false){
     const op=await trace.start('fetch',{url});
@@ -206,13 +206,14 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
     try{
       const response=await read(url,budget);
       if(budget.requests===before)budget.requests++;
+      stats[response.status===200?'fetch_succeeded':'fetch_failed']++;
       if(!withHeaders&&response.status!==200||typeof response.body!=='string'||Buffer.byteLength(response.body)>limits.bytes)throw new Error('Response status/byte bound');
       return {op,response:{url:response.url,status:response.status,body:response.body,...withHeaders?{headers:response.headers}:{}}}; // Headers are for parser checks only.
-    }catch{if(budget.requests===before)budget.requests++;await trace.finish(op,'fail',{note:'Source retrieval failed or exceeded a guard; no response retained.'});return {op,error:'Source retrieval failed or exceeded a guard'};}
+    }catch{if(budget.requests===before)budget.requests++;stats.fetch_failed++;await trace.finish(op,'fail',{note:'Source retrieval failed or exceeded a guard; no response retained.'});return {op,error:'Source retrieval failed or exceeded a guard'};}
   }
   try{
     let selected,plan,retrievalFailed=false;
-    const resumed=rotation?(await db.query(`select latest.* from (
+    const resumed=rotation&&process?(await db.query(`select latest.* from (
       select distinct on(parsed#>>'{document,identity}') * from scout.evidence
       where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like $2
       order by parsed#>>'{document,identity}',last_seen_at desc,id
@@ -328,6 +329,10 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
       const source=(await db.query(`insert into scout.evidence(tracker_id,url,content_hash,content,parsed,last_seen_at)
         values($1,$2,$3,$4,$5,clock_timestamp()) on conflict(record_id,tracker_id,url,content_hash) do update set last_seen_at=excluded.last_seen_at returning *`,
       [tracker.id,item.url,hash,content,JSON.stringify({document:{version:preparationVersion,id:item.id,identity,conflicted:Boolean(item.conflicted),preparation:{state:'pending'},processing:{state:'pending'}}})])).rows[0];
+      if(item.conflicted&&!source.parsed.document.conflicted){
+        source.parsed.document.conflicted=true;
+        await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,conflicted}','true') where id=$1",[source.id]);
+      }
       const capture=await trace.capture(source),refs=[capture];if(previous&&previous.id!==source.id)refs.push(await trace.capture(previous));
       if(fetched.response)await trace.finish(fetched.op,'pass',{artifacts:[capture],final_url:fetched.response.url,bytes:Buffer.byteLength(fetched.response.body),note:'Linked WordPress document captured; structural validation follows.'});
       if(retrieve)refs.push(await trace.artifact('provenance','Source item occurrences and coverage',{identity,provenance:item.provenance,coverage:item.coverage,conflicted:item.conflicted},{source_id:source.id}));
@@ -359,24 +364,27 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
         await trace.finish(op,reused?'skipped':'pass',{artifacts:[capture,artifact],note:(reused?'Identical successfully prepared input reused. ':'Full document prepared. ')+(feedOnly?'Feed-only: linked article unavailable or invalid. ':'')+'Downstream processing remains separate; ready inputs are returned even when unchanged.'});
         stats[reused?'reused':'prepared']++;if(feedOnly)stats.feed_only++;
         ready.push(source.id);inventory.push({id:item.id,url:item.url,source_id:source.id,state:feedOnly?'feed-only':'prepared',reused});
-        if(item.conflicted){
+        if(source.parsed.document.conflicted){
           stats.uncertain++;inventory.at(-1).processing='uncertain';
           const conflict=await trace.start('validate',{source_ids:[source.id],artifacts:refs});
           await trace.finish(conflict,'uncertain',{note:'Conflicting payloads for one source identity in this retrieval; retain all versions without choosing observation order.'});continue;
         }
-        if(process&&!stats.deferred){
-          if(feedOnly){
+        if(feedOnly){
+          if(process){
             stats.failed++;inventory.at(-1).processing='failed';
-            stats.warnings.push('Full announcement unavailable; retained feed snippet is discovery only.');continue;
+            stats.warnings.push('Full announcement unavailable; retained feed snippet is discovery only.');
           }
-          model??=makeModel?.(run.id,budget.deadline,trace);
+          continue;
+        }
+        {
           // Raw captures remain exact. Reuse only consecutive equivalent prepared inputs;
           // a real content/context change must not resurrect older completion or repair state.
           // The upsert just refreshed source.last_seen_at, so an older revisited source cannot certify its own progress.
           const prior=previous?.parsed.document.prepared_versions?.[preparationVersion]??previous?.parsed.document.prepared,prefix=documentVersion+'/'+prepared.version+'/';
           const [priorInput,input]=[prior,prepared].map(p=>p&&({...p,links:p.links.map(({start,end,...link})=>link),
             blocks:p.blocks.map(({html_start,html_end,...block})=>block),omissions:p.omissions.map(({regions,start,end,...omission})=>omission)}));
-          const equivalent=prior&&isDeepStrictEqual(priorInput,input)?
+          const equivalentInput=prior&&isDeepStrictEqual(priorInput,input);
+          const equivalent=equivalentInput?
             (await db.query("with captures as (select e.id,e.last_seen_at,p.version,p.state,coalesce((p.prepared-array['links','blocks','omissions'])=($5::jsonb-array['links','blocks','omissions'])"+
               " and (select coalesce(jsonb_agg(v-'start'-'end' order by n),'[]'::jsonb) from jsonb_array_elements(p.prepared->'links') with ordinality a(v,n))=$5::jsonb->'links'"+
               " and (select coalesce(jsonb_agg(v-'html_start'-'html_end' order by n),'[]'::jsonb) from jsonb_array_elements(p.prepared->'blocks') with ordinality a(v,n))=$5::jsonb->'blocks'"+
@@ -395,10 +403,25 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
               processing_versions:{...source.parsed.document.processing_versions,[equivalent.version]:state}};
             await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document}',$2::jsonb) where id=$1",[source.id,JSON.stringify(source.parsed.document)]);
           }
+          if(equivalentInput&&!equivalent&&previous?.parsed.document.processing.version){
+            source.parsed.document={...source.parsed.document,processing:previous.parsed.document.processing,
+              processing_versions:{...source.parsed.document.processing_versions,...previous.parsed.document.processing_versions}};
+            await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document}',$2::jsonb) where id=$1",[source.id,JSON.stringify(source.parsed.document)]);
+          }
+          if(previous&&previous.content_hash!==hash&&!equivalentInput){
+            source.parsed.document.processing={state:'pending',changed:true};
+            await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document}',$2::jsonb) where id=$1",[source.id,JSON.stringify(source.parsed.document)]);
+          }
+          const complete=source.parsed.document.processing_versions?.[source.parsed.document.processing.version];
+          if(complete?.state==='complete')await db.query("update scout.evidence e set last_seen_at=s.last_seen_at from scout.evidence s,jsonb_array_elements($2::jsonb) f"+
+            " where s.id=$1 and e.tracker_id=s.tracker_id and e.parsed#>>'{document,identity}'=s.parsed#>>'{document,identity}'"+
+            " and e.record_id=(f->>'record_id')::uuid and e.parsed->'finding'=f->'finding'",[source.id,JSON.stringify(complete.findings)]);
+          if(!process||stats.deferred)continue;
+          model??=makeModel?.(run.id,budget.deadline,trace);
           const context=await supportDocuments(db,{source,prepared,trace,context:equivalent?.version.slice(prefix.length),
             reuse:equivalent&&equivalent.id!==source.id?{capture_id:equivalent.id,version:equivalent.version,comparison:'Exact prepared document including URL/context/structure, text ranges and omissions; only raw HTML link/block/omission positions and region offsets excluded.'}:undefined});
           const result=await processDocument(db,{source,prepared:context,trace,model,deadline:budget.deadline,version:documentVersion,
-            changed:Boolean(previous&&previous.content_hash!==hash&&!equivalent)});
+            changed:Boolean(previous&&previous.content_hash!==hash&&!equivalentInput)});
           stats.created+=result.created;stats.changed+=result.changed;
           if(result.deferred)stats.deferred=result.deferred;
           if(result.state==='complete')stats.processed++;else if(result.state!=='deferred'){stats[result.state==='uncertain'?'uncertain':'failed']++;stats.warnings.push(result.error);}
@@ -416,7 +439,8 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
     stats.requests=budget.requests;stats.pending=ready.length-stats.processed;
     if(stats.deferred)stats.warnings.push('Model '+(['network','runtime'].includes(stats.deferred.reason)?'processing':'quota')+' deferred: '+stats.deferred.reason);
     // A successful preparation is not an end-to-end successful collection.
-    const outcome=ready.length||!stats.failed?'partial':'failed';
+    const outcome=process||!rotation?(ready.length||!stats.failed?'partial':'failed'):
+      stats.failed?'partial':stats.prepared?'success':'no_change';
     await db.query('update scout.collection_runs set finished_at=$2,outcome=$3,stats=stats||$4::jsonb where id=$1',[run.id,now(),outcome,JSON.stringify(stats)]);
     return {run_id:run.id,outcome,...stats,document_ids:ready};
   }catch(error){

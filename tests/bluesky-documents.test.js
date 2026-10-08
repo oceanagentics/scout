@@ -238,3 +238,16 @@ test('long Unicode post and embed fields progress without clipping and keep deco
   assert.ok(inputs.some(i=>i.segments.some(s=>s.text.includes('Final image session.'))));
   assert.ok(inputs.some(i=>i.segments.some(s=>s.source_fields?.some(f=>f.source_range[1]<f.source_length))));
 });
+
+test('background author turns check newest posts and continue a durable historical cursor through failures',async()=>{
+  const item=await fixture('hsa-webinar.json');let progress={},seen=[];
+  const run=async(fail=false)=>retrieveAuthorDocuments({tracker,sourceURL,progress,budget:{requests:0,deadline:Date.now()+10000},
+    limits:{feedPages:2,postsPerPage:20},read:async url=>{
+      const cursor=new URL(url).searchParams.get('cursor');seen.push(cursor);
+      if(fail&&cursor)throw new Error('Temporary old-page failure');
+      return response(url,{feed:[item],cursor:cursor==='older'?'oldest':cursor==='oldest'?undefined:'older'});
+    }});
+  let result=await run();progress=result.progress;assert.deepEqual(seen,[null,'older']);assert.equal(progress.cursor,'oldest');
+  seen=[];result=await run(true);progress=result.progress;assert.deepEqual(seen,[null,'oldest']);assert.equal(progress.cursor,'oldest');
+  seen=[];result=await run();assert.deepEqual(seen,[null,'oldest']);assert.deepEqual(result.progress,{});
+});

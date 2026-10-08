@@ -107,11 +107,12 @@ test('rotation uses persisted oldest attempts, skips ineligible trackers, backs 
     const recovered=(await db.query('select outcome,report,stats from scout.collection_runs where id=$1',[stale])).rows[0];
     assert.equal(recovered.outcome,'failed');assert.deepEqual(recovered.report,retained);
     assert.equal(selections.at(-1),ids[0]);
-    // Shared quota prevents collection or even claiming another source.
+    // Shared quota defers review, while source fetching remains eligible.
     const before=(await db.query('select count(*)::int n from scout.collection_runs')).rows[0].n;
     await db.query("update scout.collection_runs set stats=stats||jsonb_build_object('model_retry_at',now()+interval '2 minutes') where id=$1",[stale]);
-    const deferred=await (await invoke()).json();assert.equal(deferred.outcome,'deferred');assert.equal(deferred.reason,'provider');
-    assert.equal((await db.query('select count(*)::int n from scout.collection_runs')).rows[0].n,before);
+    await db.query("update scout.collection_runs set stats=stats||jsonb_build_object('retry_at',now()-interval '1 second') where stats->>'stage'='fetch'");
+    const deferred=await (await invoke()).json();assert.equal(deferred.review.outcome,'deferred');assert.equal(deferred.review.reason,'provider');
+    assert.equal((await db.query('select count(*)::int n from scout.collection_runs')).rows[0].n,before+1);
     // An unexpired claim remains exclusive even after losing its session.
     await db.query("update scout.collection_runs set stats=stats-'model_retry_at'");
     await db.query("insert into scout.collection_runs(tracker_id,stats) values($1,jsonb_build_object('rotation',true,'turn_expires_at',now()+interval '2 minutes'))",[ids[0]]);
@@ -132,6 +133,7 @@ test('overlap skips collection; authorized work uses parameters/transactions and
         assert.equal(options.max, 1);
         assert.equal(options.types.json.serialize({ proof: true }), '{"proof":true}');
         assert.equal(options.types.json.serialize('{"proof":true}'), '{"proof":true}');
+        assert.equal(options.types.timestamp.serialize('2026-10-05T06:34:33.790301+00:00'),'2026-10-05T06:34:33.790301+00:00');
         return { reserve: async () => tx, end: async () => { closed++; } };
       }, collect: async (db, options) => {
         collected++;

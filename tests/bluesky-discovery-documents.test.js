@@ -132,3 +132,16 @@ test('discovery keeps quoted/reply/media metadata and marks full context unfetch
   const invalid=await retrieve(async url=>response(url,[post]));assert.equal(invalid.documents.length,0);
   assert.ok(invalid.coverage.some(c=>c.state==='failed'));
 });
+
+test('background discovery alternates fresh checks with durable frozen-window pagination',async()=>{
+  let progress={},seen=[];
+  const run=()=>retrieve(async url=>{
+    const p=new URL(url).searchParams;seen.push({cursor:p.get('cursor'),until:p.get('until')});
+    return response(url,[sample],p.get('cursor')==='older'?'oldest':'older');
+  },{since:'2026-09-01T00:00:00Z',until:progress.history?'2026-10-09T00:00:00Z':'2026-10-08T00:00:00Z',progress});
+  let result=await run();progress=result.progress;assert.ok(seen.every(p=>p.cursor===null));
+  seen=[];result=await run();progress=result.progress;
+  assert.ok(seen.every(p=>p.cursor==='older'&&p.until==='2026-10-08T00:00:00Z'));
+  seen=[];result=await run();progress=result.progress;assert.ok(seen.every(p=>p.cursor===null));
+  seen=[];await run();assert.ok(seen.every(p=>p.cursor==='oldest'));
+});

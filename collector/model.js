@@ -73,12 +73,19 @@ export function reservationSQL(runId, inputBytes, runLimit = MODEL_LIMITS.run, l
   end $budget$;`;
 }
 
-export function gemini({ apiKey, ledger, runId, runLimit, limits, pace = false, fetch: send = fetch, deadline = Date.now() + 100000, trace,
+export function gemini({ apiKey, ledger, runId, runLimit, limits, pace = false, wait:waitForQuota = pace, fetch: send = fetch, deadline = Date.now() + 100000, trace,
   sleep = ms => new Promise(resolve=>setTimeout(resolve,ms)) }) {
   const configured=limits!==undefined,allocated=runLimit;
   limits=modelLimits(limits??{});runLimit??=limits.run;
   return async (instruction, input, schema) => {
-    if (!apiKey || !ledger) throw new Error('Model and shared hosted budget ledger are required');
+    if (!apiKey || !ledger) {
+      if(pace&&ledger){
+        const deferred={reason:'configuration',retry_at:new Date(Date.now()+300000).toISOString()};
+        await ledger.query("update scout.collection_runs set stats=stats||jsonb_build_object('model_retry_at',$2::text,'model_blocker','configuration') where id=$1",[runId,deferred.retry_at]);
+        throw Object.assign(new Error('Model configuration unavailable; fetching continues'),{deferred});
+      }
+      throw new Error('Model and shared hosted budget ledger are required');
+    }
     // Hosted settings are published on real run rows. Local assessment and
     // notification callers follow the latest published policy in the same DB.
     if(configured)await ledger.query("update scout.collection_runs set stats=stats||jsonb_build_object('model_limits',$2::jsonb) where id=$1",[runId,JSON.stringify(limits)]);
@@ -102,7 +109,7 @@ export function gemini({ apiKey, ledger, runId, runLimit, limits, pace = false, 
             // Another caller may have finished between the denied reservation and hint.
             if(!allowance.reason)continue;
             const wait=Math.max(1,Date.parse(allowance.retry_at)-Date.now()+100);
-            if(pace&&['minute','tokens','provider'].includes(allowance.reason)&&wait<=60000&&Date.now()+wait+15000<deadline){await sleep(wait);continue;}
+            if(pace&&waitForQuota&&['minute','tokens','provider'].includes(allowance.reason)&&wait<=60000&&Date.now()+wait+15000<deadline){await sleep(wait);continue;}
             const deferred={reason:allowance.reason,retry_at:allowance.retry_at};
             await ledger.query("update scout.collection_runs set stats=stats||jsonb_build_object('model_deferred',$2::jsonb) where id=$1",[runId,JSON.stringify(deferred)]);
             throw Object.assign(new Error('Model quota deferred: '+allowance.reason),{deferred});
@@ -171,6 +178,9 @@ export function gemini({ apiKey, ledger, runId, runLimit, limits, pace = false, 
         }
         if(pace&&!error.deferred&&!error.capacity&&(['TimeoutError','AbortError'].includes(error.name)||/Model token count returned HTTP 5\d\d/.test(error.message)))
           error.deferred={reason:'network',retry_at:new Date(Date.now()+60000).toISOString()};
+        if(pace&&/HTTP (401|403|404)/.test(error.message))error.deferred={reason:'configuration',retry_at:new Date(Date.now()+300000).toISOString()};
+        if(['network','configuration'].includes(error.deferred?.reason))
+          await ledger.query("update scout.collection_runs set stats=stats||jsonb_build_object('model_retry_at',$2::text,'model_blocker',$3::text) where id=$1",[runId,error.deferred.retry_at,error.deferred.reason]);
         if (trace?.report.operations[op].state!=='fail') await trace?.finish(op,error.deferred&&error.deferred.reason!=='network'?'skipped':'fail',{note:'Model transport, response parsing or completion deferred/failed; available artifacts are retained.'});
         throw error;
       }

@@ -7,7 +7,10 @@ import {collectHSA} from '../collector/hsa.js';
 import {gemini,MODEL_LIMITS} from '../collector/model.js';
 import {CONTENT_FIELDS} from '../collector/assessment.js';
 import {prepareDocument} from '../collector/octo-documents.js';
-import {packDocument,validateFinding as validateCitedFinding,DOCUMENT_VERSION} from '../collector/document-records.js';
+import {packDocument,processDocument,validateFinding as validateCitedFinding,DOCUMENT_VERSION} from '../collector/document-records.js';
+import {supportDocuments} from '../collector/octo-documents.js';
+import {startReport} from '../collector/report.js';
+import {hostedHSA} from '../collector/hosted-hsa.js';
 import {stepState} from '../src/runs.js';
 import {filterRecords} from '../src/records.js';
 import {eligibleRecords} from '../notifications/slack.js';
@@ -305,5 +308,83 @@ test('webinar location Online retains webinar evidence and completed repeats wit
     assert.match(resolve,/identifying this event as a webinar is sufficient support/);
     const repeated=await source.run();assert.equal(repeated.created,0);assert.equal(repeated.changed,0);
     assert.equal(source.requests.length,2);assert.deepEqual(await current(db),records);
+  }finally{await db.close();}
+});
+
+test('initial-only review parks a rejected finding and saves another, then makes no unchanged repair calls',async()=>{
+  const db=await setup();try{
+    const captured=await runner(db,()=>{throw new Error('fetch-only must not call a model');}).run({documents:true});
+    const source=(await db.query('select * from scout.evidence where id=$1',[captured.document_ids[0]])).rows[0];
+    const prepared=source.parsed.document.prepared_versions[source.parsed.document.preparation.version];
+    const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[source.tracker_id])).rows[0].id;
+    const trace=await startReport(db,run),context=await supportDocuments(db,{source,prepared,trace});let calls=0;
+    const model=async(instruction,[input],schema)=>{
+      calls++;
+      if(input.stage==='extract')return answer([cited(proposal(),input),cited(proposal('Second session','2026-10-22T10:00:00Z'),input)]);
+      assert.ok(schema.required.includes('comparisons'));
+      if(input.finding.anchor==='First session')return {invalid:true};
+      return reviewed({...resolution(input),comparisons:[]},input);
+    };
+    const reviewedSource=await processDocument(db,{source,prepared:context,trace,model,deadline:Date.now()+20000,repairs:false});
+    assert.equal(reviewedSource.state,'needs_repair');assert.equal(reviewedSource.created,1);assert.equal(calls,3);
+    const retained=(await db.query('select * from scout.source_queue where id=$1',[source.id])).rows[0];
+    assert.equal(retained.queue_state,'needs_repair');
+    assert.equal(retained.progress.findings[0].pending.round,1);
+    assert.deepEqual(retained.progress.findings[0].pending.repair.rejected,{invalid:true});
+    await processDocument(db,{source:retained,prepared:context,trace,model,deadline:Date.now()+20000,repairs:false});
+    assert.equal(calls,3);
+  }finally{await db.close();}
+});
+
+test('automatic fetching captures new material during provider cooldown, then globally reviews the oldest capture',async()=>{
+  const db=await setup();try{
+    await db.query('update scout.trackers set enabled=true where id=$1',[fixture.tracker.id]);
+    const secret='sb_secret_scout_test_only',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{default:'sb_publishable_test_only'},jwks:null};
+    const connect=()=>({reserve:async()=>({unsafe:async(q,p=[])=>/pg_try_advisory_lock|pg_advisory_unlock/.test(q)?[{acquired:true}]:(await db.query(q,p)).rows,release(){}}),end:async()=>{}});
+    let post=article,calls=0;
+    const cooldown=(await db.query("insert into scout.collection_runs(tracker_id,outcome,finished_at,stats) values($1,'partial',now(),jsonb_build_object('model_retry_at',now()+interval '1 hour')) returning id",[fixture.tracker.id])).rows[0].id;
+    const invoke=()=>hostedHSA(new Request('https://example.test?next=true',{method:'POST',headers:{apikey:secret}}),{
+      env,databaseURL:'unused',apiKey:'test-key',connect,
+      collect:(database,options)=>collectHSA(database,{...options,
+        read:async(url,budget)=>{budget.requests++;return {url,status:200,body:url===feedURL?'<rss><channel><item><guid>https://octogroup.org/?p='+post.id+'</guid><link>'+post.link+'</link><title>'+post.title.rendered+'</title><description>Feed excerpt.</description></item></channel></rss>':JSON.stringify(url.endsWith('/99')?article:post)};}}),
+      modelFetch:async(url,request)=>{
+        if(url.endsWith(':countTokens'))return Response.json({totalTokens:100});
+        calls++;const input=JSON.parse(JSON.parse(request.body).contents[0].parts[0].text)[0];
+        return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(answer([]))}]}}]});
+      }});
+    const first=await (await invoke()).json();
+    assert.equal(first.review.reason,'provider');assert.equal(first.documents,1);assert.equal(calls,0);
+    await db.query("update scout.collection_runs set stats=stats||jsonb_build_object('retry_at',now()-interval '1 second') where stats->>'stage'='fetch'");
+    post={...article,id:100,link:'https://octogroup.org/new-session/',title:{rendered:'New session'}};
+    const second=await (await invoke()).json();assert.equal(second.review.reason,'provider');assert.equal(second.documents,2);assert.equal(calls,0);
+    await db.query("update scout.collection_runs set stats=stats-'model_retry_at' where id=$1",[cooldown]);
+    await db.query("update scout.collection_runs set stats=stats||jsonb_build_object('retry_at',now()-interval '1 second') where stats->>'stage'='fetch'");
+    const notification=(await db.query("insert into scout.collection_runs(tracker_id,stats) values($1,'{\"purpose\":\"notification\"}') returning id",[fixture.tracker.id])).rows[0].id;
+    const waiting=await (await invoke()).json();assert.equal(waiting.review,undefined);assert.equal(waiting.documents,2);assert.equal(calls,0);
+    await db.query("update scout.collection_runs set started_at=now()-interval '111 seconds' where id=$1",[notification]);
+    const third=await (await invoke()).json();assert.equal(third.review.state,'complete');assert.equal(calls,1);
+    const queue=(await db.query("select parsed#>>'{document,id}' id,queue_state from scout.source_queue order by collected_at")).rows;
+    assert.deepEqual(queue,[{id:'99',queue_state:'complete'},{id:'100',queue_state:'awaiting_initial'}]);
+    const fourth=await (await invoke()).json();assert.equal(fourth.review.state,'complete');assert.equal(calls,2);
+    await invoke();assert.equal(calls,2);
+  }finally{await db.close();}
+});
+
+test('three durable transport failures park unchanged initial work while quota deferrals do not consume that bound',async()=>{
+  const db=await setup();try{
+    const captured=await runner(db,()=>{}).run({documents:true});let source=(await db.query('select * from scout.evidence where id=$1',[captured.document_ids[0]])).rows[0];
+    const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[source.tracker_id])).rows[0].id;
+    const trace=await startReport(db,run),context=await supportDocuments(db,{source,prepared:source.parsed.document.prepared_versions[source.parsed.document.preparation.version],trace});
+    let calls=0,reason='minute';
+    const model=async()=>{calls++;throw Object.assign(new Error('Temporary '+reason),{deferred:{reason,retry_at:new Date().toISOString()}});};
+    await processDocument(db,{source,prepared:context,trace,model,deadline:Date.now()+20000,repairs:false});
+    reason='network';
+    for(let i=0;i<3;i++){
+      source=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];
+      await processDocument(db,{source,prepared:context,trace,model,deadline:Date.now()+20000,repairs:false});
+    }
+    source=(await db.query('select * from scout.source_queue where id=$1',[source.id])).rows[0];
+    assert.equal(source.queue_state,'needs_repair');assert.equal(source.progress.network_failures,3);
+    await processDocument(db,{source,prepared:context,trace,model,deadline:Date.now()+20000,repairs:false});assert.equal(calls,4);
   }finally{await db.close();}
 });

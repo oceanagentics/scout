@@ -332,3 +332,60 @@ test('run view navigates on demand, renders artifacts as text, and discards late
     await tick();assert.match(root.textContent,/Validate and repair · Uncertain/);assert.match(root.textContent,/uncertain: 1/);assert.match(root.textContent,/Identity remains unresolved/);closeUncertain();
   }finally{if(old===undefined)delete globalThis.document;else globalThis.document=old;}
 });
+
+test('independent health checks detect auth/stopped scheduler, deduplicate alerts, recover and compact only redundant success history',async()=>{
+  const db=await database();try{
+    await db.exec(`create schema cron;create schema net;create schema vault;
+      create table cron.job(jobid bigint primary key,jobname text,active boolean);
+      create table cron.job_run_details(jobid bigint,end_time timestamptz);
+      create table net._http_response(id bigint primary key,status_code int,timed_out boolean,error_msg text);
+      create table net.requests(id bigserial primary key,url text,body jsonb,headers jsonb);
+      create table vault.decrypted_secrets(name text,decrypted_secret text);
+      insert into cron.job values(1,'scout-collection',true);
+      insert into vault.decrypted_secrets values('scout_loop_backend_key','fixture-key'),
+        ('scout_loop_slack_webhook','https://hooks.slack.com/services/TFZ8FRLBV/B0C5TEK4R38/fixture');
+      create function net.http_post(url text,headers jsonb default '{}',body jsonb default '{}',timeout_milliseconds int default 5000)
+        returns bigint language sql as $$insert into net.requests(url,body,headers) values(url,body,headers) returning id$$;`);
+    const operations=await readFile(new URL('../supabase/scout-loop.sql',import.meta.url),'utf8');
+    await db.exec(operations.slice(operations.indexOf('create or replace function'),operations.indexOf('-- Install paused.')));
+    const tracker=(await db.query('select id from scout.trackers order by id limit 1')).rows[0].id;
+    const control=(await db.query("insert into scout.collection_runs(tracker_id,stats) values($1,jsonb_build_object('purpose','scheduler','enabled',true,'supported','[]'::jsonb,'last_tick_at',now())) returning id",[tracker])).rows[0].id;
+    await db.query("select scout.loop_tick('next')");
+    assert.equal((await db.query('select body from net.requests')).rows[0].body,null);
+    assert.ok(!JSON.stringify((await db.query('select stats from scout.collection_runs where id=$1',[control])).rows).includes('fixture-key'));
+    await db.exec("insert into net._http_response values(1,401,false,null)");
+    await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{dispatches,0,at}',to_jsonb((now()-interval '3 minutes')::text)) where id=$1",[control]);
+    let health=(await db.query('select scout.loop_health() health')).rows[0].health;
+    assert.ok(health.issues.includes('Worker HTTP failure: 401'));
+    const alerts=(await db.query('select count(*)::int n from net.requests')).rows[0].n;
+    await db.query('select scout.loop_health()');assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,alerts);
+    await db.exec('update cron.job set active=false');
+    health=(await db.query('select scout.loop_health() health')).rows[0].health;
+    assert.ok(health.issues.includes('Collection scheduler stopped'));
+    await db.exec('update cron.job set active=true;update net._http_response set status_code=200 where id=1');
+    health=(await db.query('select scout.loop_health() health')).rows[0].health;
+    assert.ok(!health.issues.includes('Collection scheduler stopped'));assert.ok(!health.issues.includes('Worker HTTP failure: 401'));
+    const before=(await db.query('select count(*)::int n from net.requests')).rows[0].n;
+    await db.query('select scout.loop_health()');assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,before);
+    const unstamped=(await db.query("insert into scout.collection_runs(tracker_id,started_at,finished_at,outcome,stats) values($1,now()-interval '4 minutes',now(),'no_change','{\"purpose\":\"notification\",\"delivery\":{\"status\":\"sent\",\"communicated\":0,\"records\":[{}]}}') returning id",[tracker])).rows[0].id;
+    assert.ok((await db.query('select scout.loop_health() health')).rows[0].health.issues.some(issue=>issue.includes('Slack delivery uncertain')));
+    await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{delivery,communicated}','1') where id=$1",[unstamped]);
+    assert.ok(!(await db.query('select scout.loop_health() health')).rows[0].health.issues.some(issue=>issue.includes('Slack delivery uncertain')));
+    await db.query(`insert into scout.collection_runs(tracker_id,started_at,finished_at,outcome,stats,report)
+      select $1,now()-interval '40 days',now()-interval '40 days'+n*interval '1 second','no_change',
+        '{"stage":"fetch","requests":2,"prepared":0}'::jsonb,'{"artifacts":{"duplicate_body":"safe public source"}}'::jsonb
+      from generate_series(1,3) n`,[tracker]);
+    const repair=(await db.query(`insert into scout.collection_runs(tracker_id,started_at,finished_at,outcome,stats,report)
+      values($1,now()-interval '40 days',now()-interval '40 days','partial',
+      '{"stage":"initial_review","model_attempts":[{"at":"2026-01-01"}]}','{"artifacts":{"rejected":"original"}}') returning id`,[tracker])).rows[0].id;
+    await db.query('select scout.loop_retention()');
+    const compacted=(await db.query("select stats,report from scout.collection_runs where stats->>'stage'='fetch'")).rows;
+    assert.equal(compacted.length,1);assert.equal(compacted[0].report,null);assert.equal(compacted[0].stats.compacted_runs,2);assert.equal(compacted[0].stats.compacted_requests,4);
+    assert.equal((await db.query('select report from scout.collection_runs where id=$1',[repair])).rows[0].report.artifacts.rejected,'original');
+    await db.exec('set role authenticated');await db.query("select set_config('request.jwt.claim.sub',$1,false)",[member]);
+    const status=(await db.query('select awaiting_initial,parked,loop_state from scout.tracker_status where id=$1',[tracker])).rows[0];
+    assert.equal(status.awaiting_initial,0);
+    await assert.rejects(db.query('select * from scout.source_queue'),{code:'42501'});
+    await assert.rejects(db.query('select scout.loop_health()'),{code:'42501'});
+  }finally{await db.close();}
+});

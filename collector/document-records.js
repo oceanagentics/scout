@@ -281,12 +281,16 @@ async function saveResolution(db,source,entry,decision,candidates,version,state)
   });
 }
 
-export async function processDocument(db,{source,prepared,trace,model,deadline,version=DOCUMENT_VERSION,changed=false}){
+export async function processDocument(db,{source,prepared,trace,model,deadline,version=DOCUMENT_VERSION,changed=false,repairs=true}){
   version=version+'/'+prepared.version+'/'+(prepared.context??'primary');source={...source,prepared};
   const previous=source.parsed.document.processing_versions?.[version];
   let state=changed?null:previous;
+  if(!repairs&&!changed&&state&&(state.exhausted||['complete','uncertain','needs_repair'].includes(state.state)||
+    state.policy!=='initial-only'&&(state.state==='failed'&&!['Model quota reached','Observation-only run: assessments deferred (max_attempts=0)'].includes(state.error)||state.pending?.round>0||state.findings?.some(f=>f.pending?.round>0))))
+    return {created:0,changed:0,state:state.state,error:state.error};
   const counts={created:0,changed:0},completed=state?.state==='complete';
   state={...state,revision:previous?.revision??0,state:'running',cursor:state?.cursor??0,findings:state?.findings??[]};
+  if(!repairs)state.policy='initial-only';
   delete state.deferred;
   let active,phase='generate';
   try{
@@ -336,10 +340,10 @@ export async function processDocument(db,{source,prepared,trace,model,deadline,v
     state.attempted_at=new Date().toISOString();
     state=await persist(db,source,version,state);
     if(!model)throw new Error('Model/shared ledger unavailable; processing deferred');
-    while(state.cursor<prepared.text.length||state.findings.some(f=>!f.resolution&&!f.exhausted)){
+    while(state.cursor<prepared.text.length||state.findings.some(f=>!f.resolution&&!f.exhausted&&(repairs||!f.parked))){
       phase='prepare';
       if(Date.now()+1000>=deadline)throw Object.assign(new Error('Document processing time bound; deferred'),{deferred:{reason:'runtime',retry_at:new Date().toISOString()}});
-      let entry=state.findings.find(f=>!f.resolution&&!f.exhausted);
+      let entry=state.findings.find(f=>!f.resolution&&!f.exhausted&&(repairs||!f.parked));
       const extracting=!entry,stage=extracting?'extract':'resolve';
       let owner=entry??state;
       if(owner.pending?.round>2){
@@ -349,7 +353,7 @@ export async function processDocument(db,{source,prepared,trace,model,deadline,v
       }
       const input=extracting?(state.pending?.input??packDocument(source,prepared,state.cursor,version,state.end)):null;
       const earlier=new Set(Object.keys(trace.report.operations));
-      for(let round=owner.pending?.round??0;round<=2;round++){
+      for(let round=owner.pending?.round??0;round<=(repairs?2:0);round++){
         let candidates=[],supplied=input;
         if(!extracting){
           phase='generate';
@@ -370,7 +374,7 @@ export async function processDocument(db,{source,prepared,trace,model,deadline,v
         if(owner.pending?.repair)supplied={...supplied,repair:owner.pending.repair};
         const instruction=extracting?DOCUMENT_INSTRUCTION:RESOLUTION_INSTRUCTION;
         const keys=extracting?[]:factKeys.filter(k=>(k==='priority'?entry.finding.priority:entry.finding.candidate[k])!==null);
-        const schema=extracting?DOCUMENT_SCHEMA:{...RESOLUTION_SCHEMA,properties:{...RESOLUTION_SCHEMA.properties,
+        const schema=extracting?DOCUMENT_SCHEMA:{...RESOLUTION_SCHEMA,required:[...RESOLUTION_SCHEMA.required,...repairs?[]:['comparisons']],properties:{...RESOLUTION_SCHEMA.properties,
           evidence:{...RESOLUTION_SCHEMA.properties.evidence,properties:Object.fromEntries(Object.entries(RESOLUTION_SCHEMA.properties.evidence.properties)
             .map(([k,v])=>[k,{...v,items:{...v.items,maximum:entry.finding.citations.length-1}}]))},
           comparisons:{...RESOLUTION_SCHEMA.properties.comparisons,items:{...RESOLUTION_SCHEMA.properties.comparisons.items,properties:{...RESOLUTION_SCHEMA.properties.comparisons.items.properties,
@@ -440,14 +444,23 @@ export async function processDocument(db,{source,prepared,trace,model,deadline,v
         const rejected=await trace.start('validate',{checkpoint:true,source_ids:[source.id],stage,artifacts:[returned,artifact],repair:round});
         await trace.finish(rejected,'fail',{note:errors.join('; ')});
         owner.pending={...extracting?{input}:{},repair:{rejected:response,errors},round:round+1};
+        if(!repairs){
+          // Park the rejected range/finding, then continue valid initial work.
+          // Exact rejected output and feedback stay available to a future repair worker.
+          if(extracting){state.parked_ranges=[...state.parked_ranges??[],owner.pending];delete owner.pending;state.cursor=input.range[1];delete state.end;}
+          else owner.parked=true;
+        }
         state=await persist(db,source,version,state);entry=entry?state.findings.find(f=>f.key===entry.key):null;owner=entry??state;
+        if(!repairs)break;
         if(extracting&&state.findings.some(f=>!f.resolution&&!f.exhausted))break;
       }
     }
     const exhausted=state.findings.filter(f=>f.exhausted);
     if(exhausted.length){state.exhausted=true;throw new Error(exhausted.length+' finding resolutions exhausted; other findings retained: '+exhausted.map(f=>f.error).join('; '));}
     const uncertain=state.findings.filter(f=>f.resolution?.outcome==='uncertain');
-    state.state=uncertain.length?'uncertain':'complete';delete state.error;state=await persist(db,source,version,state);
+    const parked=(state.parked_ranges?.length??0)+state.findings.filter(f=>f.parked).length;
+    state.state=parked?'needs_repair':uncertain.length?'uncertain':'complete';delete state.error;state=await persist(db,source,version,state);
+    if(parked)return {...counts,state:'needs_repair',error:parked+' rejected ranges/findings parked for repair'};
     if(uncertain.length){
       const artifact=await trace.artifact('uncertain_findings','Unresolved finding identities',uncertain);
       const op=await trace.start('validate',{source_ids:[source.id],artifacts:[artifact],stage:'resolve'});
@@ -458,7 +471,9 @@ export async function processDocument(db,{source,prepared,trace,model,deadline,v
     return {...counts,state:'complete'};
   }catch(error){
     if(trace.report.operations[active]?.state==='running')await trace.finish(active,'fail',{note:error.message}).catch(()=>{});
-    state.state=error.deferred?'deferred':'failed';state.error=error.message;
+    if(!repairs&&error.deferred?.reason==='network')state.network_failures=(state.network_failures??0)+1;
+    if(state.network_failures>=3)delete error.deferred;
+    state.state=error.deferred?'deferred':repairs?'failed':'needs_repair';state.error=error.message;
     if(error.deferred)state.deferred=error.deferred;else delete state.deferred;
     await persist(db,source,version,state).catch(()=>{});
     const artifact=await trace.artifact('processing_error','Recoverable document processing failure',{error:error.message,cursor:state.cursor,findings:state.findings,version});

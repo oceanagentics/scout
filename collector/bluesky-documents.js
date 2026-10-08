@@ -82,7 +82,7 @@ export function prepareAuthorItem(item, { actor, sourceURL }) {
   return {id:post.uri,url,raw,payload:item,prepared,coverage};
 }
 
-export async function retrieveAuthorDocuments({tracker,read,sourceURL,budget,limits={feedPages:2,postsPerPage:20}}) {
+export async function retrieveAuthorDocuments({tracker,read,sourceURL,budget,progress={},limits={feedPages:2,postsPerPage:20}}) {
   const actor=tracker.collector==='bluesky_feed' && tracker.url?.match(/^https:\/\/bsky\.app\/profile\/([a-z0-9.-]+)$/)?.[1];
   if (!actor) throw new Error('Unsupported Bluesky author tracker');
   if (!Number.isInteger(limits.feedPages)||limits.feedPages<1||!Number.isInteger(limits.postsPerPage)||limits.postsPerPage<1||limits.postsPerPage>100)
@@ -110,15 +110,17 @@ export async function retrieveAuthorDocuments({tracker,read,sourceURL,budget,lim
           documents.push({...document,provenance:{page,position,feed_url:url}});
         } catch(error) {coverage.push({page,position,state:'failed',reason:error.message});}
       }
-      cursor=feed.cursor;
-      if(!cursor) return {documents,pages,coverage,complete:!coverage.some(c=>c.state==='failed'),pagination:{state:'exhausted'},limits};
+      // Always read the newest page. The second page continues the durable
+      // historical cursor instead of repeatedly fetching page two forever.
+      cursor=page===0&&limits.feedPages>1&&progress.cursor?progress.cursor:feed.cursor;
+      if(!cursor) return {documents,pages,coverage,complete:!coverage.some(c=>c.state==='failed'),pagination:{state:'exhausted'},progress:{},limits};
       if(cursors.has(cursor)) throw new Error('Repeated author-feed cursor');
       cursors.add(cursor);
     } catch(error) {
       coverage.push({url,state:'failed',reason:error.message});
-      return {documents,pages,coverage,complete:false,pagination:{state:'failed',cursor},limits};
+      return {documents,pages,coverage,complete:false,pagination:{state:'failed',cursor},progress:{cursor:cursor??progress.cursor},limits};
     }
   }
   coverage.push({relationship:'pagination',state:'unfetched',reason:'Author-feed page bound reached',cursor});
-  return {documents,pages,coverage,complete:false,pagination:{state:'bounded',cursor},limits};
+  return {documents,pages,coverage,complete:false,pagination:{state:'bounded',cursor},progress:{cursor},limits};
 }

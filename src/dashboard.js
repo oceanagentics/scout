@@ -11,6 +11,8 @@ const RECORD_FIELDS = [
 const TRACKER_FIELDS = [
   ['name', 'Name'], ['url', 'URL'], ['coverage', 'Coverage'], ['collector', 'Collector'],
   ['cadence', 'Cadence'], ['enabled', 'Enabled'],
+  ['loop_state', 'Background loop'], ['awaiting_initial', 'Awaiting first review'], ['oldest_awaiting_at', 'Oldest awaiting review (UTC)'],
+  ['parked', 'Parked for review/repair'], ['source_problems', 'Source problems'], ['processing_problems', 'Processing problems'],
   ['last_attempt_at', 'Last attempt (UTC)'], ['last_success_at', 'Last success (UTC)'], ['last_outcome', 'Last outcome'],
   ['last_error', 'Last error'], ['seed_key', 'Seed key'], ['id', 'ID'],
 ];

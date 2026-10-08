@@ -65,3 +65,29 @@ test('only the confirmed Scout webhook binding is accepted',()=>{
  for(const url of ['https://hooks.slack.com/services/OTHER/B0C5TEK4R38/token','https://hooks.slack.com/services/TFZ8FRLBV/OTHER/token','http://hooks.slack.com/services/TFZ8FRLBV/B0C5TEK4R38/token','https://user:secret@hooks.slack.com/services/TFZ8FRLBV/B0C5TEK4R38/token']) assert.throws(()=>webhookTransport(url));
  assert.equal(typeof webhookTransport('https://hooks.slack.com/services/TFZ8FRLBV/B0C5TEK4R38/fixture'),'function');
 });
+
+test('scheduled delivery persists ambiguous intent and excludes the same version across later invocations',async()=>{
+ const {hostedHSA}=await import('../collector/hosted-hsa.js'),db=await database();
+ try{
+  const tracker=(await db.query('select id from scout.trackers limit 1')).rows[0].id;
+  const record=(await db.query("insert into scout.records(kind,title,priority) values('announcement','New technical ocean data standard','high') returning id")).rows[0].id;
+  await db.query("insert into scout.evidence(record_id,tracker_id,url,content_hash,content,last_seen_at) values($1,$2,'https://example.org/source','fixture','Public evidence',clock_timestamp())",[record,tracker]);
+  const secret='sb_secret_scout_test_only',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{default:'sb_publishable_test_only'},jwks:null};
+  const connect=()=>({reserve:async()=>({unsafe:async(q,p=[])=>/pg_try_advisory_lock|pg_advisory_unlock/.test(q)?[{acquired:true}]:(await db.query(q,p)).rows,release(){}}),end:async()=>{}});
+  let posts=0,calls=0;
+  const invoke=()=>hostedHSA(new Request('https://example.test?notify=true',{method:'POST',headers:{apikey:secret}}),{
+    env,databaseURL:'unused',apiKey:'fixture',connect,post:async()=>{posts++;throw new Error('Lost response');},
+    modelFetch:async url=>{
+      if(url.endsWith(':countTokens'))return Response.json({totalTokens:100});
+      calls++;return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify([record])}]}}]});
+    }});
+  const first=await (await invoke()).json();
+  assert.equal(first.status,'unknown',JSON.stringify({first,calls,runs:(await db.query('select stats from scout.collection_runs')).rows}));
+  const delivery=(await db.query("select stats->'delivery' delivery from scout.collection_runs where stats->>'purpose'='notification'")).rows[0].delivery;
+  assert.equal(delivery.status,'unknown');assert.equal(delivery.records[0].id,record);
+  assert.equal((await (await invoke()).json()).status,'no_change');assert.equal(posts,1);assert.equal(calls,1);
+  assert.equal((await db.query('select last_communicated_at from scout.records where id=$1',[record])).rows[0].last_communicated_at,null);
+  await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{delivery,status}','\"sent\"') where stats#>>'{delivery,status}'='unknown'");
+  assert.equal((await (await invoke()).json()).status,'no_change');assert.equal(posts,1);assert.equal(calls,1);
+ }finally{await db.close();}
+});
