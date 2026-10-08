@@ -1,12 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { eventLabel, eventTiming, filterRecords, recordDates, sourceLink, trackerState } from '../src/records.js';
+import { eventLabel, eventTiming, filterRecords, recordDates, sourceLink, trackerState, fieldLabel } from '../src/records.js';
 import { loadScout } from '../src/dashboard.js';
 
 const now = new Date('2026-10-01T12:00:00Z');
 const hsa = { id: 'hsa-webinar', kind: 'event', title: 'Unpacking Part II of BBNJ: Marine Genetic Resources and Digital Sequence Information', organization: 'High Seas Alliance',
   starts_at: '2026-09-29T11:30:00Z', time_zone: '-04:00', updated_at: '2026-10-01T05:23:54Z',
   sources: [{ url: 'https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ' }] };
+
+test('reviewed source calendar dates display and filter without invented UTC times; conflicting dates stay unknown',()=>{
+  const event={kind:'event',starts_at:null,ends_at:null,sources:[{calendar_dates:{starts_on:{value:'2026-10-03'},ends_on:{value:'2026-10-05'}}}]};
+  assert.equal(fieldLabel(event,'starts_at'),'2026-10-03 · Time unknown');
+  assert.equal(eventLabel(event),'2026-10-03 – 2026-10-05 · Time unknown');
+  assert.deepEqual(recordDates(event),['2026-10-03','2026-10-05']);
+  assert.equal(filterRecords([event],{from:'2026-10-04',to:'2026-10-04'}).length,1);
+  assert.equal(eventTiming(event,now),'Upcoming');
+  assert.equal(eventTiming(event,new Date('2026-10-04T12:00:00Z')),'Date known · time unknown');
+  assert.equal(eventLabel({...event,sources:[...event.sources,{calendar_dates:{starts_on:{value:'2026-10-04'}}}]}),'Unknown');
+  assert.equal(eventLabel({...event,sources:[{calendar_dates:{starts_on:{value:'2026-02-30'}}}]}),'Unknown');
+});
 
 test('source dates, timezone boundaries, filters and past/cancelled/unknown states', () => {
   assert.match(eventLabel(hsa), /2026-09-29 · 11:30 UTC/);

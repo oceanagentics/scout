@@ -16,6 +16,7 @@ const fixture=async name=>{const raw=await readFile(new URL('./fixtures/'+name,i
 const answer=findings=>({complete:true,reason:'Supplied announcement considered.',findings});
 // Injected decisions test storage/validation only; they are not model-quality evidence.
 const resolve=input=>({outcome:input.candidates.length?'evidence':'new',record_id:input.candidates[0]?.id??null,reason:'Same finding or new finding against all supplied candidates.',
+  ...input.missing_fields?{completion:null,unknowns:Object.fromEntries(input.missing_fields.map(k=>[k,'Fixture source does not establish this same-finding field.']))}:{},
   evidence:{identity:[0],distinction:[0]},facts:Object.fromEntries([...CONTENT_FIELDS.filter(k=>input.finding.candidate[k]!==null),'priority'].map(k=>[k,'supported'])),conflict:'none'});
 
 async function database(){
@@ -631,7 +632,7 @@ test('retained UN wrong match requires occurrence proof while same-title new rem
     const state={state:'failed',revision:0,cursor:prepared.text.length,findings:[{key:'retained',finding,pending:{round:2,repair:{rejected:response,errors:['Retained identity failure']}}}]};
     await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,processing_versions}',$2::jsonb) where id=$1",[source.id,JSON.stringify({[version]:state})]);
     const transport=runModel(db,supplied=>{assert.deepEqual(supplied.finding,finding);return response;});
-    const options={source:(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0],prepared,trace,deadline:Date.now()+100000,model:transport.makeModel(run,Date.now()+100000,trace)};
+    const options={source:(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0],prepared,trace,deadline:Date.now()+100000,version:contract,model:transport.makeModel(run,Date.now()+100000,trace)};
     assert.equal((await processDocument(db,options)).state,'failed');assert.equal(transport.requests.length,1);
     options.source=(await db.query('select * from scout.evidence where id=$1',[source.id])).rows[0];
     const entry=options.source.parsed.document.processing_versions[version].findings[0];
@@ -728,7 +729,7 @@ test('retained HSA COP1 paraphrase requires candidate comparisons without forcin
       [tracker.id,actual.input.url,finding.citations[0].quote,JSON.stringify({document:{identity:'hsa:document:6736'}})])).rows[0];
     const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[tracker.id])).rows[0].id,trace=await startReport(db,run);
     const prepared=await supportDocuments(db,{source,prepared:prepareDocument({title:finding.candidate.title,url:source.url,html:source.content}),trace});
-    const version=DOCUMENT_VERSION+'/'+prepared.version+'/'+prepared.context,repair={rejected:actual.response,errors:['Retained prior resolution rejection']};
+    const contract=actual.input.version.split('/').slice(0,3).join('/'),version=contract+'/'+prepared.version+'/'+prepared.context,repair={rejected:actual.response,errors:['Retained prior resolution rejection']};
     const state={state:'failed',revision:0,cursor:prepared.text.length,findings:[{key:'retained',finding,pending:{round:2,repair}}]};
     await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,processing_versions}',$2::jsonb) where id=$1",[source.id,JSON.stringify({[version]:state})]);
     const transport=runModel(db,input=>{
@@ -1218,7 +1219,7 @@ test('HSA processing saves a stated event or no event without following links; r
   }
 });
 
-test('retained resolver inputs compile field-specific audit claims and optional comparisons without changing findings',async context=>{
+test('retained resolver inputs compile field-specific audit claims and candidate comparisons without changing findings',async context=>{
   for(const actual of (await fixture('iucn-website.json.gz')).field_audit){const db=await database();try{
     const original=JSON.stringify(actual),{input,source:s}=actual,tracker=(await db.query('select id from scout.trackers limit 1')).rows[0];
     validateFinding(input.finding,packDocument(s,s.prepared,0,DOCUMENT_VERSION));
@@ -1241,14 +1242,16 @@ test('retained resolver inputs compile field-specific audit claims and optional 
     assert.equal(Object.hasOwn(sent.field_audit,'candidates'),false);
     const schema=request.generationConfig.responseJsonSchema,unbounded=structuredClone(schema);
     for(const [key,proof]of Object.entries(unbounded.properties.evidence.properties)){
-      assert.deepEqual(proof.items,{type:'integer',minimum:0,maximum:input.finding.citations.length-1});delete proof.items.maximum;
+      const {enum:occurrence,...bounds}=proof.items;assert.deepEqual(bounds,{type:'integer',minimum:0,maximum:input.finding.citations.length-1});
+      if(occurrence)assert.ok(occurrence.every(i=>Number.isInteger(i)&&i>=0&&i<input.finding.citations.length));
+      delete proof.items.maximum;delete proof.items.enum;
       for(const i of [-1,input.finding.citations.length])assert.throws(()=>validateResolution(
         {...resolve(input),outcome:'uncertain',record_id:null,evidence:{[key]:[i]}},input.finding,input.candidates,prepared),/Resolution evidence/);
     }
-    assert.equal(schema.required.includes('comparisons'),false);
+    assert.equal(schema.required.includes('comparisons'),true);
     assert.deepEqual(schema.properties.comparisons.items.properties.citations.items,{type:'integer',minimum:0,maximum:input.finding.citations.length-1});
     assert.deepEqual(schema.properties.comparisons.items.required,['record_id','relation','citations','reason']);
-    delete unbounded.properties.comparisons;
+    delete unbounded.properties.comparisons;unbounded.required=unbounded.required.filter(k=>k!=='comparisons');
     assert.deepEqual(unbounded,before.generationConfig.responseJsonSchema);
     assert.match(request.systemInstruction.parts[0].text,/using ONLY its own quotes/);
     const compiled=requestBody(request.systemInstruction.parts[0].text,[{...input,field_audit:sent.field_audit}],schema);

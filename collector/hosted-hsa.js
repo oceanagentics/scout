@@ -1,6 +1,6 @@
 import { verifyAuth } from '@supabase/server/core';
 import postgres from 'postgres';
-import { collectHSA, DOCUMENT_TRACKERS } from './hsa.js';
+import { collectHSA, DOCUMENT_TRACKERS, readPublic, sourceURL, LIMITS } from './hsa.js';
 import { gemini, modelLimits, modelBudgetSQL, MODEL_LIMITS } from './model.js';
 import { processDocument, DOCUMENT_VERSION } from './document-records.js';
 import { supportDocuments } from './octo-documents.js';
@@ -41,17 +41,20 @@ export async function hostedHSA(request, { databaseURL, apiKey, webhook, env, li
   const attempts = params.get('max_attempts') ?? String(limits.run);
   const sourceId = params.get('source_id');
   const trackerId = params.get('tracker_id');
+  const recordId = params.get('record_id');
+  const companions = params.getAll('support_url');
   const validate = params.get('validate') === 'true';
   const assessOnly = params.get('assess_only') === 'true';
   const documents = params.get('documents');
   const body = request.body?.getReader();
   const empty = !body || (await body.read()).done;
   await body?.cancel();
-  if (!empty || (rotation||notify ? params.size!==1 : documents!=='process' || !validate || !trackerId || sourceId || assessOnly || params.getAll('documents').length!==1 ||
-      [...params.keys()].some(key => !['since','max_attempts','source_id','tracker_id','validate','assess_only','documents'].includes(key)) || params.getAll('since').length > 1 ||
+  if (!empty || (rotation||notify ? params.size!==1 : documents!=='process' || !validate || !trackerId || assessOnly || params.getAll('documents').length!==1 ||
+      [...params.keys()].some(key => !['since','max_attempts','source_id','tracker_id','record_id','support_url','validate','assess_only','documents'].includes(key)) || params.getAll('since').length > 1 || recordId&&!sourceId ||
+      companions.length>3 || companions.length&&(!recordId||companions.some(url=>{try{return sourceURL(url)!==url;}catch{return true;}})) ||
       params.getAll('assess_only').length > 1 || (params.has('assess_only') && (!assessOnly || !validate || !sourceId || !trackerId)) ||
       params.getAll('validate').length > 1 || (params.has('validate') && (!validate || !trackerId)) ||
-      ['source_id','tracker_id'].some(key=>params.getAll(key).length>1 || (params.has(key) && !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(params.get(key)))) ||
+      ['source_id','tracker_id','record_id'].some(key=>params.getAll(key).length>1 || (params.has(key) && !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(params.get(key)))) ||
       params.getAll('max_attempts').length > 1 || !/^\d+$/.test(attempts) || !Number.isSafeInteger(Number(attempts)) || Number(attempts)>limits.run ||
       !/^\d{4}-\d{2}-\d{2}$/.test(since) || !Number.isFinite(Date.parse(since)) || new Date(since).toISOString().slice(0, 10) !== since)) {
     return Response.json({ error: `Use an empty POST with next=true, or documents=process&validate=true&tracker_id=UUID and optional since=YYYY-MM-DD/max_attempts=0..${limits.run}.` }, { status: 400 });
@@ -70,6 +73,22 @@ export async function hostedHSA(request, { databaseURL, apiKey, webhook, env, li
     acquired=lock.acquired;
     if (!acquired) return Response.json({ error: 'Scout collection already running' }, { status: 409 });
     const db=database(session);
+    if(sourceId){
+      const source=(await db.query("select * from scout.evidence where id=$1 and tracker_id=$2 and record_id is null"+
+        " and parsed#>>'{document,preparation,state}'='complete'",[sourceId,trackerId])).rows[0];
+      if(!source)return Response.json({error:'Prepared source capture required for this tracker'},{status:400});
+      if(recordId&&!(await db.query("select 1 from scout.evidence where record_id=$1 and tracker_id=$2 and parsed#>>'{document,identity}'=$3 limit 1",[recordId,trackerId,source.parsed.document.identity])).rows.length)
+        return Response.json({error:'Record must be associated with this source identity'},{status:400});
+      const run=(await db.query("insert into scout.collection_runs(tracker_id,stats) values($1,jsonb_build_object('validation',true,'stage','omission_review','source_id',$2::text)) returning id",[trackerId,sourceId])).rows[0].id;
+      const trace=await startReport(db,run,'omission-review');await trace.capture(source);
+      const document=source.parsed.document,prepared=document.prepared_versions?.[document.preparation.version]??document.prepared;
+      const context=await supportDocuments(db,{source,prepared,trace,recordId,companions,read:readPublic,sourceURL,budget:{requests:0,support:true,deadline:Math.min(deadline-5000,Date.now()+20000)},limits:{...LIMITS,bytes:LIMITS.bytes*4}});
+      const review=await processDocument(db,{source,prepared:context,trace,recordId,deadline:deadline-5000,reassess:true,
+        model:Number(attempts)?gemini({apiKey,ledger:db,runId:run,deadline:deadline-5000,runLimit:Number(attempts),limits,pace:true,trace,fetch:modelFetch}):null});
+      await db.query("update scout.collection_runs set finished_at=clock_timestamp(),outcome=$2,stats=stats||$3::jsonb where id=$1",
+        [run,review.state==='complete'?'success':'partial',JSON.stringify({...review,warnings:review.error?[review.error]:[]})]);
+      return Response.json({run_id:run,...review});
+    }
     if(notify){
       await db.query("update scout.collection_runs set finished_at=clock_timestamp(),outcome='failed' where stats->>'purpose'='notification' and outcome='running' and started_at<clock_timestamp()-interval '120 seconds'");
       const excluded=(await db.query("select v.value from scout.collection_runs r cross join lateral jsonb_array_elements(r.stats#>'{delivery,records}') v"+
@@ -133,7 +152,7 @@ export async function hostedHSA(request, { databaseURL, apiKey, webhook, env, li
       if(allowance.reason)result.review={outcome:'deferred',...allowance};
       else if(Date.now()+10000<deadline){
         // Fair review across enabled trackers, independent of the tracker fetched.
-        const source=(await db.query(`select q.* from scout.source_queue q join scout.trackers t on t.id=q.tracker_id
+        let source=(await db.query(`select q.* from scout.source_queue q join scout.trackers t on t.id=q.tracker_id
           where t.enabled and q.queue_state in ('awaiting_initial','deferred')
             and not exists(select 1 from scout.collection_runs n where n.stats->>'purpose'='notification'
               and n.outcome='running' and n.started_at>clock_timestamp()-interval '110 seconds')
@@ -141,15 +160,32 @@ export async function hostedHSA(request, { databaseURL, apiKey, webhook, env, li
               where supported.collector=t.collector and supported.url=t.url)
             and (q.progress#>>'{deferred,retry_at}' is null or (q.progress#>>'{deferred,retry_at}')::timestamptz<=clock_timestamp())
           order by q.progress->>'attempted_at' asc nulls first,q.collected_at,q.id limit 1`,[JSON.stringify(DOCUMENT_TRACKERS)])).rows[0];
+        if(!source)source=(await db.query(`select q.*,e.record_id review_record_id from scout.source_queue q
+          join scout.trackers t on t.id=q.tracker_id join scout.evidence e on e.tracker_id=q.tracker_id
+            and e.parsed#>>'{document,identity}'=q.parsed#>>'{document,identity}' and e.parsed->'finding' is not null
+          join scout.records r on r.id=e.record_id
+          left join lateral (select v.value state from jsonb_each(q.parsed#>'{document,processing_versions}') v
+            where starts_with(v.key,$2||'/') and right(v.key,44)='/record:'||r.id::text
+            order by v.value->>'attempted_at' desc nulls last limit 1) scoped on true
+          where t.enabled and q.queue_state='complete' and starts_with(q.parsed#>>'{document,processing,version}',$2||'/')
+            and (r.organization is null or r.kind='event' and (r.starts_at is null or r.ends_at is null))
+            and (scoped.state is null or scoped.state->>'state' in ('running','deferred'))
+            and (scoped.state#>>'{deferred,retry_at}' is null or (scoped.state#>>'{deferred,retry_at}')::timestamptz<=clock_timestamp())
+            and not exists(select 1 from scout.collection_runs n where n.stats->>'purpose'='notification'
+              and n.outcome='running' and n.started_at>clock_timestamp()-interval '110 seconds')
+            and exists(select 1 from jsonb_to_recordset($1::jsonb) supported(collector text,url text)
+              where supported.collector=t.collector and supported.url=t.url)
+          order by scoped.state->>'attempted_at' asc nulls first,q.collected_at,q.id,e.record_id limit 1`,[JSON.stringify(DOCUMENT_TRACKERS),DOCUMENT_VERSION])).rows[0];
         if(source){
+          const recordId=source.review_record_id;
           const reviewId=(await db.query("insert into scout.collection_runs(tracker_id,stats) values($1,jsonb_build_object("+
             "'rotation',true,'stage','initial_review','turn_expires_at',clock_timestamp()+interval '180 seconds','source_id',$2::text)) returning id",[source.tracker_id,source.id])).rows[0].id;
           try{
             const trace=await startReport(db,reviewId,'initial-review');await trace.capture(source);
             const document=source.parsed.document,prepared=document.prepared_versions?.[document.preparation.version]??document.prepared;
             const prefix=DOCUMENT_VERSION+'/'+prepared.version+'/';
-            const context=await supportDocuments(db,{source,prepared,trace,context:document.processing.version?.startsWith(prefix)?document.processing.version.slice(prefix.length):undefined});
-            const review=await processDocument(db,{source,prepared:context,trace,deadline:deadline-5000,repairs:false,
+            const context=await supportDocuments(db,{source,prepared,trace,recordId,read:readPublic,sourceURL,budget:{requests:0,support:true,deadline:Math.min(deadline-5000,Date.now()+20000)},limits:{...LIMITS,bytes:LIMITS.bytes*4},context:!recordId&&document.processing.version?.startsWith(prefix)?document.processing.version.slice(prefix.length):undefined});
+            const review=await processDocument(db,{source,prepared:context,trace,recordId,reassess:!!recordId,deadline:deadline-5000,repairs:false,
               changed:document.processing.changed===true,
               model:gemini({apiKey,ledger:db,runId:reviewId,deadline:deadline-5000,limits,pace:true,wait:false,trace,fetch:modelFetch})});
             await db.query("update scout.collection_runs set finished_at=clock_timestamp(),outcome=$2,stats=stats||$3::jsonb where id=$1",

@@ -30,6 +30,22 @@ test('saved HSA and three expansion author fixtures retain full structural paylo
   }
 });
 
+test('native mention profiles use exact UTF-8 references without inferring feed-author affiliation',async()=>{
+  const item=await fixture('hsa-webinar.json'),did='did:plc:bzbqq3xierqt53aavlcvarby',label='@ceo.globalfishingwatch.org';
+  item.post.record.text='🌊 At Climate Week '+label+' joined this session.';
+  const byteStart=Buffer.byteLength(item.post.record.text.slice(0,item.post.record.text.indexOf(label)));
+  item.post.record.facets=[{index:{byteStart,byteEnd:byteStart+Buffer.byteLength(label)},features:[{$type:'app.bsky.richtext.facet#mention',did}]}];
+  item.post.author.description='Unrelated publisher affiliation';
+  const doc=prepare(item),link=doc.prepared.links.find(l=>l.relationship==='profile');
+  assert.deepEqual(new URL(link.target).searchParams.getAll('actors'),[did]);assert.equal(link.mentions[0].text,label);
+  assert.equal(link.mentions[0].uri,item.post.uri);assert.equal(doc.raw,JSON.stringify(item));assert.equal(doc.prepared.version,'bluesky-mention-documents-v1');
+  assert.ok(!doc.prepared.text.includes(item.post.author.description));assert.ok(!link.actors.includes(item.post.author.did));
+  item.post.record.facets[0].index.byteStart=1;
+  assert.ok(prepare(item).coverage.some(c=>c.relationship==='profile'&&c.state==='unsupported'));
+  item.post.record.facets=Array.from({length:11},(_,i)=>({index:{byteStart,byteEnd:byteStart+Buffer.byteLength(label)},features:[{$type:'app.bsky.richtext.facet#mention',did:'did:plc:actor'+i}]}));
+  assert.ok(!prepare(item).prepared.links.some(l=>l.relationship==='profile'));
+});
+
 test('identity/raw payload independent of feed position; content changes retained under same identity',async()=>{
   const item=await fixture('hsa-webinar.json');
   const a=await retrieve(async url=>response(url,{feed:[item]}));

@@ -23,7 +23,7 @@ export function modelBudgetSQL(runId = null, runLimit = MODEL_LIMITS.run, limits
   ), attempts as (
     select (a->>'at')::timestamptz at,coalesce((a->>'input_tokens')::bigint,0) tokens
     from recent r cross join lateral jsonb_array_elements(coalesce(r.stats->'model_attempts','[]'::jsonb)) a
-    where coalesce(a->>'model','${MODEL}')='${MODEL}' and coalesce(a->>'id','')<>'${exclude || 'none'}'
+    where coalesce(a->>'id','')<>'${exclude || 'none'}'
   ), usage as (
     select m.now,count(*) filter(where a.at>m.now-interval '60 seconds') rpm,
       coalesce(sum(a.tokens) filter(where a.at>m.now-interval '60 seconds'),0) tpm,
@@ -50,9 +50,10 @@ export const requestBody = (instruction,input,schema) => JSON.stringify({systemI
 
 // One autocommitted statement. Never call this inside a collection transaction.
 // The same hosted collection_runs ledger is required for local and hosted calls.
-export function reservationSQL(runId, inputBytes, runLimit = MODEL_LIMITS.run, limits = MODEL_LIMITS, tokens = null, attemptId = randomUUID()) {
+export function reservationSQL(runId, inputBytes, runLimit = MODEL_LIMITS.run, limits = MODEL_LIMITS, tokens = null, attemptId = randomUUID(), model = MODEL) {
   if (!/^[a-f0-9-]{36}$/i.test(runId) || !Number.isSafeInteger(inputBytes) || inputBytes < 1) throw new Error('Invalid model reservation');
   if (!/^[a-f0-9-]{36}$/i.test(attemptId)) throw new Error('Invalid model attempt');
+  if (![MODEL,'gemini-3.5-flash'].includes(model)) throw new Error('Invalid model');
   const budget=modelBudgetSQL(runId,runLimit,limits,tokens??0,tokens===null?'':attemptId);
   return `do $budget$
   declare attempts jsonb; allowance record; moment timestamptz;
@@ -65,7 +66,7 @@ export function reservationSQL(runId, inputBytes, runLimit = MODEL_LIMITS.run, l
     select * into allowance from (${budget}) available;
     if allowance.reason='unavailable' then raise exception 'Model run unavailable'; end if;
     if allowance.reason is not null then raise exception 'Model quota reached'; end if;
-    ${tokens===null ? `attempts := attempts || jsonb_build_array(jsonb_build_object('id','${attemptId}','at',moment,'reserved_at',moment,'input_bytes',${inputBytes},'input_token_limit',${MODEL_LIMITS.input},'output_bound',${MODEL_LIMITS.output},'model','${MODEL}'));`
+    ${tokens===null ? `attempts := attempts || jsonb_build_array(jsonb_build_object('id','${attemptId}','at',moment,'reserved_at',moment,'input_bytes',${inputBytes},'input_token_limit',${MODEL_LIMITS.input},'output_bound',${MODEL_LIMITS.output},'model','${model}'));`
       : `if not exists(select 1 from jsonb_array_elements(attempts) a where a->>'id'='${attemptId}') then raise exception 'Model attempt unavailable'; end if;
     select jsonb_agg(case when a->>'id'='${attemptId}' then a||jsonb_build_object('at',moment,'input_tokens',${tokens}) else a end order by n) into attempts from jsonb_array_elements(attempts) with ordinality v(a,n);`}
     update scout.collection_runs set stats=jsonb_set(stats,'{model_attempts}',attempts)
@@ -94,15 +95,16 @@ export function gemini({ apiKey, ledger, runId, runLimit, limits, pace = false, 
       if(stored)limits=modelLimits(stored);runLimit=Math.min(allocated??limits.run,limits.run);
     }
     const body = requestBody(instruction,input,schema);
-    const inputBytes = Buffer.byteLength(body),endpoint=`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}`;
-    const requestArtifact = await trace?.artifact('model_request', 'Exact Gemini request body (no headers)', { model: MODEL, body: body.replaceAll(apiKey,'[REDACTED]'), input_bytes: inputBytes, credential_redacted: body.includes(apiKey) });
+    const model=Array.isArray(input)&&input.every(i=>i.stage==='resolve')&&input.some(i=>i.missing_fields?.length)?'gemini-3.5-flash':MODEL;
+    const inputBytes = Buffer.byteLength(body),endpoint=`https://generativelanguage.googleapis.com/v1beta/models/${model}`;
+    const requestArtifact = await trace?.artifact('model_request', 'Exact Gemini request body (no headers)', { model, body: body.replaceAll(apiKey,'[REDACTED]'), input_bytes: inputBytes, credential_redacted: body.includes(apiKey) });
     let inputTokens;
     for (let attempt = 0; ; attempt++) {
       if (Date.now() + 5000 >= deadline) throw Object.assign(new Error('Model time limit reached'),pace?{deferred:{reason:'runtime',retry_at:new Date().toISOString()}}:{});
       const attemptId=randomUUID();
       const reserve=async tokens=>{
         for(;;){
-          try {await ledger.query(reservationSQL(runId,inputBytes,runLimit,limits,tokens,attemptId));return;}
+          try {await ledger.query(reservationSQL(runId,inputBytes,runLimit,limits,tokens,attemptId,model));return;}
           catch(error){
             if(!/Model quota reached/.test(error.message))throw error;
             const allowance=(await ledger.query(modelBudgetSQL(runId,runLimit,limits,tokens??0,tokens===null?'':attemptId))).rows[0];
@@ -122,7 +124,7 @@ export function gemini({ apiKey, ledger, runId, runLimit, limits, pace = false, 
       if(inputTokens===undefined){
         let counted;
         try {counted=await send(endpoint+':countTokens',{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},
-          body:JSON.stringify({generateContentRequest:{model:'models/'+MODEL,...JSON.parse(body)}}),signal:AbortSignal.timeout(Math.max(1,deadline-Date.now()-5000))});}
+          body:JSON.stringify({generateContentRequest:{model:'models/'+model,...JSON.parse(body)}}),signal:AbortSignal.timeout(Math.max(1,deadline-Date.now()-5000))});}
         catch(error){throw Object.assign(new Error('Model token count transport failed; reserved attempt remains counted'),pace?{deferred:{reason:'network',retry_at:new Date(Date.now()+60000).toISOString()}}:{});}
         const raw=await counted.text(),artifact=await trace?.artifact('token_count','Provider token count for exact request',{request_artifact:requestArtifact,http_status:counted.status,body:raw.replaceAll(apiKey,'[REDACTED]')});
         await trace?.finish(op,'running',{artifacts:[requestArtifact,artifact],note:'Token-count response retained; generation has not been sent.'});

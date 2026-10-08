@@ -4,6 +4,10 @@ export function fieldLabel(record, field) {
   if (field==='priority') return PRIORITIES[record.priority]??'Not yet assessed';
   if (record.kind!=='event'&&['location','status','starts_at','ends_at','event_url','registration_url'].includes(field)) return 'Not applicable';
   const value=record[field];
+  if (!value&&['starts_at','ends_at'].includes(field)) {
+    const date=sourceDay(record,field==='starts_at'?'starts_on':'ends_on');
+    if (date) return `${date} · Time unknown`;
+  }
   if (value===null||value===undefined||value==='') return 'Unknown';
   return field.endsWith('_at')?stamp(value):field==='kind'?KINDS[value]??value:typeof value==='object'?JSON.stringify(value):String(value);
 }
@@ -24,6 +28,10 @@ export function orderRecords(records, order='priority') {
 }
 const dayValid = value => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '') && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 const instantValid = value => typeof value === 'string' && dayValid(value.slice(0, 10)) && /T\d{2}:\d{2}.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
+const sourceDay = (record,field) => {
+  const dates=[...new Set((record.sources??[]).map(source=>source.calendar_dates?.[field]?.value).filter(dayValid))];
+  return dates.length===1?dates[0]:null;
+};
 
 export function sourceLink(value) {
   try {
@@ -38,14 +46,17 @@ export function stamp(value) {
 
 export function recordDates(record) {
   if (record.kind !== 'event') return [null, null];
-  const start = instantValid(record.starts_at) ? new Date(record.starts_at).toISOString().slice(0, 10) : null;
-  const end = instantValid(record.ends_at) ? new Date(record.ends_at).toISOString().slice(0, 10) : start;
+  const start = instantValid(record.starts_at) ? new Date(record.starts_at).toISOString().slice(0, 10) : sourceDay(record,'starts_on');
+  const end = instantValid(record.ends_at) ? new Date(record.ends_at).toISOString().slice(0, 10) : sourceDay(record,'ends_on')??start;
   return [start, end];
 }
 
 export function eventLabel(record) {
   if (record.kind!=='event') return 'Not applicable';
-  if (!instantValid(record.starts_at)) return 'Unknown';
+  if (!instantValid(record.starts_at)) {
+    const [start,end]=recordDates(record);
+    return start?`${start}${end&&end!==start?` – ${end}`:''} · Time unknown`:'Unknown';
+  }
   const start = new Date(record.starts_at).toISOString(), end = instantValid(record.ends_at) && new Date(record.ends_at).toISOString();
   return `${start.slice(0, 10)} · ${start.slice(11, 16)}${end ? ` – ${end.slice(0, 10) === start.slice(0, 10) ? '' : `${end.slice(0, 10)} `}${end.slice(11, 16)}` : ''} UTC`;
 }
@@ -55,6 +66,7 @@ export function eventTiming(record, now = new Date()) {
   if (record.status === 'cancelled') return 'Cancelled';
   const [start] = recordDates(record);
   if (!start) return 'Date unknown';
+  if (!instantValid(record.starts_at)) return start>now.toISOString().slice(0,10)?'Upcoming':recordDates(record)[1]>=now.toISOString().slice(0,10)?'Date known · time unknown':'Past / started';
   if (Date.parse(record.starts_at) > now.getTime()) return 'Upcoming';
   return instantValid(record.ends_at) && Date.parse(record.ends_at) > now.getTime() ? 'In progress' : 'Past / started';
 }

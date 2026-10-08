@@ -3,7 +3,7 @@ import { parseDocument, DomUtils } from 'htmlparser2';
 import { prepareDocument } from './octo-documents.js';
 
 export const IUCN_LISTING='https://iucn.org/our-work/topic/high-seas';
-export const PREPARATION_VERSION='iucn-documents-v2';
+export const PREPARATION_VERSION='iucn-publication-metadata-v1';
 const hasClass=(node,name)=>(node.attribs?.class??'').split(/\s+/).includes(name);
 
 // Source-only adapter; the caller owns captures, reporting and model stages.
@@ -108,7 +108,7 @@ export async function retrieveIUCNDocuments({read,sourceURL,budget,limits,knownD
         preparationHTML=preparationHTML.slice(0,contact.startIndex)+masked+preparationHTML.slice(contact.startIndex+opening.length);
       }
       const prepared=prepareDocument({title,url:item.url,html:preparationHTML});
-      prepared.version=contacts.length?PREPARATION_VERSION:'iucn-documents-v1';
+      prepared.version=contacts.length||prepared.blocks.some(b=>b.source_fields?.length)?PREPARATION_VERSION:'iucn-documents-v1';
       prepared.omissions.push(...contacts.map(n=>({start:n.startIndex,end:n.endIndex+1,reason:'Opaque protected-contact href excluded; visible contact text and original HTML retained'})));
       prepared.omissions.push({reason:'Primary header, lead, body, media and resource metadata retained; breadcrumbs, sharing, taxonomy and related cards excluded; full response retained',regions});
       result.documents.push({id,identity:'iucn:node:'+id,url:item.url,raw:response.entry.body,html,regions,metadata,node_attributes:{...node.attribs},listing:item,prepared});

@@ -30,7 +30,7 @@ export async function loadScout(client) {
   const [records, trackers, sources] = await Promise.all([
     all('records', RECORD_FIELDS.map(([field]) => field).filter(field=>field!=='priority_reason').join(','), 'updated_at'),
     all('tracker_status', TRACKER_FIELDS.map(([field]) => field).join(','), 'name'),
-    all('source_details', 'record_id,url,tracker_id,published_at,published_on,collected_at,last_seen_at,authoritative,priority_reason,assessed_at', 'record_id', 'url'),
+    all('source_details', 'record_id,url,tracker_id,published_at,published_on,collected_at,last_seen_at,authoritative,priority_reason,assessed_at,calendar_dates', 'record_id', 'url'),
   ]);
   const byRecord = new Map();
   for (const source of sources) {

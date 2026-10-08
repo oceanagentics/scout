@@ -45,14 +45,15 @@ test('invalid authenticated requests do no database work', async () => {
     request(undefined, '?validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d'),
     ...['','&validate=true','&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d',
       '&validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d&documents=process',
-      '&validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d&source_id=00000000-0000-0000-0000-000000000001',
       '&validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d&assess_only=true']
       .map(suffix=>request(undefined,'?documents=process'+suffix)),
     request(undefined, '?validate=true&validate=true&tracker_id=00000000-0000-0000-0000-000000000001'),
     ...['true','false','','true&assess_only=true'].map(value=>request(undefined, `?assess_only=${value}`)),
     request(undefined, '?assess_only=true&validate=true&tracker_id=00000000-0000-0000-0000-000000000001'),
     ...['-1','11','1.2','','2&max_attempts=3'].map(value=>request(undefined, `?max_attempts=${value}`)),
-    ...['since=2026-02-30','max_attempts=11','max_attempts=1&max_attempts=2','validate=false','sql=delete']
+    ...['since=2026-02-30','max_attempts=11','max_attempts=1&max_attempts=2','validate=false','sql=delete','record_id=00000000-0000-0000-0000-000000000001','record_id=invalid&source_id=00000000-0000-0000-0000-000000000001','record_id=00000000-0000-0000-0000-000000000001&record_id=00000000-0000-0000-0000-000000000002&source_id=00000000-0000-0000-0000-000000000001']
+      .map(value=>request(undefined,'?documents=process&validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d&'+value)),
+    ...['support_url=https://example.org/a','source_id=00000000-0000-0000-0000-000000000001&record_id=00000000-0000-0000-0000-000000000002&support_url=http://example.org/a','source_id=00000000-0000-0000-0000-000000000001&record_id=00000000-0000-0000-0000-000000000002&support_url=https://example.org/a&support_url=https://example.org/b&support_url=https://example.org/c&support_url=https://example.org/d']
       .map(value=>request(undefined,'?documents=process&validate=true&tracker_id=9dc6b107-5e12-4124-b4ce-583faf91e50d&'+value)),
     new Request('https://example.test', { method: 'POST', headers: { apikey: secret }, body: '{}' })]) {
     const response = await hostedHSA(req, { env, databaseURL: 'unused', connect: () => { connects++; } });

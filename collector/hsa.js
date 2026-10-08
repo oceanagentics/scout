@@ -78,6 +78,7 @@ export function sourceURL(value) {
 export async function readPublic(url, budget, redirects = 0) {
   url = sourceURL(url);
   if (++budget.requests > LIMITS.requests || Date.now() > budget.deadline) throw new Error('Request/time limit reached');
+  const byteLimit=budget.support?LIMITS.bytes*4:LIMITS.bytes;
   const agent = new Agent({ connect: {
       lookup(host, options, callback) {
         lookup(host, { all: true }, (error, addresses) => {
@@ -86,7 +87,7 @@ export async function readPublic(url, budget, redirects = 0) {
           callback(null, options.all ? addresses : addresses[0].address, options.all ? undefined : addresses[0].family);
         });
       },
-    }, maxResponseSize: LIMITS.bytes, connections: 1, pipelining: 0 });
+    }, maxResponseSize: byteLimit, connections: 1, pipelining: 0 });
   let result;
   try {
     const response = await request(url, {
@@ -96,12 +97,16 @@ export async function readPublic(url, budget, redirects = 0) {
     });
     let size = 0;
     const chunks = [];
-    for await (const chunk of response.body) {
+    // A redirect is defined by its headers; an incomplete shortener body must
+    // not hide the observed destination. The next hop repeats all safeguards.
+    if(response.statusCode>=300&&response.statusCode<400&&response.headers.location){response.body.on('error',()=>{});response.body.destroy();}
+    else for await (const chunk of response.body) {
       size += chunk.length;
-      if (size > LIMITS.bytes) throw new Error('Source exceeds byte limit');
+      if (size > byteLimit) throw new Error('Source exceeds byte limit');
       chunks.push(chunk);
     }
-    result = { status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks).toString('utf8'), url };
+    const encoding=budget.support&&/^application\/pdf\b/i.test(response.headers['content-type']??'')?'base64':'utf8';
+    result = { status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks).toString(encoding), url, ...encoding==='base64'?{encoding}:{} };
   } finally { await agent.destroy(); }
   if (result.status >= 300 && result.status < 400 && result.headers.location) {
     if (redirects >= LIMITS.redirects) throw new Error('Redirect limit reached');

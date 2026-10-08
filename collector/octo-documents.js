@@ -15,7 +15,7 @@ const blocks = new Set(['p','h1','h2','h3','h4','h5','h6','li','blockquote','pre
 // No finding fields or relevance rules. Ranges use UTF-16 offsets into the
 // retained HTML and prepared text; chunks reference context rather than omit it.
 // Source adapters opt into HTML whitespace with their own preparation version.
-export function prepareDocument({title,html,url,htmlWhitespace=false}) {
+export function prepareDocument({title,html,url,htmlWhitespace=false,protectedContacts=false}) {
   const dom=parseDocument(html,{withStartIndices:true,withEndIndices:true});
   const result={version:PREPARATION_VERSION,title:DomUtils.textContent(parseDocument(title)),url,text:'',blocks:[],links:[],insertions:[],omissions:[],chunks:[],chunk_bytes:CHUNK_BYTES};
   // Temporary markers protect preformatted text and distinguish link annotations
@@ -30,7 +30,10 @@ export function prepareDocument({title,html,url,htmlWhitespace=false}) {
     let value=(node.children??[]).map(child=>render(child,preformatted||literal)).join('');
     if(node.name==='a'||node.name==='img'||node.name==='iframe') {
       const raw=node.attribs?.href??node.attribs?.src;
-      if(raw){let target;try{target=new URL(raw,url).href;}catch{target=raw;}
+      const contact=protectedContacts&&node.name==='a'&&/^\/cdn-cgi\/l\/email-protection#(?:[\da-f]{2}){2,}$/i.test(raw??'')&&
+        DomUtils.findAll(n=>(n.attribs?.class??'').split(/\s+/).includes('__cf_email__')&&/^(?:[\da-f]{2}){2,}$/i.test(n.attribs?.['data-cfemail']??''),node.children).length;
+      if(contact)result.omissions.push({start:node.startIndex,end:node.endIndex+1,reason:'Opaque protected-contact href excluded; visible contact text and original HTML retained'});
+      if(raw&&!contact){let target;try{target=new URL(raw,url).href;}catch{target=raw;}
         const label=value||node.attribs.alt||node.attribs.title||target;
         const context=DomUtils.textContent(node.parent??node).trim();
         const relationship=node.name==='a'&&(/\b(?:category|tag)\b/.test(node.attribs.rel??'')||(node.attribs.class??'').split(/\s+/).includes('elementor-post-info__terms-list-item'))?'taxonomy':
@@ -58,6 +61,15 @@ export function prepareDocument({title,html,url,htmlWhitespace=false}) {
       if(level)headings.splice(level-1);
       const id=result.blocks.length;
       result.blocks.push({id,tag:node.name??'text',html_start:node.startIndex,html_end:node.endIndex+1,headings:headings.filter(x=>x!=null),text,insertions});
+      // Retain publication text, but preserve its structural role for date proof.
+      for(let parent=node;parent;parent=parent.parent){
+        const classes=(parent.attribs?.class??'').split(/\s+/),property=parent.attribs?.itemprop;
+        const field=['datePublished','dateModified'].includes(property)?property:
+          parent.name==='time'&&classes.some(c=>['published','updated'].includes(c))?(classes.includes('published')?'datePublished':'dateModified'):
+          parent.name==='span'&&classes.includes('date')&&parent.parent?.children?.some(n=>n.name==='span'&&(n.attribs?.class??'').split(/\s+/).includes('label')&&DomUtils.textContent(n).trim()==='News')?'datePublished':
+          new URL(url).hostname==='highseasalliance.org'&&classes.includes('date')&&parent.parent?.name==='article'&&(parent.parent.attribs?.class??'').split(/\s+/).includes('type-post')?'datePublished':null;
+        if(field){result.blocks.at(-1).source_fields=[{field,start:0,end:text.length,attribution:{relationship:'publication-metadata'}}];break;}
+      }
       if(node.name==='table')result.blocks.at(-1).table_context=DomUtils.findAll(n=>n.name==='caption'||n.name==='tr'&&DomUtils.getElementsByTagName('th',n.children).length,node.children)
         .map(n=>(n.name==='caption'?[n]:DomUtils.getElementsByTagName('th',n.children)).map(cell=>DomUtils.textContent(cell).replace(/\s+/g,' ').trim()).join('\t')).join('\n');
       if(level)headings[level-1]=id;
@@ -66,6 +78,17 @@ export function prepareDocument({title,html,url,htmlWhitespace=false}) {
   walk(dom);
   // Structural payloads, not scripted record fields. Never execute page JavaScript.
   const structured=DomUtils.getElementsByTagName('script',dom.children).filter(n=>n.attribs.type==='application/ld+json').map(n=>({label:'JSON-LD',body:DomUtils.textContent(n)}));
+  if(/\.qualtrics\.com$/.test(new URL(url).hostname)){
+    const encoded=DomUtils.getElementsByTagName('script',dom.children).map(n=>DomUtils.textContent(n))
+      .map(text=>text.match(/^\s*q=JSON\.parse\(decodeURIComponent\(("(?:[^"\\]|\\.)*")\)\)/)?.[1]).find(Boolean);
+    if(encoded)try{
+      const data=JSON.parse(decodeURIComponent(JSON.parse(encoded))).init.appData;
+      if(data.setup.survey.id!==new URL(url).pathname.match(/\/form\/(SV_[\w]+)$/)?.[1]||!Array.isArray(data.page.content.questions))throw new Error('Survey identity/content unavailable');
+      structured.push({label:'Qualtrics public survey page',body:JSON.stringify({survey:data.setup.survey,questions:data.page.content.questions})});
+      result.version='qualtrics-public-page-v1';
+      result.omissions.push({reason:'Qualtrics session, response, authentication and UI configuration excluded; public survey page retained; full response captured.'});
+    }catch{result.omissions.push({reason:'Malformed or mismatched Qualtrics public page payload; raw response retained.'});}
+  }
   if(/(^|\.)zoom\.us$/.test(new URL(url).hostname)){
     const raw=html.match(/\bregisterVO:(\{[^\n]+\}),\s*\n/)?.[1];
     if(raw){
@@ -82,15 +105,19 @@ export function prepareDocument({title,html,url,htmlWhitespace=false}) {
     }
   }
   for(const data of structured){
-    try{const value=JSON.parse(data.body);result.blocks.push({id:result.blocks.length,tag:'structured-data',headings:[],text:data.label+'\n'+JSON.stringify(value,null,2)});}
+    try{const value=JSON.parse(data.body),text=data.label+'\n'+JSON.stringify(value,null,2);
+      result.blocks.push({id:result.blocks.length,tag:'structured-data',headings:[],text,
+        source_fields:[...text.matchAll(/"(datePublished|dateModified)":\s*"([^"\n]+)"/g)].map(m=>({field:m[1],start:m.index,end:m.index+m[0].length,attribution:{relationship:'publication-metadata'}}))});}
     catch{result.omissions.push({reason:'Malformed '+data.label+' could not be prepared; raw response retained.'});}
   }
   if(!result.blocks.length)throw new Error('Document has no readable body');
   for(const block of result.blocks){
     if(result.text)result.text+='\n\n';
     block.start=result.text.length;result.text+=block.text;block.end=result.text.length;delete block.text;
+    for(const field of block.source_fields??[]){field.start+=block.start;field.end+=block.start;}
     for(const i of block.insertions??[])result.insertions.push({...i,start:i.start+block.start,end:i.end+block.start});delete block.insertions;
   }
+  if(new URL(url).hostname==='highseasalliance.org'&&result.blocks.some(b=>b.source_fields?.length))result.version='hsa-publication-metadata-v1';
   for(let start=0;start<result.text.length;){
     let end=start,bytes=0;
     for(const char of result.text.slice(start)){if(bytes+Buffer.byteLength(char)>CHUNK_BYTES)break;bytes+=Buffer.byteLength(char);end+=char.length;}
@@ -111,13 +138,13 @@ export function prepareDocument({title,html,url,htmlWhitespace=false}) {
 }
 
 export function prepareCbdPayload({id,url,raw,rows,task,provenance,sourceURL}){
-  const array=Array.isArray(JSON.parse(raw));
+  const original=JSON.parse(raw),array=Array.isArray(original);
   const prepared={version:'cbd-documents-v2',title:'',url,input:'whole-registry-source',text:'',blocks:[],chunks:[],links:[],omissions:[],
     offset_basis:'Prepared UTF-16 text; literal labels are generated. HTML offsets refer to the decoded field, not the raw JSON response.',
-    source_rows:rows.map((row,index)=>({source_id:row._id,row:index,raw_path:array?'$['+index+']':'$'}))};
+    source_rows:rows.map((row,index)=>({source_id:row._id??row.did,row:index,raw_path:Array.isArray(original.profiles)?'$.profiles['+index+']':array?'$['+index+']':'$'}))};
   const coverage=[];
   for(const[rowIndex,row]of rows.entries()){
-    const root=array?'$['+rowIndex+']':'$',attribution={relationship:task.kind,source_id:row._id,row:rowIndex},fields=[];
+    const root=Array.isArray(original.profiles)?'$.profiles['+rowIndex+']':array?'$['+rowIndex+']':'$',attribution={relationship:task.kind,source_id:row._id??row.did,row:rowIndex},fields=[];
     function walk(value,path,key){
       if(value&&typeof value==='object'&&Object.keys(value).length){
         for(const[k,v]of Object.entries(value))walk(v,path+(Array.isArray(value)?'['+k+']':'.'+k),k);
@@ -129,7 +156,7 @@ export function prepareCbdPayload({id,url,raw,rows,task,provenance,sourceURL}){
     fields.sort((a,b)=>(a.key==='description')-(b.key==='description'));
     for(const{value,path,key}of fields){
       if(prepared.text)prepared.text+='\n\n';
-      const start=prepared.text.length,label=path+': ',html=key==='description'&&typeof value==='string'&&/<\/?[a-z][^>]*>/i.test(value);
+      const start=prepared.text.length,label=path+': ',html=task.kind!=='profile'&&key==='description'&&typeof value==='string'&&/<\/?[a-z][^>]*>/i.test(value);
       let clean;
       if(html){
         try{clean=prepareDocument({title:'',url,html:value});}
@@ -177,18 +204,171 @@ function feedItems(body) {
   });
 }
 
-// Incidental announcement links remain metadata; extraction uses only its own
-// retained primary body. No registration/organizer/topic destinations are opened.
-export async function supportDocuments(_db,{source,prepared,trace,context,reuse}){
-  const coverage=prepared.links.map(link=>({...link,state:'unfetched',reason:'Citation/link metadata only; not opened for event extraction'}));
+// One hop from retained primary links: three destinations/article, six/run.
+// Registration/organizer relationships are link metadata, never arrival order.
+export async function supportDocuments(db,{source,prepared,read,sourceURL,budget,limits,trace,recordId,companions=[],cache=new Map(),context,reuse}){
   const documents=[{id:'P',capture_id:source.id,hash:source.content_hash,url:prepared.url,relationship:'primary',
     preparation_version:prepared.version,prepared,start:0,end:prepared.text.length}];
-  context??=digest(JSON.stringify({primary:source.content_hash,mode:'announcement-events'}));
+  if(source.parsed.document.conflicted){
+    const variants=(await db.query("select * from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}'=$2 and id<>$3 order by content_hash,id limit 4",
+      [source.tracker_id,source.parsed.document.identity,source.id])).rows;
+    if(!variants.length||variants.length>3)throw new Error('Source variants require two to four retained complete captures for joint review');
+    for(const variant of variants){
+      const document=variant.parsed.document,p=document.prepared_versions?.[document.preparation.version]??document.prepared;
+      if(document.preparation.state!=='complete'||!p||document.feed_only)throw new Error('Source variant preparation is incomplete; retain all versions before review');
+      await trace.capture(variant);
+      documents.push({id:'S'+documents.length,capture_id:variant.id,hash:variant.content_hash,url:p.url,relationship:'source-variant',
+        preparation_version:p.version,prepared:p});
+    }
+    context=undefined; // A single-capture resume key cannot certify a joint review.
+  }
+  if(!read){
+  const coverage=prepared.links.map(link=>({...link,state:'unfetched',reason:'Citation/link metadata only; not opened for event extraction'}));
+  context??=digest(JSON.stringify({primary:source.content_hash,mode:'announcement-events',...documents.length>1?{variants:documents.slice(1).map(d=>({hash:d.hash,preparation_version:d.preparation_version,text:d.prepared.text}))}:{}}));
   const artifact=await trace.artifact('support_coverage','Primary announcement and unopened citation links',
     {context,documents:documents.map(({prepared,...d})=>d),links:coverage,...reuse?{reuse}:{}});
   const op=await trace.start('prepare',{source_ids:[source.id],artifacts:[artifact],note:'Independent primary announcement; incidental links retained without retrieval or concatenation.'});
   await trace.finish(op,'pass');
   return {...prepared,documents,context,coverage};
+  }
+  const associated=(await db.query("select parsed->'finding' finding from scout.evidence where record_id is not null and tracker_id=$1 and parsed#>>'{document,identity}'=$2"+(recordId?' and record_id=$3':''),[source.tracker_id,source.parsed.document.identity,...recordId?[recordId]:[]])).rows;
+  const findingURLs=new Set(associated.flatMap(r=>[r.finding?.candidate?.event_url,r.finding?.candidate?.registration_url,...r.finding?.urls??[]]).filter(Boolean).map(url=>{try{return sourceURL(url);}catch{return url;}}));
+  const labels=recordId?associated.flatMap(r=>[r.finding?.anchor,r.finding?.candidate?.title]).filter(Boolean):[];
+  const links=new Map(),coverage=[];
+  const primaryLinks=[...prepared.links];
+  if(recordId)for(const target of new Set(companions))primaryLinks.push({tag:'a',target,relationship:'discovery',label:'Independently supplied companion',context:'Requested for record '+recordId+'. Not a link in the primary source; same-finding identity and field roles require inspection.'});
+  if(/^https:\/\/api\.cbd\.int\/api\/v2016\/reservations\/?\?/.test(source.url)){
+    const meetings=[...new Set((prepared.blocks??[]).filter(b=>b.source_paths?.some(path=>/\.(?:sideEvent|location)\.conference$/.test(path))).map(b=>prepared.text.slice(...b.value_range)))];
+    if(meetings.length===1&&/^[a-f0-9]{24}$/.test(meetings[0]))primaryLinks.push({tag:'a',relationship:'meeting',meeting:meetings[0],label:'Referenced CBD meeting identity',context:'Literal session conference reference. Parent meeting dates are not session dates.',
+      target:'https://api.cbd.int/api/v2016/conferences?'+new URLSearchParams({q:JSON.stringify({_id:{$oid:meetings[0]}}),f:JSON.stringify({Title:1,Description:1,Venue:1})})});
+    const hosts=(prepared.blocks??[]).filter(b=>b.source_paths?.some(path=>/\.sideEvent\.hostOrgs\[\d+\]$/.test(path))).map(b=>prepared.text.slice(...b.value_range));
+    if(hosts.length&&hosts.length<=10&&hosts.every(id=>/^[a-f0-9]{24}$/.test(id)))
+      primaryLinks.push({tag:'a',relationship:'organizer',hosts:[...new Set(hosts)],label:'Referenced CBD host organizations',context:'Literal sideEvent.hostOrgs references; returned names must match these IDs for this same session.',
+        target:'https://api.cbd.int/api/v2016/inde-orgs?'+new URLSearchParams({q:JSON.stringify({_id:{$in:[...new Set(hosts)].sort().map(id=>({$oid:id}))}}),f:JSON.stringify({title:1,acronym:1})})});
+    else if(hosts.length)coverage.push({relationship:'organizer',state:'unsupported',reason:'CBD host references lack a bounded unambiguous public-registry lookup'});
+  }
+  for(const link of primaryLinks){
+    if(link.relationship==='taxonomy'){coverage.push({...link,state:'skipped',reason:'Publisher taxonomy link retained without support fetching'});continue;}
+    const session=link.tag==='a'&&link.target.match(/^https:\/\/www\.cbd\.int\/side-events\/(\d+)$/)?.[1];
+    let url;try{url=sourceURL(session?'https://api.cbd.int/api/v2016/reservations/?'+new URLSearchParams({q:JSON.stringify({'sideEvent.id':+session})}):link.target);}catch{coverage.push({...link,state:'unsupported',reason:'Public HTTPS document URL required'});continue;}
+    if((link.tag!=='a'&&!(link.tag==='api'&&link.relationship==='calendar-export'))||/\.(?:png|jpe?g|gif|webp|mp4|mp3|zip)(?:$|\?)/i.test(url)){coverage.push({...link,url,state:'unsupported',reason:'Only linked HTML/text/JSON/PDF/calendar documents in this one-hop pass'});continue;}
+    if(url===sourceURL(prepared.url)){coverage.push({...link,url,state:'skipped',reason:'Primary document already retained'});continue;}
+    const prior=links.get(url);
+    if(!prior||prior.relationship==='support')links.set(url,{...link,url,...session?{session}:{} });
+  }
+  let selected=0;
+  const queue=[...links.values()].sort((a,b)=>Number(b.relationship==='discovery')-Number(a.relationship==='discovery')||Number(findingURLs.has(b.url)||findingURLs.has(b.target))-Number(findingURLs.has(a.url)||findingURLs.has(a.target))||Number(labels.some(label=>b.context?.includes(label)))-Number(labels.some(label=>a.context?.includes(label)))||(a.relationship==='support')-(b.relationship==='support')||(labels.length?(a.context?.length??0)-(b.context?.length??0):0));
+  for(const link of queue){
+    const relation={from:source.id,url:link.url,label:link.label,context:link.context,relationship:link.relationship,...link.actors?{actors:link.actors,mentions:link.mentions}:{},...link.session?{source_reference:link.target,session_id:link.session}:link.source_reference?{source_reference:link.source_reference}:{} };
+    if(selected++>=3){coverage.push({...relation,state:'deferred',reason:'Three support destinations per article'});continue;}
+    let result=cache.get(link.url);
+    if(!result){
+      if(cache.size>=limits.pages||budget.requests>=limits.requests||Date.now()>=budget.deadline){coverage.push({...relation,state:'deferred',reason:'Shared support/request/time bound'});continue;}
+      result={state:'failed'};cache.set(link.url,result);
+      const op=await trace.start('fetch',{url:link.url,note:'One-hop supporting document; shared public-fetch safeguards.'});
+      const before=budget.requests;
+      try{
+        let r;
+        try{r=await read(link.url,budget);}catch(error){
+          if(!/peer closed connection without sending TLS close_notify/.test(error.message)||budget.requests>=limits.requests||Date.now()>=budget.deadline)throw error;
+          const observed=(await db.query("select id,url from scout.evidence where record_id is null and tracker_id=$1 and parsed#>>'{document,identity}'=$2 and url<>$3 order by last_seen_at desc,collected_at desc,id limit 1",[source.tracker_id,'support:'+link.url,link.url])).rows[0];
+          if(!observed)throw error;
+          r=await read(sourceURL(observed.url),budget);result.redirect={observed_capture:observed.id,destination:observed.url,reason:error.message,rechecked:true};
+        }
+        if(budget.requests===before)budget.requests++;
+        if(r.status!==200||typeof r.body!=='string'||Buffer.byteLength(r.body,r.encoding??'utf8')>limits.bytes)throw new Error('Support response status/byte bound');
+        const url=sourceURL(r.url),mime=r.headers?.['content-type']?.split(';')[0]??'text/html';
+        const payload={url,status:r.status,mime,body:r.body,...r.encoding?{encoding:r.encoding}:{}},hash=digest(JSON.stringify(payload));
+        const capture=(await db.query("insert into scout.evidence(tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,clock_timestamp()) "+
+          "on conflict(record_id,tracker_id,url,content_hash) do update set last_seen_at=excluded.last_seen_at returning *",
+          [source.tracker_id,url,hash,JSON.stringify(payload),JSON.stringify({document:{identity:'support:'+link.url}})])).rows[0];
+        const ref=await trace.capture(capture);
+        Object.assign(result,{capture_id:capture.id,hash,url});
+        if(!['text/html','application/xhtml+xml','application/json','text/plain','application/pdf','text/calendar'].includes(mime)){
+          Object.assign(result,{state:'unsupported',capture_id:capture.id,hash,url,reason:'Unsupported support MIME type: '+mime});
+          await trace.finish(op,'skipped',{artifacts:[ref],note:result.reason});
+        }else{
+        const version=link.actors?'support-bsky-profiles-v2':link.meeting?'support-cbd-meeting-v1':link.session?'support-cbd-session-v1':link.hosts?'support-cbd-hosts-v1':mime==='application/pdf'?'support-pdf-v1':mime==='text/calendar'?'support-ical-v1':/\.qualtrics\.com$/.test(new URL(url).hostname)?'qualtrics-public-page-v1':['text/html','application/xhtml+xml'].includes(mime)?'support-html-publication-contact-v1':PREPARATION_VERSION;
+        let clean=capture.parsed.document.prepared_versions?.[version];
+        if(!clean){
+          let body=r.body;
+          if(link.actors){
+            const expected='https://public.api.bsky.app/xrpc/app.bsky.actor.getProfiles?'+new URLSearchParams(link.actors.map(did=>['actors',did])),profiles=JSON.parse(body).profiles;
+            if(link.relationship!=='profile'||url!==expected||mime!=='application/json'||!link.actors.length||link.actors.length>10||new Set(link.actors).size!==link.actors.length||!Array.isArray(profiles)||profiles.length!==link.actors.length||new Set(profiles.map(p=>p.did)).size!==profiles.length||profiles.some(p=>!link.actors.includes(p.did)||typeof p.handle!=='string'))throw new Error('Linked Bluesky profile identity conflict');
+            body=JSON.stringify(profiles.map(p=>Object.fromEntries(['did','handle','displayName','description'].filter(k=>typeof p[k]==='string').map(k=>[k,p[k]]))),null,2);
+          }
+          if(mime==='text/calendar'){
+            const lines=body.replace(/\r\n[ \t]/g,'').split(/\r?\n/).filter(Boolean),stack=[];
+            for(const line of lines){if(line.startsWith('BEGIN:'))stack.push(line.slice(6));else if(line.startsWith('END:')&&stack.pop()!==line.slice(4))throw new Error('ICS component boundary conflict');}
+            if(lines[0]!=='BEGIN:VCALENDAR'||lines.at(-1)!=='END:VCALENDAR'||stack.length)throw new Error('Incomplete ICS document');
+          }
+          if(mime==='application/pdf'){
+            if(r.encoding!=='base64')throw new Error('Exact PDF bytes unavailable');
+            const {getDocument}=await import('pdfjs-serverless');
+            const task=getDocument({data:new Uint8Array(Buffer.from(body,'base64')),isEvalSupported:false,useSystemFonts:false});
+            try{
+              const pdf=await task.promise;
+              if(pdf.numPages>30)throw new Error('Support PDF exceeds 30-page bound');
+              const pages=[];
+              for(let page=1;page<=pdf.numPages;page++){
+                if(Date.now()>=budget.deadline)throw new Error('Support PDF preparation time bound');
+                const text=await (await pdf.getPage(page)).getTextContent();
+                pages.push('Page '+page+'\n'+text.items.map(item=>item.str??'').join(' '));
+              }
+              if(!pages.some(page=>page.replace(/^Page \d+\s*/,'').trim()))throw new Error('PDF has no readable text layer; image/OCR evidence remains unavailable');
+              body=pages.join('\n\n');
+            }finally{await task.destroy();}
+          }
+          if(link.actors){
+            clean=prepareCbdPayload({id:'support:profile:'+link.actors.join(','),url,raw:r.body,rows:JSON.parse(body),task:{kind:'profile'},provenance:[],sourceURL}).prepared;
+            clean.omissions.push({path:'$.profiles',reason:'Only public identity/affiliation fields rendered; transport metrics and profile timestamps retained in raw'});
+          }else if(link.session||link.meeting||link.hosts){
+            const rows=JSON.parse(body);
+            if(mime!=='application/json'||!Array.isArray(rows)||!rows.length||rows.some(row=>link.meeting?row._id!==link.meeting:link.hosts?!link.hosts.includes(row._id):row.sideEvent?.id!==+link.session||typeof row.sideEvent.description!=='string'))throw new Error('Linked CBD '+(link.meeting?'meeting':link.hosts?'host':'session')+' identity/description conflict');
+            clean=prepareCbdPayload({id:'support:'+ (link.meeting?'meeting:':link.hosts?'host:':'session:')+(link.meeting??link.hosts?.join(',')??link.session),url,raw:body,rows,task:{kind:link.meeting?'meeting':link.hosts?'organizer':'session',id:link.meeting??link.hosts?.join(',')??link.session},provenance:[],sourceURL}).prepared;
+            if(link.meeting)clean.meeting_identity={id:link.meeting,title:rows[0].Title?.en,venue:rows[0].Venue?.en};
+          }else{
+            const html=['application/json','text/plain','application/pdf','text/calendar'].includes(mime)?'<pre>'+body.replaceAll('&','&amp;').replaceAll('<','&lt;')+'</pre>':body;
+            const title=DomUtils.textContent(DomUtils.getElementsByTagName('title',parseDocument(html).children)[0]??{children:[]})||url;
+            clean=prepareDocument({url,title,html,protectedContacts:true});
+          }
+          clean.version=version;
+          if(mime==='application/pdf')clean.offset_basis='PDF text-layer item order with generated page markers; ranges refer to prepared UTF-16 text, not original HTML.';
+          await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,prepared_versions}',coalesce(parsed#>'{document,prepared_versions}','{}')||jsonb_build_object($2::text,$3::jsonb)) where id=$1",[capture.id,version,JSON.stringify(clean)]);
+        }
+        Object.assign(result,{state:'fetched',capture_id:capture.id,hash,url,prepared:clean});
+        const artifact=await trace.artifact('preparation','Cleaned supporting document',undefined,{source_id:capture.id,content_hash:hash,preparation_version:version});
+        await trace.finish(op,'pass',{artifacts:[ref,artifact],note:'Payload and cleaned support retained. Links from this page are not followed.'});
+        }
+      }catch(error){
+        if(budget.requests===before)budget.requests++;
+        result.reason=error.message;await trace.finish(op,'fail',{note:'Support unavailable: '+error.message});
+      }
+    }
+    coverage.push({...relation,...Object.fromEntries(Object.entries(result).filter(([k])=>k!=='prepared'))});
+    if(result.state==='fetched'&&!documents.some(d=>d.capture_id===result.capture_id))
+      documents.push({id:'S'+documents.length,capture_id:result.capture_id,hash:result.hash,url:result.url,relationship:link.relationship,via:relation,preparation_version:result.prepared.version,prepared:result.prepared});
+    if(link.session&&result.state==='fetched'){
+      const meetings=[...new Set(result.prepared.blocks.filter(b=>b.source_paths?.some(path=>/\.(?:sideEvent|location)\.conference$/.test(path))).map(b=>result.prepared.text.slice(...b.value_range)))];
+      if(meetings.length===1&&/^[a-f0-9]{24}$/.test(meetings[0])){
+        const url=sourceURL('https://api.cbd.int/api/v2016/conferences?'+new URLSearchParams({q:JSON.stringify({_id:{$oid:meetings[0]}}),f:JSON.stringify({Title:1,Description:1,Venue:1})}));
+        if(!queue.some(next=>next.url===url))queue.splice(queue.indexOf(link)+1,0,{url,target:url,meeting:meetings[0],source_reference:link.target,relationship:'meeting',label:'Referenced CBD meeting identity',context:'Conference ID retained in '+link.url+'. Parent meeting dates are not session dates.'});
+      }
+      const hosts=[...new Set(result.prepared.blocks.filter(b=>b.source_paths?.some(path=>/\.sideEvent\.hostOrgs\[\d+\]$/.test(path))).map(b=>result.prepared.text.slice(...b.value_range)))];
+      if(hosts.length&&hosts.length<=10&&hosts.every(id=>/^[a-f0-9]{24}$/.test(id))){
+        const url=sourceURL('https://api.cbd.int/api/v2016/inde-orgs?'+new URLSearchParams({q:JSON.stringify({_id:{$in:hosts.sort().map(id=>({$oid:id}))}}),f:JSON.stringify({title:1,acronym:1})}));
+        if(!queue.some(next=>next.url===url))queue.splice(queue.indexOf(link)+1+Number(queue[queue.indexOf(link)+1]?.relationship==='meeting'),0,{url,target:url,hosts,source_reference:link.target,relationship:'organizer',label:'Referenced CBD host organizations',context:'Literal sideEvent.hostOrgs references retained in '+link.url+'; returned names must match these IDs for this same session.'});
+      }else if(hosts.length)coverage.push({from:source.id,relationship:'organizer',state:'unsupported',reason:'CBD host references lack a bounded unambiguous public-registry lookup'});
+    }
+  }
+  // Response framing can change while quoted support text stays identical.
+  // Proofs still use the current raw captures; only the resume key uses prepared content.
+  context=digest(JSON.stringify({primary:source.content_hash,documents:documents.map(d=>({url:d.url,relationship:d.relationship,via:d.via,preparation_version:d.preparation_version,title:d.prepared.title,text:d.prepared.text,source_fields:d.prepared.blocks.flatMap(b=>b.source_fields??[])}))}));
+  const combined={...prepared,documents,context,coverage};
+  const artifact=await trace.artifact('support_coverage','Primary/support relationships, versions and coverage',{context,documents:documents.map(({prepared,...d})=>d),links:coverage});
+  const op=await trace.start('prepare',{source_ids:[source.id],artifacts:[artifact],note:'Bounded one-hop support context; every omitted/failed destination remains explicit.'});
+  await trace.finish(op,'pass');
+  return combined;
 }
 
 // Opt-in fetch/prepare route. No call into the legacy scripted assessment/save

@@ -16,7 +16,7 @@ export function prepareAuthorItem(item, { actor, sourceURL }) {
   // Literal content fields, not serialized transport JSON. Offsets refer to
   // decoded source strings (UTF-16); every original value remains in raw.
   const prepared={version:PREPARATION_VERSION,title:'',url,input:'author-feed-item',text:'',blocks:[],chunks:[],links:[],omissions:[]};
-  const coverage=[],rendered=new Set(),fields=new Map();
+  const coverage=[],rendered=new Set(),fields=new Map(),mentions=[];
   function content(text,path,field,context) {
     if(typeof text!=='string'||rendered.has(path))return;
     rendered.add(path);
@@ -47,6 +47,14 @@ export function prepareAuthorItem(item, { actor, sourceURL }) {
       else content(value.uri,path+'.uri','reference',context);
     }
     if(!technical&&path.endsWith('.external'))context={...context,uri:value.uri??null,author:null,relationship:'external'};
+    if(!technical&&/\.(?:record|value)$/.test(path)&&context.uri?.startsWith('at://')&&typeof value.text==='string')for(const facet of value.facets??[])for(const feature of facet.features??[])if(feature.$type==='app.bsky.richtext.facet#mention'){
+      const {byteStart:a,byteEnd:b}=facet.index??{},bytes=new TextEncoder().encode(value.text);
+      try{
+        if(!/^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/.test(feature.did)||!Number.isInteger(a)||!Number.isInteger(b)||a<0||b<=a||b>bytes.length)throw new Error('Invalid native mention reference/range');
+        const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes.slice(a,b));
+        mentions.push({did:feature.did,text,uri:context.uri,path});
+      }catch(error){coverage.push({relationship:'profile',path,state:'unsupported',reason:error.message});}
+    }
     if (value.$type==='app.bsky.richtext.facet#link') link(value.uri,'support',path,context);
     if (value.external?.uri) link(value.external.uri,'support',path+'.external',context);
     if (value.uri?.startsWith('at://')) {
@@ -72,6 +80,11 @@ export function prepareAuthorItem(item, { actor, sourceURL }) {
   const primary={uri:post.uri,author:post.author.handle,text:post.record.text,relationship:'post'};
   content(post.record.text,'item.post.record.text','text',primary);
   walk(item,'item',primary);
+  const actors=[...new Set(mentions.map(m=>m.did))].sort();
+  if(actors.length&&actors.length<=10){
+    prepared.version='bluesky-mention-documents-v1';
+    prepared.links.push({target:sourceURL('https://public.api.bsky.app/xrpc/app.bsky.actor.getProfiles?'+new URLSearchParams(actors.map(did=>['actors',did]))),tag:'a',relationship:'profile',actors,mentions,label:'Native mentioned participants',context:'Exact native mention DIDs; profiles supply identity/affiliation only, never event participation or schedule.',state:'unfetched'});
+  }else if(actors.length)coverage.push({relationship:'profile',state:'unsupported',reason:'Native mentions exceed ten-actor public lookup bound'});
   for(const block of prepared.blocks)prepared.chunks.push({start:prepared.chunks.at(-1)?.end??0,end:block.end,block_ids:[block.id],context_block_ids:[],preceding_context:null});
   // Plain-text links are retained even when a facet is absent; no prefix clipping.
   for(const block of prepared.blocks)if(block.field==='text')for(const match of prepared.text.slice(block.start,block.end).matchAll(/https:\/\/[^\s<>]+/g))
