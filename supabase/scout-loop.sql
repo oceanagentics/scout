@@ -27,7 +27,7 @@ end $$;
 create or replace function scout.loop_health() returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare control scout.collection_runs; issues jsonb:='[]'; backlog jsonb; response record;
-  fingerprint text; webhook text; alert_id bigint; latest_work timestamptz;
+  latest_work timestamptz;
 begin
   select * into control from scout.collection_runs where stats->>'purpose'='scheduler' order by started_at desc limit 1 for update;
   if control.id is null then return jsonb_build_object('state','not_installed'); end if;
@@ -84,23 +84,9 @@ begin
     and started_at>clock_timestamp()-interval '30 minutes' and not (stats ? 'delivery')) then
     issues:=issues||jsonb_build_array('Finding notification selection/configuration failed; inspect retained notification run'); end if;
   if pg_database_size(current_database())>367001600 then issues:=issues||jsonb_build_array('Database storage exceeds 350 MiB; review storage capacity'); end if;
-  fingerprint:=md5(issues::text);
-  -- Reserve the transition before HTTP dispatch. Ambiguous Slack replies are
-  -- visible in health metadata and never cause repeated identical alerts.
-  if fingerprint is distinct from control.stats#>>'{health,fingerprint}' then
-    select decrypted_secret into webhook from vault.decrypted_secrets where name='scout_loop_slack_webhook';
-    if webhook ~ '^https://hooks[.]slack[.]com/services/TFZ8FRLBV/B0C5TEK4R38/[A-Za-z0-9]+$' then
-      alert_id:=net.http_post(url:=webhook,body:=jsonb_build_object('text','Scout background loop: '||
-        case when issues='[]'::jsonb then 'Recovered; no current operating problems.' else
-          (select string_agg(v,E'\n• ') from jsonb_array_elements_text(issues) a(v)) end||
-        E'\nAwaiting initial review: '||(backlog->>'awaiting_initial')||'; parked: '||(backlog->>'parked')||
-        E'\nhttps://bbnj-scout.web.app'),timeout_milliseconds:=12000);
-    end if;
-  else alert_id:=(control.stats#>>'{health,alert_request_id}')::bigint;
-  end if;
+  -- Health remains inspectable in the backend; Slack carries curated findings only.
   update scout.collection_runs set stats=stats||jsonb_build_object('health',jsonb_build_object('checked_at',clock_timestamp(),
-    'issues',issues,'backlog',backlog,'fingerprint',fingerprint,'alert_request_id',alert_id,
-    'alert_http_status',(select status_code from net._http_response where id=alert_id))) where id=control.id;
+    'issues',issues,'backlog',backlog)) where id=control.id;
   return jsonb_build_object('issues',issues,'backlog',backlog);
 end $$;
 

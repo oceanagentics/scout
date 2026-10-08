@@ -13,7 +13,7 @@ import {startReport} from '../collector/report.js';
 import {hostedHSA} from '../collector/hosted-hsa.js';
 import {stepState} from '../src/runs.js';
 import {filterRecords} from '../src/records.js';
-import {eligibleRecords} from '../notifications/slack.js';
+import {eligibleRecords,readRecords} from '../notifications/slack.js';
 
 const fixture=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));
 const mp=JSON.parse(fixture.posts.body).find(p=>p.id===16281);
@@ -183,7 +183,7 @@ test('publications, funder updates and advocacy save as rated announcements with
     const records=await current(db);assert.equal(records.length,4);
     for(const [title,,priority] of items){const record=records.find(r=>r.title===title);assert.equal(record.kind,'announcement');assert.equal(record.priority,priority);
       for(const key of ['location','event_url','registration_url','starts_at','ends_at','status'])assert.equal(record[key],null);}
-    assert.equal(eligibleRecords(records).length,2);assert.deepEqual(eligibleRecords(records,{kind:'digest',from:'2026-10-01',through:'2026-10-31'}),[]);
+    assert.equal(eligibleRecords(await readRecords(db)).length,2);assert.deepEqual(eligibleRecords(records,{kind:'digest',from:'2026-10-01',through:'2026-10-31'}),[]);
     for(const request of source.requests)assert.ok(JSON.parse(request).systemInstruction.parts[0].text.includes(PRIORITY_INSTRUCTION));
     const calls=source.requests.length;await source.run();assert.equal(source.requests.length,calls);assert.deepEqual(await current(db),records);
     const prepared=prepareDocument({url:article.link,title:'Ocean updates',html:items.map(([t,d])=>'<h2>'+t+'</h2><p>'+d+'</p>').join('')});

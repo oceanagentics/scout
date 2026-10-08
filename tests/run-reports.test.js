@@ -333,7 +333,7 @@ test('run view navigates on demand, renders artifacts as text, and discards late
   }finally{if(old===undefined)delete globalThis.document;else globalThis.document=old;}
 });
 
-test('independent health checks detect auth/stopped scheduler, deduplicate alerts, recover and compact only redundant success history',async()=>{
+test('independent health checks record failures and recovery without Slack posts, and compact only redundant success history',async()=>{
   const db=await database();try{
     await db.exec(`create schema cron;create schema net;create schema vault;
       create table cron.job(jobid bigint primary key,jobname text,active boolean);
@@ -357,20 +357,20 @@ test('independent health checks detect auth/stopped scheduler, deduplicate alert
     await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{dispatches,0,at}',to_jsonb((now()-interval '3 minutes')::text)) where id=$1",[control]);
     let health=(await db.query('select scout.loop_health() health')).rows[0].health;
     assert.ok(health.issues.includes('Worker HTTP failure: 401'));
-    const alerts=(await db.query('select count(*)::int n from net.requests')).rows[0].n;
-    await db.query('select scout.loop_health()');assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,alerts);
+    assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,1);
+    assert.deepEqual((await db.query('select stats from scout.collection_runs where id=$1',[control])).rows[0].stats.health.issues,health.issues);
     await db.exec('update cron.job set active=false');
     health=(await db.query('select scout.loop_health() health')).rows[0].health;
     assert.ok(health.issues.includes('Collection scheduler stopped'));
     await db.exec('update cron.job set active=true;update net._http_response set status_code=200 where id=1');
     health=(await db.query('select scout.loop_health() health')).rows[0].health;
     assert.ok(!health.issues.includes('Collection scheduler stopped'));assert.ok(!health.issues.includes('Worker HTTP failure: 401'));
-    const before=(await db.query('select count(*)::int n from net.requests')).rows[0].n;
-    await db.query('select scout.loop_health()');assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,before);
+    assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,1);
     const unstamped=(await db.query("insert into scout.collection_runs(tracker_id,started_at,finished_at,outcome,stats) values($1,now()-interval '4 minutes',now(),'no_change','{\"purpose\":\"notification\",\"delivery\":{\"status\":\"sent\",\"communicated\":0,\"records\":[{}]}}') returning id",[tracker])).rows[0].id;
     assert.ok((await db.query('select scout.loop_health() health')).rows[0].health.issues.some(issue=>issue.includes('Slack delivery uncertain')));
     await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{delivery,communicated}','1') where id=$1",[unstamped]);
     assert.ok(!(await db.query('select scout.loop_health() health')).rows[0].health.issues.some(issue=>issue.includes('Slack delivery uncertain')));
+    assert.equal((await db.query('select count(*)::int n from net.requests')).rows[0].n,1);
     await db.query(`insert into scout.collection_runs(tracker_id,started_at,finished_at,outcome,stats,report)
       select $1,now()-interval '40 days',now()-interval '40 days'+n*interval '1 second','no_change',
         '{"stage":"fetch","requests":2,"prepared":0}'::jsonb,'{"artifacts":{"duplicate_body":"safe public source"}}'::jsonb
