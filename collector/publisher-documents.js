@@ -5,6 +5,91 @@ import { prepareDocument } from './octo-documents.js';
 export const GFW_LISTING = 'https://globalfishingwatch.org/mediacenter/';
 const origin = 'https://globalfishingwatch.org';
 
+// Exact, reviewed public sources. Paths select publisher documents, never findings.
+export const PUBLISHER_SOURCES = [
+  {key:'skylight',name:'Skylight (Ai2)',url:'https://skylight.global/news',detail:/^\/news\/[^/]+\/?$/},
+  {key:'oceans5',name:'Oceans 5',url:'https://www.oceans5.org/projects/',detail:/^\/project\/[^/]+\/$/},
+  {key:'bloomberg-oceans',name:'Bloomberg Ocean Initiative',url:'https://www.bloomberg.org/environment/protecting-the-oceans/'},
+  {key:'minderoo',name:'Minderoo Foundation',url:'https://www.minderoo.org/media/',detail:/^\/media\/[^/]+\/$/},
+  {key:'oceankind',name:'Oceankind',url:'https://oceankind.org/',listings:['https://oceankind.org/','https://oceankind.org/approach/'],wholeBody:true},
+  {key:'skytruth',name:'SkyTruth',url:'https://skytruth.org/blog',detail:/^\/blog\/[^/]+\/?$/},
+  {key:'oceano-azul',name:'Oceano Azul Foundation',url:'https://oceanoazulfoundation.org/media/',listings:['https://oceanoazulfoundation.org/media/','https://oceanoazulfoundation.org/what-we-do/'],detail:/^\/what-we-do\/[^/]+\/$/},
+  {key:'obis',name:'UNESCO-IOC OBIS',url:'https://obis.org/',detail:/^\/\d{4}\/\d\d\/\d\d\/[^/]+\/$/},
+  {key:'geo-cop17',name:'GEO — CBD COP17 pavilion schedule',url:'https://earthobservations.org/about-us/events/cop17/schedule',detail:/^\/about-us\/events\/cop17\/schedule\/[^/]+\/?$/,daily:true,wholeBody:true},
+  {key:'cbd-cop17',name:'CBD COP17 — Yerevan, Armenia',url:'https://www.cbd.int/conferences/2026',conference:'2026',daily:true},
+];
+
+export async function retrievePublisherDocuments({tracker,read,sourceURL,budget,limits,known=[],knownDocuments=[],pending=[],progress={}}) {
+  const profile=PUBLISHER_SOURCES.find(p=>tracker.collector==='web'&&p.url===tracker.url);
+  if(!profile)throw new Error('Unsupported publisher tracker');
+  const documents=[],inventory=[],coverage=[],fetches=[],next={...progress},candidates=new Map();
+  const publisherURL=value=>{
+    const url=sourceURL(value),u=new URL(url),configured=new URL(profile.url);
+    if(u.origin!==configured.origin||u.search)throw new Error('Outside configured publisher');
+    return url;
+  };
+  async function capture(url,api=false) {
+    if(documents.length>=limits.documents||budget.requests>=limits.requests||Date.now()>=budget.deadline){coverage.push({url,state:'deferred',reason:'Document/request/time bound'});return;}
+    const receipt={requested_url:url,state:'failed'},before=budget.requests;fetches.push(receipt);
+    try{
+      const response=await read(sourceURL(url),budget);receipt.response=response;
+      if(response.status!==200||sourceURL(response.url)!==url||typeof response.body!=='string'||Buffer.byteLength(response.body)>limits.bytes||Date.now()>=budget.deadline)
+        throw new Error('Response identity/status/byte/time bound');
+      let html,title='',region;
+      if(api){
+        if(!/json/i.test(response.headers?.['content-type']??''))throw new Error('Conference API format unavailable');
+        const rows=JSON.parse(response.body);
+        if(!Array.isArray(rows)||rows.length!==1||rows[0].code!==profile.conference||rows[0]._id!=='69a875b3475867d4716ad6bc')throw new Error('Conference identity unavailable');
+        html='<pre>'+response.body.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')+'</pre>';
+        region={kind:'complete-conference-response'};
+      }else{
+        if(!/text\/html/i.test(response.headers?.['content-type']??'')||!/<\/html>\s*$/i.test(response.body.replace(/<!--[\s\S]*?-->/g,'')))throw new Error('HTML format/integrity unavailable');
+        const dom=parseDocument(response.body,{withStartIndices:true,withEndIndices:true});
+        title=DomUtils.textContent(DomUtils.getElementsByTagName('title',dom.children)[0]??{});
+        const mains=profile.wholeBody?[]:DomUtils.getElementsByTagName('main',dom.children);
+        const selected=mains.length?mains:DomUtils.getElementsByTagName('body',dom.children);
+        if(selected.length!==1)throw new Error('Document boundary ambiguous');
+        const node=selected[0];html=response.body.slice(node.startIndex,node.endIndex+1);
+        region={kind:node.name,start:node.startIndex,end:node.endIndex+1};
+      }
+      const prepared=prepareDocument({title,html,url,htmlWhitespace:true});
+      if(!prepared.text.trim())throw new Error('Empty publisher document');
+      const doc={id:url,identity:'publisher:'+url,url,raw:response.body,response,regions:[region],prepared,provenance:[{relationship:'configured-publisher',source_url:profile.url}]};
+      documents.push(doc);receipt.state='prepared';coverage.push({url,state:'prepared',reason:'Whole source region retained; scripts, archives, media and external support unfetched'});
+      return doc;
+    }catch(error){receipt.reason=error.message;coverage.push({url,state:'failed',reason:error.message});}
+    finally{if(budget.requests===before)budget.requests++;}
+  }
+  if(profile.conference){
+    const url=sourceURL('https://api.cbd.int/api/v2016/conferences?'+new URLSearchParams({q:JSON.stringify({code:profile.conference})}));
+    await capture(url,true);
+  }else{
+    for(const url of profile.listings??[profile.url]){
+      const doc=await capture(sourceURL(url));
+      for(const link of doc?.prepared.links??[]){
+        try{
+          const url=publisherURL(link.target);
+          if(profile.detail?.test(new URL(url).pathname)){candidates.set(url,{id:url,url});inventory.push({id:url,url,state:'listed'});}
+          else coverage.push({...link,state:'unfetched',reason:'Outside bounded publisher detail paths'});
+        }catch{coverage.push({...link,state:'unfetched',reason:'External/support/media link'});}
+      }
+    }
+    for(const item of [...known,...knownDocuments]){
+      try{const url=publisherURL(item.url);if(item.id===url&&profile.detail?.test(new URL(url).pathname))candidates.set(url,{id:url,url});}
+      catch{coverage.push({url:item.url,state:'failed',reason:'Known publisher identity conflict'});}
+    }
+    const ordered=[...candidates.values()],after=ordered.findIndex(i=>i.url===progress.after_url);
+    const queue=after<0?ordered:[...ordered.slice(after+1),...ordered.slice(0,after+1)];
+    const priority=new Map(pending.filter(i=>['model-repair','model-pending'].includes(i.state)).map(i=>[i.url,i.state==='model-repair'?0:1]));
+    queue.sort((a,b)=>(priority.get(a.url)??2)-(priority.get(b.url)??2));
+    for(const item of queue){
+      const before=fetches.length;await capture(item.url);
+      if(fetches.length>before)next.after_url=item.url;
+    }
+  }
+  return {documents,inventory,coverage,fetches,progress:next,complete:false};
+}
+
 // Retrieval only. Persistence, change detection, support fetching and finding
 // processing belong to the shared document pipeline.
 export async function retrieveGFWDocuments({read,sourceURL,budget,limits,knownArticles=[],pending=[],linkedEvidence=[],progress={}}) {

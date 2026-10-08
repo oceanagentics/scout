@@ -33,4 +33,18 @@ values
   ('bbnj-trackers-2026-10-01:21', 'BBNJ discovery search', 'Discover events, announcements and new organizers. Search separately for BBNJ, High Seas Treaty, traité sur la haute mer, and relevant conference tags.', 'https://bsky.app/search?q=BBNJ', 'bluesky_search', '7 days', false)
 on conflict (seed_key) do nothing;
 
+-- Priority publishers and CBD COP17 Armenia; enable only after live collection proof.
+insert into scout.trackers (seed_key,name,coverage,url,collector,cadence,enabled) values
+  ('bbnj-trackers-2026-10-08:skylight', 'Skylight (Ai2)', 'Ocean conservation, technology, research, partnerships, events and funding announcements from the configured publisher.', 'https://skylight.global/news', 'web', '7 days', false),
+  ('bbnj-trackers-2026-10-08:oceans5', 'Oceans 5', 'Ocean conservation, technology, research, partnerships, events and funding announcements from the configured publisher.', 'https://www.oceans5.org/projects/', 'web', '7 days', false),
+  ('bbnj-trackers-2026-10-08:bloomberg-oceans', 'Bloomberg Ocean Initiative', 'Ocean conservation, technology, research, partnerships, events and funding announcements from the configured publisher.', 'https://www.bloomberg.org/environment/protecting-the-oceans/', 'web', '7 days', false),
+  ('bbnj-trackers-2026-10-08:minderoo', 'Minderoo Foundation', 'Ocean conservation, technology, research, partnerships, events and funding announcements from the configured publisher.', 'https://www.minderoo.org/media/', 'web', '7 days', false),
+  ('bbnj-trackers-2026-10-08:oceankind', 'Oceankind', 'Ocean conservation, technology, research, partnerships, events and funding announcements from the configured publisher.', 'https://oceankind.org/', 'web', '7 days', false),
+  ('bbnj-trackers-2026-10-08:skytruth', 'SkyTruth', 'Ocean conservation, technology, research, partnerships, events and funding announcements from the configured publisher.', 'https://skytruth.org/blog', 'web', '7 days', false),
+  ('bbnj-trackers-2026-10-08:oceano-azul', 'Oceano Azul Foundation', 'Ocean conservation, technology, research, partnerships, events and funding announcements from the configured publisher.', 'https://oceanoazulfoundation.org/media/', 'web', '7 days', false),
+  ('bbnj-trackers-2026-10-08:obis', 'UNESCO-IOC OBIS', 'Ocean conservation, technology, research, partnerships, events and funding announcements from the configured publisher.', 'https://obis.org/', 'web', '7 days', false),
+  ('bbnj-trackers-2026-10-08:geo-cop17', 'GEO — CBD COP17 pavilion schedule', 'CBD COP17 programmes, sessions, participation information and schedule changes in Yerevan, Armenia, 19–30 October 2026.', 'https://earthobservations.org/about-us/events/cop17/schedule', 'web', '1 day', false),
+  ('bbnj-trackers-2026-10-08:cbd-cop17', 'CBD COP17 — Yerevan, Armenia', 'CBD COP17 programmes, sessions, participation information and schedule changes in Yerevan, Armenia, 19–30 October 2026.', 'https://www.cbd.int/conferences/2026', 'web', '1 day', false)
+on conflict (seed_key) do nothing;
+
 commit;

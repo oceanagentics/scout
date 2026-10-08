@@ -315,8 +315,8 @@ test('UN side-event whole sources resume native pending sessions through a listi
       assert.deepEqual(Object.keys(q),['sideEvent.id']);assert.ok([6915,5838,5378].includes(q['sideEvent.id']));return {...sessions.get(q['sideEvent.id']),url};
     }};
     await assert.rejects(collectHSA(db,{...options,sourceId:'00000000-0000-4000-8000-000000000000'}),{status:400});
-    const cbd=(await db.query('select id from scout.trackers where url=$1',[CBD_REGISTRY])).rows[0];
-    await assert.rejects(collectHSA(db,{...options,trackerId:cbd.id}),{status:400});assert.equal(reads.length,0);
+    const unsupported=(await db.query('select id from scout.trackers where url is null')).rows[0];
+    await assert.rejects(collectHSA(db,{...options,trackerId:unsupported.id}),{status:400});assert.equal(reads.length,0);
     const first=await collectHSA(db,options);assert.equal(first.documents,4);assert.equal(first.requests,4);assert.equal(first.created,0);assert.equal(transport.requests.length,2);
     const pending=(await db.query("select parsed#>'{document,processing_versions}' versions from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}'='un-side:session:6915'",[tracker.id])).rows[0];
     assert.equal(Object.values(pending.versions)[0].findings.length,1);assert.equal(Object.values(pending.versions)[0].findings[0].resolution,undefined);

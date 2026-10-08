@@ -286,7 +286,7 @@ test('Workspace provider proof grants readers automatically; editable metadata a
     await db.exec('set role authenticated');
     assert.equal((await db.query('select scout.access_role() as role')).rows[0].role, 'reader');
     assert.equal((await db.query('select * from scout.records')).rows.length, 1);
-    assert.equal((await db.query('select * from scout.trackers')).rows.length, 22);
+    assert.equal((await db.query('select * from scout.trackers')).rows.length, 32);
     assert.equal((await db.query('update scout.trackers set enabled=false returning id')).rows.length, 0);
     await assert.rejects(db.query("update auth.users set raw_app_meta_data='{\"scout\":{\"admin\":true}}'"), { code: '42501' });
     for (const table of ['records','sources','record_changes','collection_runs','deliveries','source_versions']) {
@@ -539,8 +539,9 @@ test('all tracker seeds are uncollected and repeat safely after app edits', asyn
     await db.exec(beforeSchema + schemaMigration);
     await db.exec(trackerSeed);
     const initial = (await db.query('select * from scout.trackers order by seed_key')).rows;
-    assert.equal(initial.length, 22);
-    assert.deepEqual(new Set(initial.map(row => row.seed_key)), new Set(Array.from({ length: 22 }, (_, i) => `bbnj-trackers-2026-10-01:${i}`)));
+    assert.equal(initial.length, 32);
+    assert.deepEqual(new Set(initial.filter(row=>row.seed_key.startsWith('bbnj-trackers-2026-10-01:')).map(row => row.seed_key)), new Set(Array.from({ length: 22 }, (_, i) => `bbnj-trackers-2026-10-01:${i}`)));
+    assert.equal(initial.filter(row=>row.seed_key.startsWith('bbnj-trackers-2026-10-08:')&&!row.enabled).length,10);
     for (const row of (await db.query('select * from scout.tracker_status')).rows) {
       for (const key of ['last_attempt_at', 'last_success_at', 'last_outcome', 'last_error']) assert.equal(row[key], null);
     }
@@ -554,7 +555,7 @@ test('all tracker seeds are uncollected and repeat safely after app edits', asyn
     assert.equal(feed.cadence, '1 day');
     assert.equal(discovery.collector, 'bluesky_search');
     assert.match(discovery.coverage, /traité sur la haute mer/);
-    assert.equal(initial.filter(row => row.collector === 'web').length, 17);
+    assert.equal(initial.filter(row => row.collector === 'web').length, 27);
     assert.equal(initial.filter(row => row.collector === feed.collector).length, 4);
     assert.deepEqual(initial.filter(row => row.enabled).map(row => row.seed_key),
       [17, 18, 19, 20].map(id => `bbnj-trackers-2026-10-01:${id}`));
