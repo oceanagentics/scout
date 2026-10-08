@@ -193,8 +193,8 @@ export async function supportDocuments(_db,{source,prepared,trace,context,reuse}
 
 // Opt-in fetch/prepare route. No call into the legacy scripted assessment/save
 // path: every ready document, including unchanged pending work, is returned.
-export async function collectDocuments(db,{tracker,read,sourceURL,now,since,deadline,limits,process=false,model,makeModel,documentVersion=DOCUMENT_VERSION,retrieve,path='octo'}) {
-  const run=(await db.query('insert into scout.collection_runs(tracker_id,started_at,stats) values($1,$2,$3::jsonb) returning id',[tracker.id,now(),JSON.stringify({validation:true,documents_only:!process})])).rows[0];
+export async function collectDocuments(db,{tracker,read,sourceURL,now,since,deadline,limits,process=false,model,makeModel,documentVersion=DOCUMENT_VERSION,retrieve,path='octo',rotation=false,runId}) {
+  const run=runId?{id:runId}:(await db.query('insert into scout.collection_runs(tracker_id,started_at,stats) values($1,$2,$3::jsonb) returning id',[tracker.id,now(),JSON.stringify({validation:!rotation,documents_only:!process})])).rows[0];
   const trace=await startReport(db,run.id,path+(process?'-records':'-documents'));
   const budget={requests:0,deadline:Math.min(deadline,Date.now()+limits.seconds*1000)};
   const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,uncertain:0,unfetched:0,processed:0,created:0,changed:0,warnings:[...process?[]:['Fetch/prepare only; generation, validation/repair and record saving are not requested.'],path==='octo'?'One RSS page; archives/media remain unfetched.':'Bounded source retrieval; inspect source coverage for failed/deferred items and unvisited pages.','Incidental links retained as citations/metadata; no support expansion.']};
@@ -212,7 +212,22 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
   }
   try{
     let selected,plan,retrievalFailed=false;
-    if(retrieve){
+    const resumed=rotation?(await db.query(`select latest.* from (
+      select distinct on(parsed#>>'{document,identity}') * from scout.evidence
+      where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like $2
+      order by parsed#>>'{document,identity}',last_seen_at desc,id
+    ) latest cross join lateral (select parsed#>array['document','processing_versions',parsed#>>'{document,processing,version}'] state) p
+    where parsed#>>'{document,preparation,state}'='complete' and coalesce(parsed#>>'{document,feed_only}','false')<>'true'
+      and coalesce(parsed#>>'{document,conflicted}','false')<>'true'
+      and (starts_with(parsed#>>'{document,processing,version}',$3) or
+        parsed#>>'{document,processing,version}' is null and parsed#>>'{document,conflicted}'='false')
+      and coalesce(p.state->>'state','pending') not in ('complete','uncertain') and coalesce(p.state->>'exhausted','false')<>'true'
+    order by p.state->>'attempted_at' asc nulls first,collected_at,id limit 1`,[tracker.id,path+':%',documentVersion+'/'])).rows:[];
+    if(resumed.length){
+      selected=resumed.map(source=>({id:source.parsed.document.id,url:source.url,source}));
+      stats.resumed=true;
+      plan=await trace.artifact('coverage','Retained processing turn',{source_ids:resumed.map(s=>s.id),freshness:'Stored capture only; source observation timestamps are unchanged.'});
+    }else if(retrieve){
       const previous=(await db.query("select stats->'document_source' state from scout.collection_runs where tracker_id=$1 and stats ? 'document_source' order by started_at desc,id desc limit 1",[tracker.id])).rows[0]?.state??{};
       const captured=(await db.query("select distinct on(parsed#>>'{document,identity}') parsed#>>'{document,id}' id,url,"+
         " parsed#>>'{document,processing,version}' version,parsed#>array['document','processing_versions',parsed#>>'{document,processing,version}'] progress"+
@@ -286,6 +301,19 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
         inventory.push(...selected.slice(index).map(d=>({id:d.id,url:d.url,state:'deferred',reason:'Collection runtime budget'})));
         stats.warnings.push('Collection runtime reached; remaining documents deferred');break;
       }
+      if(entry.source){
+        const source=entry.source,document=source.parsed.document;
+        const prepared=document.prepared_versions?.[document.preparation.version]??document.prepared;
+        const prefix=documentVersion+'/'+prepared.version+'/';
+        const capture=await trace.capture(source);ready.push(source.id);stats.documents++;stats.reused++;
+        const context=await supportDocuments(db,{source,prepared,trace,context:document.processing.version?.slice(prefix.length)});
+        model??=makeModel?.(run.id,budget.deadline,trace);
+        const result=await processDocument(db,{source,prepared:context,trace,model,deadline:budget.deadline,version:documentVersion});
+        stats.created+=result.created;stats.changed+=result.changed;
+        if(result.deferred)stats.deferred=result.deferred;
+        if(result.state==='complete')stats.processed++;else if(result.state!=='deferred'){stats[result.state==='uncertain'?'uncertain':'failed']++;stats.warnings.push(result.error);}
+        inventory.push({id:entry.id,url:source.url,source_id:source.id,state:'prepared',processing:result.state,artifacts:[capture]});continue;
+      }
       // Stable serialization also when known feed metadata was read from JSONB.
       const item=retrieve?entry:{id:entry.id,url:entry.url,title:entry.title,published:entry.published,description:entry.description,raw:entry.raw,offsets:entry.offsets};
       if(!retrieve&&index>=limits.requests-1){inventory.push({id:item.id,url:item.url,state:'unfetched',reason:'Article count bound'});stats.unfetched++;continue;}
@@ -299,7 +327,7 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
       const previous=(await db.query("select id,url,content_hash,parsed from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}'=$2 order by last_seen_at desc,id limit 1",[tracker.id,identity])).rows[0];
       const source=(await db.query(`insert into scout.evidence(tracker_id,url,content_hash,content,parsed,last_seen_at)
         values($1,$2,$3,$4,$5,clock_timestamp()) on conflict(record_id,tracker_id,url,content_hash) do update set last_seen_at=excluded.last_seen_at returning *`,
-      [tracker.id,item.url,hash,content,JSON.stringify({document:{version:preparationVersion,id:item.id,identity,preparation:{state:'pending'},processing:{state:'pending'}}})])).rows[0];
+      [tracker.id,item.url,hash,content,JSON.stringify({document:{version:preparationVersion,id:item.id,identity,conflicted:Boolean(item.conflicted),preparation:{state:'pending'},processing:{state:'pending'}}})])).rows[0];
       const capture=await trace.capture(source),refs=[capture];if(previous&&previous.id!==source.id)refs.push(await trace.capture(previous));
       if(fetched.response)await trace.finish(fetched.op,'pass',{artifacts:[capture],final_url:fetched.response.url,bytes:Buffer.byteLength(fetched.response.body),note:'Linked WordPress document captured; structural validation follows.'});
       if(retrieve)refs.push(await trace.artifact('provenance','Source item occurrences and coverage',{identity,provenance:item.provenance,coverage:item.coverage,conflicted:item.conflicted},{source_id:source.id}));
@@ -336,7 +364,7 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
           const conflict=await trace.start('validate',{source_ids:[source.id],artifacts:refs});
           await trace.finish(conflict,'uncertain',{note:'Conflicting payloads for one source identity in this retrieval; retain all versions without choosing observation order.'});continue;
         }
-        if(process){
+        if(process&&!stats.deferred){
           if(feedOnly){
             stats.failed++;inventory.at(-1).processing='failed';
             stats.warnings.push('Full announcement unavailable; retained feed snippet is discovery only.');continue;
@@ -372,7 +400,8 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
           const result=await processDocument(db,{source,prepared:context,trace,model,deadline:budget.deadline,version:documentVersion,
             changed:Boolean(previous&&previous.content_hash!==hash&&!equivalent)});
           stats.created+=result.created;stats.changed+=result.changed;
-          if(result.state==='complete')stats.processed++;else{stats[result.state==='uncertain'?'uncertain':'failed']++;stats.warnings.push(result.error);}
+          if(result.deferred)stats.deferred=result.deferred;
+          if(result.state==='complete')stats.processed++;else if(result.state!=='deferred'){stats[result.state==='uncertain'?'uncertain':'failed']++;stats.warnings.push(result.error);}
           inventory.at(-1).processing=result.state;
         }
       }catch{
@@ -385,6 +414,7 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now,since,dead
     const coverage=await trace.artifact('coverage','Document outcomes',{documents:inventory,unvisited:'Source retrieval bounds remain explicit; incidental citation links and media are not opened for extraction.'});
     await trace.finish(selection,retrievalFailed?'fail':'pass',{artifacts:[plan,coverage],note:'Document identities selected without topic, category, date or finding filters; inspect bounded retrieval outcomes and failures.'});
     stats.requests=budget.requests;stats.pending=ready.length-stats.processed;
+    if(stats.deferred)stats.warnings.push('Model '+(['network','runtime'].includes(stats.deferred.reason)?'processing':'quota')+' deferred: '+stats.deferred.reason);
     // A successful preparation is not an end-to-end successful collection.
     const outcome=ready.length||!stats.failed?'partial':'failed';
     await db.query('update scout.collection_runs set finished_at=$2,outcome=$3,stats=stats||$4::jsonb where id=$1',[run.id,now(),outcome,JSON.stringify(stats)]);

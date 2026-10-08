@@ -287,6 +287,7 @@ export async function processDocument(db,{source,prepared,trace,model,deadline,v
   let state=changed?null:previous;
   const counts={created:0,changed:0},completed=state?.state==='complete';
   state={...state,revision:previous?.revision??0,state:'running',cursor:state?.cursor??0,findings:state?.findings??[]};
+  delete state.deferred;
   let active,phase='generate';
   try{
     // Legacy resolution exhaustion stopped the whole document and deleted the last
@@ -332,11 +333,12 @@ export async function processDocument(db,{source,prepared,trace,model,deadline,v
       if(!rejected||history[1]?.run_id===history[0].run_id||![0,1,2].includes(rejected.round))throw new Error(state.error);
       state.pending={input:packDocument(source,prepared,state.cursor,version,state.end),repair:{rejected:rejected.response,errors:[state.error]},round:rejected.round+1};
     }
+    state.attempted_at=new Date().toISOString();
     state=await persist(db,source,version,state);
     if(!model)throw new Error('Model/shared ledger unavailable; processing deferred');
     while(state.cursor<prepared.text.length||state.findings.some(f=>!f.resolution&&!f.exhausted)){
       phase='prepare';
-      if(Date.now()+1000>=deadline)throw new Error('Document processing time bound; deferred');
+      if(Date.now()+1000>=deadline)throw Object.assign(new Error('Document processing time bound; deferred'),{deferred:{reason:'runtime',retry_at:new Date().toISOString()}});
       let entry=state.findings.find(f=>!f.resolution&&!f.exhausted);
       const extracting=!entry,stage=extracting?'extract':'resolve';
       let owner=entry??state;
@@ -380,7 +382,7 @@ export async function processDocument(db,{source,prepared,trace,model,deadline,v
         let response,errors=[];
         try{response=await model(instruction,[supplied],schema);await trace.finish(active,'pass');}
         catch(error){
-          await trace.finish(active,'fail',{note:error.message});
+          await trace.finish(active,error.deferred?'skipped':'fail',{note:error.message});
           if(error.capacity){
             state.capacity={kind:error.capacity,error:error.message,range:input?.range??null};
             const [start,end]=input?.range??[],middle=(start+end)/2;
@@ -456,9 +458,11 @@ export async function processDocument(db,{source,prepared,trace,model,deadline,v
     return {...counts,state:'complete'};
   }catch(error){
     if(trace.report.operations[active]?.state==='running')await trace.finish(active,'fail',{note:error.message}).catch(()=>{});
-    state.state='failed';state.error=error.message;await persist(db,source,version,state).catch(()=>{});
+    state.state=error.deferred?'deferred':'failed';state.error=error.message;
+    if(error.deferred)state.deferred=error.deferred;else delete state.deferred;
+    await persist(db,source,version,state).catch(()=>{});
     const artifact=await trace.artifact('processing_error','Recoverable document processing failure',{error:error.message,cursor:state.cursor,findings:state.findings,version});
-    const op=await trace.start(phase,{checkpoint:true,source_ids:[source.id],artifacts:[artifact]});await trace.finish(op,'fail',{note:'Processing incomplete; extracted findings and accepted resolutions retained.'});
-    return {...counts,state:'failed',error:error.message};
+    const op=await trace.start(phase,{checkpoint:true,source_ids:[source.id],artifacts:[artifact]});await trace.finish(op,error.deferred?'skipped':'fail',{note:'Processing incomplete; extracted findings and accepted resolutions retained.'});
+    return {...counts,state:state.state,error:error.message,...error.deferred?{deferred:error.deferred}:{}};
   }
 }

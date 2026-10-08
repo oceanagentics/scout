@@ -567,3 +567,41 @@ SCOUT-16.01 frontend deployment remains pending, but its previous `invalid_grant
 **OceanCare document route — committed locally after review:** the accepted unchanged adapter is connected under oceancare after local Blue Marine 827be52 and GOF be22a8a. One shared integration passes with the unchanged 12,727-character English story: native identity oceancare:post:222223:en survives deferred resolution and a listing 503, one simulated PrepCom gathering saves, and restored-listing repeat dispatches no model work. Raw/prepared/processing data, record, prior run and tracker are exact; translation/support links remain unfetched. The test narrows to one observed listing card; ten accepted source checks are reused without rerun. The 383 missing full stories, broader multilingual continuity and actual provider/save/reader/repeat proof remain open. Bill accepted the exact diff and graph; committed locally with no deployment or live calls. Review: .cache/scout17-oceancare-integration-review/review.json.
 
 **RISE UP document route — local integration awaiting review:** the accepted unchanged adapter is connected under riseup with native campaign/page IDs and riseup-documents-v1. One focused shared test preserves the full 20,430-character configured page and two full observed newsletters; the 23,346-character September issue resumes pending resolution while both listings return 503. Four injected calls save one simulated CHM workshop. Two bounded restored-listing cycles revisit the same native issue with zero model dispatches and preserve all three raw/prepared/processing sources, the record, prior resumed run and tracker. The archive remains discovery only. No response body is narrowed; one observed issue is seeded as prior pending discovery. Thirteen accepted source checks are reused for unchanged bytes. Seventy missing observed issue bodies, wider archives/support/media and actual provider/save/reader/repeat remain unproven. The 25-file graph adds only riseup-documents.js and changes only hsa.js. No commit, deployment or live calls; Explorers, UNTC and CBD remain unintegrated. Review: .cache/scout17-riseup-integration-review/review.json.
+
+## Continuous oldest-first collection (local implementation)
+
+The private worker accepts an empty `POST ?next=true`. Each bounded turn claims the enabled, supported document tracker with the oldest collection attempt (never attempted first), ignoring its cadence. Notification and stored-assessment runs do not affect that ordering. One database session lock prevents overlapping turns; a persisted three-minute claim protects an interrupted turn until recovery. Expired claims are closed on the next invocation without deleting their reports or evidence.
+
+Pending captures from the current processing version resume one source at a time without fetching or advancing source observation timestamps. Completed, uncertain, exhausted and conflicting captures remain protected. Once no compatible pending capture remains, the adapter checks its source again. Network/provider interruptions keep the processing checkpoint; tracker failures back off from one minute to one hour while other trackers advance.
+
+All Gemini generation uses the existing shared `collection_runs` ledger. Backend settings are `SCOUT_MODEL_RPM` (default 2), `SCOUT_MODEL_TPM` (default 0, disabled), `SCOUT_MODEL_RPD` (default 0, disabled), and `SCOUT_MODEL_TURN_ATTEMPTS` (default 10). Set them to the actual project's model allowances; these defaults are conservative application settings, not verified Google limits. Hosted calls publish the settings in their run rows, and local callers read the latest published policy. Reservations survive crashes and record transaction rollbacks; failed preflights are conservatively counted. Known input tokens are checked under the same lock before generation. Short quota waits fit within the turn deadline; longer waits defer work. Provider 429 cooldowns apply across runs, with daily exhaustion deferred to the next Pacific midnight ([Google rate-limit documentation](https://ai.google.dev/gemini-api/docs/rate-limits)).
+
+After deploying the function, enable Supabase Cron/pg_net and store the project URL as `scout_project_url` and the project's named default backend secret as `scout_collector_key` in Vault. The following SQL installs/replaces a **paused** trigger. It sends an empty body (`NULL`), matching the worker contract; its 30-second tick only wakes the loop, rather than imposing a tracker revisit interval. References: [Supabase Cron](https://supabase.com/docs/guides/cron/quickstart), [pg_net POST implementation](https://github.com/supabase/pg_net/blob/master/sql/pg_net.sql).
+
+```sql
+begin;
+do $$
+begin
+  if (select count(*) from vault.decrypted_secrets
+      where name in ('scout_project_url','scout_collector_key') and decrypted_secret <> '') <> 2 then
+    raise exception 'Scout URL and backend key must be configured in Vault';
+  end if;
+end $$;
+select cron.schedule('scout-collect-next', '30 seconds', $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name='scout_project_url')
+      || '/functions/v1/scout-collect-hsa?next=true',
+    body := NULL::jsonb,
+    headers := jsonb_build_object('apikey',
+      (select decrypted_secret from vault.decrypted_secrets where name='scout_collector_key')),
+    timeout_milliseconds := 110000
+  );
+$job$);
+select cron.alter_job(job_id := jobid, active := false)
+from cron.job where jobname='scout-collect-next';
+commit;
+```
+
+To start or pause it, run `select cron.alter_job(job_id := jobid, active := true)` (or `false`) `from cron.job where jobname='scout-collect-next';` after confirming deployment and allowances. No database migration or external queue is needed. Neither deployment nor scheduler activation was performed with this local implementation. Recovery mechanics are fixture-tested; months/years of operation, source completeness and model correctness still require operational observation. Runs/reports/evidence accumulate under the existing retention behavior.
+
+Verification: 32 focused worker/model/report checks and the legacy exhausted-checkpoint regression pass, as does the production build. The full working-tree suite reports 287 passes and six existing failures (Bluesky content-range assertions, HUB title-only identity fixtures, the Explorers draft API continuity case and a Harvest fixture using the removed date_evidence column); these failures reproduce against the pre-change implementation.

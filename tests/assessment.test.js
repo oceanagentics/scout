@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {database as adapter} from '../collector/hosted-hsa.js';
-import {gemini,reservationSQL} from '../collector/model.js';
+import {gemini,reservationSQL,modelBudgetSQL,modelLimits} from '../collector/model.js';
 
 async function database() {
   const db=new PGlite();
@@ -56,5 +56,62 @@ test('actual hosted database adapter commits reservations before rollback and re
     await hosted.query(reservationSQL(fresh,50));
     assert.equal((await db.query("select jsonb_array_length(stats->'model_attempts') n from scout.collection_runs where id=$1",[fresh])).rows[0].n,2);
     await assert.rejects(hosted.query(reservationSQL(fresh,50)),/quota/);
+  }finally{await db.close();}
+});
+
+test('shared token/day limits, paced calls and provider interruptions retain durable reservations',async()=>{
+  const db=await database();
+  try{
+    const tracker=(await db.query('select id from scout.trackers limit 1')).rows[0].id;
+    const run=async()=>(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[tracker])).rows[0].id;
+    const old=await run(),fresh=await run(),limits=modelLimits({minute:2,tokens:100,day:3});
+    const seeds=[{id:'00000000-0000-0000-0000-000000000001',at:new Date().toISOString(),input_tokens:80}];
+    await db.query("update scout.collection_runs set stats=jsonb_build_object('model_attempts',$2::jsonb) where id=$1",[old,JSON.stringify(seeds)]);
+    assert.equal((await db.query(modelBudgetSQL(fresh,10,limits,30))).rows[0].reason,'tokens');
+    let waits=0,counted=0,generated=0;
+    const good=async url=>url.endsWith(':countTokens')?(counted++,Response.json({totalTokens:30})):
+      (generated++,Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]}));
+    const model=gemini({apiKey:'fixture-only',ledger:db,runId:fresh,limits,pace:true,fetch:good,sleep:async ms=>{
+      waits++;assert.ok(ms>0&&ms<=60000);
+      await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{model_attempts}',(select jsonb_agg(a||jsonb_build_object('at',(a->>'at')::timestamptz-interval '61 seconds')) from jsonb_array_elements(stats->'model_attempts') a)) where stats ? 'model_attempts'");
+    }});
+    await model('test',[],{});assert.equal(waits,1);assert.equal(counted,1);assert.equal(generated,1);
+    const attempts=(await db.query('select stats from scout.collection_runs where id=$1',[fresh])).rows[0].stats.model_attempts;
+    assert.equal(attempts.length,1);assert.equal(attempts[0].input_tokens,30);
+    await db.query(reservationSQL(fresh,50,10,limits));
+    const daily=(await db.query(modelBudgetSQL(null,10,limits))).rows[0];
+    assert.equal(daily.reason,'day');assert.ok(Date.parse(daily.retry_at)>Date.now());
+    await db.query("update scout.collection_runs set stats=stats-'model_attempts'-'model_limits'");
+    for(const endpoint of ['countTokens','generateContent']){
+      const blocked=await run();let sent=0;
+      const quota=gemini({apiKey:'fixture-only',ledger:db,runId:blocked,limits:{minute:10},fetch:async url=>{
+        sent++;return url.endsWith(':'+endpoint)?new Response('{"retryDelay":"120s"}',{status:429}):Response.json({totalTokens:25});
+      }});
+      await assert.rejects(quota('test',[],{}),error=>error.deferred?.reason==='provider');
+      assert.equal(sent,endpoint==='countTokens'?1:2);
+      const other=await run();
+      // A local caller without explicit config follows the hosted published limit/cooldown.
+      await assert.rejects(gemini({apiKey:'fixture-only',ledger:db,runId:other,fetch:()=>{throw new Error('must not send');}})('test',[],{}),error=>error.deferred?.reason==='provider');
+      assert.equal((await db.query('select stats from scout.collection_runs where id=$1',[blocked])).rows[0].stats.model_attempts.length,1);
+      await db.query("update scout.collection_runs set stats=stats-'model_retry_at'-'model_attempts'");
+    }
+    const dailyRun=await run();
+    await assert.rejects(gemini({apiKey:'fixture-only',ledger:db,runId:dailyRun,limits:{minute:10},fetch:async()=>
+      new Response('{"quotaId":"GenerateRequestsPerDayPerProjectPerModel"}',{status:429})})('test',[],{}),error=>
+      error.deferred?.reason==='day'&&Date.parse(error.deferred.retry_at)>Date.now());
+    await db.query("update scout.collection_runs set stats=stats-'model_retry_at'-'model_attempts'");
+    // A local caller cannot exceed a smaller centrally published turn allowance.
+    const policy=await run();
+    await gemini({apiKey:'fixture-only',ledger:db,runId:policy,limits:{minute:10,run:1},fetch:good})('test',[],{});
+    const local=await run(),follower=gemini({apiKey:'fixture-only',ledger:db,runId:local,runLimit:10,fetch:good});
+    await follower('test',[],{});await assert.rejects(follower('test',[],{}),error=>error.deferred?.reason==='turn');
+    const generatedBefore=generated;
+    const interrupted=await run();
+    await assert.rejects(gemini({apiKey:'fixture-only',ledger:db,runId:interrupted,pace:true,fetch:async()=>{throw new TypeError('Network disconnected');}})('test',[],{}),error=>error.deferred?.reason==='network');
+    assert.equal((await db.query('select stats from scout.collection_runs where id=$1',[interrupted])).rows[0].stats.model_attempts.length,1);
+    const bound=await run();
+    await assert.rejects(gemini({apiKey:'fixture-only',ledger:db,runId:bound,pace:true,deadline:Date.now(),fetch:good})('test',[],{}),error=>error.deferred?.reason==='runtime');
+    assert.equal(generated,generatedBefore);
+    assert.throws(()=>modelLimits({minute:0}));assert.throws(()=>modelLimits({day:-1}));
   }finally{await db.close();}
 });

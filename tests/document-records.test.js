@@ -102,6 +102,28 @@ test('dated findings save and repeat using source proofs without a record date e
   }finally{await db.close();}
 });
 
+test('automatic rotation resumes a quota-deferred checkpoint without fetching or changing source timestamps',async()=>{
+  const db=await setup();
+  try{
+    const first=runner(db,stages([proposal()]),{runLimit:1});
+    const stopped=await first.run();assert.equal(stopped.deferred.reason,'turn');assert.equal(stopped.failed,0);
+    assert.equal(first.requests.length,1);assert.equal((await current(db)).length,0);
+    const capture=(await db.query('select id,last_seen_at,content from scout.evidence where record_id is null')).rows[0];
+    const state=Object.values((await progress(db)).processing_versions)[0];
+    assert.equal(state.state,'deferred');assert.equal(state.findings.length,1);
+    await db.query('update scout.trackers set enabled=true where id=$1',[fixture.tracker.id]);
+    const resume=runner(db,input=>{assert.equal(input.stage,'resolve');return resolution(input);});
+    const completed=await resume.run({rotation:true,validate:false,read:async()=>{throw new Error('Retained work must not fetch');}});
+    assert.equal(completed.resumed,true);assert.equal(completed.created,1,completed.warnings.join(';'));
+    assert.equal(completed.requests,0);assert.equal(resume.requests.length,1);
+    const after=(await db.query('select last_seen_at,content from scout.evidence where id=$1',[capture.id])).rows[0];
+    assert.deepEqual(after,{last_seen_at:capture.last_seen_at,content:capture.content});
+    assert.equal(Object.values((await progress(db)).processing_versions)[0].state,'complete');
+    await resume.run({rotation:true,validate:false});assert.equal(resume.requests.length,1);
+    assert.equal((await current(db)).length,1);
+  }finally{await db.close();}
+});
+
 test('completed Low findings retain reader-visible sources and reasons; uncertain findings and repeat calls stay excluded',async()=>{
   const db=await setup(),title='Ocean film screening',description='A public screening of an ocean film.';
   const low={anchor:title,urls:[],candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'event',title,description},

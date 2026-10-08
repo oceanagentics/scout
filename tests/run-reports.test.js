@@ -74,6 +74,7 @@ test('successful run persists progress, exact model bodies and capture/record li
   const db=await database();let calls=0;
   try{
     const makeModel=(runId,_deadline,trace)=>gemini({apiKey:'secret-fixture-value',ledger:db,runId,trace,fetch:async(_url,request)=>{
+      if(_url.endsWith(':countTokens'))return Response.json({totalTokens:200});
       calls++;const saved=(await db.query('select report from scout.collection_runs where id=$1',[runId])).rows[0].report;
       assert.equal(stepState(saved,'generate'),'Running');assert.equal(stepState(saved,'save'),'Not reached');
       const artifact=Object.values(saved.artifacts).find(a=>a.kind==='model_request');assert.equal(artifact.data.body,request.body);
@@ -135,6 +136,7 @@ test('recovered provider retry summarizes successful generation while retaining 
   const db=await database();let calls=0;
   try{
     const run=await collectHSA(db,{...options,read:read(),makeModel:(runId,_d,trace)=>gemini({apiKey:'private-retry-key',ledger:db,runId,trace,fetch:async(_url,request)=>{
+      if(_url.endsWith(':countTokens'))return Response.json({totalTokens:200});
       calls++;
       const row=(await db.query('select * from scout.collection_runs where id=$1',[runId])).rows[0];
       assert.equal(stepState(row.report,'generate'),'Running');assert.equal(row.stats.model_attempts.length,calls);
@@ -146,9 +148,9 @@ test('recovered provider retry summarizes successful generation while retaining 
     const row=(await db.query('select * from scout.collection_runs where id=$1',[run.run_id])).rows[0];
     assert.equal(stepState(row.report,'generate'),'Pass');assert.equal(row.stats.model_attempts.length,2);
     const attempts=Object.values(row.report.operations).filter(o=>o.attempt);
-    assert.deepEqual(attempts.map(o=>o.state),['fail','pass']);assert.ok(attempts.every(o=>o.artifacts.length===2));
+    assert.deepEqual(attempts.map(o=>o.state),['fail','pass']);assert.deepEqual(attempts.map(o=>o.artifacts.length),[3,2]);
     assert.equal(attempts[0].artifacts[0],attempts[1].artifacts[0]);
-    assert.equal(row.report.artifacts[attempts[0].artifacts[1]].data.body,'Temporary provider error for [REDACTED]');
+    assert.equal(row.report.artifacts[attempts[0].artifacts.at(-1)].data.body,'Temporary provider error for [REDACTED]');
     assert.equal(row.report.artifacts[attempts[1].artifacts[1]].data.http_status,200);
   }finally{await db.close();}
 });
@@ -229,7 +231,8 @@ test('unexpected interruption preserves earlier committed evidence and marks the
 test('provider errors and unreadable bodies retain request references and counted attempts without changing retries',async()=>{
   const db=await database();let calls=0;
   try{
-    const run=await collectHSA(db,{...options,read:read(),makeModel:(runId,_d,trace)=>gemini({apiKey:'private-provider-key',ledger:db,runId,trace,fetch:async()=>{
+    const run=await collectHSA(db,{...options,read:read(),makeModel:(runId,_d,trace)=>gemini({apiKey:'private-provider-key',ledger:db,runId,trace,fetch:async url=>{
+      if(url.endsWith(':countTokens'))return Response.json({totalTokens:200});
       calls++;
       if(calls===1)return new Response('Temporary provider error for private-provider-key',{status:503,headers:{authorization:'header-secret'}});
       return new Response(new ReadableStream({start(c){c.error(new Error('broken stream'));}}),{status:503});
@@ -240,7 +243,7 @@ test('provider errors and unreadable bodies retain request references and counte
     assert.equal(outputs[0].data.body,'Temporary provider error for [REDACTED]');assert.equal(outputs[0].data.credential_redacted,true);
     assert.equal(outputs[1].data.unavailable,'Response body could not be read.');assert.ok(!Object.hasOwn(outputs[1].data,'body'));
     assert.ok(artifacts.some(a=>a.kind==='model_request'));assert.ok(!JSON.stringify(row).includes('private-provider-key'));assert.ok(!JSON.stringify(row).includes('header-secret'));
-    const transport=Object.values(row.report.operations).filter(o=>o.attempt);assert.deepEqual(transport.map(o=>o.state),['fail','fail']);assert.ok(transport.every(o=>o.artifacts.length===2));
+    const transport=Object.values(row.report.operations).filter(o=>o.attempt);assert.deepEqual(transport.map(o=>o.state),['fail','fail']);assert.deepEqual(transport.map(o=>o.artifacts.length),[3,2]);
   }finally{await db.close();}
 });
 

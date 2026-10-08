@@ -42,6 +42,12 @@ export const EXPLORERS = 'https://www.explorers.org/calendar-of-events/';
 export const UNTC = 'https://treaties.un.org/Pages/ViewDetails.aspx?src=TREATY&mtdsg_no=XXI-10&chapter=21&clang=_en';
 export const DOALOS = 'https://www.un.org/bbnjagreement/en';
 export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistance/side-events';
+export const DOCUMENT_TRACKERS = [
+  ...[HSA,'deepstewardship.bsky.social','globalfishingwatch.org','iddri.bsky.social'].map(actor=>({collector:'bluesky_feed',url:'https://bsky.app/profile/'+actor})),
+  {collector:'bluesky_search',url:'https://bsky.app/search?q=BBNJ'},
+  ...[OCTO,GFW_WEB,IUCN,DOSI_WEB,IDDRI,HARVEST,"https://www.hubocean.earth/events-calendar",HSA_WEB,DOALOS,UN_SIDE_EVENTS,SYMPOSIUM,BLUE_MARINE,GOF,OCEANCARE,RISE_UP]
+    .map(url=>({collector:'web',url})),
+];
 export const USER_AGENT = 'BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)';
 export const LIMITS = { feedPages: 2, postsPerPage: 25, pages: 6, redirects: 3, requests: 24, bytes: 524288, seconds: 120 };
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -413,7 +419,7 @@ async function save(db, identity, source, rank, observedAt, stats) {
   return {warning:dateWarning,recordId:existing.id,sourceId:source.id};
 }
 
-export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000, model, makeModel, sourceId = null, trackerId = null, validate = false, assessOnly = false, documents = false, documentVersion } = {}) {
+export async function collectHSA(db, { since = new Date(Date.now() - 30 * 86400000).toISOString(), read = readPublic, now = () => new Date().toISOString(), deadline = Date.now() + LIMITS.seconds * 1000, model, makeModel, sourceId = null, trackerId = null, validate = false, assessOnly = false, documents = false, documentVersion, rotation = false, runId } = {}) {
   if (!Number.isFinite(Date.parse(since))) throw new Error('A valid coverage start is required');
   if (validate !== false && (validate !== true || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(trackerId ?? ''))) {
     throw Object.assign(new Error('Validation requires an explicit tracker UUID'), { status: 400 });
@@ -444,8 +450,8 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const discovery=tracker.collector==='bluesky_search' && tracker.url==='https://bsky.app/search?q=BBNJ';
   if(documents!==false){
     const author=[HSA,'deepstewardship.bsky.social','globalfishingwatch.org','iddri.bsky.social'].includes(actor);
-    if(![true,'process'].includes(documents)||!(octo||author||gfw||discovery||iucn||dosiWeb||iddri||harvest||hub||hsaWeb||doalos||sideEvents||symposium||blueMarine||gof||oceancare||riseup)||!validate||assessOnly||sourceId)throw Object.assign(new Error('Document processing requires explicit supported tracker validation without assessment/source selection'),{status:400});
-    return collectDocuments(db,{tracker,read,sourceURL,now,since,deadline,limits:LIMITS,process:documents==='process',model,makeModel,documentVersion,
+    if(![true,'process'].includes(documents)||!(octo||author||gfw||discovery||iucn||dosiWeb||iddri||harvest||hub||hsaWeb||doalos||sideEvents||symposium||blueMarine||gof||oceancare||riseup)||(!validate&&!rotation)||rotation&&!tracker.enabled||assessOnly||sourceId)throw Object.assign(new Error('Document processing requires explicit supported tracker validation without assessment/source selection'),{status:400});
+    return collectDocuments(db,{tracker,read,sourceURL,now,since,deadline,limits:LIMITS,process:documents==='process',model,makeModel,documentVersion,rotation,runId,
       path:octo?'octo':author?'author':gfw?'gfw':discovery?'discovery':iucn?'iucn':dosiWeb?'dosi':iddri?'iddri':hub?'hub':hsaWeb?'hsa':doalos?'doalos':sideEvents?'un-side':symposium?'symposium':blueMarine?'bluemarine':gof?'gof':oceancare?'oceancare':riseup?'riseup':'harvest',
       retrieve:author?retrieveAuthorDocuments:gfw?retrieveGFWDocuments:discovery?retrieveDiscoveryDocuments:iucn?retrieveIUCNDocuments:dosiWeb?retrieveDosiDocuments:iddri?retrieveIDDRIDocuments:harvest?retrieveHarvestDocuments:hub?retrieveHubDocuments:hsaWeb?retrieveHSAWebDocuments:doalos?retrieveDoalosDocuments:sideEvents?retrieveUnSideDocuments:symposium?retrieveSymposiumDocuments:blueMarine?retrieveBlueMarineDocuments:gof?retrieveGOFDocuments:oceancare?retrieveOceanCareDocuments:riseup?retrieveRiseupDocuments:undefined});
   }
