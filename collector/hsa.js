@@ -17,6 +17,7 @@ import { retrieveBlueMarineDocuments } from './bluemarine-documents.js';
 import { retrieveGOFDocuments } from './gof-documents.js';
 import { retrieveOceanCareDocuments } from './oceancare-documents.js';
 import { retrieveRiseupDocuments } from './riseup-documents.js';
+import { retrieveUntcDocuments } from './untc-documents.js';
 import { Buffer } from 'node:buffer';
 import { Agent, request } from 'undici';
 import { lookup } from 'node:dns';
@@ -45,7 +46,7 @@ export const UN_SIDE_EVENTS = DOALOS+'/capacity-building-and-technical-assistanc
 export const DOCUMENT_TRACKERS = [
   ...[HSA,'deepstewardship.bsky.social','globalfishingwatch.org','iddri.bsky.social'].map(actor=>({collector:'bluesky_feed',url:'https://bsky.app/profile/'+actor})),
   {collector:'bluesky_search',url:'https://bsky.app/search?q=BBNJ'},
-  ...[OCTO,GFW_WEB,IUCN,DOSI_WEB,IDDRI,HARVEST,"https://www.hubocean.earth/events-calendar",HSA_WEB,DOALOS,UN_SIDE_EVENTS,SYMPOSIUM,BLUE_MARINE,GOF,OCEANCARE,RISE_UP]
+  ...[OCTO,GFW_WEB,IUCN,DOSI_WEB,IDDRI,HARVEST,"https://www.hubocean.earth/events-calendar",HSA_WEB,DOALOS,UN_SIDE_EVENTS,SYMPOSIUM,BLUE_MARINE,GOF,OCEANCARE,RISE_UP,UNTC]
     .map(url=>({collector:'web',url})),
 ];
 export const USER_AGENT = 'BBNJ-Scout-Bot/1.0 (+https://bbnj-scout.web.app)';
@@ -450,10 +451,10 @@ export async function collectHSA(db, { since = new Date(Date.now() - 30 * 864000
   const discovery=tracker.collector==='bluesky_search' && tracker.url==='https://bsky.app/search?q=BBNJ';
   if(documents!==false){
     const author=[HSA,'deepstewardship.bsky.social','globalfishingwatch.org','iddri.bsky.social'].includes(actor);
-    if(![true,'process'].includes(documents)||!(octo||author||gfw||discovery||iucn||dosiWeb||iddri||harvest||hub||hsaWeb||doalos||sideEvents||symposium||blueMarine||gof||oceancare||riseup)||(!validate&&!rotation)||rotation&&!tracker.enabled||assessOnly||sourceId)throw Object.assign(new Error('Document processing requires explicit supported tracker validation without assessment/source selection'),{status:400});
+    if(![true,'process'].includes(documents)||!(octo||author||gfw||discovery||iucn||dosiWeb||iddri||harvest||hub||hsaWeb||doalos||sideEvents||symposium||blueMarine||gof||oceancare||riseup||untc)||(!validate&&!rotation)||rotation&&!tracker.enabled||assessOnly||sourceId)throw Object.assign(new Error('Document processing requires explicit supported tracker validation without assessment/source selection'),{status:400});
     return collectDocuments(db,{tracker,read,sourceURL,now,since,deadline,limits:LIMITS,process:documents==='process',model,makeModel,documentVersion,rotation,runId,
-      path:octo?'octo':author?'author':gfw?'gfw':discovery?'discovery':iucn?'iucn':dosiWeb?'dosi':iddri?'iddri':hub?'hub':hsaWeb?'hsa':doalos?'doalos':sideEvents?'un-side':symposium?'symposium':blueMarine?'bluemarine':gof?'gof':oceancare?'oceancare':riseup?'riseup':'harvest',
-      retrieve:author?retrieveAuthorDocuments:gfw?retrieveGFWDocuments:discovery?retrieveDiscoveryDocuments:iucn?retrieveIUCNDocuments:dosiWeb?retrieveDosiDocuments:iddri?retrieveIDDRIDocuments:harvest?retrieveHarvestDocuments:hub?retrieveHubDocuments:hsaWeb?retrieveHSAWebDocuments:doalos?retrieveDoalosDocuments:sideEvents?retrieveUnSideDocuments:symposium?retrieveSymposiumDocuments:blueMarine?retrieveBlueMarineDocuments:gof?retrieveGOFDocuments:oceancare?retrieveOceanCareDocuments:riseup?retrieveRiseupDocuments:undefined});
+      path:untc?'untc':octo?'octo':author?'author':gfw?'gfw':discovery?'discovery':iucn?'iucn':dosiWeb?'dosi':iddri?'iddri':hub?'hub':hsaWeb?'hsa':doalos?'doalos':sideEvents?'un-side':symposium?'symposium':blueMarine?'bluemarine':gof?'gof':oceancare?'oceancare':riseup?'riseup':'harvest',
+      retrieve:untc?retrieveUntcDocuments:author?retrieveAuthorDocuments:gfw?retrieveGFWDocuments:discovery?retrieveDiscoveryDocuments:iucn?retrieveIUCNDocuments:dosiWeb?retrieveDosiDocuments:iddri?retrieveIDDRIDocuments:harvest?retrieveHarvestDocuments:hub?retrieveHubDocuments:hsaWeb?retrieveHSAWebDocuments:doalos?retrieveDoalosDocuments:sideEvents?retrieveUnSideDocuments:symposium?retrieveSymposiumDocuments:blueMarine?retrieveBlueMarineDocuments:gof?retrieveGOFDocuments:oceancare?retrieveOceanCareDocuments:riseup?retrieveRiseupDocuments:undefined});
   }
   const explorers=tracker.collector==='web' && tracker.url===EXPLORERS;
   if (!actor && !hub && !untc && !doalos && !sideEvents && !hsaWeb && !iddri && !dosiWeb && !gfw && !iucn && !gof && !oceancare && !harvest && !riseup && !blueMarine && !symposium && !cbd && !octo && !explorers && !discovery) throw Object.assign(new Error('Unsupported tracker configuration; review before collecting'), { status: 400 });

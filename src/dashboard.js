@@ -68,6 +68,7 @@ export function mountDashboard(root, load, runs) {
         <label><input class="visually-hidden" type="radio" name="kind" value="" checked><span>All</span></label>
         <label><input class="visually-hidden" type="radio" name="kind" value="announcement"><span>Announcements</span></label>
         <label><input class="visually-hidden" type="radio" name="kind" value="event"><span>Events</span></label>
+        <label><input class="visually-hidden" type="radio" name="kind" value="treaty_status"><span>Treaty changes</span></label>
       </div>
       <label>Priority<select name="priority"><option value="">All priorities</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option><option value="unassessed">Not yet assessed</option></select></label>
       <label>Order<select name="order"><option value="priority">Priority, then date</option><option value="date">Date</option><option value="column" hidden disabled>Selected column</option></select></label>

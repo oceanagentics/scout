@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {gunzipSync} from 'node:zlib';
 import {PGlite} from '@electric-sql/pglite';
-import {collectHSA} from '../collector/hsa.js';
+import {collectHSA,UNTC,sourceURL,DOCUMENT_TRACKERS} from '../collector/hsa.js';
 import {gemini,MODEL_LIMITS} from '../collector/model.js';
-import {CONTENT_FIELDS} from '../collector/assessment.js';
+import {CONTENT_FIELDS,PRIORITY_INSTRUCTION} from '../collector/assessment.js';
 import {prepareDocument} from '../collector/octo-documents.js';
 import {packDocument,processDocument,validateFinding as validateCitedFinding,DOCUMENT_VERSION} from '../collector/document-records.js';
 import {supportDocuments} from '../collector/octo-documents.js';
@@ -162,6 +162,72 @@ test('completed Low findings retain reader-visible sources and reasons; uncertai
     assert.equal(Object.values((await progress(db,100)).processing_versions)[0].findings[0].resolution.outcome,'uncertain');
     assert.deepEqual(await current(db),records);
     assert.equal((await db.query('select count(*)::int n from scout.evidence where record_id is not null')).rows[0].n,1);
+  }finally{await db.close();}
+});
+
+test('publications, funder updates and advocacy save as rated announcements without event fields',async()=>{
+  const db=await setup(),items=[
+    ['ChM architecture update','Published BBNJ Clearing-House Mechanism data standards.','high'],
+    ['Ocean funding call','A funder opened grants for ocean conservation.','high'],
+    ['BBNJ paper','A new paper examines BBNJ marine genetic resources.','normal'],
+    ['Ocean advocacy','General ocean conservation advocacy.','low'],
+  ];
+  const findings=items.map(([title,description,priority])=>({anchor:title,urls:[],
+    candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'announcement',title,description},
+    priority,reason:description,evidence:{kind:description,title,description,priority:description}}));
+  const source=runner(db,stages(findings,input=>({...resolution(input),comparisons:input.candidates.map(r=>({
+    record_id:r.id,relation:'distinct',citations:[1],reason:'A separate stated update from '+r.title}))})),
+    {post:{...article,title:{rendered:'Ocean updates'},content:{rendered:items.map(([t,d])=>'<h2>'+t+'</h2><p>'+d+'</p>').join('')}}});
+  try{
+    const run=await source.run();assert.equal(run.created,4,run.warnings.join(';'));
+    const records=await current(db);assert.equal(records.length,4);
+    for(const [title,,priority] of items){const record=records.find(r=>r.title===title);assert.equal(record.kind,'announcement');assert.equal(record.priority,priority);
+      for(const key of ['location','event_url','registration_url','starts_at','ends_at','status'])assert.equal(record[key],null);}
+    assert.equal(eligibleRecords(records).length,2);assert.deepEqual(eligibleRecords(records,{kind:'digest',from:'2026-10-01',through:'2026-10-31'}),[]);
+    for(const request of source.requests)assert.ok(JSON.parse(request).systemInstruction.parts[0].text.includes(PRIORITY_INSTRUCTION));
+    const calls=source.requests.length;await source.run();assert.equal(source.requests.length,calls);assert.deepEqual(await current(db),records);
+    const prepared=prepareDocument({url:article.link,title:'Ocean updates',html:items.map(([t,d])=>'<h2>'+t+'</h2><p>'+d+'</p>').join('')});
+    const input=packDocument({id:'source'},prepared,0,DOCUMENT_VERSION),invalid=cited(findings[0],input);
+    invalid.candidate.location='Online';assert.throws(()=>validateCitedFinding(invalid,input),/Inapplicable event field/);
+    invalid.candidate.location=null;invalid.candidate.kind='treaty_status';assert.throws(()=>validateCitedFinding(invalid,input),/Official UN treaty evidence/);
+  }finally{await db.close();}
+});
+
+test('UN Treaty document collection saves separate official actions with source proofs and a zero-call repeat',async()=>{
+  const saved=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/un-treaty.json.gz',import.meta.url)))),db=await setup();
+  const tracker=(await db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('UN Treaty',$1,'web','7 days',false) returning *",[UNTC])).rows[0];
+  assert.ok(DOCUMENT_TRACKERS.some(t=>t.url===UNTC));
+  const source=runner(db,input=>{
+    if(input.stage==='resolve')return {...resolution(input),comparisons:input.candidates.map(r=>({record_id:r.id,relation:'distinct',citations:[0],reason:'A separate country/action occurrence from '+r.title}))};
+    const text=input.segments.map(s=>s.text).join(''),header=input.table_headers[0];
+    return answer([['Albania','Algeria','Ratification','9 Jun 2025'],['Armenia','Australia','Approval','25 Feb 2026']].map(([country,next,action,date])=>{
+      const row=text.slice(text.indexOf(country),text.indexOf(next,text.indexOf(country))).trim();
+      return {anchor:country,urls:[],candidate:{...Object.fromEntries(CONTENT_FIELDS.map(k=>[k,null])),kind:'treaty_status',title:country+' · '+action+' · '+date,organization:country},
+        priority:'high',reason:'Officially verified BBNJ '+action.toLowerCase()+'.',citations:[{doc:'P',quote:row},{doc:'P',quote:header},{doc:'P',quote:country}],
+        evidence:{kind:[0,1],title:[0,1],organization:[2],priority:[0,1],identity:[0]},dates:{}};
+    }));
+  });
+  const options={trackerId:tracker.id,read:async url=>{assert.equal(url,sourceURL(UNTC));return {...saved.html,status:200,headers:{'content-type':'text/html'}};}};
+  try{
+    const run=await source.run(options);assert.equal(run.created,2,run.warnings.join(';'));
+    const records=await current(db);assert.equal(records.length,2);assert.ok(records.every(r=>r.kind==='treaty_status'&&r.priority==='high'&&r.starts_at===null));
+    const captures=(await db.query('select * from scout.evidence where tracker_id=$1',[tracker.id])).rows;
+    assert.equal(captures.find(e=>e.record_id===null).content,saved.html.body);
+    assert.equal(captures.filter(e=>e.record_id!==null).length,2);assert.ok(captures.filter(e=>e.record_id!==null).every(e=>e.parsed.accepted_fields.kind.sources[0].url===sourceURL(UNTC)));
+    const calls=source.requests.length;await source.run(options);assert.equal(source.requests.length,calls);assert.deepEqual(await current(db),records);
+  }finally{await db.close();}
+});
+
+test('background collection holds older completed rubric versions without reopening their review',async()=>{
+  const db=await setup(),source=runner(db,stages([]));
+  try{
+    await source.run({documentVersion:'announcement-events-6/resolve-4/rubric-1'});
+    const before=await progress(db);assert.equal(before.processing.state,'complete');
+    await db.query('update scout.trackers set enabled=true where id=$1',[fixture.tracker.id]);
+    await source.run({documents:true,rotation:true,validate:false});
+    const queue=(await db.query('select queue_state from scout.source_queue')).rows;
+    assert.deepEqual(queue,[{queue_state:'version_held'}]);assert.equal(source.requests.length,1);
+    assert.deepEqual((await progress(db)).processing_versions,before.processing_versions);
   }finally{await db.close();}
 });
 

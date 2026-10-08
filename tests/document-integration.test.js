@@ -62,7 +62,7 @@ test('saved webinar and conference passages require literal evidence and leave m
     const finding=base(anchor,[{doc:'P',quote:anchor===webinar.title.rendered?anchor:quote}]);
     finding.candidate.kind='event';
     assert.equal(validateFinding(finding,input),finding);
-    for(const kind of ['announcement','treaty_status'])assert.throws(()=>validateFinding({...finding,candidate:{...finding.candidate,kind}},input),/supported kind/);
+    assert.throws(()=>validateFinding({...finding,candidate:{...finding.candidate,kind:'paper'}},input),/supported kind/);
     assert.ok(prepared.links.length>0);assert.deepEqual(Object.keys(input.documents),['P']);
     const invented=structuredClone(finding);invented.citations[0].quote+=' invented details';
     assert.throws(()=>validateFinding(invented,input),/citation/);
@@ -866,7 +866,7 @@ test('retained DOSI repair resumes before fresh articles; raw UI churn preserves
     });
     // Replay the retained v1 preparation exactly; a version upgrade is checked separately below.
     const retainedPreparation=doc=>({...doc,prepared:{...retained.get(doc.url).parsed.document.prepared_versions['dosi-documents-v1'],omissions:doc.prepared.omissions}});
-    const options={tracker,sourceURL,now:()=>new Date().toISOString(),deadline:Date.now()+100000,limits:{seconds:100,requests:8,pages:4},process:true,path:'dosi',makeModel:transport.makeModel,
+    const options={tracker,sourceURL,now:()=>new Date().toISOString(),deadline:Date.now()+100000,limits:{seconds:100,requests:8,pages:4},process:true,path:'dosi',documentVersion:newsletter.parsed.document.processing.version.split('/').slice(0,3).join('/'),makeModel:transport.makeModel,
       retrieve:async args=>{const result=await retrieveDosiDocuments(args);result.documents=result.documents.map(retainedPreparation);return result;},read:async url=>{
       reads.push(url);if(url===saved.feed.url)return saved.feed;
       const s=retained.get(url);if(!s)throw new Error('Fixture intentionally lacks other articles');
@@ -940,7 +940,7 @@ test('actual DOSI unknown-clock refusal resumes at repair one, can save null dat
       const quote='How Deep is Your Love will be screened in UK cinemas from 2nd October with preview screenings + Q&A in London from the 23rd of this month.';
       return answer([base('How Deep is Your Love',[{doc:'P',quote}])]);
     });
-    const options={source,prepared,trace,deadline,model:transport.makeModel(run,deadline,trace)};
+    const options={source,prepared,trace,deadline,version:source.parsed.document.processing.version.split('/').slice(0,3).join('/'),model:transport.makeModel(run,deadline,trace)};
     const result=await processDocument(db,options);
     const state=(await db.query('select parsed from scout.evidence where id=$1',[source.id])).rows[0].parsed.document;
     if(['exhausted','wrong-source','ambiguous'].includes(mode)){
@@ -995,7 +995,7 @@ test('actual DOSI exhausted resolution stays stopped while later findings save, 
     const trace=await startReport(db,run),deadline=Date.now()+100000;
     const source=(await db.query('select * from scout.evidence where id=$1',[s.id])).rows[0];
     const prepared=await supportDocuments(db,{source,prepared:s.parsed.document.prepared_versions['dosi-documents-v2'],trace});
-    assert.equal(DOCUMENT_VERSION+'/'+prepared.version+'/'+prepared.context,version);
+    assert.equal(version.split('/').slice(0,3).join('/')+'/'+prepared.version+'/'+prepared.context,version);
     for(const key of ['a16','a23'])assert.throws(()=>validateResolution(r.report.artifacts[key].data.response,failed.finding,r.report.artifacts.a12.data.candidates,prepared),/Unsupported\/conflicting factual evidence/);
     let scienceCalls=0,remaining=mode==='retained'?1:Infinity;
     const transport=runModel(db,input=>{
@@ -1009,7 +1009,7 @@ test('actual DOSI exhausted resolution stays stopped while later findings save, 
         {...resolve(input),outcome:'uncertain',record_id:null,reason:'Injected unresolved identity; no speculative save.'};
     });
     const model=transport.makeModel(run,deadline,trace);
-    const options={source,prepared,trace,deadline,model:async(...args)=>{
+    const options={source,prepared,trace,deadline,version:version.split('/').slice(0,3).join('/'),model:async(...args)=>{
       if(remaining--<=0)throw new Error('Model quota reached');
       await db.query("update scout.collection_runs set stats=jsonb_set(stats,'{model_attempts}',(select jsonb_agg(a||jsonb_build_object('at',(a->>'at')::timestamptz-interval '61 seconds')) from jsonb_array_elements(stats->'model_attempts') a)) where id=$1 and jsonb_array_length(coalesce(stats->'model_attempts','[]'))>0",[run]);
       return model(...args);
@@ -1057,7 +1057,7 @@ test('DOSI legacy recovery reaches the ordinary bounded acquisition queue withou
     if(mode==='extract-exhausted')prior.error=prior.error.replace('Two resolve','Two extract');
     if(mode==='all-findings-exhausted')for(const entry of prior.findings)if(!entry.resolution)entry.exhausted=true;
     if(mode==='no-later-finding')for(const entry of prior.findings.slice(2))entry.exhausted=true;
-    if(mode==='old-version')s.parsed.document.processing.version=version.replace(DOCUMENT_VERSION,'announcement-events-old');
+    if(mode==='old-version')s.parsed.document.processing.version=version.replace(version.split('/').slice(0,3).join('/'),'announcement-events-old');
     await db.query('update scout.trackers set id=$1 where url=$2',[r.tracker_id,f.home.url]);
     const tracker=(await db.query('select * from scout.trackers where id=$1',[r.tracker_id])).rows[0];
     await db.query('insert into scout.evidence(id,tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,$6,$7)',
@@ -1075,7 +1075,7 @@ test('DOSI legacy recovery reaches the ordinary bounded acquisition queue withou
     });
     let pending;
     const result=await collectDocuments(db,{tracker,sourceURL,now:()=>new Date().toISOString(),deadline:Date.now()+100000,
-      limits:{seconds:100,requests:8,pages:10,bytes:2_000_000},process:true,path:'dosi',
+      limits:{seconds:100,requests:8,pages:10,bytes:2_000_000},process:true,path:'dosi',documentVersion:version.split('/').slice(0,3).join('/'),
       retrieve:async options=>{pending=options.pending;return retrieveDosiDocuments(options);},
       read:async url=>{reads.push(url);assert.ok(responses.has(url),url);return responses.get(url);},
       makeModel:(...args)=>{const model=transport.makeModel(...args);return async(...call)=>{
@@ -1228,7 +1228,7 @@ test('retained resolver inputs compile field-specific audit claims and optional 
     const run=(await db.query('insert into scout.collection_runs(tracker_id) values($1) returning id',[tracker.id])).rows[0].id,trace=await startReport(db,run);
     const prepared=await supportDocuments(db,{source,prepared:s.prepared,trace,context:version.split('/').at(-1)});
     const transport=runModel(db,p=>({...resolve(p),outcome:'uncertain',record_id:null,reason:'Injected identity uncertainty; this check proves request construction only.'}));
-    const result=await processDocument(db,{source,prepared,trace,deadline:Date.now()+100000,model:transport.makeModel(run,Date.now()+100000,trace)});
+    const result=await processDocument(db,{source,prepared,trace,deadline:Date.now()+100000,version:version.split('/').slice(0,3).join('/'),model:transport.makeModel(run,Date.now()+100000,trace)});
     assert.equal(result.state,'uncertain');assert.equal(transport.requests.length,1);assert.equal(result.created,0);
     const request=JSON.parse(transport.requests[0]),sent=JSON.parse(request.contents[0].parts[0].text)[0],before=JSON.parse(actual.baseline_request);
     assert.deepEqual(sent.finding,input.finding);assert.deepEqual(sent.field_audit.event,{anchor:input.finding.anchor,title:input.finding.candidate.title});
