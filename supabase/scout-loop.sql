@@ -55,10 +55,10 @@ begin
     if issues ? 'Collection scheduler stopped' or
       coalesce(latest_work,control.started_at)<clock_timestamp()-interval '10 minutes'
       and response.mode='next' and (response.timed_out or response.error_msg is not null or response.status_code not in (200,409)) then
-      urgent:='Scout collection is stopped. Check the collection scheduler, backend credentials and latest worker errors.';
+      urgent:='Scout collection is stopped and needs attention.';
     elsif exists(select 1 from scout.collection_runs where stats->>'model_blocker'='configuration'
       and (stats->>'model_retry_at')::timestamptz>clock_timestamp()) then
-      urgent:='Scout cannot review new discoveries because its model credentials or configuration are invalid. Check the model configuration.';
+      urgent:='Scout model credentials or configuration need attention.';
     end if;
   end if;
   select issues||coalesce(jsonb_agg(problem order by problem),'[]'::jsonb) into issues from (

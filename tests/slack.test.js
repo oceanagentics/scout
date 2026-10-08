@@ -16,7 +16,7 @@ async function database() {
 }
 const now=new Date('2026-10-01T12:00:00Z');
 const select=async (_question,input)=>input.candidates.slice(0,input.kind==='digest'?5:1)
-  .map(r=>({id:r.id,summary:'New BBNJ Clearing-House data standards are available.',relevance:'These standards inform Ocean Agentics’ ChM implementation.'}));
+  .map(r=>({id:r.id,summary:'New BBNJ Clearing-House data standards are available.'}));
 
 test('discoveries are fresh and announced once; digests contain only dated upcoming events',()=>{
  const records=Array.from({length:8},(_,i)=>({id:String(i),kind:'event',priority:i===7?'high':'normal',starts_at:'2026-10-03T12:00:00Z',updated_at:'2026-10-01T00:00:00Z',discovered_at:'2026-10-01T00:00:00Z'}));
@@ -45,9 +45,12 @@ test('ephemeral previews use agent recency judgment, stamp only confirmed includ
   }
   const asOf=new Date(Date.now()+1000);
   const preview=await prepareMessage(db,{model:select,now:asOf});
-  assert.equal(preview.records.length,1);assert.match(preview.payload.text,/inform Ocean Agentics/);
+  assert.equal(preview.records.length,1);
+  assert.equal(preview.payload.text,`New BBNJ Clearing-House data standards are available. <${preview.records[0].sources[0].url}|Read more>`);
   assert.doesNotMatch(preview.payload.text,/Unknown|Not applicable|Priority:|Organization:|Updated:|Status:/);
-  assert.match(JSON.stringify(preview.payload),/bbnj-scout.web.app\/\?record=/);
+  assert.equal(preview.payload.blocks,undefined);assert.equal(preview.payload.unfurl_links,false);assert.equal(preview.payload.unfurl_media,false);
+  const escaped=await prepareMessage(db,{now:asOf,model:async(_question,input)=>[{id:input.candidates[0].id,summary:'New <@U123> & ChM standards.'}]});
+  assert.match(escaped.payload.text,/New &lt;@U123&gt; &amp; ChM standards\./);assert.equal(escaped.payload.parse,'none');
   let posts=0;
   const unknown=await sendMessage(db,preview,async()=>{posts++;throw new Error('timeout');},{now:()=>asOf});
   assert.equal(unknown.status,'unknown');assert.equal(posts,1);
@@ -61,8 +64,10 @@ test('ephemeral previews use agent recency judgment, stamp only confirmed includ
   await db.query("update scout.records set title='Material correction' where id=$1",[next.records[0].id]);
   await assert.rejects(sendMessage(db,next,async()=>{throw new Error('must not send');},{now:()=>asOf}),/changed/);
   const skipped=await prepareMessage(db,{model:async()=>[],now:asOf});assert.equal(skipped.payload,null);
-  for(const invalid of [[{id:'invented',summary:'Update',relevance:'Relevant'}],[{id:next.records[0].id,summary:'',relevance:'Relevant'}],
-    [{id:next.records[0].id,summary:'a'.repeat(281),relevance:'Relevant'}],[{id:next.records[0].id,summary:'Read https://example.org',relevance:'Relevant'}],
+  for(const invalid of [[{id:'invented',summary:'Update'}],[{id:next.records[0].id,summary:''}],
+    [{id:next.records[0].id,summary:'a'.repeat(161)}],[{id:next.records[0].id,summary:'Read https://example.org'}],
+    [{id:next.records[0].id,summary:'Update',relevance:'Extra explanation'}],[{id:next.records[0].id,summary:'First line.\nSecond line.'}],
+    [{id:next.records[0].id,summary:'One update. Another update.'}],
     [null],await select('',{kind:'digest',candidates:next.records.concat(preview.records)})])
     await assert.rejects(prepareMessage(db,{model:async()=>invalid,now:asOf}),/selection/);
  }finally{await db.close();}
@@ -87,13 +92,13 @@ test('source evidence grounds copy; corroboration cannot refresh discoveries and
   assert.equal((await prepareMessage(db,{now:asOf,model:()=>{throw Error('Old finding must not reach model');}})).payload,null);
   const from=asOf.toISOString().slice(0,10),through=new Date(asOf.getTime()+7*86400000).toISOString().slice(0,10);
   const preview=await prepareMessage(db,{kind:'digest',from,through,now:asOf,model:async(_instruction,input,schema)=>{
-    assert.equal(schema.maxItems,5);assert.equal(input.candidates.length,1);
+    assert.equal(schema.maxItems,5);assert.equal(schema.items.properties.summary.maxLength,160);assert.equal(input.candidates.length,1);
     assert.deepEqual(input.candidates[0].sources[0].finding.citations,parsed.finding.citations);
     assert.equal(input.candidates[0].sources[0].published_on,'2026-09-01');
-    return [{id:event,summary:'A workshop on BBNJ ChM data standards.',relevance:'It addresses technical ChM implementation.'}];
+    return [{id:event,summary:`BBNJ ChM data standards workshop on ${input.candidates[0].starts_at.slice(0,10)}.`}];
   }});
-  assert.match(preview.payload.text,/Upcoming events/);assert.match(preview.payload.text,/Register/);
-  assert.match(preview.payload.text,/Source/);assert.doesNotMatch(preview.payload.text,/Unknown|Priority:|Updated:/);
+  assert.match(preview.payload.text,/Upcoming events/);assert.equal(preview.payload.text.split('\n').length,2);
+  assert.equal((preview.payload.text.match(/<https:\/\//g)??[]).length,1);assert.doesNotMatch(preview.payload.text,/Unknown|Priority:|Updated:|Register|Details/);
   const declined=await prepareMessage(db,{kind:'digest',from,through,now:asOf,model:async()=>[]});
   assert.equal(declined.payload,null);assert.equal((await sendMessage(db,declined,()=>{throw Error('Empty digest must not post');})).status,'no_change');
   await db.query("update scout.records set starts_at=null where id=$1",[event]);
@@ -114,7 +119,7 @@ test('scheduled delivery persists ambiguous intent and excludes the same version
     env,databaseURL:'unused',apiKey:'fixture',connect,post:async()=>{posts++;throw new Error('Lost response');},
     modelFetch:async url=>{
       if(url.endsWith(':countTokens'))return Response.json({totalTokens:100});
-      calls++;return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify([{id:record,summary:'New BBNJ ChM data standards.',relevance:'These inform Ocean Agentics’ implementation.'}])}]}}]});
+      calls++;return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify([{id:record,summary:'New BBNJ ChM data standards.'}])}]}}]});
     }});
   const first=await (await invoke()).json();
   assert.equal(first.status,'unknown',JSON.stringify({first,calls,runs:(await db.query('select stats from scout.collection_runs')).rows}));
