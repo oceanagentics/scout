@@ -94,53 +94,6 @@ test('retained contact-token changes preserve literal content, ordinary links, r
   assert.deepEqual(changed.requests,[IUCN_LISTING,doc.url]);
 });
 
-test('retained token captures carry pending, complete and exhausted processing without resetting old versions',async()=>{
-  const db=new PGlite();
-  try{
-    await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;
-      create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');create table auth.identities(user_id uuid,provider text,identity_data jsonb);
-      create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;`);
-    for(const name of readdirSync(new URL('../supabase/migrations/',import.meta.url)).sort())await db.exec(readFileSync(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
-    await db.exec(readFileSync(new URL('../supabase/seeds/trackers.sql',import.meta.url),'utf8'));
-    const tracker=(await db.query('select * from scout.trackers where url=$1',[IUCN_LISTING])).rows[0],documents=[];
-    for(const capture of fixture.retained_contacts){
-      await db.query('insert into scout.evidence(id,tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,$6,$7)',
-        [capture.id,tracker.id,capture.url,capture.content_hash,capture.content,JSON.stringify(capture.parsed),capture.last_seen_at]);
-      const run=await collect({home:{...fixture.home,status:503},knownDocuments:[{id:capture.parsed.document.id,url:capture.url}],overrides:{[capture.url]:{
-        url:capture.url,status:200,headers:{'content-type':'text/html'},body:capture.content}}});documents.push(run.documents[0]);
-    }
-    const inputs=[];let item=documents[0],mode='pending';
-    const options={tracker,sourceURL,now:()=>new Date().toISOString(),deadline:Date.now()+100000,limits:{seconds:100,requests:4,pages:4},process:true,path:'iucn',
-      retrieve:async()=>({documents:[item],coverage:[]}),model:async(_,supplied)=>{
-        inputs.push(supplied[0]);
-        if(mode==='pending'){if(inputs.length===1)throw Object.assign(new Error('Invalid JSON'),{rejected:'Injected invalid response'});throw new Error('Model quota reached');}
-        return {complete:mode!=='exhausted',reason:'Injected storage/continuity decision only.',findings:[]};
-      }};
-    await collectDocuments(db,options);assert.equal(inputs.length,2);
-    const first=(await db.query('select parsed from scout.evidence where id=$1',[fixture.retained_contacts[0].id])).rows[0].parsed.document;
-    const version=first.processing.version,pending=first.processing_versions[version].pending;assert.equal(pending.round,1);
-    mode='complete';item=documents[1];await collectDocuments(db,options);assert.equal(inputs.length,3);
-    assert.deepEqual(inputs[2],{...pending.input,source_id:fixture.retained_contacts[1].id,repair:pending.repair});
-    item=documents[2];const repeat=await collectDocuments(db,options);assert.equal(repeat.processed,1);assert.equal(inputs.length,3);
-    const completed=(await db.query('select parsed from scout.evidence where id=$1',[fixture.retained_contacts[2].id])).rows[0].parsed.document;
-    assert.equal(completed.processing.version,version);assert.equal(completed.processing_versions[version].state,'complete');
-    item=(await collect({home:{...fixture.home,status:503},knownDocuments:[{id:item.id,url:item.url}],overrides:{[item.url]:{
-      url:item.url,status:200,headers:{'content-type':'text/html'},body:item.raw.replace('Remmy Lema','Updated contact person')}}})).documents[0];
-    await collectDocuments(db,options);assert.equal(inputs.length,4,'Visible contact change requires fresh processing');
-    mode='exhausted';item=documents[3];await collectDocuments(db,options);assert.equal(inputs.length,7);
-    const exhausted=(await db.query('select parsed from scout.evidence where id=$1',[fixture.retained_contacts[3].id])).rows[0].parsed.document;
-    assert.equal(exhausted.processing_versions[exhausted.processing.version].exhausted,true);
-    for(const next of documents.slice(4,6)){item=next;await collectDocuments(db,options);assert.equal(inputs.length,7,'Token change must not renew exhausted attempts');}
-    for(const capture of fixture.retained_contacts){
-      const retained=(await db.query('select content,parsed from scout.evidence where id=$1',[capture.id])).rows[0];
-      assert.equal(retained.content,capture.content);
-      for(const [key,value] of Object.entries(capture.parsed.document.prepared_versions))assert.deepEqual(retained.parsed.document.prepared_versions[key],value);
-      for(const [key,value] of Object.entries(capture.parsed.document.processing_versions))assert.deepEqual(retained.parsed.document.processing_versions[key],value);
-    }
-    assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
-  }finally{await db.close();}
-});
-
 test('structural listing reorder and duplicate cards preserve identities and bounded selection',async()=>{
   const rows=[...fixture.home.body.matchAll(/<li>\s*<div class="wrapper-line">[\s\S]*?<\/li>/g)].map(m=>m[0]);
   assert.equal(rows.length,6);

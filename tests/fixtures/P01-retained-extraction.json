@@ -1,0 +1,380 @@
+{
+  "provenance": {
+    "progress_sha256": "355c67c5fb19504a1132ecbdebba04588f53523dc59e349f8389b0cde7eaac70",
+    "results_sha256": "2a6e35af47b847d0d42bd484a744a2dfda9b269bd93a02150c6037745bc3858b",
+    "purpose": "Exact packet and generated answers from failed P01. Re-expressions in tests are offline diagnostics, not replacement responses or accuracy results."
+  },
+  "packet": {
+    "stage": "extract",
+    "source_id": "ff60853e-7d44-4f70-b8ce-3f5873ab830d",
+    "coverage": [],
+    "documents": [
+      {
+        "id": "P",
+        "capture_id": "ff60853e-7d44-4f70-b8ce-3f5873ab830d",
+        "preparation_id": null,
+        "url": "https://www.hubocean.earth/events-calendar?format=json",
+        "relationship": "primary",
+        "title": "Ocean Data Platform: Working with AI-agents",
+        "blocks": [
+          {
+            "id": 0,
+            "end": 279,
+            "tag": "img",
+            "start": 0,
+            "headings": [],
+            "html_end": 3804,
+            "html_start": 1766,
+            "text": "https://images.squarespace-cdn.com/content/v1/60d9cb21964164103233a604/bca4cbbd-e2e3-42c9-8069-8535ffe3fc4e/22+Oct+ODP+Webinar+%281%29.png <https://images.squarespace-cdn.com/content/v1/60d9cb21964164103233a604/bca4cbbd-e2e3-42c9-8069-8535ffe3fc4e/22+Oct+ODP+Webinar+%281%29.png>"
+          },
+          {
+            "id": 1,
+            "end": 448,
+            "tag": "a",
+            "start": 281,
+            "headings": [],
+            "html_end": 5274,
+            "html_start": 4956,
+            "text": "Register Now  <https://events.teams.microsoft.com/event/06e5811c-e7c9-493c-98c2-5f818c3654a2@4532deee-c4ed-44d7-88c6-79ffa513472c?source=copyLinkLegacyShareLinkDialog>"
+          },
+          {
+            "id": 2,
+            "end": 581,
+            "tag": "p",
+            "start": 450,
+            "headings": [],
+            "html_end": 7071,
+            "html_start": 6872,
+            "text": "This practical webinar demonstrates how large language models can help people work with real ocean data in the Ocean Data Platform."
+          },
+          {
+            "id": 3,
+            "end": 626,
+            "tag": "p",
+            "start": 583,
+            "headings": [],
+            "html_end": 7182,
+            "html_start": 7071,
+            "text": "Using AI Skills and ODP, we’ll show how to:"
+          },
+          {
+            "id": 4,
+            "end": 693,
+            "tag": "li",
+            "start": 628,
+            "headings": [],
+            "html_end": 7352,
+            "html_start": 7210,
+            "text": "Discover relevant ocean datasets using natural-language questions"
+          },
+          {
+            "id": 5,
+            "end": 738,
+            "tag": "li",
+            "start": 695,
+            "headings": [],
+            "html_end": 7472,
+            "html_start": 7352,
+            "text": "Query, filter, and analyse data through ODP"
+          },
+          {
+            "id": 6,
+            "end": 799,
+            "tag": "li",
+            "start": 740,
+            "headings": [],
+            "html_end": 7608,
+            "html_start": 7472,
+            "text": "Turn data and analysis into an interactive map or prototype"
+          },
+          {
+            "id": 7,
+            "end": 1024,
+            "tag": "p",
+            "start": 801,
+            "headings": [],
+            "html_end": 7904,
+            "html_start": 7613,
+            "text": "The session will focus on practical demonstrations of LLM-assisted workflows, including examples of prototypes built with real ODP data. We’ll also discuss how to verify results and develop reliable, reproducible workflows."
+          },
+          {
+            "id": 8,
+            "end": 1156,
+            "tag": "p",
+            "start": 1026,
+            "headings": [],
+            "html_end": 8102,
+            "html_start": 7904,
+            "text": "The webinar is intended for researchers, analysts, developers, and practitioners interested in combining ocean data with AI tools."
+          },
+          {
+            "id": 9,
+            "end": 1325,
+            "tag": "a",
+            "start": 1158,
+            "headings": [],
+            "html_end": 10272,
+            "html_start": 9955,
+            "text": "Register Now  <https://events.teams.microsoft.com/event/06e5811c-e7c9-493c-98c2-5f818c3654a2@4532deee-c4ed-44d7-88c6-79ffa513472c?source=copyLinkLegacyShareLinkDialog>"
+          },
+          {
+            "id": 10,
+            "end": 1672,
+            "tag": "pre",
+            "start": 1327,
+            "headings": [],
+            "html_end": 11419,
+            "html_start": 11063,
+            "text": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Squarespace Inc/Squarespace 6//v6//EN\r\nBEGIN:VEVENT\r\nUID:6aad3109b87c753f927ebf61@squarespace.com\r\nDTSTAMP:20260921T072333Z\r\nDTSTART:20261022T133000Z\r\nDTEND:20261022T141500Z\r\nSUMMARY:Ocean Data Platform: Working with AI-agents\r\nGEO:59.902383;10.614395\r\nLOCATION:Online (Teams)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+          }
+        ]
+      }
+    ],
+    "section": {
+      "index": 0,
+      "total": 1,
+      "scope": "Consider every finding in this source section; retained headings establish context. Other sections are processed separately."
+    }
+  },
+  "responses": [
+    {
+      "complete": true,
+      "reason": "Successfully extracted the single event finding from the source document.",
+      "findings": [
+        {
+          "kind": "event",
+          "anchor": "Ocean Data Platform: Working with AI-agents",
+          "title": "Ocean Data Platform: Working with AI-agents",
+          "description": "This practical webinar demonstrates how large language models can help people work with real ocean data in the Ocean Data Platform.",
+          "canonical_url": null,
+          "organizations": [
+            {
+              "name": "Ocean Data Platform",
+              "role": "organizer"
+            }
+          ],
+          "details": {
+            "start": {
+              "value": "2026-10-22",
+              "precision": "day",
+              "time": "13:30:00",
+              "zone": "Z"
+            },
+            "end": {
+              "value": "2026-10-22",
+              "precision": "day",
+              "time": "14:15:00",
+              "zone": "Z"
+            },
+            "occurrence": null,
+            "parent": null,
+            "location": "Online (Teams)",
+            "mode": "online",
+            "registration_url": "https://events.teams.microsoft.com/event/06e5811c-e7c9-493c-98c2-5f818c3654a2@4532deee-c4ed-44d7-88c6-79ffa513472c?source=copyLinkLegacyShareLinkDialog",
+            "status": "scheduled"
+          },
+          "identities": [
+            {
+              "scheme": "calendar_uid",
+              "value": "6aad3109b87c753f927ebf61@squarespace.com",
+              "citations": [
+                10
+              ]
+            }
+          ],
+          "citations": [
+            {
+              "doc": "P",
+              "block": 10,
+              "quote": "SUMMARY:Ocean Data Platform: Working with AI-agents"
+            },
+            {
+              "doc": "P",
+              "block": 2,
+              "quote": "This practical webinar demonstrates how large language models can help people work with real ocean data in the Ocean Data Platform."
+            },
+            {
+              "doc": "P",
+              "block": 10,
+              "quote": "UID:6aad3109b87c753f927ebf61@squarespace.com"
+            },
+            {
+              "doc": "P",
+              "block": 10,
+              "quote": "DTSTART:20261022T133000Z"
+            },
+            {
+              "doc": "P",
+              "block": 10,
+              "quote": "DTEND:20261022T141500Z"
+            },
+            {
+              "doc": "P",
+              "block": 10,
+              "quote": "LOCATION:Online (Teams)"
+            },
+            {
+              "doc": "P",
+              "block": 1,
+              "quote": "Register Now  <https://events.teams.microsoft.com/event/06e5811c-e7c9-493c-98c2-5f818c3654a2@4532deee-c4ed-44d7-88c6-79ffa513472c?source=copyLinkLegacyShareLinkDialog>"
+            }
+          ],
+          "evidence": {
+            "kind": [
+              10
+            ],
+            "anchor": [
+              10
+            ],
+            "title": [
+              10
+            ],
+            "description": [
+              1
+            ],
+            "organizations.0.name": [
+              0
+            ],
+            "organizations.0.role": [
+              0
+            ],
+            "details.start": [
+              3
+            ],
+            "details.end": [
+              3
+            ],
+            "details.location": [
+              5
+            ],
+            "details.mode": [
+              5
+            ],
+            "details.registration_url": [
+              6
+            ],
+            "details.status": [
+              3
+            ]
+          },
+          "unknowns": {},
+          "changes": {},
+          "research": {
+            "urls": [],
+            "query": null
+          }
+        }
+      ]
+    },
+    {
+      "complete": true,
+      "reason": "Successfully extracted the single event finding from the source document.",
+      "findings": [
+        {
+          "kind": "event",
+          "anchor": "Ocean Data Platform: Working with AI-agents",
+          "title": "Ocean Data Platform: Working with AI-agents",
+          "description": "This practical webinar demonstrates how large language models can help people work with real ocean data in the Ocean Data Platform.",
+          "canonical_url": null,
+          "organizations": [
+            {
+              "name": "Ocean Data Platform",
+              "role": "organizer"
+            }
+          ],
+          "details": {
+            "start": {
+              "value": "2026-10-22",
+              "precision": "day",
+              "time": "13:30:00",
+              "zone": "Z"
+            },
+            "end": {
+              "value": "2026-10-22",
+              "precision": "day",
+              "time": "14:15:00",
+              "zone": "Z"
+            },
+            "occurrence": null,
+            "parent": null,
+            "location": "Online (Teams)",
+            "mode": "online",
+            "registration_url": "https://events.teams.microsoft.com/event/06e5811c-e7c9-493c-98c2-5f818c3654a2@4532deee-c4ed-44d7-88c6-79ffa513472c?source=copyLinkLegacyShareLinkDialog",
+            "status": "scheduled"
+          },
+          "identities": [
+            {
+              "scheme": "native_id",
+              "value": "6aad3109b87c753f927ebf61@squarespace.com",
+              "citations": [
+                1
+              ]
+            }
+          ],
+          "citations": [
+            {
+              "doc": "P",
+              "block": 2,
+              "quote": "This practical webinar demonstrates how large language models can help people work with real ocean data in the Ocean Data Platform."
+            },
+            {
+              "doc": "P",
+              "block": 10,
+              "quote": "BEGIN:VEVENT\r\nUID:6aad3109b87c753f927ebf61@squarespace.com\r\nDTSTAMP:20260921T072333Z\r\nDTSTART:20261022T133000Z\r\nDTEND:20261022T141500Z\r\nSUMMARY:Ocean Data Platform: Working with AI-agents\r\nGEO:59.902383;10.614395\r\nLOCATION:Online (Teams)\r\nEND:VEVENT"
+            }
+          ],
+          "evidence": {
+            "kind": [
+              1
+            ],
+            "anchor": [
+              1
+            ],
+            "title": [
+              1
+            ],
+            "description": [
+              0
+            ],
+            "canonical_url": [
+              1
+            ],
+            "organizations": [
+              1
+            ],
+            "details.start": [
+              1
+            ],
+            "details.end": [
+              1
+            ],
+            "details.occurrence": [
+              1
+            ],
+            "details.parent": [
+              1
+            ],
+            "details.location": [
+              1
+            ],
+            "details.mode": [
+              1
+            ],
+            "details.registration_url": [
+              1
+            ],
+            "details.status": [
+              1
+            ]
+          },
+          "unknowns": {},
+          "changes": {},
+          "research": {
+            "urls": [],
+            "query": null
+          }
+        }
+      ]
+    }
+  ]
+}

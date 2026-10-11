@@ -58,7 +58,7 @@ test('date evidence column removal preserves event times, source proofs, account
   try {
     await db.exec(auth + fixture);
     for (const file of (await readdir(new URL('../supabase/migrations/', import.meta.url))).sort())
-      if (file !== name) await db.exec(await readFile(new URL('../supabase/migrations/' + file, import.meta.url), 'utf8'));
+      if (file !== name&&file<'20261009190000') await db.exec(await readFile(new URL('../supabase/migrations/' + file, import.meta.url), 'utf8'));
     const tracker = (await db.query("insert into scout.trackers(name,url,collector,cadence) values('Source','https://example.org','web','1 day') returning *")).rows[0];
     const record = (await db.query("insert into scout.records(kind,title,starts_at,ends_at) values('event','Supported webinar','2026-10-08T14:00Z','2026-10-08T15:00Z') returning *")).rows[0];
     const source = (await db.query(`insert into scout.evidence(record_id,tracker_id,url,content_hash,content,parsed,last_seen_at)

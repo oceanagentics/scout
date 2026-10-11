@@ -4,8 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { prepareAuthorItem, retrieveAuthorDocuments } from '../collector/bluesky-documents.js';
-import { packDocument, DOCUMENT_VERSION, DOCUMENT_INSTRUCTION, DOCUMENT_SCHEMA } from '../collector/document-records.js';
-import { requestBody } from '../collector/model.js';
+import {packDocument} from '../collector/finding-jobs.js';
+
 
 const hsa='highseasalliance.bsky.social';
 const fixture=async name=>{const raw=await readFile(new URL('./fixtures/'+name,import.meta.url));return JSON.parse(name.endsWith('.gz')?gunzipSync(raw):raw);};
@@ -168,37 +168,18 @@ test('facet/embed/plain links are fetchable; registration authority comes from a
 });
 
 
-test('retained live HSA failures begin with complete attributable post and embed fields, with exact raw and repair evidence',async()=>{
+test('retained HSA failures now supply complete post and embed fields with source attribution',async()=>{
   const saved=await fixture('hsa-social-preparation.json.gz');
-  for(const feed of saved.feeds)assert.equal(createHash('sha256').update(feed.body).digest('hex'),feed.sha256);
-  for(const [index,source] of saved.sources.entries()){
+  for(const source of saved.sources){
     const item=JSON.parse(source.content),doc=prepare(item);
     assert.equal(doc.raw,source.content);assert.equal(createHash('sha256').update(doc.raw).digest('hex'),source.content_hash);
-    const oldRequest=saved.artifacts[index?'a18':'a9'].data.body,oldInput=JSON.parse(JSON.parse(oldRequest).contents[0].parts[0].text)[0];
-    assert.ok(!oldInput.segments.some(s=>s.text.includes(item.post.record.text)));
-    const version=DOCUMENT_VERSION+'/'+doc.prepared.version+'/'+'0'.repeat(64);
-    const input=packDocument(source,doc.prepared,0,version);
-    assert.ok(input.segments.some(s=>s.text.includes(item.post.record.text)));
-    const alt=item.post.embed.images?.[0].alt;
-    if(alt)assert.ok(input.segments.some(s=>s.text.includes(alt)),'Whole returned poster alt must fit with its post');
-    else for(const key of ['title','description','uri'])assert.ok(input.segments.some(s=>s.text.includes(item.post.embed.external[key])));
-    for(const segment of input.segments)for(const field of segment.source_fields){
-      assert.deepEqual(field.source_range,[0,field.source_length],'Actual first request must not slice a content field');
-      for(const path of field.source_paths){
-        const original=path.split('.').slice(1).reduce((v,k)=>v[k],item);
-        assert.equal(doc.prepared.text.slice(...field.range),original.slice(...field.source_range));
-      }
-    }
+    const input=packDocument(source,{documents:[{id:'P',capture_id:source.id,url:doc.url,relationship:'primary',prepared:doc.prepared}]});
+    assert.ok(input.documents[0].blocks.some(b=>b.text.includes(item.post.record.text)));
+    const embed=item.post.embed;
+    for(const text of embed.images?.map(i=>i.alt)??[embed.external.title,embed.external.description,embed.external.uri])
+      assert.ok(input.documents[0].blocks.some(b=>b.text.includes(text)));
     assert.ok(doc.prepared.omissions.some(o=>o.path.includes('.author.avatar')));
-    assert.ok(doc.prepared.omissions.some(o=>o.path.endsWith('.likeCount')));
-    assert.ok(doc.prepared.omissions.some(o=>o.path.includes('.mimeType')));
     assert.ok(!doc.prepared.text.includes('"mimeType"'));
-    const wire=requestBody(DOCUMENT_INSTRUCTION,[input],DOCUMENT_SCHEMA);assert.ok(Buffer.byteLength(wire)<=7000);
-    const actualRefusal=JSON.parse(JSON.parse(saved.artifacts[index?'a19':'a10'].data.body).candidates[0].content.parts[0].text);
-    assert.equal(actualRefusal.complete,false);assert.equal(actualRefusal.findings.length,0);
-    const repaired={...input,repair:{rejected:actualRefusal,errors:['Retained refusal; this size check does not dispatch or override an incomplete response.']}};
-    const repair=requestBody(DOCUMENT_INSTRUCTION,[repaired],DOCUMENT_SCHEMA);
-    assert.ok(Buffer.byteLength(repair)<=8000);assert.deepEqual(JSON.parse(JSON.parse(repair).contents[0].parts[0].text)[0].repair.rejected,actualRefusal);
   }
 });
 
@@ -232,27 +213,17 @@ test('neutral social fields retain quote/reply/external/alt attribution, every s
   assert.ok(doc.coverage.some(c=>c.relationship==='media'&&c.state==='unfetched'));
 });
 
-test('long Unicode post and embed fields progress without clipping and keep decoded source ranges and neighboring context',async()=>{
+test('Unicode post and embedded alt text retain all content and original source paths',async()=>{
   const item=await fixture('hsa-webinar.json');
-  item.post.record.text='First distinct session.'.padEnd(399,'.')+'🌊'+'Français 🌊  whitespace.\n'.repeat(180)+'Final post session.';
+  item.post.record.text='Français 🌊 whitespace. '.repeat(1000)+'Final post session.';
   item.post.embed={images:[{alt:'Image evidence 🌊. '.repeat(100)+'Final image session.'}]};
   delete item.post.record.embed;delete item.post.record.facets;
-  const {prepared}=prepare(item),source={id:'00000000-0000-4000-8000-000000000001'},inputs=[];
-  let start=0;while(start<prepared.text.length){
-    const input=packDocument(source,prepared,start,DOCUMENT_VERSION+'/'+prepared.version+'/'+'0'.repeat(64));
-    assert.equal(input.range[0],start);assert.ok(input.range[1]>start);assert.ok(input.range[1]<=prepared.text.length);
-    assert.ok(Buffer.byteLength(requestBody(DOCUMENT_INSTRUCTION,[input],DOCUMENT_SCHEMA))<=7000);
-    assert.ok(input.segments.every(s=>s.text.isWellFormed()));
-    for(const s of input.segments)for(const f of s.source_fields??[])for(const path of f.source_paths){
-      const raw=path.split('.').slice(1).reduce((v,k)=>v[k],item);
-      assert.equal(prepared.text.slice(...f.range),raw.slice(...f.source_range));assert.equal(f.source_length,raw.length);
-    }
-    if(start>0&&start<item.post.record.text.length)assert.ok(input.segments.some(s=>s.range[0]<start),'Adjacent context retained');
-    inputs.push(input);start=input.range[1];assert.ok(inputs.length<100);
-  }
-  assert.equal(inputs.map(i=>prepared.text.slice(...i.range)).join(''),prepared.text);
-  assert.ok(inputs.some(i=>i.segments.some(s=>s.text.includes('Final image session.'))));
-  assert.ok(inputs.some(i=>i.segments.some(s=>s.source_fields?.some(f=>f.source_range[1]<f.source_length))));
+  const doc=prepare(item),input=packDocument({id:'capture'},{documents:[{id:'P',capture_id:'capture',url:doc.url,prepared:doc.prepared}]});
+  const blocks=input.documents[0].blocks;
+  assert.ok(blocks.every(b=>b.text.isWellFormed()));
+  assert.ok(blocks.some(b=>b.text.includes(item.post.record.text)));
+  assert.ok(blocks.some(b=>b.text.includes(item.post.embed.images[0].alt)));
+  assert.ok(blocks.some(b=>b.source_paths?.length));
 });
 
 test('background author turns check newest posts and continue a durable historical cursor through failures',async()=>{

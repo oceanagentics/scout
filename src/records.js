@@ -2,12 +2,11 @@ export const KINDS = { event: 'Event', announcement: 'Announcement', treaty_stat
 export const PRIORITIES = { high:'High', normal:'Normal', low:'Low' };
 export function fieldLabel(record, field) {
   if (field==='priority') return PRIORITIES[record.priority]??'Not yet assessed';
-  if (record.kind!=='event'&&['location','status','starts_at','ends_at','event_url','registration_url'].includes(field)) return 'Not applicable';
+  if(field==='organization')return (record.organizations??[]).map(o=>`${o.name} (${o.role})`).join('; ')||'Unknown';
+  if(['starts_at','ends_at'].includes(field))return dateLabel(record.details?.[field==='starts_at'?DATE_FIELDS[record.kind]?.[0]:record.kind==='event'?'end':'effective']);
+  if(field==='completeness')return record.completeness?.state??'Unknown';
+  if(field==='details')return JSON.stringify(record.details);
   const value=record[field];
-  if (!value&&['starts_at','ends_at'].includes(field)) {
-    const date=sourceDay(record,field==='starts_at'?'starts_on':'ends_on');
-    if (date) return `${date} · Time unknown`;
-  }
   if (value===null||value===undefined||value==='') return 'Unknown';
   return field.endsWith('_at')?stamp(value):field==='kind'?KINDS[value]??value:typeof value==='object'?JSON.stringify(value):String(value);
 }
@@ -15,7 +14,7 @@ export function orderRecords(records, order='priority') {
   const rank = value => ({high:0,normal:1,low:2})[value]??3;
   if (typeof order==='object') return [...records].sort((a,b)=>{
     const [left,right]=[a,b].map(record=>{
-      const value=record[order.field];
+      const value=order.field==='starts_at'&&record.details?findingInterval(record)[0]:record[order.field];
       return value==null||value===''?null:order.field==='priority'?rank(value):order.field.endsWith('_at')?Date.parse(value)
         :order.field==='sources'?value.length:typeof value==='object'?JSON.stringify(value):value;
     });
@@ -24,15 +23,10 @@ export function orderRecords(records, order='priority') {
     return order.direction==='descending'?-compared:compared;
   });
   return [...records].sort((a,b)=>(order==='priority'?rank(a.priority)-rank(b.priority):0)||
-    (a.starts_at?Date.parse(a.starts_at):Infinity)-(b.starts_at?Date.parse(b.starts_at):Infinity)||a.id.localeCompare(b.id));
+    (recordDates(a)[0]?Date.parse(recordDates(a)[0]):Infinity)-(recordDates(b)[0]?Date.parse(recordDates(b)[0]):Infinity)||a.id.localeCompare(b.id));
 }
 const dayValid = value => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '') && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 const instantValid = value => typeof value === 'string' && dayValid(value.slice(0, 10)) && /T\d{2}:\d{2}.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
-const sourceDay = (record,field) => {
-  const dates=[...new Set((record.sources??[]).map(source=>source.calendar_dates?.[field]?.value).filter(dayValid))];
-  return dates.length===1?dates[0]:null;
-};
-
 export function sourceLink(value) {
   try {
     const url = new URL(value);
@@ -44,46 +38,21 @@ export function stamp(value) {
   return instantValid(value) ? `${new Date(value).toISOString().slice(0, 16).replace('T', ' ')} UTC` : 'Unknown';
 }
 
-export function recordDates(record) {
-  if (record.kind !== 'event') return [null, null];
-  const start = instantValid(record.starts_at) ? new Date(record.starts_at).toISOString().slice(0, 10) : sourceDay(record,'starts_on');
-  const end = instantValid(record.ends_at) ? new Date(record.ends_at).toISOString().slice(0, 10) : sourceDay(record,'ends_on')??start;
-  return [start, end];
-}
+export const recordDates=record=>findingInterval(record);
 
 export function eventLabel(record) {
-  if (record.kind!=='event') return 'Not applicable';
-  if (!instantValid(record.starts_at)) {
-    const [start,end]=recordDates(record);
-    return start?`${start}${end&&end!==start?` – ${end}`:''} · Time unknown`:'Unknown';
-  }
-  const start = new Date(record.starts_at).toISOString(), end = instantValid(record.ends_at) && new Date(record.ends_at).toISOString();
-  return `${start.slice(0, 10)} · ${start.slice(11, 16)}${end ? ` – ${end.slice(0, 10) === start.slice(0, 10) ? '' : `${end.slice(0, 10)} `}${end.slice(11, 16)}` : ''} UTC`;
+  const field=DATE_FIELDS[record.kind]?.[0],prefix={event:'Starts',announcement:'Published',treaty_status:'Action date'}[record.kind];
+  return `${prefix} · ${dateLabel(record.details?.[field])}${record.kind==='event'&&record.details?.end?' – '+dateLabel(record.details?.end):''}`;
 }
 
 export function eventTiming(record, now = new Date()) {
   if (record.kind !== 'event') return '';
-  if (record.status === 'cancelled') return 'Cancelled';
-  const [start] = recordDates(record);
-  if (!start) return 'Date unknown';
-  if (!instantValid(record.starts_at)) return start>now.toISOString().slice(0,10)?'Upcoming':recordDates(record)[1]>=now.toISOString().slice(0,10)?'Date known · time unknown':'Past / started';
-  if (Date.parse(record.starts_at) > now.getTime()) return 'Upcoming';
-  return instantValid(record.ends_at) && Date.parse(record.ends_at) > now.getTime() ? 'In progress' : 'Past / started';
-}
-
-export function filterRecords(records, filters = {}, now = new Date()) {
-  const query = (filters.search ?? '').normalize('NFKC').toLowerCase().trim();
-  return records.filter(record => {
-    if (filters.kind && record.kind !== filters.kind) return false;
-    if (filters.priority && (record.priority??'unassessed')!==filters.priority) return false;
-    if (filters.record && record.id!==filters.record) return false;
-    if (filters.organization && (record.organization || 'Unknown organization') !== filters.organization) return false;
-    if (query && ![record.title, record.organization, record.description].filter(Boolean).join(' ').normalize('NFKC').toLowerCase().includes(query)) return false;
-    const [start, end] = recordDates(record);
-    if ((filters.from || filters.to) && (!start || (filters.from && end < filters.from) || (filters.to && start > filters.to))) return false;
-    if (filters.timing && eventTiming(record, now) !== filters.timing) return false;
-    return true;
-  });
+  if(record.details?.status==='cancelled')return 'Cancelled';
+  const start=record.details?.start,end=record.details?.end,[from,to]=findingInterval(record),today=now.toISOString().slice(0,10);
+  if(!from)return 'Date unknown';
+  if(start.utc&&Date.parse(start.utc)>+now)return 'Upcoming';
+  if(start.utc&&end?.utc&&Date.parse(end.utc)>+now)return 'In progress';
+  return from>today?'Upcoming':to>=today&&!start.utc?'Date known · time unknown':'Past / started';
 }
 
 export function trackerState(tracker) {
@@ -92,3 +61,4 @@ export function trackerState(tracker) {
   return { availability, outcome: outcomes[tracker.last_outcome] ?? (tracker.last_attempt_at ? 'No completed result' : 'Never collected'),
     success: tracker.last_success_at ? stamp(tracker.last_success_at) : 'Never' };
 }
+import {DATE_FIELDS,dateLabel,findingInterval} from './finding.js';

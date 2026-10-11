@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
-import { isDeepStrictEqual } from 'node:util';
 import { parseDocument, DomUtils } from 'htmlparser2';
-import { startReport } from './report.js';
-import { processDocument, DOCUMENT_VERSION } from './document-records.js';
+import {processDocument,claimSource,finishSource} from './finding-jobs.js';
+import {readCalendar} from '../src/finding.js';
 
 const digest = text => createHash('sha256').update(text).digest('hex');
 const FEED = 'https://octogroup.org/feed/';
@@ -204,428 +203,147 @@ function feedItems(body) {
   });
 }
 
-// One hop from retained primary links: three destinations/article, six/run.
-// Registration/organizer relationships are link metadata, never arrival order.
-export async function supportDocuments(db,{source,prepared,read,sourceURL,budget,limits,trace,recordId,companions=[],cache=new Map(),context,reuse}){
-  const documents=[{id:'P',capture_id:source.id,hash:source.content_hash,url:prepared.url,relationship:'primary',
-    preparation_version:prepared.version,prepared,start:0,end:prepared.text.length}];
-  if(source.parsed.document.conflicted){
-    const variants=(await db.query("select * from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}'=$2 and id<>$3 order by content_hash,id limit 4",
-      [source.tracker_id,source.parsed.document.identity,source.id])).rows;
-    if(!variants.length||variants.length>3)throw new Error('Source variants require two to four retained complete captures for joint review');
-    for(const variant of variants){
-      const document=variant.parsed.document,p=document.prepared_versions?.[document.preparation.version]??document.prepared;
-      if(document.preparation.state!=='complete'||!p||document.feed_only)throw new Error('Source variant preparation is incomplete; retain all versions before review');
-      await trace.capture(variant);
-      documents.push({id:'S'+documents.length,capture_id:variant.id,hash:variant.content_hash,url:p.url,relationship:'source-variant',
-        preparation_version:p.version,prepared:p});
-    }
-    context=undefined; // A single-capture resume key cannot certify a joint review.
-  }
-  if(!read){
-  const coverage=prepared.links.map(link=>({...link,state:'unfetched',reason:'Citation/link metadata only; not opened for event extraction'}));
-  context??=digest(JSON.stringify({primary:source.content_hash,mode:'announcement-events',...documents.length>1?{variants:documents.slice(1).map(d=>({hash:d.hash,preparation_version:d.preparation_version,text:d.prepared.text}))}:{}}));
-  const artifact=await trace.artifact('support_coverage','Primary announcement and unopened citation links',
-    {context,documents:documents.map(({prepared,...d})=>d),links:coverage,...reuse?{reuse}:{}});
-  const op=await trace.start('prepare',{source_ids:[source.id],artifacts:[artifact],note:'Independent primary announcement; incidental links retained without retrieval or concatenation.'});
-  await trace.finish(op,'pass');
-  return {...prepared,documents,context,coverage};
-  }
-  const associated=(await db.query("select parsed->'finding' finding from scout.evidence where record_id is not null and tracker_id=$1 and parsed#>>'{document,identity}'=$2"+(recordId?' and record_id=$3':''),[source.tracker_id,source.parsed.document.identity,...recordId?[recordId]:[]])).rows;
-  const findingURLs=new Set(associated.flatMap(r=>[r.finding?.candidate?.event_url,r.finding?.candidate?.registration_url,...r.finding?.urls??[]]).filter(Boolean).map(url=>{try{return sourceURL(url);}catch{return url;}}));
-  const labels=recordId?associated.flatMap(r=>[r.finding?.anchor,r.finding?.candidate?.title]).filter(Boolean):[];
-  const links=new Map(),coverage=[];
-  const primaryLinks=[...prepared.links];
-  if(recordId)for(const target of new Set(companions))primaryLinks.push({tag:'a',target,relationship:'discovery',label:'Independently supplied companion',context:'Requested for record '+recordId+'. Not a link in the primary source; same-finding identity and field roles require inspection.'});
-  if(/^https:\/\/api\.cbd\.int\/api\/v2016\/reservations\/?\?/.test(source.url)){
-    const meetings=[...new Set((prepared.blocks??[]).filter(b=>b.source_paths?.some(path=>/\.(?:sideEvent|location)\.conference$/.test(path))).map(b=>prepared.text.slice(...b.value_range)))];
-    if(meetings.length===1&&/^[a-f0-9]{24}$/.test(meetings[0]))primaryLinks.push({tag:'a',relationship:'meeting',meeting:meetings[0],label:'Referenced CBD meeting identity',context:'Literal session conference reference. Parent meeting dates are not session dates.',
-      target:'https://api.cbd.int/api/v2016/conferences?'+new URLSearchParams({q:JSON.stringify({_id:{$oid:meetings[0]}}),f:JSON.stringify({Title:1,Description:1,Venue:1})})});
-    const hosts=(prepared.blocks??[]).filter(b=>b.source_paths?.some(path=>/\.sideEvent\.hostOrgs\[\d+\]$/.test(path))).map(b=>prepared.text.slice(...b.value_range));
-    if(hosts.length&&hosts.length<=10&&hosts.every(id=>/^[a-f0-9]{24}$/.test(id)))
-      primaryLinks.push({tag:'a',relationship:'organizer',hosts:[...new Set(hosts)],label:'Referenced CBD host organizations',context:'Literal sideEvent.hostOrgs references; returned names must match these IDs for this same session.',
-        target:'https://api.cbd.int/api/v2016/inde-orgs?'+new URLSearchParams({q:JSON.stringify({_id:{$in:[...new Set(hosts)].sort().map(id=>({$oid:id}))}}),f:JSON.stringify({title:1,acronym:1})})});
-    else if(hosts.length)coverage.push({relationship:'organizer',state:'unsupported',reason:'CBD host references lack a bounded unambiguous public-registry lookup'});
-  }
-  for(const link of primaryLinks){
-    if(link.relationship==='taxonomy'){coverage.push({...link,state:'skipped',reason:'Publisher taxonomy link retained without support fetching'});continue;}
-    const session=link.tag==='a'&&link.target.match(/^https:\/\/www\.cbd\.int\/side-events\/(\d+)$/)?.[1];
-    let url;try{url=sourceURL(session?'https://api.cbd.int/api/v2016/reservations/?'+new URLSearchParams({q:JSON.stringify({'sideEvent.id':+session})}):link.target);}catch{coverage.push({...link,state:'unsupported',reason:'Public HTTPS document URL required'});continue;}
-    if((link.tag!=='a'&&!(link.tag==='api'&&link.relationship==='calendar-export'))||/\.(?:png|jpe?g|gif|webp|mp4|mp3|zip)(?:$|\?)/i.test(url)){coverage.push({...link,url,state:'unsupported',reason:'Only linked HTML/text/JSON/PDF/calendar documents in this one-hop pass'});continue;}
-    if(url===sourceURL(prepared.url)){coverage.push({...link,url,state:'skipped',reason:'Primary document already retained'});continue;}
-    const prior=links.get(url);
-    if(!prior||prior.relationship==='support')links.set(url,{...link,url,...session?{session}:{} });
-  }
-  let selected=0;
-  const queue=[...links.values()].sort((a,b)=>Number(b.relationship==='discovery')-Number(a.relationship==='discovery')||Number(findingURLs.has(b.url)||findingURLs.has(b.target))-Number(findingURLs.has(a.url)||findingURLs.has(a.target))||Number(labels.some(label=>b.context?.includes(label)))-Number(labels.some(label=>a.context?.includes(label)))||(a.relationship==='support')-(b.relationship==='support')||(labels.length?(a.context?.length??0)-(b.context?.length??0):0));
-  for(const link of queue){
-    const relation={from:source.id,url:link.url,label:link.label,context:link.context,relationship:link.relationship,...link.actors?{actors:link.actors,mentions:link.mentions}:{},...link.session?{source_reference:link.target,session_id:link.session}:link.source_reference?{source_reference:link.source_reference}:{} };
-    if(selected++>=3){coverage.push({...relation,state:'deferred',reason:'Three support destinations per article'});continue;}
-    let result=cache.get(link.url);
-    if(!result){
-      if(cache.size>=limits.pages||budget.requests>=limits.requests||Date.now()>=budget.deadline){coverage.push({...relation,state:'deferred',reason:'Shared support/request/time bound'});continue;}
-      result={state:'failed'};cache.set(link.url,result);
-      const op=await trace.start('fetch',{url:link.url,note:'One-hop supporting document; shared public-fetch safeguards.'});
-      const before=budget.requests;
-      try{
-        let r;
-        try{r=await read(link.url,budget);}catch(error){
-          if(!/peer closed connection without sending TLS close_notify/.test(error.message)||budget.requests>=limits.requests||Date.now()>=budget.deadline)throw error;
-          const observed=(await db.query("select id,url from scout.evidence where record_id is null and tracker_id=$1 and parsed#>>'{document,identity}'=$2 and url<>$3 order by last_seen_at desc,collected_at desc,id limit 1",[source.tracker_id,'support:'+link.url,link.url])).rows[0];
-          if(!observed)throw error;
-          r=await read(sourceURL(observed.url),budget);result.redirect={observed_capture:observed.id,destination:observed.url,reason:error.message,rechecked:true};
-        }
-        if(budget.requests===before)budget.requests++;
-        if(r.status!==200||typeof r.body!=='string'||Buffer.byteLength(r.body,r.encoding??'utf8')>limits.bytes)throw new Error('Support response status/byte bound');
-        const url=sourceURL(r.url),mime=r.headers?.['content-type']?.split(';')[0]??'text/html';
-        const payload={url,status:r.status,mime,body:r.body,...r.encoding?{encoding:r.encoding}:{}},hash=digest(JSON.stringify(payload));
-        const capture=(await db.query("insert into scout.evidence(tracker_id,url,content_hash,content,parsed,last_seen_at) values($1,$2,$3,$4,$5,clock_timestamp()) "+
-          "on conflict(record_id,tracker_id,url,content_hash) do update set last_seen_at=excluded.last_seen_at returning *",
-          [source.tracker_id,url,hash,JSON.stringify(payload),JSON.stringify({document:{identity:'support:'+link.url}})])).rows[0];
-        const ref=await trace.capture(capture);
-        Object.assign(result,{capture_id:capture.id,hash,url});
-        if(!['text/html','application/xhtml+xml','application/json','text/plain','application/pdf','text/calendar'].includes(mime)){
-          Object.assign(result,{state:'unsupported',capture_id:capture.id,hash,url,reason:'Unsupported support MIME type: '+mime});
-          await trace.finish(op,'skipped',{artifacts:[ref],note:result.reason});
-        }else{
-        const version=link.actors?'support-bsky-profiles-v2':link.meeting?'support-cbd-meeting-v1':link.session?'support-cbd-session-v1':link.hosts?'support-cbd-hosts-v1':mime==='application/pdf'?'support-pdf-v1':mime==='text/calendar'?'support-ical-v1':/\.qualtrics\.com$/.test(new URL(url).hostname)?'qualtrics-public-page-v1':['text/html','application/xhtml+xml'].includes(mime)?'support-html-publication-contact-v1':PREPARATION_VERSION;
-        let clean=capture.parsed.document.prepared_versions?.[version];
-        if(!clean){
-          let body=r.body;
-          if(link.actors){
-            const expected='https://public.api.bsky.app/xrpc/app.bsky.actor.getProfiles?'+new URLSearchParams(link.actors.map(did=>['actors',did])),profiles=JSON.parse(body).profiles;
-            if(link.relationship!=='profile'||url!==expected||mime!=='application/json'||!link.actors.length||link.actors.length>10||new Set(link.actors).size!==link.actors.length||!Array.isArray(profiles)||profiles.length!==link.actors.length||new Set(profiles.map(p=>p.did)).size!==profiles.length||profiles.some(p=>!link.actors.includes(p.did)||typeof p.handle!=='string'))throw new Error('Linked Bluesky profile identity conflict');
-            body=JSON.stringify(profiles.map(p=>Object.fromEntries(['did','handle','displayName','description'].filter(k=>typeof p[k]==='string').map(k=>[k,p[k]]))),null,2);
-          }
-          if(mime==='text/calendar'){
-            const lines=body.replace(/\r\n[ \t]/g,'').split(/\r?\n/).filter(Boolean),stack=[];
-            for(const line of lines){if(line.startsWith('BEGIN:'))stack.push(line.slice(6));else if(line.startsWith('END:')&&stack.pop()!==line.slice(4))throw new Error('ICS component boundary conflict');}
-            if(lines[0]!=='BEGIN:VCALENDAR'||lines.at(-1)!=='END:VCALENDAR'||stack.length)throw new Error('Incomplete ICS document');
-          }
-          if(mime==='application/pdf'){
-            if(r.encoding!=='base64')throw new Error('Exact PDF bytes unavailable');
-            const {getDocument}=await import('pdfjs-serverless');
-            const task=getDocument({data:new Uint8Array(Buffer.from(body,'base64')),isEvalSupported:false,useSystemFonts:false});
-            try{
-              const pdf=await task.promise;
-              if(pdf.numPages>30)throw new Error('Support PDF exceeds 30-page bound');
-              const pages=[];
-              for(let page=1;page<=pdf.numPages;page++){
-                if(Date.now()>=budget.deadline)throw new Error('Support PDF preparation time bound');
-                const text=await (await pdf.getPage(page)).getTextContent();
-                pages.push('Page '+page+'\n'+text.items.map(item=>item.str??'').join(' '));
-              }
-              if(!pages.some(page=>page.replace(/^Page \d+\s*/,'').trim()))throw new Error('PDF has no readable text layer; image/OCR evidence remains unavailable');
-              body=pages.join('\n\n');
-            }finally{await task.destroy();}
-          }
-          if(link.actors){
-            clean=prepareCbdPayload({id:'support:profile:'+link.actors.join(','),url,raw:r.body,rows:JSON.parse(body),task:{kind:'profile'},provenance:[],sourceURL}).prepared;
-            clean.omissions.push({path:'$.profiles',reason:'Only public identity/affiliation fields rendered; transport metrics and profile timestamps retained in raw'});
-          }else if(link.session||link.meeting||link.hosts){
-            const rows=JSON.parse(body);
-            if(mime!=='application/json'||!Array.isArray(rows)||!rows.length||rows.some(row=>link.meeting?row._id!==link.meeting:link.hosts?!link.hosts.includes(row._id):row.sideEvent?.id!==+link.session||typeof row.sideEvent.description!=='string'))throw new Error('Linked CBD '+(link.meeting?'meeting':link.hosts?'host':'session')+' identity/description conflict');
-            clean=prepareCbdPayload({id:'support:'+ (link.meeting?'meeting:':link.hosts?'host:':'session:')+(link.meeting??link.hosts?.join(',')??link.session),url,raw:body,rows,task:{kind:link.meeting?'meeting':link.hosts?'organizer':'session',id:link.meeting??link.hosts?.join(',')??link.session},provenance:[],sourceURL}).prepared;
-            if(link.meeting)clean.meeting_identity={id:link.meeting,title:rows[0].Title?.en,venue:rows[0].Venue?.en};
-          }else{
-            const html=['application/json','text/plain','application/pdf','text/calendar'].includes(mime)?'<pre>'+body.replaceAll('&','&amp;').replaceAll('<','&lt;')+'</pre>':body;
-            const title=DomUtils.textContent(DomUtils.getElementsByTagName('title',parseDocument(html).children)[0]??{children:[]})||url;
-            clean=prepareDocument({url,title,html,protectedContacts:true});
-          }
-          clean.version=version;
-          if(mime==='application/pdf')clean.offset_basis='PDF text-layer item order with generated page markers; ranges refer to prepared UTF-16 text, not original HTML.';
-          await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,prepared_versions}',coalesce(parsed#>'{document,prepared_versions}','{}')||jsonb_build_object($2::text,$3::jsonb)) where id=$1",[capture.id,version,JSON.stringify(clean)]);
-        }
-        Object.assign(result,{state:'fetched',capture_id:capture.id,hash,url,prepared:clean});
-        const artifact=await trace.artifact('preparation','Cleaned supporting document',undefined,{source_id:capture.id,content_hash:hash,preparation_version:version});
-        await trace.finish(op,'pass',{artifacts:[ref,artifact],note:'Payload and cleaned support retained. Links from this page are not followed.'});
-        }
-      }catch(error){
-        if(budget.requests===before)budget.requests++;
-        result.reason=error.message;await trace.finish(op,'fail',{note:'Support unavailable: '+error.message});
+export async function prepareResponse(response,{sourceURL,deadline=Date.now()+20000,task={}}={}){
+  const url=sourceURL(response.url),mime=(response.headers?.['content-type']??response.mime??'text/html').split(';')[0].trim().toLowerCase();
+  if(response.status!==200||typeof response.body!=='string'||Buffer.byteLength(response.body,response.encoding??'utf8')>2097152)throw new Error('Source response status/byte bound');
+  let body=response.body,prepared;
+  if(task.kind){
+    const raw=JSON.parse(body),rows=Array.isArray(raw)?raw:[raw];
+    if(task.ids&&rows.some(row=>!task.ids.includes(row._id))||task.session&&rows.some(row=>row.sideEvent?.id!==task.session))throw new Error('Native reference response identity conflict');
+    prepared=prepareCbdPayload({url,raw:body,rows,task,provenance:[],sourceURL}).prepared;
+  }else if(mime==='application/pdf'){
+    if(response.encoding!=='base64')throw new Error('Exact PDF bytes unavailable');
+    const {getDocument,OPS}=await import('pdfjs-serverless');
+    const imageOperations=new Set(Object.entries(OPS).filter(([name])=>/Image/.test(name)).map(([,value])=>value));
+    const document=getDocument({data:new Uint8Array(Buffer.from(body,'base64')),isEvalSupported:false,useSystemFonts:false});
+    try{
+      const pdf=await document.promise;if(pdf.numPages>30)throw new Error('PDF exceeds 30-page reading bound');
+      prepared={version:'pdf-2',title:url,url,text:'',blocks:[],links:[],omissions:[],pages:pdf.numPages,visual:false,visual_pages:[]};
+      for(let page=1;page<=pdf.numPages;page++){
+        if(Date.now()>=deadline)throw new Error('PDF preparation time bound');
+        const view=await pdf.getPage(page),content=await view.getTextContent(),text=content.items.map(item=>item.str??'').join(' '),start=prepared.text.length;
+        prepared.text+=text+'\n\n';prepared.blocks.push({id:page-1,page,start,end:prepared.text.length});
+        if(!text.trim()||(await view.getOperatorList()).fnArray.some(op=>imageOperations.has(op))){prepared.visual=true;prepared.visual_pages.push(page);}
+        if(Date.now()>=deadline)throw new Error('PDF preparation time bound');
       }
+      // Image pages use the same provider/account and reservation as extraction.
+      // Exact PDF bytes remain only in this invocation.
+      if(prepared.visual)prepared.inline_data={mime_type:'application/pdf',data:body};
+    }finally{await document.destroy();}
+  }else{
+    if(mime==='text/calendar'){
+      body=body.replace(/\r?\n[ \t]/g,'');const stack=[];
+      for(const line of body.split(/\r?\n/)){if(line.startsWith('BEGIN:'))stack.push(line.slice(6));else if(line.startsWith('END:')&&stack.pop()!==line.slice(4))throw new Error('Calendar component conflict');}
+      if(!body.startsWith('BEGIN:VCALENDAR')||!body.trim().endsWith('END:VCALENDAR')||stack.length)throw new Error('Incomplete calendar');
     }
-    coverage.push({...relation,...Object.fromEntries(Object.entries(result).filter(([k])=>k!=='prepared'))});
-    if(result.state==='fetched'&&!documents.some(d=>d.capture_id===result.capture_id))
-      documents.push({id:'S'+documents.length,capture_id:result.capture_id,hash:result.hash,url:result.url,relationship:link.relationship,via:relation,preparation_version:result.prepared.version,prepared:result.prepared});
-    if(link.session&&result.state==='fetched'){
-      const meetings=[...new Set(result.prepared.blocks.filter(b=>b.source_paths?.some(path=>/\.(?:sideEvent|location)\.conference$/.test(path))).map(b=>result.prepared.text.slice(...b.value_range)))];
-      if(meetings.length===1&&/^[a-f0-9]{24}$/.test(meetings[0])){
-        const url=sourceURL('https://api.cbd.int/api/v2016/conferences?'+new URLSearchParams({q:JSON.stringify({_id:{$oid:meetings[0]}}),f:JSON.stringify({Title:1,Description:1,Venue:1})}));
-        if(!queue.some(next=>next.url===url))queue.splice(queue.indexOf(link)+1,0,{url,target:url,meeting:meetings[0],source_reference:link.target,relationship:'meeting',label:'Referenced CBD meeting identity',context:'Conference ID retained in '+link.url+'. Parent meeting dates are not session dates.'});
-      }
-      const hosts=[...new Set(result.prepared.blocks.filter(b=>b.source_paths?.some(path=>/\.sideEvent\.hostOrgs\[\d+\]$/.test(path))).map(b=>result.prepared.text.slice(...b.value_range)))];
-      if(hosts.length&&hosts.length<=10&&hosts.every(id=>/^[a-f0-9]{24}$/.test(id))){
-        const url=sourceURL('https://api.cbd.int/api/v2016/inde-orgs?'+new URLSearchParams({q:JSON.stringify({_id:{$in:hosts.sort().map(id=>({$oid:id}))}}),f:JSON.stringify({title:1,acronym:1})}));
-        if(!queue.some(next=>next.url===url))queue.splice(queue.indexOf(link)+1+Number(queue[queue.indexOf(link)+1]?.relationship==='meeting'),0,{url,target:url,hosts,source_reference:link.target,relationship:'organizer',label:'Referenced CBD host organizations',context:'Literal sideEvent.hostOrgs references retained in '+link.url+'; returned names must match these IDs for this same session.'});
-      }else if(hosts.length)coverage.push({from:source.id,relationship:'organizer',state:'unsupported',reason:'CBD host references lack a bounded unambiguous public-registry lookup'});
+    if(!['text/html','application/xhtml+xml','application/json','text/plain','text/calendar'].includes(mime))throw new Error('Unsupported source MIME: '+mime);
+    const html=['application/json','text/plain','text/calendar'].includes(mime)?'<pre>'+body.replaceAll('&','&amp;').replaceAll('<','&lt;')+'</pre>':body;
+    prepared=prepareDocument({url,title:'',html,protectedContacts:true});
+    if(mime==='text/calendar')for(const {properties,...calendar} of readCalendar(body)){
+      const start=prepared.text.length;prepared.text+='\n\nCalendar occurrence (DATE end is inclusive below)\n'+JSON.stringify(calendar);
+      prepared.blocks.push({id:prepared.blocks.length,tag:'calendar-event',start,end:prepared.text.length,calendar});
     }
   }
-  // Response framing can change while quoted support text stays identical.
-  // Proofs still use the current raw captures; only the resume key uses prepared content.
-  context=digest(JSON.stringify({primary:source.content_hash,documents:documents.map(d=>({url:d.url,relationship:d.relationship,via:d.via,preparation_version:d.preparation_version,title:d.prepared.title,text:d.prepared.text,source_fields:d.prepared.blocks.flatMap(b=>b.source_fields??[])}))}));
-  const combined={...prepared,documents,context,coverage};
-  const artifact=await trace.artifact('support_coverage','Primary/support relationships, versions and coverage',{context,documents:documents.map(({prepared,...d})=>d),links:coverage});
-  const op=await trace.start('prepare',{source_ids:[source.id],artifacts:[artifact],note:'Bounded one-hop support context; every omitted/failed destination remains explicit.'});
-  await trace.finish(op,'pass');
-  return combined;
+  return prepared;
 }
 
-// Opt-in fetch/prepare route. No call into the legacy scripted assessment/save
-// path: every ready document, including unchanged pending work, is returned.
-export async function collectDocuments(db,{tracker,read,sourceURL,now,since,deadline,limits,process=false,model,makeModel,documentVersion=DOCUMENT_VERSION,retrieve,path='octo',rotation=false,runId}) {
-  const run=runId?{id:runId}:(await db.query('insert into scout.collection_runs(tracker_id,started_at,stats) values($1,$2,$3::jsonb) returning id',[tracker.id,now(),JSON.stringify({validation:!rotation,documents_only:!process})])).rows[0];
-  const trace=await startReport(db,run.id,path+(process?'-records':'-documents'));
-  const budget={requests:0,deadline:Math.min(deadline,Date.now()+limits.seconds*1000)};
-  const stats={documents:0,prepared:0,reused:0,feed_only:0,failed:0,fetch_failed:0,fetch_succeeded:0,uncertain:0,unfetched:0,processed:0,created:0,changed:0,warnings:[...process||rotation?[]:['Fetch/prepare only; generation, validation/repair and record saving are not requested.'],path==='octo'?'One RSS page; archives/media remain unfetched.':'Bounded source retrieval; inspect source coverage for failed/deferred items and unvisited pages.','Incidental links retained as citations/metadata; no support expansion.']};
-  const ready=[],inventory=[];
-  async function fetchDocument(url,withHeaders=false){
-    const op=await trace.start('fetch',{url});
-    if(budget.requests>=limits.requests||Date.now()>=budget.deadline){await trace.finish(op,'skipped',{note:'Shared request/time bound; document not fetched.'});return {op,error:'Shared request/time bound'};}
+// Native reference routing stays in the source adapter; extracted facts do not.
+function nativeLinks(prepared){
+  const links=[];
+  if(new URL(prepared.url).hostname!=='api.cbd.int')return links;
+  const values=pattern=>(prepared.blocks??[]).filter(b=>b.source_paths?.some(p=>pattern.test(p))).map(b=>prepared.text.slice(...b.value_range));
+  const meetings=[...new Set(values(/\.(?:sideEvent|location)\.conference$/))],hosts=[...new Set(values(/\.sideEvent\.hostOrgs\[\d+\]$/))];
+  if(meetings.length===1&&/^[a-f0-9]{24}$/.test(meetings[0]))links.push({target:'https://api.cbd.int/api/v2016/conferences?'+new URLSearchParams({q:JSON.stringify({_id:{$oid:meetings[0]}}),f:JSON.stringify({Title:1,Description:1,Venue:1})}),task:{kind:'meeting',ids:meetings},relationship:'meeting',label:'Referenced parent meeting; not session dates'});
+  if(hosts.length&&hosts.length<=10&&hosts.every(v=>/^[a-f0-9]{24}$/.test(v)))links.push({target:'https://api.cbd.int/api/v2016/inde-orgs?'+new URLSearchParams({q:JSON.stringify({_id:{$in:hosts.map(id=>({$oid:id}))}}),f:JSON.stringify({title:1,acronym:1})}),task:{kind:'organizer',ids:hosts},relationship:'organizer',label:'Referenced organizations'});
+  return links;
+}
+export async function supportDocuments(_db,{source,prepared,read,sourceURL,budget,limits,companions=[]}){
+  const documents=[{id:'P',url:source.url,relationship:'primary',prepared}],coverage=[];
+  const links=[...companions.map(target=>({target,relationship:'companion'})),...nativeLinks(prepared),
+    ...(prepared.links??[]).filter(l=>['a','api'].includes(l.tag)&&['organizer','registration'].includes(l.relationship))];
+  const visited=new Set([source.url]);let opened=0;
+  for(const link of links){
+    let url;try{url=sourceURL(link.target);}catch{continue;}
+    if(visited.has(url))continue;visited.add(url);
+    if(opened>=3||budget.requests>=limits.requests||Date.now()+1000>=budget.deadline)break;
+    opened++;
     const before=budget.requests;
     try{
-      const response=await read(url,budget);
-      if(budget.requests===before)budget.requests++;
-      stats[response.status===200?'fetch_succeeded':'fetch_failed']++;
-      if(!withHeaders&&response.status!==200||typeof response.body!=='string'||Buffer.byteLength(response.body)>limits.bytes)throw new Error('Response status/byte bound');
-      return {op,response:{url:response.url,status:response.status,body:response.body,...withHeaders?{headers:response.headers}:{}}}; // Headers are for parser checks only.
-    }catch{if(budget.requests===before)budget.requests++;stats.fetch_failed++;await trace.finish(op,'fail',{note:'Source retrieval failed or exceeded a guard; no response retained.'});return {op,error:'Source retrieval failed or exceeded a guard'};}
+      const response=await read(url,{...budget,support:true});
+      const clean=await prepareResponse(response,{sourceURL,deadline:budget.deadline,task:link.task});
+      documents.push({id:'S'+documents.length,url:response.url,relationship:link.relationship??'support',prepared:clean});
+      links.push(...nativeLinks(clean));
+    }catch(error){
+      if(error.deferred)throw error;
+      coverage.push({url,state:'inaccessible',reason:'inaccessible_source'});
+    }finally{budget.requests=Math.max(budget.requests,before+1);}
   }
+  return {...prepared,documents,coverage};
+}
+
+async function retrieveOcto({read,budget,sourceURL,known=[],limits}){
+  const documents=[],coverage=[];let items=[];
+  try{const response=await read(FEED,budget);if(response.status!==200)throw new Error('Feed unavailable');items=feedItems(response.body);}
+  catch(error){coverage.push({url:FEED,state:'failed',reason:error.message});}
+  const duplicates=new Set(items.filter((item,i)=>items.findIndex(other=>other.id===item.id)!==i).map(item=>item.id));
+  const inventory=[...new Map([...known,...items].filter(item=>item.id).map(i=>[String(i.id),i])).values()];
+  for(const item of inventory.sort((a,b)=>Number(known.some(k=>k.id===a.id&&k.captured))-Number(known.some(k=>k.id===b.id&&k.captured)))){
+    if(item.error||duplicates.has(item.id)){coverage.push({url:item.url,state:'unsupported',reason:item.error??'Ambiguous feed identity'});continue;}
+    const url='https://octogroup.org/wp-json/wp/v2/posts/'+item.id;
+    let response,prepared,failure;
+    try{
+      if(budget.requests>=limits.requests||Date.now()+1000>=budget.deadline)throw new Error('Acquisition bound');
+      response=await read(url,budget);
+      if(Buffer.byteLength(response.body)>limits.bytes)throw new Error('Article byte bound');
+      const post=JSON.parse(response.body);
+      if(response.status!==200||response.url!==url||post.id!==+item.id||post.status!=='publish'||post.content?.protected||typeof post.content?.rendered!=='string')throw new Error('Full article unavailable');
+      prepared=prepareDocument({url:sourceURL(post.link),title:post.title.rendered,html:post.content.rendered});
+      prepared.input='linked-article';
+    }catch(error){failure={url:item.url,state:error.message==='Acquisition bound'?'unfetched':'failed',reason:error.message};coverage.push(failure);
+      if(failure.state==='unfetched'&&known.some(k=>k.id===item.id&&k.captured))continue;
+      if(item.description)try{prepared=prepareDocument({url:sourceURL(item.url),title:item.title,html:item.description});prepared.input='feed-only';prepared.coverage=[failure];}catch{}
+    }
+    if(prepared)documents.push({id:String(item.id),identity:'octo:post:'+item.id,url:prepared.url,
+      raw:prepared.input==='linked-article'?response.body:JSON.stringify({feed:item.raw,article:response?{url:response.url,status:response.status,body:response.body}:null}),prepared,coverage:failure?[failure]:[]});
+  }
+  coverage.push(...items.filter(item=>!item.id).map(item=>({url:item.url,state:'unsupported',reason:item.error})));
+  return {documents,coverage,inventory:inventory.filter(item=>!item.error&&!duplicates.has(item.id)).map(({id,url})=>({id,url}))};
+}
+export async function collectDocuments(db,{tracker,read,sourceURL,now=()=>new Date().toISOString(),since,deadline,limits,model,makeModel,retrieve=retrieveOcto}){
+  const root=await claimSource(db,{tracker_id:tracker.id,identity:'tracker',url:tracker.url});
+  if(!root||root.state==='parked')return {outcome:root?.state??'idle'};
+  const budget={requests:0,deadline},counts={created:0,changed:0,processed:0};
   try{
-    let selected,plan,retrievalFailed=false;
-    const resumed=rotation&&process?(await db.query(`select latest.* from (
-      select distinct on(parsed#>>'{document,identity}') * from scout.evidence
-      where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like $2
-      order by parsed#>>'{document,identity}',last_seen_at desc,id
-    ) latest cross join lateral (select parsed#>array['document','processing_versions',parsed#>>'{document,processing,version}'] state) p
-    where parsed#>>'{document,preparation,state}'='complete' and coalesce(parsed#>>'{document,feed_only}','false')<>'true'
-      and coalesce(parsed#>>'{document,conflicted}','false')<>'true'
-      and (starts_with(parsed#>>'{document,processing,version}',$3) or
-        parsed#>>'{document,processing,version}' is null and parsed#>>'{document,conflicted}'='false')
-      and coalesce(p.state->>'state','pending') not in ('complete','uncertain') and coalesce(p.state->>'exhausted','false')<>'true'
-    order by p.state->>'attempted_at' asc nulls first,collected_at,id limit 1`,[tracker.id,path+':%',documentVersion+'/'])).rows:[];
-    if(resumed.length){
-      selected=resumed.map(source=>({id:source.parsed.document.id,url:source.url,source}));
-      stats.resumed=true;
-      plan=await trace.artifact('coverage','Retained processing turn',{source_ids:resumed.map(s=>s.id),freshness:'Stored capture only; source observation timestamps are unchanged.'});
-    }else if(retrieve){
-      const previous=(await db.query("select stats->'document_source' state from scout.collection_runs where tracker_id=$1 and stats ? 'document_source' order by started_at desc,id desc limit 1",[tracker.id])).rows[0]?.state??{};
-      const captured=(await db.query("select distinct on(parsed#>>'{document,identity}') parsed#>>'{document,id}' id,url,"+
-        " parsed#>>'{document,processing,version}' version,parsed#>array['document','processing_versions',parsed#>>'{document,processing,version}'] progress"+
-        " from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like $2 order by parsed#>>'{document,identity}',last_seen_at desc,scout.evidence.id",[tracker.id,path+':%'])).rows;
-      const pending=captured.filter(d=>process&&d.version?.startsWith(documentVersion+'/')&&d.progress&&!['complete','uncertain'].includes(d.progress.state)&&
-        (!d.progress.exhausted||d.progress.state==='failed'&&d.progress.error?.startsWith('Two resolve repair attempts exhausted: ')&&
-          d.progress.findings?.filter(f=>!f.resolution&&!f.exhausted).length>1))
-        .map(d=>({id:d.id,url:d.url,state:d.progress.exhausted||d.progress.pending||d.progress.findings?.some(f=>f.pending)?'model-repair':'model-pending'}));
-      const knownKey=['iucn','dosi','iddri'].includes(path)?'url':'id',known=new Map([...(previous.known??[]),...captured.map(({id,url})=>({id,url}))].map(item=>[String(item[knownKey]),item]));
-      const result=await retrieve({tracker,sourceURL,budget,
-        limits:{...limits,articles:4,documents:limits.pages-1,...path==='discovery'?{searchPages:1,postsPerPage:5,requests:4}:path==='dosi'?{documents:4,requests:8}:{}},
-        ...path==='discovery'?{since:new Date(since).toISOString(),until:now()}:{},
-        knownArticles:[...known.values()],knownDocuments:[...known.values()],known:[...known.values()],pending:[...pending,...(previous.pending??[])],progress:previous.progress??{},read:async url=>{
-        const fetched=await fetchDocument(url,true);if(!fetched.response)throw new Error(fetched.error);
-        const {headers,...payload}=fetched.response;
-        const artifact=await trace.artifact('fetch_response','Source response',payload);
-        await trace.finish(fetched.op,payload.status===200?'pass':'fail',{artifacts:[artifact],note:'Safe response body retained; adapter validates source identity/structure.'});
-        if(payload.status!==200)throw new Error('Source response status '+payload.status);
-        return fetched.response;
-      }});
-      for(const item of [...result.inventory??[],...result.documents])if(item[knownKey]&&item.url&&item.state!=='unsupported'){
-        const key=String(item[knownKey]);known.set(key,{...known.get(key),url:item.url,...item.id?{id:String(item.id)}:{}});
-      }
-      if(result.progress||result.pending){
-        stats.document_source={known:[...known.values()],progress:result.progress??{},...result.pending?{pending:result.pending}:{}};
-        await db.query("update scout.collection_runs set stats=stats||$2::jsonb where id=$1",[run.id,JSON.stringify({document_source:stats.document_source})]);
-      }
-      const grouped=new Map(),versions=new Map();
-      for(const entry of result.documents)for(const item of entry.variants??[entry]){
-        const identity=item.identity??item.id,key=identity+':'+digest(item.raw),prior=grouped.get(key);
-        const provenance=[item.provenance??{listing:item.listing,api_url:item.api_url,via:item.via,regions:item.regions,metadata:item.metadata,alternates:item.alternates}].flat();
-        if(prior)prior.provenance.push(...provenance);
-        else grouped.set(key,{...item,identity,provenance,conflicted:entry.state==='conflict'});
-        if(!versions.has(identity))versions.set(identity,new Set());versions.get(identity).add(key);
-      }
-      selected=[...grouped.values()].map(item=>({...item,conflicted:item.conflicted||versions.get(item.identity).size>1}));
-      const priority=new Map(pending.map(d=>[d.url,d.state==='model-repair'?0:1]));
-      selected.sort((a,b)=>(priority.get(a.url)??2)-(priority.get(b.url)??2));
-      stats.failed+=(result.coverage??[]).filter(c=>c.state==='failed').length;
-      retrievalFailed=stats.failed>0;
-      stats.unfetched+=(result.coverage??[]).filter(c=>['deferred','unfetched'].includes(c.state)).length;
-      plan=await trace.artifact('coverage','Source documents and retrieval coverage',{documents:selected.map(({id,url,identity,provenance,conflicted})=>({id,url,identity,provenance,conflicted})),
-        coverage:result.coverage,pagination:result.pagination,queries:result.queries,window:result.window,limits:result.limits,complete:result.complete,progress:result.progress});
-    }else{
-    const known=(await db.query(`select distinct on(parsed#>>'{document,id}') content::jsonb->'feed' as feed,last_seen_at
-      from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}' like 'octo:post:%'
-      order by parsed#>>'{document,id}',last_seen_at desc,id`,[tracker.id])).rows;
-    const feed=await fetchDocument(FEED);let items=[];
-    if(feed.response){
-      const artifact=await trace.artifact('fetch_response','RSS source document',feed.response);
-      await trace.finish(feed.op,'pass',{artifacts:[artifact]});
-      const parse=await trace.start('prepare',{checkpoint:true,artifacts:[artifact],note:'Read RSS document identities.'});
-      try{if(feed.response.url!==FEED)throw new Error('Unexpected RSS destination');items=feedItems(feed.response.body);await trace.finish(parse,'pass');}
-      catch{await trace.finish(parse,'fail',{note:'RSS identity parsing failed; only previously known documents can be checked.'});stats.warnings.push('RSS could not be parsed; only previously known article documents can be checked.');stats.failed++;}
-    }else{stats.warnings.push('RSS unavailable; stored feed metadata is used for known documents.');stats.failed++;}
-    const candidates=new Map(known.map(row=>[row.feed.id,row.feed]));
+    const known=(await db.query("select native_id id,identity,url,native_ref task,(processed_hash is not null) captured from scout.source_state where tracker_id=$1 and identity<>'tracker' order by due_at limit 200",[tracker.id])).rows;
+    const result=await retrieve({tracker,read,sourceURL,budget,limits:{...limits,articles:1,documents:1,requests:8},since,until:now(),known,knownDocuments:known,knownArticles:known,pending:[],progress:JSON.parse(root.cursor??'{}')});
+    const items=(result.documents??[]).slice(0,4),processedURLs=[];
+    const generate=model??makeModel?.();
     for(const item of items){
-      if(item.error){inventory.push({...item,raw:undefined,description:undefined,state:'unfetched',reason:item.error});stats.unfetched++;continue;}
-      if(items.filter(other=>other.id===item.id).length>1){inventory.push({id:item.id,url:item.url,state:'unfetched',reason:'Duplicate feed identity; deferred'});candidates.delete(item.id);stats.unfetched++;continue;}
-      candidates.set(item.id,item);
+      if(counts.processed||Date.now()+10000>=deadline)break;
+      if(known.length>=200&&!known.some(s=>s.url===item.url))continue;
+      const source={tracker_id:tracker.id,identity:String(item.identity??item.id??item.url),url:item.url,native_id:item.id==null?null:String(item.id),native_ref:item.task??{}};
+      const outcome=await processDocument(db,{source,model:generate,deadline,read:()=>supportDocuments(db,{source,prepared:item.prepared,read,sourceURL,budget,limits})});
+      processedURLs.push(item.url);
+      counts.created+=outcome.created;counts.changed+=outcome.changed;counts.processed++;
     }
-    // Previously known documents are rechecked even if the feed is unchanged or
-    // no longer contains them. Least-recently observed first avoids starvation.
-    const checked=new Map(known.map(row=>[row.feed.id,Date.parse(row.last_seen_at)]));
-    selected=[...candidates.values()].sort((a,b)=>(checked.get(a.id)??0)-(checked.get(b.id)??0));
-    plan=await trace.artifact('coverage','Document retrieval plan',{feed:FEED,documents:selected.map(i=>({id:i.id,url:i.url})),invalid:inventory,article_limit:limits.requests-1,supporting_links:'Not opened; full targets retained as citations/metadata'});
+    const progress=Object.fromEntries(Object.entries(result.progress??{}).filter(([key,value])=>['after_url','after_id','after_selected_id','cursor','next_page','total_pages','query','meeting_offset','history'].includes(key)&&['string','number','boolean'].includes(typeof value)));
+    if(result.progress?.reservations)progress.reservations=Object.fromEntries(Object.entries(result.progress.reservations).filter(([key,value])=>/^[a-f0-9]{24}$/.test(key)&&Number.isSafeInteger(value)&&value>=0).slice(-4));
+    const cursor=JSON.stringify(progress);
+    if(cursor.length>512)throw new Error('cursor_bound');
+    // URL-only inventory is capped; a cursor advances discovery without saving listing bodies.
+    const urls=new Set([...known.map(i=>i.url),...processedURLs]);let added=0;
+    for(const item of [...result.documents??[],...result.inventory??[]]){
+      if(!item.url||urls.has(item.url)||urls.size>=200||added>=16)continue;
+      let url;try{url=sourceURL(item.url);}catch{continue;}
+      if(['unsupported','failed'].includes(item.state))continue;
+      urls.add(url);
+      added++;
+      await db.query('insert into scout.source_state(tracker_id,identity,url,native_id,native_ref) values($1,$2,$3,$4,$5) on conflict do nothing returning id',[tracker.id,String(item.identity??item.id??url).slice(0,512),url,item.id==null?null:String(item.id).slice(0,256),item.task??{}]);
     }
-    const selection=await trace.start('prepare',{checkpoint:true,artifacts:[plan]});await trace.finish(selection,retrievalFailed?'fail':'pass',{note:'Document identities selected without topic, category, date or finding filters; source failures remain in coverage.'});
-    for(const [index,entry] of selected.entries()){
-      if(Date.now()+5000>=budget.deadline){
-        inventory.push(...selected.slice(index).map(d=>({id:d.id,url:d.url,state:'deferred',reason:'Collection runtime budget'})));
-        stats.warnings.push('Collection runtime reached; remaining documents deferred');break;
-      }
-      if(entry.source){
-        const source=entry.source,document=source.parsed.document;
-        const prepared=document.prepared_versions?.[document.preparation.version]??document.prepared;
-        const prefix=documentVersion+'/'+prepared.version+'/';
-        const capture=await trace.capture(source);ready.push(source.id);stats.documents++;stats.reused++;
-        const context=await supportDocuments(db,{source,prepared,trace,context:document.processing.version?.slice(prefix.length)});
-        model??=makeModel?.(run.id,budget.deadline,trace);
-        const result=await processDocument(db,{source,prepared:context,trace,model,deadline:budget.deadline,version:documentVersion});
-        stats.created+=result.created;stats.changed+=result.changed;
-        if(result.deferred)stats.deferred=result.deferred;
-        if(result.state==='complete')stats.processed++;else if(result.state!=='deferred'){stats[result.state==='uncertain'?'uncertain':'failed']++;stats.warnings.push(result.error);}
-        inventory.push({id:entry.id,url:source.url,source_id:source.id,state:'prepared',processing:result.state,artifacts:[capture]});continue;
-      }
-      // Stable serialization also when known feed metadata was read from JSONB.
-      const item=retrieve?entry:{id:entry.id,url:entry.url,title:entry.title,published:entry.published,description:entry.description,raw:entry.raw,offsets:entry.offsets};
-      if(!retrieve&&index>=limits.requests-1){inventory.push({id:item.id,url:item.url,state:'unfetched',reason:'Article count bound'});stats.unfetched++;continue;}
-      const apiURL='https://octogroup.org/wp-json/wp/v2/posts/'+item.id;
-      const fetched=retrieve?{}:await fetchDocument(apiURL);
-      const content=retrieve?item.raw:JSON.stringify({feed:item,article:fetched.response??null});
-      const {offsets,...payload}=item; // Enclosing-feed location is provenance, not document content.
-      const hash=digest(retrieve?item.raw:JSON.stringify({feed:payload,article:fetched.response??null}));
-      const identity=item.identity??'octo:post:'+item.id,preparationVersion=item.prepared?.version??PREPARATION_VERSION;
-      const detect=await trace.start('detect',{url:item.url});
-      const previous=(await db.query("select id,url,content_hash,parsed from scout.evidence where tracker_id=$1 and record_id is null and parsed#>>'{document,identity}'=$2 order by last_seen_at desc,id limit 1",[tracker.id,identity])).rows[0];
-      const source=(await db.query(`insert into scout.evidence(tracker_id,url,content_hash,content,parsed,last_seen_at)
-        values($1,$2,$3,$4,$5,clock_timestamp()) on conflict(record_id,tracker_id,url,content_hash) do update set last_seen_at=excluded.last_seen_at returning *`,
-      [tracker.id,item.url,hash,content,JSON.stringify({document:{version:preparationVersion,id:item.id,identity,conflicted:Boolean(item.conflicted),preparation:{state:'pending'},processing:{state:'pending'}}})])).rows[0];
-      if(item.conflicted&&!source.parsed.document.conflicted){
-        source.parsed.document.conflicted=true;
-        await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,conflicted}','true') where id=$1",[source.id]);
-      }
-      const capture=await trace.capture(source),refs=[capture];if(previous&&previous.id!==source.id)refs.push(await trace.capture(previous));
-      if(fetched.response)await trace.finish(fetched.op,'pass',{artifacts:[capture],final_url:fetched.response.url,bytes:Buffer.byteLength(fetched.response.body),note:'Linked WordPress document captured; structural validation follows.'});
-      if(retrieve)refs.push(await trace.artifact('provenance','Source item occurrences and coverage',{identity,provenance:item.provenance,coverage:item.coverage,conflicted:item.conflicted},{source_id:source.id}));
-      await trace.finish(detect,previous?.content_hash===hash?'skipped':'pass',{source_ids:[source.id],artifacts:refs,note:retrieve?'SHA-256 of exact item/article payload; listing positions and response framing are separate provenance.':'SHA-256 of exact article response plus retained feed item, excluding enclosing-feed offsets; observation does not mark processing complete.'});
-      const op=await trace.start('prepare',{source_ids:[source.id],artifacts:[capture]});stats.documents++;
-      try{
-        let prepared=source.parsed.document.prepared_versions?.[preparationVersion]??source.parsed.document.prepared,feedOnly=source.parsed.document.feed_only;
-        const reused=source.parsed.document.preparation.state==='complete'&&prepared?.version===preparationVersion;
-        if(!reused){
-          if(Date.now()>=budget.deadline)throw new Error('Preparation time bound');
-          if(retrieve){prepared=item.prepared;feedOnly=false;}else{
-          let post;
-          try{
-            post=JSON.parse(fetched.response?.body??'null');
-            const url=new URL(post?.link);
-            if(fetched.response.url!==apiURL||post?.id!==+item.id||url.origin!=='https://octogroup.org'||post.status!=='publish'||typeof post.content?.rendered!=='string'||post.content.protected||typeof post.title?.rendered!=='string')throw new Error('Article identity/content unavailable');
-          }catch{post=null;}
-          feedOnly=!post;
-          prepared=prepareDocument({url:post?.link??item.url,title:post?.title.rendered??item.title,html:post?.content.rendered??item.description});
-          prepared.input=feedOnly?'feed-only':'linked-article';prepared.feed_metadata={title:item.title,published:item.published,url:item.url,offsets:item.offsets,
-            offset_basis:'Original RSS response where this retained item was observed; metadata may precede this article check.'};
-          }
-          const document={...source.parsed.document,
-            prepared_versions:{...source.parsed.document.prepared_versions,[preparationVersion]:prepared},feed_only:feedOnly,preparation:{state:'complete',version:preparationVersion}};
-          await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document}',$2::jsonb) where id=$1",[source.id,JSON.stringify(document)]);
-          source.parsed.document=document;
-        }
-        const artifact=await trace.artifact('preparation','Prepared document, chunks and unfetched links',undefined,{source_id:source.id,content_hash:hash,url:item.url,preparation_version:prepared.version});
-        await trace.finish(op,reused?'skipped':'pass',{artifacts:[capture,artifact],note:(reused?'Identical successfully prepared input reused. ':'Full document prepared. ')+(feedOnly?'Feed-only: linked article unavailable or invalid. ':'')+'Downstream processing remains separate; ready inputs are returned even when unchanged.'});
-        stats[reused?'reused':'prepared']++;if(feedOnly)stats.feed_only++;
-        ready.push(source.id);inventory.push({id:item.id,url:item.url,source_id:source.id,state:feedOnly?'feed-only':'prepared',reused});
-        if(source.parsed.document.conflicted){
-          stats.uncertain++;inventory.at(-1).processing='uncertain';
-          const conflict=await trace.start('validate',{source_ids:[source.id],artifacts:refs});
-          await trace.finish(conflict,'uncertain',{note:'Conflicting payloads for one source identity in this retrieval; retain all versions without choosing observation order.'});continue;
-        }
-        if(feedOnly){
-          if(process){
-            stats.failed++;inventory.at(-1).processing='failed';
-            stats.warnings.push('Full announcement unavailable; retained feed snippet is discovery only.');
-          }
-          continue;
-        }
-        {
-          // Raw captures remain exact. Reuse only consecutive equivalent prepared inputs;
-          // a real content/context change must not resurrect older completion or repair state.
-          // The upsert just refreshed source.last_seen_at, so an older revisited source cannot certify its own progress.
-          const prior=previous?.parsed.document.prepared_versions?.[preparationVersion]??previous?.parsed.document.prepared,prefix=documentVersion+'/'+prepared.version+'/';
-          const [priorInput,input]=[prior,prepared].map(p=>p&&({...p,links:p.links.map(({start,end,...link})=>link),
-            blocks:p.blocks.map(({html_start,html_end,...block})=>block),omissions:p.omissions.map(({regions,start,end,...omission})=>omission)}));
-          const equivalentInput=prior&&isDeepStrictEqual(priorInput,input);
-          const equivalent=equivalentInput?
-            (await db.query("with captures as (select e.id,e.last_seen_at,p.version,p.state,coalesce((p.prepared-array['links','blocks','omissions'])=($5::jsonb-array['links','blocks','omissions'])"+
-              " and (select coalesce(jsonb_agg(v-'start'-'end' order by n),'[]'::jsonb) from jsonb_array_elements(p.prepared->'links') with ordinality a(v,n))=$5::jsonb->'links'"+
-              " and (select coalesce(jsonb_agg(v-'html_start'-'html_end' order by n),'[]'::jsonb) from jsonb_array_elements(p.prepared->'blocks') with ordinality a(v,n))=$5::jsonb->'blocks'"+
-              " and (select coalesce(jsonb_agg(v-'regions'-'start'-'end' order by n),'[]'::jsonb) from jsonb_array_elements(p.prepared->'omissions') with ordinality a(v,n))=$5::jsonb->'omissions',false) equivalent"+
-              " from scout.evidence e cross join lateral (select e.parsed#>>'{document,processing,version}' version,"+
-              " e.parsed#>array['document','processing_versions',e.parsed#>>'{document,processing,version}'] state,"+
-              " coalesce(e.parsed#>array['document','prepared_versions',$4],e.parsed#>'{document,prepared}') prepared) p"+
-              " where e.tracker_id=$1 and e.record_id is null and e.parsed#>>'{document,identity}'=$2)"+
-              " select id,version,state from captures where equivalent and starts_with(version,$3) and state is not null"+
-              " and (id<>$6::uuid or id=$7::uuid)"+
-              " and last_seen_at>coalesce((select max(last_seen_at) from captures where not equivalent),'-infinity'::timestamptz)"+
-              " order by (state->>'state'='complete') desc,last_seen_at desc,id limit 1",[tracker.id,identity,prefix,prepared.version,JSON.stringify(input),source.id,previous.id])).rows[0]:null;
-          if(equivalent&&equivalent.id!==source.id){
-            const state=structuredClone(equivalent.state);if(state.pending?.input)state.pending.input.source_id=source.id;
-            source.parsed.document={...source.parsed.document,processing:{state:state.state,version:equivalent.version},
-              processing_versions:{...source.parsed.document.processing_versions,[equivalent.version]:state}};
-            await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document}',$2::jsonb) where id=$1",[source.id,JSON.stringify(source.parsed.document)]);
-          }
-          if(equivalentInput&&!equivalent&&previous?.parsed.document.processing.version){
-            source.parsed.document={...source.parsed.document,processing:previous.parsed.document.processing,
-              processing_versions:{...source.parsed.document.processing_versions,...previous.parsed.document.processing_versions}};
-            await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document}',$2::jsonb) where id=$1",[source.id,JSON.stringify(source.parsed.document)]);
-          }
-          if(previous&&previous.content_hash!==hash&&!equivalentInput){
-            source.parsed.document.processing={state:'pending',changed:true};
-            await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document}',$2::jsonb) where id=$1",[source.id,JSON.stringify(source.parsed.document)]);
-          }
-          const complete=source.parsed.document.processing_versions?.[source.parsed.document.processing.version];
-          if(complete?.state==='complete')await db.query("update scout.evidence e set last_seen_at=s.last_seen_at from scout.evidence s,jsonb_array_elements($2::jsonb) f"+
-            " where s.id=$1 and e.tracker_id=s.tracker_id and e.parsed#>>'{document,identity}'=s.parsed#>>'{document,identity}'"+
-            " and e.record_id=(f->>'record_id')::uuid and e.parsed->'finding'=f->'finding'",[source.id,JSON.stringify(complete.findings)]);
-          if(!process||stats.deferred)continue;
-          model??=makeModel?.(run.id,budget.deadline,trace);
-          const context=await supportDocuments(db,{source,prepared,trace,context:equivalent?.version.slice(prefix.length),
-            reuse:equivalent&&equivalent.id!==source.id?{capture_id:equivalent.id,version:equivalent.version,comparison:'Exact prepared document including URL/context/structure, text ranges and omissions; only raw HTML link/block/omission positions and region offsets excluded.'}:undefined});
-          const result=await processDocument(db,{source,prepared:context,trace,model,deadline:budget.deadline,version:documentVersion,
-            changed:Boolean(previous&&previous.content_hash!==hash&&!equivalentInput)});
-          stats.created+=result.created;stats.changed+=result.changed;
-          if(result.deferred)stats.deferred=result.deferred;
-          if(result.state==='complete')stats.processed++;else if(result.state!=='deferred'){stats[result.state==='uncertain'?'uncertain':'failed']++;stats.warnings.push(result.error);}
-          inventory.at(-1).processing=result.state;
-        }
-      }catch{
-        stats.failed++;await db.query("update scout.evidence set parsed=jsonb_set(parsed,'{document,preparation}','{\"state\":\"failed\"}') where id=$1",[source.id]);
-        await trace.finish(op,'fail',{note:'Preparation failed or exceeded a bound. Capture retained; identical input remains eligible for retry.'});
-        inventory.push({id:item.id,url:item.url,source_id:source.id,state:'failed',reason:'Preparation failed; retry eligible'});
-      }
-    }
-    if(!selected.length)await trace.skip('prepare','No structurally usable document identities found.');
-    const coverage=await trace.artifact('coverage','Document outcomes',{documents:inventory,unvisited:'Source retrieval bounds remain explicit; incidental citation links and media are not opened for extraction.'});
-    await trace.finish(selection,retrievalFailed?'fail':'pass',{artifacts:[plan,coverage],note:'Document identities selected without topic, category, date or finding filters; inspect bounded retrieval outcomes and failures.'});
-    stats.requests=budget.requests;stats.pending=ready.length-stats.processed;
-    if(stats.deferred)stats.warnings.push('Model '+(['network','runtime'].includes(stats.deferred.reason)?'processing':'quota')+' deferred: '+stats.deferred.reason);
-    // A successful preparation is not an end-to-end successful collection.
-    const outcome=process||!rotation?(ready.length||!stats.failed?'partial':'failed'):
-      stats.failed?'partial':stats.prepared?'success':'no_change';
-    await db.query('update scout.collection_runs set finished_at=$2,outcome=$3,stats=stats||$4::jsonb where id=$1',[run.id,now(),outcome,JSON.stringify(stats)]);
-    return {run_id:run.id,outcome,...stats,document_ids:ready};
+    await finishSource(db,root,{cursor,retryAt:new Date(Date.now()+Math.max(6*3600000,Number(tracker.cadence?.days??0)*86400000+Number(tracker.cadence?.hours??0)*3600000)).toISOString()});
+    return {outcome:counts.created||counts.changed?'success':'no_change',...counts};
   }catch(error){
-    for(const [id,op]of Object.entries(trace.report.operations))if(op.state==='running')await trace.finish(id,'fail',{note:'Interrupted; inspect retained artifacts.'}).catch(()=>{});
-    await db.query("update scout.collection_runs set finished_at=clock_timestamp(),outcome='failed' where id=$1",[run.id]).catch(()=>{});
-    throw error;
+    await finishSource(db,root,{state:'deferred',reason:'inaccessible_source',attempts:root.attempts,retryAt:new Date(Math.max(Date.parse(error.deferred?.retry_at)||0,Date.now()+3600000)).toISOString()});
+    return {outcome:'deferred',reason:'inaccessible_source',...counts};
   }
 }

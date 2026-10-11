@@ -1,81 +1,39 @@
-import { test } from 'node:test';
+import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import { eventLabel, eventTiming, filterRecords, recordDates, sourceLink, trackerState, fieldLabel } from '../src/records.js';
-import { loadScout } from '../src/dashboard.js';
+import {eventLabel,eventTiming,recordDates,sourceLink,trackerState,fieldLabel,orderRecords} from '../src/records.js';
+import {loadScout} from '../src/dashboard.js';
+import {normalizeDate} from '../src/finding.js';
 
-const now = new Date('2026-10-01T12:00:00Z');
-const hsa = { id: 'hsa-webinar', kind: 'event', title: 'Unpacking Part II of BBNJ: Marine Genetic Resources and Digital Sequence Information', organization: 'High Seas Alliance',
-  starts_at: '2026-09-29T11:30:00Z', time_zone: '-04:00', updated_at: '2026-10-01T05:23:54Z',
-  sources: [{ url: 'https://us06web.zoom.us/webinar/register/WN_cueG31LFSVOVPdkUxm5SHQ' }] };
-
-test('reviewed source calendar dates display and filter without invented UTC times; conflicting dates stay unknown',()=>{
-  const event={kind:'event',starts_at:null,ends_at:null,sources:[{calendar_dates:{starts_on:{value:'2026-10-03'},ends_on:{value:'2026-10-05'}}}]};
-  assert.equal(fieldLabel(event,'starts_at'),'2026-10-03 · Time unknown');
-  assert.equal(eventLabel(event),'2026-10-03 – 2026-10-05 · Time unknown');
-  assert.deepEqual(recordDates(event),['2026-10-03','2026-10-05']);
-  assert.equal(filterRecords([event],{from:'2026-10-04',to:'2026-10-04'}).length,1);
-  assert.equal(eventTiming(event,now),'Upcoming');
-  assert.equal(eventTiming(event,new Date('2026-10-04T12:00:00Z')),'Date known · time unknown');
-  assert.equal(eventLabel({...event,sources:[...event.sources,{calendar_dates:{starts_on:{value:'2026-10-04'}}}]}),'Unknown');
-  assert.equal(eventLabel({...event,sources:[{calendar_dates:{starts_on:{value:'2026-02-30'}}}]}),'Unknown');
+test('typed reader displays local dates, partial precision, roles and independent date meanings',()=>{
+  const event={id:'event',kind:'event',organizations:[{name:'Ocean Institute',role:'partner'}],details:{start:normalizeDate({value:'2026-10-15',precision:'day',time:'00:30',zone:'+08:00'})}};
+  assert.deepEqual(recordDates(event),['2026-10-15','2026-10-15']);assert.ok(eventLabel(event).includes('2026-10-15 · 00:30 +08:00'));
+  assert.equal(fieldLabel(event,'organization'),'Ocean Institute (partner)');
+  assert.equal(eventTiming(event,new Date('2026-10-14T16:00:00Z')),'Upcoming');
+  const day={...event,details:{start:{value:'2026-10-03',precision:'day'},end:{value:'2026-10-05',precision:'day'}}};
+  assert.equal(eventTiming(day,new Date('2026-10-04T12:00:00Z')),'Date known · time unknown');
+  assert.equal(eventTiming({...day,details:{...day.details,status:'cancelled'}}),'Cancelled');
+  assert.equal(eventTiming({kind:'event',details:{}}),'Date unknown');
+  const publication={id:'pub',kind:'announcement',details:{published:{value:'2026-03',precision:'month'},effective:{value:'2027',precision:'year'}}};
+  assert.equal(eventLabel(publication),'Published · 2026-03 · month precision');
+  assert.equal(fieldLabel(publication,'ends_at'),'2027 · year precision');
+  assert.equal(eventLabel({kind:'treaty_status',details:{action_date:{value:'2026-05-28',precision:'day'}}}),'Action date · 2026-05-28 · Time unknown');
+  assert.equal(orderRecords([event,publication],'date')[0].id,'pub');
 });
-
-test('source dates, timezone boundaries, filters and past/cancelled/unknown states', () => {
-  assert.match(eventLabel(hsa), /2026-09-29 · 11:30 UTC/);
-  assert.equal(eventTiming(hsa, now), 'Past / started');
-  const boundary = { ...hsa, id: 'boundary', starts_at: '2026-10-02T00:30:00Z', time_zone: '-04:00' };
-  assert.deepEqual(recordDates(boundary), ['2026-10-02', '2026-10-02']);
-  assert.match(eventLabel(boundary), /2026-10-02 · 00:30 UTC/);
-  const workshop = { id: 'workshop', kind: 'event', title: 'BBNJ workshop', starts_at: '2026-10-03T12:00:00Z', ends_at: '2026-10-05T12:00:00Z', time_zone: 'UTC' };
-  assert.equal(filterRecords([workshop], { from: '2026-10-04', to: '2026-10-04' }, now).length, 1);
-  const unknown = { id: 'unknown', kind: 'event', title: 'BBNJ date to follow' };
-  assert.equal(eventTiming(unknown, now), 'Date unknown');
-  assert.equal(eventTiming({ ...boundary, status: 'cancelled' }, now), 'Cancelled');
-  assert.equal(filterRecords([hsa, boundary, unknown], { timing: 'Upcoming' }, now).length, 1);
-  const treaty = { id: 'treaty', kind: 'treaty_status', title: 'Treaty update', description: 'Example country reported a treaty update' };
-  assert.equal(filterRecords([hsa, treaty], { search: 'EXAMPLE', kind: 'treaty_status' }, now)[0].id, 'treaty');
-  assert.equal(filterRecords([hsa, unknown], { organization: 'High Seas Alliance', search: 'genetic' }, now)[0].id, hsa.id);
-  assert.equal(filterRecords([unknown], { from: '2026-01-01' }, now).length, 0);
+test('source links reject unsafe URLs and tracker freshness uses persisted run status',()=>{
+  for(const url of ['javascript:alert(1)','https://user:secret@example.org'])assert.equal(sourceLink(url),null);
+  assert.equal(trackerState({enabled:false,url:null}).availability,'Unconfigured');
+  assert.equal(trackerState({enabled:false,url:'https://example.org'}).availability,'Collector not yet proven');
+  assert.equal(trackerState({enabled:true,url:'https://example.org'}).success,'Never');
+  const tracker={url:'https://example.org',last_success_at:'2026-10-01T11:00:00Z'};
+  for(const outcome of ['partial','failed','quota'])assert.equal(trackerState({...tracker,last_outcome:outcome}).success,'2026-10-01 11:00 UTC');
 });
-
-test('source links reject unsafe and credential-bearing URLs', () => {
-  assert.equal(sourceLink('javascript:alert(1)'), null);
-  assert.equal(sourceLink('https://user:secret@example.org'), null);
-});
-
-test('tracker freshness uses run-derived status without a stored schedule', () => {
-  const tracker = { enabled: true, url: 'https://bsky.app/profile/highseasalliance.bsky.social', collector: 'bluesky_feed', last_success_at: null };
-  assert.equal(trackerState(tracker, now).success, 'Never');
-  const success = { ...tracker, last_success_at: '2026-10-01T11:00:00Z', last_outcome: 'success' };
-  const unchanged = { ...success, last_success_at: '2026-10-01T11:30:00Z', last_outcome: 'no_change' };
-  assert.notEqual(trackerState(success, now).success, trackerState(unchanged, now).success);
-  for (const outcome of ['partial', 'failed', 'quota']) assert.equal(trackerState({ ...unchanged, last_outcome: outcome }, now).success, trackerState(unchanged, now).success);
-  assert.equal(trackerState({ ...tracker, url: null, enabled: false }, now).availability, 'Unconfigured');
-  assert.equal(trackerState({ ...tracker, url: 'https://example.org', enabled: false }, now).availability, 'Collector not yet proven');
-  for (const actor of ['highseasalliance.bsky.social','deepstewardship.bsky.social','globalfishingwatch.org','iddri.bsky.social'])
-    assert.equal(trackerState({...tracker,url:`https://bsky.app/profile/${actor}`}).availability,'Manual collection only');
-  const hub={...tracker,collector:'web',url:'https://www.hubocean.earth/events-calendar'};
-  assert.equal(trackerState(hub).availability,'Manual collection only');
-  assert.equal(trackerState({...hub,enabled:false}).availability,'Collector not yet proven');
-  assert.equal(trackerState({...hub,url:'https://octogroup.org/webinars/',enabled:false}).availability,'Collector not yet proven');
-});
-
-test('member data reads load every page and surface errors instead of silently truncating', async () => {
-  const inventory = { records: Array.from({ length: 501 }, (_, id) => ({ id })), tracker_status: Array.from({ length: 22 }, (_, id) => ({ id })), source_details: [{ record_id: 500, url: 'https://example.org' }] };
-  let fail = false;
-  const client = { from(table) { return { select(columns) {
-    assert.ok(!columns.includes('excerpt') && !columns.includes('content_hash'));
-    if (table === 'records') {
-      const fields = columns.split(',sources(')[0].split(',');
-      for (const removed of ['summary', 'start_on', 'end_on', 'published_on', 'country', 'treaty_action', 'recorded_on', 'collected_at', 'date_evidence']) assert.ok(!fields.includes(removed));
-      assert.ok(fields.includes('starts_at') && fields.includes('ends_at'));
-    }
-    return { order() { return this; }, async range(from, through) { return fail ? { error: new Error('Unavailable') } : { data: inventory[table].slice(from, through + 1) }; } };
-  } }; } };
-  const data = await loadScout(client);
-  assert.equal(data.records.length, 501);
-  assert.equal(data.trackers.length, 22);
-  assert.equal(data.records[500].sources[0].url, 'https://example.org');
-  fail = true;
-  await assert.rejects(loadScout(client), /Unavailable/);
+test('reader sends filters and stable cursor to bounded server queries and surfaces errors',async()=>{
+  const rows=Array.from({length:50},(_,i)=>({id:String(i),priority:'low',kind:'announcement',organizations:[],details:{published:{value:'2026-03',precision:'month'}}})),calls=[];let fail=false;
+  const client={rpc:async(name,args)=>{calls.push({name,args});return fail?{error:new Error('Unavailable')}:{data:name==='findings'?rows:[]};},
+    from:table=>{assert.equal(table,'tracker_status');return{select(){return this;},order(){return this;},limit(n){assert.equal(n,500);return{data:[]};}};}};
+  const result=await loadScout(client,{filters:{kind:'announcement',organization:'Ocean Institute',meaning:'effective',from:'2027-01-01'}});
+  assert.equal(result.records.length,50);assert.deepEqual(result.next,{rank:2,day:'2026-03-01',id:'49'});
+  assert.equal(calls[0].args.p_limit,50);assert.equal(calls[0].args.p_organization,'Ocean Institute');assert.equal(calls[0].args.p_meaning,'effective');
+  await loadScout(client,{after:result.next});assert.deepEqual(calls[2].args.p_after,result.next);
+  assert.ok(calls.every(c=>['findings','finding_jobs'].includes(c.name)));fail=true;await assert.rejects(loadScout(client),/Unavailable/);
 });

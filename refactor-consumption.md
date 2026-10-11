@@ -1,6 +1,122 @@
 # Scout refactor consumption plan
 
-Status: approved for implementation; baseline pending. Written 2026-10-09.
+Status (11 October 2026): simplified implementation completed locally and independently reviewed; all 263 tests and the frontend build pass. The one-record offline test passes with mocked provider replies. Current shared-account headroom, the one-record live model test and native PostgreSQL WAL/I/O remain pending. All four production cron jobs and manager heartbeat stay paused. No bulk collection, notifications, billing changes or historical-content deletion. Full live corpus acceptance remains separate and pending.
+
+## Current architecture proposal and operating budget
+
+This section supersedes the earlier requirements to retain raw evidence, prepared documents, model traffic, stage-by-stage job payloads, and reports. The user explicitly wants the machinery generating that material removed. Existing stored content is outside this change; leave it untouched. Historical benchmark fixtures are test inputs, not a reason to persist production inputs.
+
+**Read a due source in memory, extract and validate useful facts, save changed findings and source URLs, discard the working material.** Events, announcements, and treaty changes remain in scope. Funding remains a future extension.
+
+### What stays and what stops
+
+| Keep | Stop generating or persisting |
+| --- | --- |
+| Current finding fields: identity, title, short description, dates, organizations and roles, type-specific details, priority, uncertainty, human overrides | Webpage/API/PDF captures, prepared text, OCR output and intermediate document versions |
+| Source URLs, native identity keys, compact fingerprints and publication metadata | Saved prompts, model responses, quoted proof trails and complete record snapshots |
+| One compact current state per tracked source/work item: due time, lease, fingerprints, attempt count and short error code | A new collection-run/report record for each poll, per-step report writes, growing JSON histories |
+| Small durable quota reservations and numeric usage, retained only for their required accounting window | Quota bookkeeping embedded in large run JSON; model settings rewritten on each call |
+| Existing access rules, tracker configuration and notification deduplication | Report/artifact UI and RPCs; health reconstruction from run history; background evidence repair/replay |
+
+Persist URLs and final facts, never original content in a different table, job payload, cache, log, or error string. Model support checks can inspect source text and citations in memory. Human corrections retain the corrected value, source URL and a compact override marker. No new tracing system or replacement artifact store.
+
+### Implementation sequence
+
+1. Replace acquisition persistence with compact source state. Keep useful HTML/calendar/PDF/API readers and fetch limits. Keep observed and successfully processed fingerprints distinct: a failed or quota-deferred attempt must not mark its input processed. An identical completed input returns before any model call. Capture/preparation IDs no longer drive processing.
+2. Execute extraction, identity matching and relevance decisions in memory within a bounded invocation. Use native identities and source URLs first. The ordinary target is one model generation; allow a justified second review when accuracy requires it. A failure ends the attempt with a compact reason and retry deadline. Re-fetch on a later attempt; do not persist intermediate packets to resume a stage.
+3. Save final facts and acceptance together in one record write. Insert source associations/native identity rows only when new. Compare canonical useful fields before UPDATE; a recheck alone must not update a finding, append a version, or rewrite its identities. Save atomically with optimistic concurrency and preserve human overrides. A one-line cursor may support a large listing; never store its body or extracted packet.
+4. Replace the growing run-based model ledger with fixed-shape, small reservation rows. Retain the existing pre-dispatch reservation, exact token preflight and usage reconciliation protections: three small row mutations per generation attempt. Expire only reservations whose quota window has closed and whose accounting is settled; carry unresolved charges conservatively into bounded numeric accounting. Honor provider retry deadlines. Do not reset old accounting or modify limits to make a benchmark pass.
+5. Collapse orchestration to one hourly due-work check, with source refresh every six hours by default and daily for quiet sources. This deliberately trades sub-minute polling for hours-scale source freshness; specific sources can receive a deliberate tighter schedule. Check for due work before dispatching HTTP. Use a source lease and current-state row, not a new run history. Make health a read of current state. Keep one bounded maintenance action for expired operational metadata, piggybacked on scheduling. Preserve notification eligibility/deduplication; remove repeated model re-assessment of unchanged accepted facts.
+6. Remove the obsolete production paths and their dependent UI/tests: report.js/report_entries, capture/preparation persistence, capture-based job replay, history-based queue/health reconstruction and persisted proof reconstruction. Keep the small source readers, factual validators and meaningful behavioral tests. Replace the pending reset-required migration with a compatible migration that copies known useful fields and URL/identity associations, preserves the 71 existing records, and leaves historical content alone. Old producers must remain disabled through cutover.
+7. Review the whole diff and measured operating cost before deployment. Apply compatible schema/backend/frontend changes with schedules still paused; run a bounded comparison and inspect saved records. Resume schedules only after acceptance. One focused implementation commit excludes unrelated dirty work. The existing worker remains the only implementation writer when work is resumed.
+
+### Storage estimate
+
+Budget lookup on 11 October: the original Services tab explicitly requires $0/month recurring fees, Supabase Free and Gemini Free, and records Tavily's 1,000-credit allowance. Current official Supabase limits are 500 MB database per project, 5 GB monthly egress and 500,000 monthly Edge invocations. Nano baseline is 5 MB/s and 250 IOPS; design below baseline rather than depend on burst credits. Database quotas are shared with other services in chm, and several allowances are organization-wide. SQL has no separately published per-statement free allowance; internal operation budgets must protect actual compute/I/O and storage. Sources: https://docs.google.com/document/d/13HIEN45IEKQN-i29pQuoRD-eeFOl-t70a1_2TBpV7zI/edit?tab=t.1h6brasprb8e ; https://supabase.com/docs/guides/platform/billing-on-supabase ; https://supabase.com/docs/guides/platform/compute-and-disk .
+
+The old hosted policy (Oct 9 snapshot) was two attempts/minute, ten/run, and zero configured daily/TPM caps. Those zeros do not establish unlimited provider quota. The Oct 1 account check in tasks.md recorded actual AI Studio limits of 15 RPM, 250,000 input TPM and 500 RPD for bbnj-chm/gemini-3.5-flash-lite. These are historical ceilings, not current remaining usage. Gemini limits are per project/model and current limits/usage must be confirmed; RPD resets at midnight Pacific. Source: https://ai.google.dev/gemini-api/docs/rate-limits . A fresh manager health request fails at DNS (ENOTFOUND) before HTTP, and no browser session is available. Current provider limits/usage and Supabase size/I/O headroom were requested from the owner. Continue local implementation; no repeated unchanged network attempts or uncapped live runs.
+
+Single-record pilot selected: E04, IDDRI's “Making MPAs work in the High Seas” page. Independently read official source: https://www.iddri.org/en/publications-and-events/conference/making-mpas-work-high-seas-sharing-lessons-learned-established . Expected essentials: event on 2026-02-26, local start 12:00 EST (UTC-05:00; 17:00Z), IDDRI as speaker/participant, registration URL; no invented end time or organizer. This exercises both date/time and organization roles. The web tool's page is a cached source read; the live pilot must fetch its own source. Preserve the existing expected development facts and report any real source change separately.
+
+Enforced operating policy for the replacement: no unattended model dispatch without verified finite quota configuration; allocate no more than half the verified project allowance after reserving known shared usage. Preserve in-flight/unsettled charges. The first manual pilot is one record, at most two generations, no search and no notifications, and cannot exceed the actual verified remaining allowance. Use compact SQL/model/runtime guards and fail closed on missing budgets. Stop new source/model work at 80% of the database-size allowance (400 MB for this 500 MB project); current size must be checked before live writes. Runtime/SQL/IO measurements remain release evidence, not inferred from pricing. All numeric cost estimates below remain unverified until tested.
+
+These are design estimates, not measurements of the replacement. Use decimal KB/MB. Assumptions: ordinary short description, 1–3 organizations, 1–3 source URLs, small typed dates/identity metadata, and one or two model calls. Multi-source and unusually large records cost more in proportion to their actual fields.
+
+As a size sanity check, projecting only labeled facts/title/kind/unknowns from the 24 existing development cases produced JSON of 207–635 bytes (median 318 bytes). This is an incomplete record projection: it excludes descriptions, URLs, database representation, indexes and operational state. It does not establish physical storage cost. Held-out cases were not opened.
+
+| Item | Proposed estimate / bound |
+| --- | --- |
+| Final finding plus its source/identity metadata | Typically 2–5 KB logical data; approximately 10–20 KB physical storage allowance including rows/indexes and a share of source state |
+| Source state shared across its findings | Approximately 0.3–1 KB logical data per source, updated in place |
+| Quota reservation | Approximately 0.2–0.5 KB logical data per model attempt; short-lived within the applicable accounting window |
+| Saved source bodies, prepared text, prompts, responses, reports | Zero new bytes |
+| 71 ordinary records | Approximately 0.71–1.42 MB incremental physical storage allowance |
+| 10,000 ordinary records | Approximately 100–200 MB incremental physical storage allowance |
+
+These figures exclude existing historical content, database/system-table minimum sizes, platform logs, backups and transaction logs. Record refreshes replace current values; there is no history accumulation per refresh. PostgreSQL still creates dead tuples that ordinary vacuum must reclaim for reuse. Operational storage scales with tracked sources and active accounting windows, not all past polls. Bound retained source/lead inventory too: use existing tracker horizons, and expire completed unreferenced leads so discovery cannot become a permanent crawl archive.
+
+### Database write estimate
+
+Count row INSERT/UPDATE/DELETE mutations, including quota expiration, not just SQL calls or transactions. A bulk INSERT touching ten rows counts as ten. SQL statement count can be lower through batching; transaction commits, indexes, triggers and physical disk I/O are separate. The implementation must account for triggers and platform writes in verification.
+
+For a normal processing pass, let S be source-state rows claimed/completed, M model generation attempts, R new/materially changed record rows, L new source associations and I new identity rows:
+
+`processing row writes = 2S + 3M + R + L + I`
+
+Later expiration adds one DELETE per retired quota row (M). Extra provider-wide cooldown updates, recovery work, lead discovery, notification sends and platform maintenance are separate; they cannot be hidden inside this formula.
+
+| Scenario | Processing mutations | Later quota expiration | Total application mutations |
+| --- | --- | --- | --- |
+| New record, one source, one new source link and identity, one model call | 8 | 1 | 9 |
+| Same, with a second model review | 11 | 2 | 13 |
+| Existing record changes; source/identity associations already exist; 1–2 model calls | 6–9 | 1–2 | 7–11 |
+| Source changed, but extracted facts are unchanged; 1–2 model calls | 5–8 | 1–2 | 6–10 |
+| Completed source unchanged at its next due check | 2 source-state updates; zero finding writes/model calls | 0 | 2 |
+| Fetch fails before any model call | 2 source-state updates | 0 | 2 |
+| Model attempt fails after reservation/preflight | Up to 5, plus at most one shared cooldown update if required | 1 | Up to 7 |
+| No source due | 0 application mutations and no HTTP/model dispatch | 0 | 0 application mutations |
+
+Newly discovered URL inventory adds one compact source-row insertion if it cannot be combined with claiming. Each extra source link or native identity adds one insertion. Multiple records on one page share source and model overhead. For example, 20 new findings from one source and one model call, each with one source link and identity, require 65 processing mutations plus one quota-row expiration: 66 total, or 3.3 per finding. This assumes the page fits one adequate model call; it is not a quality claim.
+
+Notification delivery is separate from extraction: propose one compact per-record/version delivery marker written before sending and finalized after sending (two mutations), with uncertain deliveries held from automatic resend. No stored message body or model re-selection poll. Any retained notification model call adds the same four lifecycle quota mutations and must be justified explicitly. No messages are sent during validation.
+
+The hourly schedule adds 24 scheduler wakes/day. pg_cron/pg_net can create their own operational rows even when application work is small. Budget provisionally up to ten small platform row mutations per wake (240/day), retain those logs only for a bounded window where supported, and measure the actual installed versions before release. This is an allowance, not a measured count. If platform behavior exceeds it, include the observed cost and correct the dispatch/logging design instead of excluding it.
+
+Example ongoing workload: 100 sources checked every six hours gives 400 checks/day and 800 source-state mutations/day when unchanged, with zero model calls, zero record changes and zero retained source bodies. Add the provisional platform allowance of 240/day and a small measured bounded-maintenance allowance. Record count alone cannot predict polling work; source count and refresh interval are explicit inputs.
+
+The current implementation deliberately selects at most one due source per hourly invocation: at most 24 selections/day. It does **not** deliver the illustrative 400-check/day workload above. Recurring operation remains paused; source freshness and throughput require separate acceptance before activation.
+
+Recreating 71 records from 71 independent sources would therefore budget 639–923 application row mutations including quota expiration, plus scheduler/notification work where applicable. This is a planning scenario, not an attribution of the historical 366,861 report updates to those 71 records.
+
+### Transaction-log estimate and release tests
+
+Provisional WAL planning range: roughly 20–200 KB for an ordinary new-record lifecycle under the assumptions above, or 1.42–14.2 MB for 71 independent creations, excluding unrelated/platform workloads. Use 250 KB average per ordinary new record as an initial review ceiling; do not claim it achieved without measurement. Updates and deletes produce WAL even when retained data size stays flat. Full-page images, indexes and checkpoint timing make WAL different from logical saved bytes: https://www.postgresql.org/docs/17/wal-configuration.html . The range is an engineering allowance, not a measured result or a guaranteed physical-I/O ratio.
+
+Before deployment, use the existing runner and a real PostgreSQL test environment to verify:
+
+- New record: correct dates/organizations/type/URLs, one final record save, expected row mutation counts including side effects. Repeat with two model calls and multiple sources.
+- Unchanged record/source: 100 scheduled repeats produce exactly 200 source-state mutations, no model calls, no new records/history, and no accumulating source content. Empty due checks produce zero application writes. Test changing irrelevant source content separately from materially changed facts.
+- Large sources: increase a page/PDF from small to large while keeping the same final facts. No body, prompt, response, quote trail or irrelevant sentinel may appear in database parameters, normal logs or error state. Saved storage and writes must not scale with input size.
+- Failure/crash: preserve pre-dispatch quota charges, do not mark unfinished input processed, re-fetch when resuming, reject stale concurrent writes, and enforce a finite processing-attempt cap. Initial proposal: at most three processing attempts for unchanged content, each with at most two model generations; then park. New cron wakes do not reset that cap. Provider cooldowns prevent dispatch until due.
+- Storage/WAL: measure table/index deltas, row mutations, statement counts and per-statement WAL on identical workloads with warm pages and across checkpoint boundaries. Include quota expiry and scheduler/pg_net overhead. Compare against a baseline without resetting accounting or statistics. Do not use PGlite or serialized-byte counts as proof of measured PostgreSQL WAL. Keep ordinary vacuum/reuse behavior in the steady-state check.
+- Quality/access: keep the existing source-backed before/after accuracy gates, uncertainty behavior, human overrides, isolation and notification dedupe checks. Removing persistence does not weaken the factual contract. Missing live semantic validation remains pending.
+
+No production restart based only on passing functional tests or a theoretical cost estimate. Manager reports the proposed deletion of code and actual test/cost results before production cutover.
+
+### Current verification — 11 October
+
+The manager independently ran the E04 test through the production reader, model quota wrapper, factual validators and save path using the existing tracked IDDRI fixture and mocked provider responses. It saved 26 February 2026, 12:00 EST / 17:00Z, IDDRI as participant, and the registration URL; no invented end time. This verifies mechanics against expected facts, **not live model judgment**.
+
+| Measured offline result | Value |
+| --- | --- |
+| First creation | 33 counted SQL statements (including instrumented function statements), 11 row mutations |
+| Provider HTTP in the test | 2 token-count requests and 2 generations; replies and token counts mocked |
+| Retained final record, source link, identity, source state and two quota rows | Approximately 3.9 KB serialized as JSON; 2,771 bytes via `pg_column_size` |
+| Source page | 56,738 bytes read; zero source-body bytes persisted |
+| 100 unchanged due checks | 200 statements, 200 source-state mutations, zero model calls, zero finding changes, unchanged table row counts |
+| Irrelevant source-text change | Final finding unchanged; source/model processing still occurs |
+
+Row sizes exclude indexes, heap-page allocation, platform data, historical content and WAL. Quota expiration adds two later deletions for this two-call case. Native PostgreSQL initialization failed at the runtime's shared-memory restriction, including an approved retry; production WAL and physical I/O remain unmeasured. Network DNS failure blocks the live account checks and pilot from this environment. Current shared account quota/usage and database size/I/O are still pending owner confirmation. The new runtime remains disabled without fresh finite budget verification. Existing production records/history and paused schedules remain untouched.
 
 ## Purpose and authority
 
@@ -43,7 +159,7 @@ Retain useful acquisition code, source retention, quota accounting, atomic saves
 
 ## Target workflow
 
-`discover -> gather evidence -> extract typed facts -> validate and match -> save -> assess relevance and surface`
+`discover -> gather evidence -> extract typed proposals -> validate and match -> assess support and relevance -> save and surface`
 
 These are responsibilities in the existing application, not separate services or autonomous agents.
 
@@ -113,6 +229,7 @@ Acceptance gates:
 5. Measured model calls/tokens per correctly resolved finding improve over the comparable baseline. Normal paths avoid completion/re-resolution loops. Report differences in source work and quotas; do not claim speedups from omitted work or different test conditions.
 6. Existing auth/access, shared-project isolation, quota accounting and notification behavior remain correct. Document baseline failures and show no new unexplained failures. A flaky rerun alone does not establish that an introduced failure is unrelated.
 7. The replacement removes obsolete production paths. Report added/deleted production code, tests and migrations separately. No domain-by-domain semantic patch collection, prompt-version SQL ladder, or legacy repair-history reconstruction.
+8. Operational write cost is a release gate. Report persistence must avoid repeatedly rewriting accumulated large evidence payloads. Compare database write counts and submitted bytes on identical representative runs, including failure/recovery checkpoints; measure actual WAL separately when safe database access is available. Clearly distinguish offline size/count proxies from measured WAL. Preserve durable accounting and required evidence; passing functional tests alone does not satisfy this gate.
 
 One meaningful end-to-end benchmark and a compact set of boundary tests are preferable to hundreds of implementation-mirroring tests. Use the existing test runner. A small reusable evaluation fixture/runner is authorized by this before/after requirement; do not add miscellaneous debugging scripts or a new testing framework.
 
@@ -149,8 +266,17 @@ Done means the current three kinds work through the replacement in the app, acce
 
 ## Current checkpoint
 
-- Manager: plan written; old omission-repair workflow replaced by manager oversight every 30 minutes.
-- Worker: dispatched and active in `01a121b8-ef1b-78e3-9b28-ec8b86f33dbe`; Phase 1 only until manager review.
-- Phase: 1, baseline pending.
-- Before/after results: not yet measured.
-- Production changes for this refactor: none.
+- Phase: 3, live comparison incomplete. Worker chat `01a121b8-ef1b-78e3-9b28-ec8b86f33dbe` remains the sole implementation writer.
+- Latest outcome: the 16:11:53 UTC health sample reported database, REST and Auth unhealthy. Historical logs contain seven statement timeouts, six Scout-related, including two pg_cron operations. Later project metadata reports ACTIVE_HEALTHY, but reliable SQL execution and the cause remain unverified. Reviews: `.cache/scout-refactor/manager-connection-hosting-review.json` and `manager-hosting-diagnostics-review.json`. No further live retries or production changes are authorized.
+- Offline acceptance: manager independently reproduced B01/B02/B04/B05/B06 saved-state checks for repost/source variants, rescheduling, inaccessible-source backoff and conflicting dates. All passed without production or test-file changes. Injected model verdicts establish mechanics only; semantic quality remains pending. Review: `.cache/scout-refactor/manager-boundary-execution-review.json`. Funding examples and other boundary evidence remain in `manager-funding-boundary-review.json` and `manager-boundary-probes.json`; held-out source A06 remains unopened.
+- Fresh user-requested recheck (Oct 11): Firebase renewal failed before login at auth.firebase.tools/attest; Supabase requests failed with ENOTFOUND before any HTTP response, including network-enabled execution. Google DNS checks also failed, and no browser is connected. This establishes an execution-environment connectivity blocker, not current Supabase health. Evidence: .cache/scout-refactor/manager-auth-service-attempt-20261011.json.
+- New owner evidence (Oct 11): Firebase reauthentication succeeded with CLI 15.33.0; the user also verified bbnj-scout hosting access in project ryustatic with hosting:sites:list. Firebase authentication is no longer a release blocker. Supabase dashboard warns that disk I/O budget is about to deplete, reverting to a 5 MB/s baseline when exhausted. This supports I/O pressure but does not establish the responsible workload or current exhaustion. Evidence: .cache/scout-refactor/manager-user-recovery-evidence-20261011.json.
+- I/O snapshot received (Oct 11): the owner's bounded statistics query succeeded. Query 6710213100261677192 has 366,861 calls and 45.4 GB cumulative WAL; query 1346117666528997502 averages 15.3 seconds over 500 calls; another statement has heavy temporary-file reads. These totals do not identify current load or prove the timeout cause. Evidence: .cache/scout-refactor/manager-user-io-snapshot-20261011.json.
+- Query identities received: the 366,861-call writer is collector/report.js updating the growing report JSON; the 500-call slow query is scout.loop_health(); the temporary-read hotspot is legacy scout.source_queue selection. The refactor removes the legacy queue but retains the report writer. Counts were unchanged between owner snapshots, so current activity remains unverified. Evidence: .cache/scout-refactor/manager-user-io-identities-20261011.json.
+- Current schedules confirmed by owner: all four named Scout jobs are active; collection and health reported running, findings succeeded, and retention failed. A reversible pause of those four schedules is proposed to contain load; execution and committed-state verification are still pending. Evidence: .cache/scout-refactor/manager-user-cron-state-20261011.json.
+- Next action: verify owner-executed schedule pause, then inspect remaining in-flight work and retention error with bounded reads. Existing worker finishes the offline report/health review (io-hotspot-review.json); manager assesses it against the write-cost release gate. Manager execution network remains unavailable; model batches/deployment remain inactive.
+- External blocker: historical Supabase resource/wait diagnostics for 16:07–16:12 UTC were requested from the owner because API logs show failures without their cause and no browser dashboard is available here. No restart, scaling, schedule or credential changes are proposed without evidence.
+- Accounting: 16 campaign reservations, 15 provider generations, ten usage responses; five generations lack usage and one counted pre-dispatch reservation has no usage. Preserve all costs and frozen expectations. All live batch approvals are inactive; diagnostics made no model calls or reservations.
+- Local evidence: shared date/clock/zone formats and other missing representation requirements are explicit; validators and findings-4 remain unchanged. Worker suite 327/327 and build pass; manager independently verified 22 artifacts, 241 execution hashes and 21 focused tests. Model compliance remains pending. No index has been applied.
+- Baseline: 36 frozen primary cases (18 events, 12 announcements, six treaty changes), split 24 development/12 held out; baseline 330/336 tests and build pass. Frozen primary and supplemental sources and expectations remain unchanged.
+- Release gates: full before/after and held-out acceptance, hosted search/runtime checks, compatible reviewed cutover, app outcomes and one focused implementation commit. Production content/schema/schedules/deployment remain unchanged; only designated evaluation accounting has been written.

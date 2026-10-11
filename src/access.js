@@ -1,5 +1,4 @@
 import { loadScout, mountDashboard } from './dashboard.js';
-import { runAPI } from './runs.js';
 
 export function mountAccess(client, root, mount = mountDashboard) {
   const status = root.querySelector('#status'), form = root.querySelector('#sign-in');
@@ -37,7 +36,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
       window.history.replaceState(null, '', url);
     }
     window.sessionStorage.removeItem('scout-record');
-    closeDashboard = mount(workspace, () => loadScout(client), runAPI(client));
+    closeDashboard = mount(workspace, options => loadScout(client,options));
   }
 
   client.auth.onAuthStateChange((_event, session) => { void showSession(session); });
