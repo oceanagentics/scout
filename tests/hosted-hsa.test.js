@@ -72,5 +72,5 @@ test('database failure rolls back and does not disclose connection or source det
 test('scheduler is hourly, paused, and has no report, notification or history-scanning health loop',async()=>{
  const text=await readFile(new URL('../supabase/scout-loop.sql',import.meta.url),'utf8');
  assert.match(text,/'0 \* \* \* \*'/);assert.match(text,/active:=false/);assert.ok(!text.includes('collection_runs'));
- assert.ok(!text.includes('loop_tick(\'notify\')'));assert.match(text,/s\.state<>'parked'/);
+ assert.ok(!text.includes('loop_tick(\'notify\')'));assert.ok(!text.includes("s.state<>'parked'"));
 });

@@ -61,7 +61,7 @@ export async function hostedHSA(request,{databaseURL,apiKey,webhook,env,connect=
     let selected;
     if(rotation){
       selected=(await db.query(`select t.*,s.identity source_identity,s.url source_url,s.native_ref source_ref from scout.source_state s join scout.trackers t on t.id=s.tracker_id
-        where t.enabled and s.state<>'parked' and s.due_at<=clock_timestamp() and (s.lease_until is null or s.lease_until<clock_timestamp())
+        where t.enabled and s.due_at<=clock_timestamp() and (s.lease_until is null or s.lease_until<clock_timestamp())
         order by s.due_at,s.id limit 1`)).rows[0];
       if(!selected)return Response.json({outcome:'idle',cost:db.metrics});
     }else if(!notify)selected=(await db.query('select * from scout.trackers where id=$1',[trackerId])).rows[0];
@@ -80,10 +80,11 @@ export async function hostedHSA(request,{databaseURL,apiKey,webhook,env,connect=
       result=await collectHSA(db,{trackerId:selected.id,documents:'process',rotation:true,model,read,deadline});
     }else{
       const source={tracker_id:selected.id,identity:rotation?selected.source_identity:url,url:rotation?selected.source_url:url},budget={requests:0,support:true,deadline};
+      let primary;
       result=await processDocument(db,{source,model,deadline,read:async()=>{
         const response=await read(source.url,budget),prepared=await prepareResponse(response,{sourceURL,deadline,task:selected.source_ref??{}});
-        return supportDocuments(db,{source:{...source,url:response.url},prepared,read,sourceURL,budget,limits:LIMITS});
-      }});
+        primary=prepared;return prepared;
+      },support:requests=>supportDocuments(db,{source,prepared:primary,read,sourceURL,budget,limits:LIMITS,requests})});
     }
     return Response.json({...result,cost:db.metrics});
   }catch(error){

@@ -50,13 +50,14 @@ create table scout.source_state(
  identity text not null check(length(identity)<=512), url text not null check(length(url)<=2048),
  native_id text check(length(native_id)<=256), native_ref jsonb not null default '{}' check(octet_length(native_ref::text)<=512),
  observed_hash text, processed_hash text, attempts integer not null default 0 check(attempts between 0 and 3),
+ research jsonb not null default '{}' check(octet_length(research::text)<=8192),
  state text not null default 'due' check(state in ('due','running','complete','deferred','parked')),
  reason text check(reason ~ '^[a-z_]{1,48}$'), cursor text check(length(cursor)<=512),
  due_at timestamptz not null default clock_timestamp(), lease_id uuid, lease_until timestamptz,
  checked_at timestamptz, unique(tracker_id,identity)
 );
-insert into scout.source_state(tracker_id,identity,url) select id,'tracker',url from scout.trackers;
-create index source_due on scout.source_state(due_at) where state in ('due','complete','deferred','running');
+insert into scout.source_state(tracker_id,identity,url) select id,'tracker',url from scout.trackers where url is not null and length(url)<=2048;
+create index source_due on scout.source_state(due_at);
 create table scout.record_sources(
  record_id uuid not null references scout.records(id) on delete cascade,
  url text not null check(length(url)<=2048), tracker_id uuid references scout.trackers(id),

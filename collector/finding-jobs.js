@@ -1,39 +1,50 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {Buffer} from 'node:buffer';
-import {EXTRACTION_INSTRUCTION,validateFinding,REVIEW_INSTRUCTION,proposalClaims,reviewFinding,claimValue,sameClaim} from './finding-contract.js';
+import {EXTRACTION_INSTRUCTION,validateFinding,REVIEW_INSTRUCTION,IMPORTANT_FIELDS,RESEARCH_FIELDS,claimValue,sameClaim} from './finding-contract.js';
 import {PRIORITY_INSTRUCTION} from './assessment.js';
 import {normalizeDate} from '../src/finding.js';
+import {nativeLinks,sourceURL} from './octo-documents.js';
 
 const canonical=value=>JSON.stringify(value,(_key,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
 const hash=value=>createHash('sha256').update(canonical(value)).digest('hex');
 const normalize=value=>value.normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase();
 const fail=reason=>Object.assign(new Error(reason),{reason});
 export function packDocument(source,prepared){
-  return {stage:'extract',documents:(prepared.documents??[{id:'P',url:source.url,relationship:'primary',prepared}]).map(d=>({
+  return {stage:'extract',documents:(prepared.documents??[{id:'P',url:prepared.url??source.url,relationship:'primary',prepared}]).map(d=>{
+    const seen=new Set([d.url,source.url].filter(Boolean).map(sourceURL));
+    return {
     id:d.id,url:d.url,relationship:d.relationship,title:d.prepared.title,
-    ...(d.prepared.visual?{visual:true,pages:d.prepared.pages,visual_pages:d.prepared.visual_pages}:{}),
+    links:[...d.prepared.links??[],...nativeLinks(d.prepared)].flatMap(l=>{try{
+      const url=sourceURL(l.target);if(seen.has(url))return [];seen.add(url);
+      const label=(l.label??'').replace(/\s+/g,' ').trim().slice(0,160).toWellFormed(),context=(l.context??'').replace(/\s+/g,' ').trim();
+      const start=Math.max(0,context.indexOf(label||url)-80);
+      return [{url,label,context:context.slice(start,start+320).toWellFormed(),relationship:l.relationship??'support'}];
+    }catch{return [];}}),
+    ...(d.prepared.pages?{pages:d.prepared.pages}:{}),
+    ...(d.prepared.visual?{visual:true,visual_pages:d.prepared.visual_pages}:{}),
     blocks:(d.prepared.blocks?.length?d.prepared.blocks:[{id:0,start:0,end:d.prepared.text?.length??0}]).map(b=>({...b,text:d.prepared.text?.slice(b.start,b.end)??''})),
     ...(d.prepared.inline_data?{inline_data:d.prepared.inline_data}:{})
-  }))};
+  };})};
 }
 export async function claimSource(db,source){
   return (await db.query(`insert into scout.source_state(tracker_id,identity,url,state,attempts,lease_id,lease_until,native_id,native_ref)
     select $1,$2,$3,'running',1,$4,clock_timestamp()+interval '120 seconds',$5,$6
     where exists(select 1 from scout.source_state where tracker_id=$1 and identity=$2)
       or (select count(*) from scout.source_state where tracker_id=$1)<201
-    on conflict(tracker_id,identity) do update set state=case when scout.source_state.attempts>=3 then 'parked' else 'running' end,attempts=least(3,scout.source_state.attempts+1),
-      reason=case when scout.source_state.attempts>=3 then 'attempt_bound' else scout.source_state.reason end,
+    on conflict(tracker_id,identity) do update set state=case when scout.source_state.state='parked' or scout.source_state.attempts>=3 then 'parked' else 'running' end,
+      attempts=case when scout.source_state.state='parked' then scout.source_state.attempts else least(3,scout.source_state.attempts+1) end,
+      reason=case when scout.source_state.state<>'parked' and scout.source_state.attempts>=3 then 'attempt_bound' else scout.source_state.reason end,
       lease_id=excluded.lease_id,lease_until=excluded.lease_until
-    where scout.source_state.state<>'parked' and scout.source_state.due_at<=clock_timestamp() and
+    where scout.source_state.due_at<=clock_timestamp() and
       (scout.source_state.lease_until is null or scout.source_state.lease_until<clock_timestamp())
     returning *`,[source.tracker_id,source.identity??source.url,source.url,randomUUID(),source.native_id??null,source.native_ref??{}])).rows[0];
 }
-export async function finishSource(db,source,{observed,processed,state='complete',reason=null,retryAt,attempts=0,cursor=null}={}){
-  return (await db.query(`update scout.source_state set observed_hash=coalesce($3,observed_hash),processed_hash=coalesce($4,processed_hash),
+export async function finishSource(db,source,{observed,processed,state='complete',reason=null,retryAt,attempts=0,cursor=null,research=null}={}){
+  return (await db.query(`update scout.source_state set observed_hash=coalesce($3,observed_hash),processed_hash=case when $11 then $4 else processed_hash end,
     state=$5,reason=$6,attempts=$7,due_at=greatest(clock_timestamp()+interval '1 minute',$8::timestamptz),
-    checked_at=clock_timestamp(),lease_id=null,lease_until=null,cursor=$9
+    checked_at=clock_timestamp(),lease_id=null,lease_until=null,cursor=$9,research=coalesce($10,research)
     where id=$1 and lease_id=$2 and lease_until>clock_timestamp() returning id`,
-    [source.id,source.lease_id,observed??null,processed??null,state,reason,attempts,retryAt??new Date(Date.now()+6*3600000).toISOString(),cursor])).rows.length>0;
+    [source.id,source.lease_id,observed??null,processed??null,state,reason,attempts,retryAt??new Date(Date.now()+6*3600000).toISOString(),cursor,research,processed!==undefined])).rows.length>0;
 }
 function finalValues(f,target){
   const values=Object.fromEntries(['kind','title','description','canonical_url','organizations','details','completeness'].map(k=>[k,structuredClone(f[k])]));
@@ -73,7 +84,7 @@ async function saveFindings(db,source,findings,verdicts,packet){
     if(!(await tx.query("select id from scout.source_state where id=$1 and lease_id=$2 and lease_until>clock_timestamp() for update",[source.id,source.lease_id])).rows.length)throw fail('stale_lease');
     // One global finding lock serializes identity decisions, including overlapping sources.
     await tx.query("select pg_advisory_xact_lock(hashtextextended('scout:findings',0))");
-    const counts={created:0,changed:0},createdIds=[];
+    const counts={created:0,changed:0,unresolved:false},createdIds=[];
     for(let n=0;n<findings.length;n++){
       const f=findings[n],native=f.identities.some(i=>/:(native_id|calendar_uid):/.test(i.key)),localKey='source:'+hash([source.tracker_id,source.identity,f.kind,normalize(f.anchor)]),
         identities=[...new Set([...f.identities.map(i=>i.key),...native?[]:[localKey]])];
@@ -93,6 +104,7 @@ async function saveFindings(db,source,findings,verdicts,packet){
         if(identities.some(k=>native(k)&&prior.some(p=>native(p.identity)===native(k)&&!identities.includes(p.identity))))throw fail('ambiguous_identity');
       }
       const values=finalValues(f,target),rating=relevanceFor(verdicts[n],f,values);
+      if(Object.values(values.completeness.unknowns).some(u=>u.reason!=='not_announced'))counts.unresolved=true;
       if(target&&rating.priority===target.priority&&rating.relevance.state===target.relevance.state&&
         ['kind','title','description','canonical_url','organizations','details','completeness'].every(k=>sameClaim(target[k],values[k])))rating.relevance=target.relevance;
       Object.assign(values,rating);
@@ -119,51 +131,99 @@ async function saveFindings(db,source,findings,verdicts,packet){
     return counts;
   });
 }
-// Read only after claiming. Re-fetch on every retry; successful fingerprints never hide failures.
-export async function processDocument(db,{source,prepared,read,model,deadline=Date.now()+100000}){
+// Re-fetch after claiming; parked attempts still check for changed or recovered inputs.
+export async function processDocument(db,{source,prepared,read,support,model,deadline=Date.now()+100000}){
   const leased=await claimSource(db,source);
-  if(!leased||leased.state==='parked')return {state:leased?.state??'idle',created:0,changed:0};
-  let observed,attempts=leased.attempts,completedCalls=0;
+  if(!leased)return {state:'idle',created:0,changed:0};
+  let observed,research=leased.research,attempts=leased.attempts,completedCalls=0,retryAt,counts={created:0,changed:0};
   try{
     if(Date.now()+5000>=deadline)throw fail('runtime_bound');
-    prepared??=await read();
-    const packet=packDocument(source,prepared);observed=hash(packet);
+    try{prepared??=await read();}catch(error){observed=hash({state:'inaccessible_source'});throw Object.assign(error,{reason:'inaccessible_source'});}
+    const primary=packDocument(source,prepared),main=hash(primary);
+    let fetched={documents:[],coverage:[]};
+    if(research?.main===main&&research.supports?.length){
+      fetched=support?await support(research.supports):{documents:[],coverage:research.supports.map(({url})=>({url,state:'unread'}))};
+      retryAt=fetched.retryAt;
+    }
+    research={main,supports:fetched.coverage.map(({url,state})=>{
+      const doc=fetched.documents.find(d=>d.requested_url===url);
+      return {url,state,hash:doc?hash(packDocument({url:doc.url},doc.prepared)):state==='unread'?leased.research?.supports?.find(s=>s.url===url)?.hash??null:null};
+    })};
+    observed=hash(research);
+    const changed=Boolean(leased.observed_hash&&(!leased.research?.main||leased.research.main!==main||
+      leased.observed_hash===hash({state:'inaccessible_source'})||research.supports.some(s=>s.state==='fetched'&&s.hash!==leased.research.supports?.find(p=>p.url===s.url)?.hash)));
+    if(leased.state==='parked'&&(!changed||!leased.observed_hash)){
+      await finishSource(db,leased,{observed,research,state:'parked',reason:leased.reason,attempts,
+        retryAt:new Date(Math.max(Date.parse(retryAt)||0,Date.now()+86400000)).toISOString()});
+      return {state:'parked',reason:leased.reason,...counts};
+    }
     if(observed===leased.processed_hash){
-      await finishSource(db,leased,{observed,processed:observed});return {state:'unchanged',created:0,changed:0};
+      await finishSource(db,leased,{observed,processed:observed,research});return {state:'unchanged',...counts};
     }
-    if(leased.attempts===3&&leased.reason==='attempt_bound'&&observed===leased.observed_hash)throw fail('attempt_bound');
-    if(observed!==leased.observed_hash&&leased.observed_hash)attempts=1;
+    if(changed)attempts=1;
+    if(Date.now()+5000>=deadline)throw fail('runtime_bound');
     if(!model)throw fail('configuration');
-    const instruction=EXTRACTION_INSTRUCTION.replace('do not assess relevance yet','assess relevance only from supported facts')+
-      ' Also return relevance: an array aligned with findings, each {priority:high|normal|low|null,reason:string,fields:array of finding field paths}. '+PRIORITY_INSTRUCTION;
-    const response=await model(instruction,[packet]);completedCalls++;
-    if(response?.complete!==true||!Array.isArray(response.findings)||response.findings.length>8)throw fail('invalid_output');
-    let findings=response.findings.map(f=>validateFinding(f,packet)),verdicts=response.relevance??[];
-    // Dates, organization roles and official treaty changes justify independent semantic review.
-    const reviewIndices=findings.flatMap((f,i)=>f.organizations.length||Object.values(f.details).some(v=>v?.precision)||f.kind==='treaty_status'?[i]:[]);
-    const reviews=[];
-    for(const i of reviewIndices){
-      const finding=findings[i],claims=proposalClaims(finding.proposal),input={...packet,stage:'review',finding,claims,
-        basis:claims.filter(c=>!c.field.startsWith('unknowns.')).map(c=>({key:'proposed.'+c.field,field:c.field,value:c.value}))},input_hash=hash(input);
-      reviews.push({index:i,input:{...input,input_hash}});
+    const response=await model(EXTRACTION_INSTRUCTION,[primary]);completedCalls++;
+    if(!response||Object.keys(response).some(k=>!['understanding','research'].includes(k))||typeof response.understanding!=='string'||
+      !response.understanding.isWellFormed()||response.understanding.length>6000)throw fail('invalid_output');
+    if(!response.research||!Array.isArray(response.research.requests)||Object.keys(response.research).some(k=>k!=='requests'))throw fail('invalid_research');
+    const requests=response.research.requests;
+    if(requests.length>3||requests.some(r=>!r||Object.keys(r).some(k=>!['url','needed_for','reason'].includes(k))||
+      typeof r.url!=='string'||r.url.length>2048||typeof r.reason!=='string'||!r.reason.trim()||r.reason.length>280||
+      !Array.isArray(r.needed_for)||!r.needed_for.length||r.needed_for.some(k=>!RESEARCH_FIELDS.includes(k))||
+      !primary.documents.some(d=>d.links.some(l=>l.url===sourceURL(r.url)))))throw fail('invalid_research');
+    const wanted=[...new Map(requests.map(r=>[sourceURL(r.url),{...r,url:sourceURL(r.url)}])).values()].sort((a,b)=>a.url.localeCompare(b.url));
+    const missing=wanted.filter(r=>!fetched.coverage.some(c=>c.url===r.url));
+    if(missing.length){
+      const extra=support?await support(missing):{documents:[],coverage:missing.map(({url})=>({url,state:'unread'}))};
+      fetched={documents:[...fetched.documents,...extra.documents.filter(d=>d.id!=='P')],coverage:[...fetched.coverage,...extra.coverage]};
+      if(Date.parse(extra.retryAt)>(Date.parse(retryAt)||0))retryAt=extra.retryAt;
     }
-    if(reviews.length){
-      const inputs=reviews.map(r=>r.input),shared=reviews.length===1?inputs:[{...packet,stage:'review_batch',reviews:inputs.map(({documents,...input})=>input)}];
-      const answer=await model(REVIEW_INSTRUCTION+' Relevance rubric: '+PRIORITY_INSTRUCTION+
-        (reviews.length>1?' Review each item in reviews independently against shared documents. Return {reviews:[one complete review per item, in input order]}.':''),shared);completedCalls++;
-      const decisions=reviews.length===1?[answer]:answer?.reviews;
-      if(!Array.isArray(decisions)||decisions.length!==reviews.length)throw fail('invalid_output');
-      reviews.forEach(({index,input},n)=>{findings[index]=reviewFinding(findings[index],decisions[n],packet,{input_hash:input.input_hash});verdicts[index]=decisions[n].relevance;});
+    const documents=[{id:'P',url:prepared.url??source.url,relationship:'primary',prepared}];
+    const statuses=wanted.map(({url})=>{
+      const doc=fetched.documents.find(d=>d.requested_url===url),state=fetched.coverage.find(c=>c.url===url)?.state??'unread';
+      if(doc)documents.push({...doc,id:'S'+documents.length});
+      return {url,state,hash:doc?hash(packDocument({url:doc.url},doc.prepared)):null};
+    });
+    research={main,supports:statuses};observed=hash(research);
+    if(Date.now()+5000>=deadline)throw fail('runtime_bound');
+    const packet=packDocument(source,{documents}),input={...packet,stage:'complete',understanding:response.understanding,
+      requested_sources:statuses.map(({url,state})=>({url,state})),important_fields:IMPORTANT_FIELDS};
+    input.input_hash=hash(input);
+    const answer=await model(REVIEW_INSTRUCTION+'\n\nRelevance rubric:\n'+PRIORITY_INSTRUCTION,[input]);completedCalls++;
+    if(answer?.input_hash!==input.input_hash||!Array.isArray(answer.findings)||answer.findings.length>8||
+      !Array.isArray(answer.checks)||answer.checks.length!==answer.findings.length||answer.research)throw fail('invalid_output');
+    const verdicts=answer.relevance??[],findings=answer.findings.map((proposal,i)=>{
+      const check=answer.checks[i],occurrence=check?.occurrence;
+      if(!check||Object.keys(check).some(k=>!['checked_fields','occurrence'].includes(k))||!occurrence||Object.keys(occurrence).some(k=>!['status','reason'].includes(k))||
+        !['supported','unsupported','uncertain'].includes(occurrence.status)||typeof occurrence.reason!=='string'||!occurrence.reason.trim()||!occurrence.reason.isWellFormed()||occurrence.reason.length>280)throw fail('invalid_output');
+      if(occurrence.status!=='supported')throw fail('ambiguous_identity');
+      return validateFinding(proposal,packet);
+    });
+    let adequate=answer.complete===true&&Array.isArray(answer.checked_documents)&&
+      sameClaim([...answer.checked_documents].sort(),packet.documents.map(d=>d.id).sort())&&statuses.every(s=>s.state==='fetched');
+    for(const [i,f]of findings.entries()){
+      const fields=IMPORTANT_FIELDS[f.kind],checked=answer.checks[i].checked_fields;
+      if(!Array.isArray(checked)||!sameClaim([...checked].sort(),[...fields].sort()))adequate=false;
+      for(const field of fields){
+        const value=claimValue(f,field),present=Array.isArray(value)?value.length>0:value!=null;
+        if(!present&&!f.unknowns[field])f.unknowns[field]={reason:'unverified_evidence',explanation:'Important field not established by completion check.'};
+      }
+      if(statuses.some(s=>s.state!=='fetched'))f.unknowns.research={reason:'inaccessible_source',explanation:'Requested source remains unavailable or unread.'};
+      if(Object.values(f.unknowns).some(u=>u.reason!=='not_announced'))adequate=false;
+      f.completeness={state:Object.values(f.unknowns).some(u=>u.reason==='conflicting_evidence')?'conflicting':Object.keys(f.unknowns).length?'provisional':'complete',unknowns:f.unknowns};
     }
-    const counts=await saveFindings(db,leased,findings,verdicts,packet);
-    if(!await finishSource(db,leased,{observed,processed:observed}))throw fail('stale_lease');
+    const saved=await saveFindings(db,leased,findings,verdicts,packet);
+    counts={created:saved.created,changed:saved.changed};
+    if(!adequate||saved.unresolved)throw fail('research_unresolved');
+    if(!await finishSource(db,leased,{observed,processed:observed,research}))throw fail('stale_lease');
     return {state:'complete',...counts};
   }catch(error){
-    const reason=['quota','configuration','runtime_bound','provider_unavailable','provider_unknown','stale_lease','stale_record','ambiguous_identity','input_bound','output_bound','review_bound','finding_bound','attempt_bound'].includes(error.reason??error.message)?error.reason??error.message:'invalid_output';
-    if(reason==='quota'&&!completedCalls&&!error.dispatched)attempts=Math.max(0,attempts-1);
-    const parked=attempts>=3||['ambiguous_identity','input_bound','review_bound','finding_bound','attempt_bound'].includes(reason);
-    await finishSource(db,leased,{observed,state:parked?'parked':'deferred',reason:attempts>=3?'attempt_bound':reason,attempts,
-      retryAt:new Date(Math.max(Date.parse(error.deferred?.retry_at)||0,Date.now()+(parked?86400000:60000*2**attempts))).toISOString()});
-    return {state:parked?'parked':'deferred',reason,created:0,changed:0};
+    const reason=['quota','configuration','runtime_bound','provider_unavailable','provider_unknown','stale_lease','stale_record','ambiguous_identity','input_bound','output_bound','review_bound','finding_bound','attempt_bound','invalid_research','research_unresolved','inaccessible_source'].includes(error.reason??error.message)?error.reason??error.message:'invalid_output';
+    if(reason==='quota'&&!completedCalls&&!error.dispatched&&(leased.state!=='parked'||observed!==leased.observed_hash))attempts=Math.max(0,attempts-1);
+    const parked=leased.state==='parked'&&observed===leased.observed_hash||attempts>=3||['ambiguous_identity','input_bound','review_bound','finding_bound','attempt_bound'].includes(reason);
+    await finishSource(db,leased,{observed,research,processed:counts.created||counts.changed?null:undefined,state:parked?'parked':'deferred',reason:attempts>=3?'attempt_bound':reason,attempts,
+      retryAt:new Date(Math.max(Date.parse(error.deferred?.retry_at)||0,Date.parse(retryAt)||0,Date.now()+(parked?86400000:60000*2**attempts))).toISOString()});
+    return {state:parked?'parked':'deferred',reason,...counts};
   }
 }

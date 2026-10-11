@@ -1,8 +1,19 @@
 import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
+import { isIP } from 'node:net';
 import { parseDocument, DomUtils } from 'htmlparser2';
 import {processDocument,claimSource,finishSource} from './finding-jobs.js';
 import {readCalendar} from '../src/finding.js';
+
+export function sourceURL(value) {
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) throw new Error('Unsupported source URL');
+  if (isIP(url.hostname.replaceAll(/[\[\]]/g, '')) || !url.hostname.includes('.')) throw new Error('Source must use a public hostname');
+  url.hash = '';
+  for (const key of [...url.searchParams.keys()]) if (/^utm_|^(fbclid|gclid)$/i.test(key)) url.searchParams.delete(key);
+  url.searchParams.sort();
+  return url.href;
+}
 
 const digest = text => createHash('sha256').update(text).digest('hex');
 const FEED = 'https://octogroup.org/feed/';
@@ -248,7 +259,7 @@ export async function prepareResponse(response,{sourceURL,deadline=Date.now()+20
 }
 
 // Native reference routing stays in the source adapter; extracted facts do not.
-function nativeLinks(prepared){
+export function nativeLinks(prepared){
   const links=[];
   if(new URL(prepared.url).hostname!=='api.cbd.int')return links;
   const values=pattern=>(prepared.blocks??[]).filter(b=>b.source_paths?.some(p=>pattern.test(p))).map(b=>prepared.text.slice(...b.value_range));
@@ -257,28 +268,32 @@ function nativeLinks(prepared){
   if(hosts.length&&hosts.length<=10&&hosts.every(v=>/^[a-f0-9]{24}$/.test(v)))links.push({target:'https://api.cbd.int/api/v2016/inde-orgs?'+new URLSearchParams({q:JSON.stringify({_id:{$in:hosts.map(id=>({$oid:id}))}}),f:JSON.stringify({title:1,acronym:1})}),task:{kind:'organizer',ids:hosts},relationship:'organizer',label:'Referenced organizations'});
   return links;
 }
-export async function supportDocuments(_db,{source,prepared,read,sourceURL,budget,limits,companions=[]}){
+export async function supportDocuments(_db,{source,prepared,read,sourceURL,budget,limits,requests=[]}){
   const documents=[{id:'P',url:source.url,relationship:'primary',prepared}],coverage=[];
-  const links=[...companions.map(target=>({target,relationship:'companion'})),...nativeLinks(prepared),
-    ...(prepared.links??[]).filter(l=>['a','api'].includes(l.tag)&&['organizer','registration'].includes(l.relationship))];
-  const visited=new Set([source.url]);let opened=0;
-  for(const link of links){
-    let url;try{url=sourceURL(link.target);}catch{continue;}
+  const links=[...prepared.links??[],...nativeLinks(prepared)],visited=new Set([sourceURL(source.url)]);
+  let retryAt;
+  for(const request of requests){
+    let url;try{url=sourceURL(request.url);}catch{throw Object.assign(new Error('invalid_research'),{reason:'invalid_research'});}
     if(visited.has(url))continue;visited.add(url);
-    if(opened>=3||budget.requests>=limits.requests||Date.now()+1000>=budget.deadline)break;
-    opened++;
-    const before=budget.requests;
+    const link=links.find(l=>{try{return sourceURL(l.target)===url;}catch{return false;}});
+    if(!link)throw Object.assign(new Error('invalid_research'),{reason:'invalid_research'});
+    if((budget.support_reads??0)>=3||budget.requests>=limits.requests||Date.now()+1000>=budget.deadline){
+      coverage.push({url,state:'unread',reason:'research_budget_exhausted'});continue;
+    }
+    budget.support_reads=(budget.support_reads??0)+1;
+    const before=budget.requests,wasSupport=budget.support;budget.support=true;
     try{
-      const response=await read(url,{...budget,support:true});
+      const response=await read(url,budget);
+      if(Buffer.byteLength(response.body,response.encoding==='base64'?'base64':'utf8')>(limits.bytes??524288)*4)throw new Error('support_bound');
       const clean=await prepareResponse(response,{sourceURL,deadline:budget.deadline,task:link.task});
-      documents.push({id:'S'+documents.length,url:response.url,relationship:link.relationship??'support',prepared:clean});
-      links.push(...nativeLinks(clean));
+      documents.push({id:'S'+documents.length,url:response.url,requested_url:url,relationship:link.relationship??'support',prepared:clean});
+      coverage.push({url,state:'fetched'});
     }catch(error){
-      if(error.deferred)throw error;
       coverage.push({url,state:'inaccessible',reason:'inaccessible_source'});
-    }finally{budget.requests=Math.max(budget.requests,before+1);}
+      if(Date.parse(error.deferred?.retry_at)>(Date.parse(retryAt)||0))retryAt=error.deferred.retry_at;
+    }finally{budget.requests=Math.max(budget.requests,before+1);budget.support=wasSupport;}
   }
-  return {...prepared,documents,coverage};
+  return {...prepared,documents,coverage,retryAt};
 }
 
 async function retrieveOcto({read,budget,sourceURL,known=[],limits}){
@@ -311,7 +326,7 @@ async function retrieveOcto({read,budget,sourceURL,known=[],limits}){
 }
 export async function collectDocuments(db,{tracker,read,sourceURL,now=()=>new Date().toISOString(),since,deadline,limits,model,makeModel,retrieve=retrieveOcto}){
   const root=await claimSource(db,{tracker_id:tracker.id,identity:'tracker',url:tracker.url});
-  if(!root||root.state==='parked')return {outcome:root?.state??'idle'};
+  if(!root)return {outcome:'idle'};
   const budget={requests:0,deadline},counts={created:0,changed:0,processed:0};
   try{
     const known=(await db.query("select native_id id,identity,url,native_ref task,(processed_hash is not null) captured from scout.source_state where tracker_id=$1 and identity<>'tracker' order by due_at limit 200",[tracker.id])).rows;
@@ -322,7 +337,8 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now=()=>new Da
       if(counts.processed||Date.now()+10000>=deadline)break;
       if(known.length>=200&&!known.some(s=>s.url===item.url))continue;
       const source={tracker_id:tracker.id,identity:String(item.identity??item.id??item.url),url:item.url,native_id:item.id==null?null:String(item.id),native_ref:item.task??{}};
-      const outcome=await processDocument(db,{source,model:generate,deadline,read:()=>supportDocuments(db,{source,prepared:item.prepared,read,sourceURL,budget,limits})});
+      const outcome=await processDocument(db,{source,model:generate,deadline,prepared:item.prepared,
+        support:requests=>supportDocuments(db,{source,prepared:item.prepared,read,sourceURL,budget,limits,requests})});
       processedURLs.push(item.url);
       counts.created+=outcome.created;counts.changed+=outcome.changed;counts.processed++;
     }

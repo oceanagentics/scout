@@ -1,4 +1,4 @@
-import { collectDocuments } from './octo-documents.js';
+import { collectDocuments, sourceURL } from './octo-documents.js';
 import { retrieveAuthorDocuments } from './bluesky-documents.js';
 import { retrieveDiscoveryDocuments } from './bluesky-discovery-documents.js';
 import { retrieveGFWDocuments, retrievePublisherDocuments, PUBLISHER_SOURCES } from './publisher-documents.js';
@@ -57,15 +57,7 @@ function publicAddress(address) {
     (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127));
 }
 
-export function sourceURL(value) {
-  const url = new URL(value);
-  if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) throw new Error('Unsupported source URL');
-  if (isIP(url.hostname.replaceAll(/[\[\]]/g, '')) || !url.hostname.includes('.')) throw new Error('Source must use a public hostname');
-  url.hash = '';
-  for (const key of [...url.searchParams.keys()]) if (/^utm_|^(fbclid|gclid)$/i.test(key)) url.searchParams.delete(key);
-  url.searchParams.sort();
-  return url.href;
-}
+export {sourceURL};
 
 // Validate DNS at connection time, including each redirect; never fetch local services.
 export async function readPublic(url, budget, redirects = 0) {
