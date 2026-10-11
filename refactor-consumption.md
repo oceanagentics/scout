@@ -44,6 +44,22 @@ Dates retain supported calendar precision even when clock or timezone is unknown
 
 **Only the first model response may request supporting pages.** Read the main page and supply its content plus available link URLs, labels and surrounding context. The model drafts the record, identifies missing or conflicting important fields, and optionally requests up to three supplied URLs, explaining which question each could answer. Code enforces URL safety, duplicates and budgets; the model selects relevance. Remove automatic registration/organizer/companion/native-reference follow-up fetches: any supporting-source request must be explicit in that first response. An empty request list causes zero supporting fetches and does not establish completeness. Do not recursively follow links from the supporting pages or add unsolicited search.
 
+Move supporting-page fetching **between the two model calls**. Replace the currently ignored `research.urls`/query output with explicit requests alongside the draft record, using existing record field paths:
+
+```json
+{
+  "research": {
+    "requests": [{
+      "url": "https://example.org/event/programme",
+      "needed_for": ["details.start", "organizations"],
+      "reason": "The page says the programme lists the schedule and hosts."
+    }]
+  }
+}
+```
+
+`packDocument` must supply available links with their labels/context. `processDocument` must consume and validate the first response's requests, then invoke `supportDocuments` only for those URLs; remove its automatic relevance filter and pre-model supporting fetches from both manual and scheduled entrypoints. Accept only supplied URLs, deduplicate them and enforce three supporting reads across the whole attempt, not three per finding. The second call receives the main page, draft, requested source contents and fetch-failure statuses. Request explanations and working material stay in memory.
+
 Fetch only the requested pages within the shared limits, then use a second call when needed to complete and check the record against all supplied material. It must be able to recover omitted facts and correct the draft, rather than merely approve or reject its existing claims. Supply failed/unread-source status so the model cannot treat unavailable material as evidence that a fact was not announced. Validate final supported facts, preserve human corrections and established values, then save once. An unresolved technical or research failure must not be marked successfully processed just because the model returned valid JSON.
 
 **Instruction delivery must be inspectable.** Current instructions live in `collector/finding-contract.js` (`EXTRACTION_INSTRUCTION`, `REVIEW_INSTRUCTION`) and `collector/assessment.js` (`PRIORITY_INSTRUCTION`). `collector/finding-jobs.js` assembles them; `collector/model.js` sends them as Gemini `systemInstruction`, with source documents separately in user content in the same request. The model receives neither this plan, AGENTS.md nor the manager conversation. Replace runtime wording substitution with explicit readable prompt composition, and review the fully assembled first and follow-up instructions before the pilot. Each call must include its needed instructions and source context; there is no implicit conversation memory.
@@ -55,7 +71,7 @@ Operating bounds remain at most two generations per processing attempt, with the
 Acceptance additions before expanding the live comparison:
 
 - A date/organization plainly present but omitted from the first draft can be recovered in the final pass; a missing essential field cannot silently bypass completeness checking. Test event, announcement and treaty date meanings and organization roles without weakening source support.
-- Only explicitly requested URLs are fetched, including when a programme/calendar link is selected. Empty requests, duplicate/unsafe URLs, unrequested registration links and links on supporting pages cannot trigger extra reads. Failed reads remain distinguishable from genuinely unpublished facts.
+- Give the first call registration, programme and unrelated links; have it request only the programme. Verify that only the programme is fetched, after the first response, and its supported date/organization facts reach the final record. Empty requests must cause zero follow-up reads. Duplicate/unsafe/unsupplied URLs, unrequested registration links and links on supporting pages cannot trigger extra reads; multiple findings share the three-read cap. Failed reads remain distinguishable from genuinely unpublished facts. Run the behavior through both manual and scheduled entrypoints with scheduling itself paused.
 - Parked unchanged input stays free of model calls/finding writes; a changed requested supporting page or recovered fetch can reopen work even if the main page is unchanged. Provider deadlines and finite attempts still apply.
 - After these mechanics pass, verify current shared quota and run the one-record real-model pilot with SQL/mutation/retained-byte and native PostgreSQL cost measurements. Then compare old/new extraction on the frozen source-backed expectations, scoring date and organization recovery, roles, incorrect facts and cost per correct finding. Dropped/unresolved expected records count as misses. Preserve held-out separation and the existing 95% precision/recovery gates. Keep only compact results/costs, never new page/prompt/response archives; the old runner must not be used unchanged if it persists those materials. Mocked mechanics do not prove real-model gains.
 
