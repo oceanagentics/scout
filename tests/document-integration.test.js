@@ -84,7 +84,7 @@ test('tracker discovery keeps native IDs and advances its bounded cursor across 
   await collectDocuments(db,options);
   assert.equal(seen[1].progress.after_id,'1');assert.equal(seen[1].known[0].id,'1');
   assert.equal((await db.query("select count(*)::int n from scout.source_state where identity<>'tracker'")).rows[0].n,2);
-  assert.equal((await db.query('select count(*)::int n from scout.evidence')).rows[0].n,0);
+  assert.equal((await db.query("select to_regclass('scout.evidence') name")).rows[0].name,null);
  }finally{await db.close();}
 });
 test('quota deferral before generation does not consume the source failure allowance',async()=>{

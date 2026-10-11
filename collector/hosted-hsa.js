@@ -72,7 +72,8 @@ export async function hostedHSA(request,{databaseURL,apiKey,webhook,env,connect=
       const preview=await prepareMessage(db),result=await sendMessage(db,preview,post??webhookTransport(webhook));
       return Response.json({...result,cost:db.metrics});
     }
-    if(rotation)await db.query('select * from scout.expire_quota()');
+    // Manual pilots use the same bounded accounting retention as scheduled work.
+    await db.query('select * from scout.expire_quota()');
     const invocation=randomUUID(),model=gemini({apiKey,ledger:db,invocation,deadline,fetch:modelFetch});
     let result;
     if(rotation&&selected.source_identity==='tracker'){

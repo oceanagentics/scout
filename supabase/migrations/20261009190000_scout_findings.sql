@@ -1,5 +1,11 @@
 begin;
--- Additive conversion. Historical records, source bodies, reports and accounting remain.
+-- Transfer useful facts, URLs and active accounting, then retire legacy storage.
+do $$ begin
+ if to_regclass('cron.job') is not null then
+  if exists(select 1 from cron.job where active and (jobname like 'scout-%' or command ilike '%scout%'))
+  then raise exception 'Pause Scout jobs before findings cutover';end if;
+ end if;
+end $$;
 drop trigger updated_at on scout.records;
 alter table scout.records
  add column canonical_url text,
@@ -22,7 +28,7 @@ update scout.records set canonical_url=event_url,
  relevance=jsonb_build_object('state',case when priority is null then 'pending' else 'assessed' end,'reason','Preserved existing assessment','fields','[]'::jsonb),
  accepted_version=case when priority is not null then 1 end,
  discovered_at=coalesce((select min(collected_at) from scout.evidence e where e.record_id=scout.records.id),updated_at);
--- Copy only accepted final calendar values; leave historical evidence byte-for-byte intact.
+-- Copy accepted final calendar values before removing historical evidence.
 update scout.records r set details=r.details||coalesce((select jsonb_object_agg(
  case f.key when 'starts_on' then 'start' else 'end' end,jsonb_build_object('value',f.value->>'value','precision','day'))
  from (select distinct on(x.key) x.key,x.value from scout.evidence e
@@ -58,6 +64,12 @@ create table scout.record_sources(
 );
 insert into scout.record_sources(record_id,url,tracker_id)
  select distinct on(record_id,url) record_id,url,tracker_id from scout.evidence where record_id is not null order by record_id,url,collected_at desc;
+insert into scout.record_sources(record_id,url,tracker_id)
+ select distinct on(e.record_id,s->>'url') e.record_id,s->>'url',e.tracker_id from scout.evidence e
+ cross join lateral jsonb_each(coalesce(e.parsed->'accepted_fields','{}')) f
+ cross join lateral jsonb_array_elements(coalesce(f.value->'sources','[]')) s
+ where e.record_id is not null and s->>'url' is not null order by e.record_id,s->>'url',e.collected_at desc
+ on conflict do nothing;
 update scout.records r set provenance=coalesce((select jsonb_object_agg(field,urls) from
  (select jsonb_agg(distinct url) urls from scout.record_sources where record_id=r.id) refs
  cross join lateral unnest(array['title','description','canonical_url']||array(select 'details.'||jsonb_object_keys(r.details))) field
@@ -80,13 +92,13 @@ create table scout.quota_policy(
 insert into scout.quota_policy(id) values(true);
 update scout.quota_policy set cooldown_until=(select max((stats->>'model_retry_at')::timestamptz) from scout.collection_runs
  where (stats->>'model_retry_at')::timestamptz>clock_timestamp());
--- Conservative carry is explicit; the old ledger is neither rewritten nor reset.
+-- Preserve active charges before removing the old ledger.
 create table scout.quota_reservations(
  id uuid primary key, invocation uuid not null, reserved_at timestamptz not null default clock_timestamp(),
  input_tokens integer not null check(input_tokens>=0), output_tokens integer not null default 0 check(output_tokens>=0),
  state text not null check(state in ('reserved','dispatched','settled','unknown')), reason text check(reason ~ '^[a-z_]{1,48}$')
 );
--- Copy active legacy charges only. The original ledger remains untouched.
+-- Expired history has no effect on current rate-limit windows.
 insert into scout.quota_reservations(id,invocation,reserved_at,input_tokens,state)
  select gen_random_uuid(),r.id,coalesce((a->>'at')::timestamptz,r.started_at),
  least(2147483647,coalesce((a->>'input_tokens')::bigint,(a->>'input_token_limit')::bigint,16000))::integer,'unknown'
@@ -232,14 +244,27 @@ language sql stable security definer set search_path='' as $$
 $$;
 revoke all on function scout.finding_jobs(uuid) from public,anon;
 grant execute on function scout.finding_jobs(uuid) to authenticated,service_role;
--- Retire replay/report APIs, never their historical rows.
+-- All useful fields and active quota reservations have been transferred above.
+-- Uncertain notification delivery needs an explicit dedupe decision before removal.
+do $$ begin
+ if exists(select 1 from scout.collection_runs where stats#>>'{delivery,status}' in ('unknown','dispatching'))
+ or exists(select 1 from scout.collection_runs r cross join lateral jsonb_array_elements(coalesce(stats#>'{delivery,records}','[]')) d
+   left join scout.records f on f.id=(d->>'id')::uuid where r.stats#>>'{delivery,status}'='sent'
+   and (f.id is null or f.last_communicated_at is null or f.last_communicated_at<(d->>'updated_at')::timestamptz))
+ then raise exception 'Unresolved legacy notification delivery';end if;
+end $$;
 drop function scout.run_history(uuid,timestamptz,uuid);
 drop function scout.run_detail(uuid);
 drop function scout.run_artifact(uuid,text);
 drop view scout.source_details;
 drop view scout.current_evidence;
-revoke all on scout.evidence,scout.collection_runs from authenticated,service_role;
 drop view scout.tracker_status;
+drop function if exists scout.loop_tick(text);
+drop function if exists scout.loop_health();
+drop function if exists scout.loop_retention();
+drop function if exists scout.source_backlog(uuid);
+drop view if exists scout.source_queue;
+drop table scout.evidence,scout.collection_runs;
 create view scout.tracker_status with(security_barrier=true) as
 select t.*,s.checked_at last_attempt_at,case when s.state='complete' then s.checked_at end last_success_at,
  s.state last_outcome,s.reason last_error,'paused'::text loop_state,

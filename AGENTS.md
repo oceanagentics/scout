@@ -10,4 +10,4 @@
 - Report scope, findings and remaining uncertainty before substantial changes and at meaningful milestones. Stop workers/automations when told to stop; resume only on user direction.
 - Use the existing checkout and one authorized implementation writer. No clones/worktrees. Verify explicitly requested implementation and create one focused commit after review, excluding unrelated dirty work.
 
-Current acceptance: build the simplified pipeline and test one record within verified model/SQL budgets. Keep recurring collection and notifications paused until reviewed. Existing stored source/history content is outside the cleanup scope. Funding collection remains future work.
+Current acceptance: build the simplified pipeline and test one record within verified model/SQL budgets. Keep recurring collection and notifications paused until reviewed. Legacy operational data cleanup was explicitly authorized on 11 October; preserve useful records, final facts, source URLs and any active quota/delivery accounting. Funding collection remains future work.

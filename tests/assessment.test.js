@@ -85,7 +85,7 @@ test('legacy active charges and future provider retry migrate without carrying e
   const stats={model_attempts:[{at:new Date(Date.now()-864000000).toISOString(),input_tokens:5000},{at:new Date().toISOString(),input_tokens:1500,state:'reserved'},{at:new Date().toISOString(),input_token_limit:16000,state:'unknown'}],model_retry_at:new Date(Date.now()+3600000).toISOString()};
   await raw.query('insert into scout.collection_runs(tracker_id,stats) values($1,$2)',[tr.id,stats]);
   await raw.exec(await readFile(new URL('../supabase/migrations/20261009190000_scout_findings.sql',import.meta.url),'utf8'));
-  assert.deepEqual((await raw.query('select stats from scout.collection_runs')).rows[0].stats,stats);
+  assert.equal((await raw.query("select to_regclass('scout.collection_runs') name")).rows[0].name,null);
   assert.equal((await raw.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,2);
   await enable(raw);assert.equal((await reserve(raw)).rows[0].allowed,false);
   assert.equal(new Date((await raw.query('select cooldown_until from scout.quota_policy')).rows[0].cooldown_until).getTime(),Date.parse(stats.model_retry_at));

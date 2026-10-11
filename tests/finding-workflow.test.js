@@ -85,8 +85,7 @@ test('one E04 record through production readers, model accounting and final save
   const retained={};
   for(const table of ['records','record_sources','record_identities','source_state','quota_reservations'])retained[table]=(await raw.query(`select count(*)::int rows,
     coalesce(sum(octet_length(to_jsonb(t)::text)),0)::int logical_json_bytes,coalesce(sum(pg_column_size(t)),0)::int row_bytes from scout.${table} t`)).rows[0];
-  assert.equal((await raw.query('select count(*)::int n from scout.evidence')).rows[0].n,0);
-  assert.equal((await raw.query('select count(*)::int n from scout.collection_runs')).rows[0].n,0);
+  assert.deepEqual((await raw.query("select to_regclass('scout.evidence') evidence,to_regclass('scout.collection_runs') runs")).rows[0],{evidence:null,runs:null});
   const counts=async()=>Object.fromEntries(await Promise.all(['records','record_sources','record_identities','source_state','quota_reservations'].map(async name=>[name,(await raw.query('select count(*)::int n from scout.'+name)).rows[0].n])));
   const before=await counts();
   for(let i=0;i<100;i++){
@@ -108,7 +107,7 @@ test('one E04 record through production readers, model accounting and final save
  }finally{await raw.close();}
 });
 
-test('compatible conversion preserves IDs, final facts, URLs, priority, delivery and historical content',async()=>{
+test('compatible conversion preserves IDs, final facts, URLs, priority and delivery while retiring history',async()=>{
  const db=await setup(false);try{
   const tr=await tracker(db),r=(await db.query("insert into scout.records(kind,title,organization,event_url,priority,last_communicated_at) values('event','Legacy','IDDRI','https://example.org/event','normal','2026-01-01') returning *")).rows[0];
   const parsed={accepted_fields:{starts_on:{value:'2026-02-26',accepted_at:'2026-10-01',sources:[{url:'https://example.org/event',quote:'unchanged private proof'}]}},
@@ -117,14 +116,13 @@ test('compatible conversion preserves IDs, final facts, URLs, priority, delivery
   await db.query("insert into scout.collection_runs(tracker_id,started_at,stats) values($1,now()-interval '10 days',$2)",[tr.id,{model_attempts:[{at:'2026-01-01T00:00:00Z',input_tokens:123}]}]);
   const oldAnnouncement=(await db.query("insert into scout.records(kind,title,priority) values('announcement','Legacy announcement','normal') returning id")).rows[0];
   await db.query("insert into scout.evidence(record_id,tracker_id,url,content_hash,content,parsed) values($1,$2,'https://example.org/legacy-announcement','legacy-news','UNCHANGED ANNOUNCEMENT BODY','{}')",[oldAnnouncement.id,tr.id]);
-  const history=(await db.query('select * from scout.evidence')).rows;
   await db.exec(await readFile(new URL('../supabase/migrations/20261009190000_scout_findings.sql',import.meta.url),'utf8'));
   const converted=(await db.query('select * from scout.records where id=$1',[r.id])).rows[0];
   assert.equal(converted.id,r.id);assert.equal(converted.details.start.value,'2026-02-26');
   assert.deepEqual(converted.organizations,[{name:'IDDRI',role:'unspecified'}]);assert.equal(converted.canonical_url,r.event_url);
   assert.equal(converted.priority,'normal');assert.equal(converted.relevance.reason,'Legacy accepted reason.');
   assert.deepEqual(converted.last_communicated_at,r.last_communicated_at);assert.deepEqual(converted.updated_at,r.updated_at);
-  assert.deepEqual((await db.query('select * from scout.evidence')).rows,history);
+  assert.equal((await db.query("select to_regclass('scout.evidence') name")).rows[0].name,null);
   assert.equal((await db.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,0);
   const source={tracker_id:tr.id,identity:'legacy-announcement',url:'https://example.org/legacy-announcement'};
   const prepared=prepareDocument({url:source.url,title:'',html:'<p>Legacy announcement.</p>'});
@@ -136,7 +134,6 @@ test('compatible conversion preserves IDs, final facts, URLs, priority, delivery
   assert.equal(refresh.created,0);assert.equal(refresh.state,'complete');
   assert.equal((await db.query("select id from scout.records where kind='announcement'")).rows[0].id,oldAnnouncement.id);
   assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,2);
-  assert.deepEqual((await db.query('select * from scout.evidence')).rows,history);
   const nativePrepared=prepareDocument({url:source.url,title:'',html:'<p>Legacy announcement. UID:legacy-native</p>'});
   const nativeRefresh=await processDocument(db,{source:{...source,identity:'new-native-reader'},prepared:nativePrepared,model:async()=>({complete:true,findings:[{
     occurrence:{kind:'announcement',anchor:'Legacy announcement',title:'Legacy announcement',sources},description:null,canonical_url:null,organizations:[],
@@ -146,7 +143,7 @@ test('compatible conversion preserves IDs, final facts, URLs, priority, delivery
   assert.equal(nativeRefresh.reason,'ambiguous_identity');assert.equal(nativeRefresh.created,0);
   assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,2);
   await db.exec('set role authenticated');
-  await assert.rejects(db.query('select * from scout.evidence'),{code:'42501'});
+  await assert.rejects(db.query('select * from scout.record_sources'),{code:'42501'});
   assert.equal((await db.query('select * from scout.findings()')).rows.length,0);
  }finally{await db.close();}
 });
