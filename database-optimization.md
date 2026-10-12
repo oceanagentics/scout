@@ -115,6 +115,31 @@ For subsequent ordinary authorized research, retain heap/index/TOAST allocation 
 
 Inlining removes related-row/index work, but wider rows and changes to indexed source/identity arrays can affect HOT behavior. **HOT and per-update WAL improvements remain unmeasured.** Zero index allocation growth does not mean zero index writes. Record future real results without generating artificial research or edits to populate a metric.
 
+### One-hour checkpoint — 12 October 2026, 19:07:33–20:07:56 UTC
+
+Read-only management API comparison during real writes; no research or database mutations were triggered by this check. Collector deployment advanced from v137 to v138 at 19:53:19 UTC, alongside separate URL-only research, model fallback and calendar work. The research description above records the migration-time implementation; current behavior is governed by `refactor-consumption.md`.
+
+| Measurement | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Findings | 95 | 103 | +8 |
+| Source links / aliases | 117 / 98 | 132 / 113 | +15 / +15 |
+| Finding heap | 122,880 B | 139,264 B | +16,384 B |
+| Finding indexes | 286,720 B | 319,488 B | +32,768 B |
+| Finding total | 458,752 B | 507,904 B | +49,152 B |
+| All Scout relations | 868,352 B | 958,464 B | +90,112 B |
+| Whole database | 14,079,667 B | 14,210,739 B | +131,072 B |
+| Estimated dead finding rows | 0 | 0 | 0 |
+
+The eight version-1 findings arrived in one batch at 19:36:45 UTC and contain all 15 added links and aliases. Table counters show **8 inserts, 0 updates and 0 deletes**. Observed finding allocation grew **6,144 B per new finding**, including **4,096 B of indexes**; this small page-allocation sample is not a capacity forecast. Identity, organization, source and text GIN indexes each grew 8,192 B, ending at 40,960 / 24,576 / 24,576 / 98,304 B. Other index sizes were unchanged. Scan deltas were primary key +26, canonical/title/identities +16 each, priority-page +11, kind-priority +1 and zero for the other six indexes; one hour of no scans does not establish redundancy.
+
+The bulk insert's existing `EXPLAIN ANALYZE` wrapper recorded **1 call, 46,073 B WAL, 57.283 ms execution, 1,009 shared-buffer hits, 2 reads and 19 dirtied blocks**: **5,759 B WAL per inserted finding**. Its statement entry began at 19:36:45 UTC (`queryid=-4619956265173898327`); its reported row counter is zero because it is an EXPLAIN wrapper. The eight inserted rows are established separately by table counters and discovery timestamps. This is batch SQL execution time, not API latency or full research cost.
+
+Operational activity was separate: reservations had **18 inserts, 18 updates, 17 HOT updates (94.4%)** and 8,192 B growth; policy had **30 updates, all HOT (100%)**, 8,192 B growth and one autovacuum. Their dead-row estimates fell 17→13 and 28→4 respectively. Source-state, delivery and tracker counters/allocations were unchanged; source-state still had 53 estimated dead rows. The new calendar table added 24,576 B, with 1 insert and 11 HOT updates. No observed table had a deletion delta. Matching direct quota DML contributed **48 calls/48 rows, 12,200 B WAL, 53.042 ms, 1,337 buffer hits, 0 reads and 8 dirtied blocks**. Reservation creation is nested in `reserve_model`; tracking is `top` and its function-call baseline was not captured, so these are partial costs, not a complete write total.
+
+All six baseline table OIDs matched. Database statistics reset remained null; statement statistics reset remained **2026-10-08 23:05:13.347985 UTC**, with **0 evictions**, no missing baseline entries and no decreasing captured counters. Deltas match `(userid, dbid, queryid::text, toplevel)`; new direct-DML entries start from zero in this unchanged window.
+
+**Conclusion:** the earlier same-content **32.5% storage reduction** remains established. This hour adds a real insert-cost checkpoint, but the v135 twelve-source run and this bulk save are different workloads, so no write-cost or latency improvement/regression is established. Finding HOT is **N/A (0 updates)**; indexed versus non-indexed update costs and unchanged-save behavior were not measured. Growth accompanies useful new data and separate operational/calendar work; no finding dead-row buildup was observed. These estimates cannot quantify free-page/index bloat, and `pgstattuple` remains unenabled. No maintenance action is justified by this sample. This was a one-time follow-up, with no continuing monitoring.
+
 ## Supabase analytics and operating limits
 
 The management API provides useful read-only measurements:
