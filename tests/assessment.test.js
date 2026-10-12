@@ -11,7 +11,7 @@ async function setup(cutover=true){
  await raw.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;
  create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');create table auth.identities(user_id uuid,provider text,identity_data jsonb);
  create function auth.uid() returns uuid language sql as $$select null::uuid$$;`);
- for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort().filter(n=>cutover||n!=='20261009190000_scout_findings.sql'))
+ for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort().filter(n=>cutover||n<'20261009190000_scout_findings.sql'))
   await raw.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
  return raw;
 }
@@ -31,21 +31,21 @@ test('fresh finite shared headroom and database size are required before any mod
   assert.equal(http,0);assert.equal((await raw.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,0);
  }finally{await raw.close();}
 });
-test('three durable quota mutations, exact preflight, streaming Unicode and max two generations',async()=>{
+test('two durable quota mutations, URL retrieval accounting, streaming Unicode and max two generations',async()=>{
  const raw=await setup();try{
   await enable(raw);const db=boundary(raw),http={count:0,generation:0};
   const send=async url=>{
    if(url.endsWith(':countTokens')){http.count++;return Response.json({totalTokens:1234});}
    http.generation++;
-   const body=JSON.stringify({usageMetadata:{promptTokenCount:1234,candidatesTokenCount:12},candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify({organization:'Océan 海洋'})}]}}]});
+   const body=JSON.stringify({usageMetadata:{promptTokenCount:234,toolUsePromptTokenCount:1000,candidatesTokenCount:12,totalTokenCount:1246},candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:'https://example.org',urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},content:{parts:[{text:JSON.stringify({organization:'Océan 海洋'})}]}}]});
    const bytes=new TextEncoder().encode(body);
    return new Response(new ReadableStream({start(controller){for(const b of bytes)controller.enqueue(new Uint8Array([b]));controller.close();}}));
   };
   const model=gemini({apiKey:'test',ledger:db,fetch:send});
-  assert.deepEqual(await model('Test',{}),{organization:'Océan 海洋'});assert.equal(db.metrics.mutations,3);
-  await model('Test',{});assert.equal(db.metrics.mutations,6);
+  assert.equal((await model('Test',{})).organization,'Océan 海洋');assert.equal(db.metrics.mutations,2);
+  await model('Test',{});assert.equal(db.metrics.mutations,4);
   await raw.exec("update scout.quota_reservations set reserved_at=now()-interval '61 seconds'");
-  await assert.rejects(model('Test',{}),/quota/);assert.deepEqual(http,{count:2,generation:2});
+  await assert.rejects(model('Test',{}),/quota/);assert.deepEqual(http,{count:0,generation:2});
   const rows=(await raw.query('select * from scout.quota_reservations')).rows;assert.equal(rows.length,2);
   assert.ok(rows.every(r=>r.state==='settled'&&r.input_tokens===1234));
  }finally{await raw.close();}
@@ -72,7 +72,7 @@ test('daily denial returns Pacific reset, token oversize never generates and pro
   assert.deepEqual(denied.retry_at,reset);
   await raw.exec("update scout.quota_reservations set reserved_at=now()-interval '2 days';update scout.quota_policy set rpd=250");
   let generated=0;
-  await assert.rejects(gemini({apiKey:'test',ledger:boundary(raw),fetch:async url=>{if(url.endsWith(':countTokens'))return Response.json({totalTokens:16001});generated++;}})('Test',{}),/input_bound/);
+  await assert.rejects(gemini({apiKey:'test',ledger:boundary(raw),fetch:async()=>{generated++;}})('Test',{oversize:'x'.repeat(24001)}),/input_bound/);
   assert.equal(generated,0);
   await assert.rejects(gemini({apiKey:'test',ledger:boundary(raw),fetch:async()=>new Response('{}',{status:429,headers:{'retry-after':'3600'}})})('Test',{}),/provider_unavailable/);
   const cooldown=(await raw.query('select cooldown_until from scout.quota_policy')).rows[0].cooldown_until;

@@ -2,10 +2,9 @@ import {verifyAuth} from '@supabase/server/core';
 import postgres from 'postgres';
 import {Buffer} from 'node:buffer';
 import {randomUUID} from 'node:crypto';
-import {collectHSA,readPublic,sourceURL,LIMITS} from './hsa.js';
+import {collectHSA,readPublic,sourceURL} from './hsa.js';
 import {gemini} from './model.js';
 import {processDocument} from './finding-jobs.js';
-import {supportDocuments,prepareResponse} from './octo-documents.js';
 import {correctFinding} from './corrections.js';
 import {prepareMessage,sendMessage,webhookTransport} from '../notifications/slack.js';
 
@@ -80,11 +79,7 @@ export async function hostedHSA(request,{databaseURL,apiKey,webhook,env,connect=
       result=await collectHSA(db,{trackerId:selected.id,documents:'process',rotation:true,model,read,deadline});
     }else{
       const source={tracker_id:selected.id,identity:rotation?selected.source_identity:url,url:rotation?selected.source_url:url},budget={requests:0,support:true,deadline};
-      let primary;
-      result=await processDocument(db,{source,model,deadline,read:async()=>{
-        const response=await read(source.url,budget),prepared=await prepareResponse(response,{sourceURL,deadline,task:selected.source_ref??{}});
-        primary=prepared;return prepared;
-      },support:requests=>supportDocuments(db,{source,prepared:primary,read,sourceURL,budget,limits:LIMITS,requests})});
+      result=await processDocument(db,{source,model,deadline,read:url=>read(url,budget)});
     }
     return Response.json({...result,cost:db.metrics});
   }catch(error){

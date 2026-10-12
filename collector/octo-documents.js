@@ -259,43 +259,6 @@ export async function prepareResponse(response,{sourceURL,deadline=Date.now()+20
 }
 
 // Native reference routing stays in the source adapter; extracted facts do not.
-export function nativeLinks(prepared){
-  const links=[];
-  if(new URL(prepared.url).hostname!=='api.cbd.int')return links;
-  const values=pattern=>(prepared.blocks??[]).filter(b=>b.source_paths?.some(p=>pattern.test(p))).map(b=>prepared.text.slice(...b.value_range));
-  const meetings=[...new Set(values(/\.(?:sideEvent|location)\.conference$/))],hosts=[...new Set(values(/\.sideEvent\.hostOrgs\[\d+\]$/))];
-  if(meetings.length===1&&/^[a-f0-9]{24}$/.test(meetings[0]))links.push({target:'https://api.cbd.int/api/v2016/conferences?'+new URLSearchParams({q:JSON.stringify({_id:{$oid:meetings[0]}}),f:JSON.stringify({Title:1,Description:1,Venue:1})}),task:{kind:'meeting',ids:meetings},relationship:'meeting',label:'Referenced parent meeting; not session dates'});
-  if(hosts.length&&hosts.length<=10&&hosts.every(v=>/^[a-f0-9]{24}$/.test(v)))links.push({target:'https://api.cbd.int/api/v2016/inde-orgs?'+new URLSearchParams({q:JSON.stringify({_id:{$in:hosts.map(id=>({$oid:id}))}}),f:JSON.stringify({title:1,acronym:1})}),task:{kind:'organizer',ids:hosts},relationship:'organizer',label:'Referenced organizations'});
-  return links;
-}
-export async function supportDocuments(_db,{source,prepared,read,sourceURL,budget,limits,requests=[]}){
-  const documents=[{id:'P',url:source.url,relationship:'primary',prepared}],coverage=[];
-  const links=[...prepared.links??[],...nativeLinks(prepared)],visited=new Set([sourceURL(source.url)]);
-  let retryAt;
-  for(const request of requests){
-    let url;try{url=sourceURL(request.url);}catch{throw Object.assign(new Error('invalid_research'),{reason:'invalid_research'});}
-    if(visited.has(url))continue;visited.add(url);
-    const link=links.find(l=>{try{return sourceURL(l.target)===url;}catch{return false;}});
-    if(!link)throw Object.assign(new Error('invalid_research'),{reason:'invalid_research'});
-    if((budget.support_reads??0)>=3||budget.requests>=limits.requests||Date.now()+1000>=budget.deadline){
-      coverage.push({url,state:'unread',reason:'research_budget_exhausted'});continue;
-    }
-    budget.support_reads=(budget.support_reads??0)+1;
-    const before=budget.requests,wasSupport=budget.support;budget.support=true;
-    try{
-      const response=await read(url,budget);
-      if(Buffer.byteLength(response.body,response.encoding==='base64'?'base64':'utf8')>(limits.bytes??524288)*4)throw new Error('support_bound');
-      const clean=await prepareResponse(response,{sourceURL,deadline:budget.deadline,task:link.task});
-      documents.push({id:'S'+documents.length,url:response.url,requested_url:url,relationship:link.relationship??'support',prepared:clean});
-      coverage.push({url,state:'fetched'});
-    }catch(error){
-      coverage.push({url,state:'inaccessible',reason:'inaccessible_source'});
-      if(Date.parse(error.deferred?.retry_at)>(Date.parse(retryAt)||0))retryAt=error.deferred.retry_at;
-    }finally{budget.requests=Math.max(budget.requests,before+1);budget.support=wasSupport;}
-  }
-  return {...prepared,documents,coverage,retryAt};
-}
-
 async function retrieveOcto({read,budget,sourceURL,known=[],limits}){
   const documents=[],coverage=[];let items=[];
   try{const response=await read(FEED,budget);if(response.status!==200)throw new Error('Feed unavailable');items=feedItems(response.body);}
@@ -338,7 +301,7 @@ export async function collectDocuments(db,{tracker,read,sourceURL,now=()=>new Da
       if(known.length>=200&&!known.some(s=>s.url===item.url))continue;
       const source={tracker_id:tracker.id,identity:String(item.identity??item.id??item.url),url:item.url,native_id:item.id==null?null:String(item.id),native_ref:item.task??{}};
       const outcome=await processDocument(db,{source,model:generate,deadline,prepared:item.prepared,
-        support:requests=>supportDocuments(db,{source,prepared:item.prepared,read,sourceURL,budget,limits,requests})});
+        read:url=>read(url,budget)});
       processedURLs.push(item.url);
       counts.created+=outcome.created;counts.changed+=outcome.changed;counts.processed++;
     }

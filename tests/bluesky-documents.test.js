@@ -4,7 +4,6 @@ import { readFile } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { prepareAuthorItem, retrieveAuthorDocuments } from '../collector/bluesky-documents.js';
-import {packDocument} from '../collector/finding-jobs.js';
 
 
 const hsa='highseasalliance.bsky.social';
@@ -173,7 +172,7 @@ test('retained HSA failures now supply complete post and embed fields with sourc
   for(const source of saved.sources){
     const item=JSON.parse(source.content),doc=prepare(item);
     assert.equal(doc.raw,source.content);assert.equal(createHash('sha256').update(doc.raw).digest('hex'),source.content_hash);
-    const input=packDocument(source,{documents:[{id:'P',capture_id:source.id,url:doc.url,relationship:'primary',prepared:doc.prepared}]});
+    const input={documents:[{blocks:[{text:doc.prepared.text}]}]};
     assert.ok(input.documents[0].blocks.some(b=>b.text.includes(item.post.record.text)));
     const embed=item.post.embed;
     for(const text of embed.images?.map(i=>i.alt)??[embed.external.title,embed.external.description,embed.external.uri])
@@ -218,8 +217,7 @@ test('Unicode post and embedded alt text retain all content and original source 
   item.post.record.text='Français 🌊 whitespace. '.repeat(1000)+'Final post session.';
   item.post.embed={images:[{alt:'Image evidence 🌊. '.repeat(100)+'Final image session.'}]};
   delete item.post.record.embed;delete item.post.record.facets;
-  const doc=prepare(item),input=packDocument({id:'capture'},{documents:[{id:'P',capture_id:'capture',url:doc.url,prepared:doc.prepared}]});
-  const blocks=input.documents[0].blocks;
+  const doc=prepare(item),blocks=doc.prepared.blocks.map(b=>({...b,text:doc.prepared.text.slice(b.start,b.end)}));
   assert.ok(blocks.every(b=>b.text.isWellFormed()));
   assert.ok(blocks.some(b=>b.text.includes(item.post.record.text)));
   assert.ok(blocks.some(b=>b.text.includes(item.post.embed.images[0].alt)));

@@ -2,19 +2,14 @@ import {Buffer} from 'node:buffer';
 import {randomUUID} from 'node:crypto';
 
 export const MODEL='gemini-3.5-flash-lite';
-export const MODEL_LIMITS={minute:2,run:2,tokens:125000,day:250,input:16000,output:8192};
+export const MODEL_LIMITS={minute:2,run:2,tokens:125000,day:250,input:60000,output:8192};
 
 export function requestBody(instruction,input,schema){
-  const attachments=[];
-  const text=JSON.stringify(input,(key,value)=>{
-    if(key!=='inline_data')return value;
-    if(value?.mime_type!=='application/pdf'||typeof value.data!=='string'||Buffer.byteLength(value.data,'base64')>2097152)throw new Error('input_bound');
-    attachments.push({inlineData:{mimeType:value.mime_type,data:value.data}});
-    return {attachment:attachments.length,mime_type:value.mime_type};
-  });
-  if(Buffer.byteLength(text)>96000||attachments.length>1)throw new Error('input_bound');
-  return JSON.stringify({systemInstruction:{parts:[{text:instruction}]},contents:[{role:'user',parts:[{text},...attachments]}],
-    generationConfig:{maxOutputTokens:MODEL_LIMITS.output,thinkingConfig:{thinkingLevel:'minimal'},responseMimeType:'application/json',responseJsonSchema:schema}});
+  const body={contents:[{role:'user',parts:[{text:instruction},...(Array.isArray(input)&&!input.length?[]:[{text:JSON.stringify(input)}])]}],
+    tools:[{urlContext:{}}],store:false,
+    generationConfig:{maxOutputTokens:MODEL_LIMITS.output,thinkingConfig:{thinkingLevel:'minimal'},responseMimeType:'application/json',responseJsonSchema:schema}};
+  if(Buffer.byteLength(JSON.stringify(body))>24000)throw new Error('input_bound');
+  return JSON.stringify(body);
 }
 
 // All request/response material is invocation-local. No automatic provider retries.
@@ -28,7 +23,7 @@ export function gemini({apiKey,ledger,invocation=randomUUID(),maxCalls=2,fetch:s
       const result=(await ledger.query('select * from scout.reserve_model($1,$2,$3,$4)',[invocation,id,tokens,maxCalls])).rows[0];
       if(!result?.allowed)throw Object.assign(new Error('quota'),{reason:'quota',deferred:{reason:'quota',retry_at:result?.retry_at}});
     };
-    await reserve(null); // durable before even the countTokens request
+    await reserve(MODEL_LIMITS.input); // URL retrieval is unknown: reserve headroom before dispatch
     let tokens=MODEL_LIMITS.input,output=0,state='settled',reason=null,dispatched=false,retryAt;
     const request=async(suffix,payload)=>{
       let response;
@@ -49,23 +44,28 @@ export function gemini({apiKey,ledger,invocation=randomUUID(),maxCalls=2,fetch:s
       try{return JSON.parse(raw);}catch{throw new Error('invalid_output');}
     };
     try{
-      const counted=await request(':countTokens',JSON.stringify({generateContentRequest:{model:'models/'+MODEL,...JSON.parse(body)}}));
-      if(!Number.isSafeInteger(counted.totalTokens)||counted.totalTokens<0||counted.totalTokens>MODEL_LIMITS.input)throw new Error('input_bound');
-      tokens=counted.totalTokens;
-      await reserve(tokens); // exact token preflight immediately before dispatch
       if(Date.now()+5000>=deadline)throw new Error('runtime_bound');
       dispatched=true;
       const result=await request(':generateContent',body);
-      if(Number.isSafeInteger(result.usageMetadata?.promptTokenCount))tokens=Math.max(tokens,result.usageMetadata.promptTokenCount);
-      if(Number.isSafeInteger(result.usageMetadata?.candidatesTokenCount))output=Math.max(0,result.usageMetadata.candidatesTokenCount);
+      const usage=result.usageMetadata;
+      if(Number.isSafeInteger(usage?.promptTokenCount)&&Number.isSafeInteger(usage?.totalTokenCount)){
+        tokens=usage.promptTokenCount+(usage.toolUsePromptTokenCount??0);
+        output=(usage.candidatesTokenCount??0)+(usage.thoughtsTokenCount??0);
+      }else state='unknown';
+      if(tokens>MODEL_LIMITS.input){reason='token_reservation_overrun';retryAt=new Date(Date.now()+120000).toISOString();}
       const choice=result.candidates?.[0];
-      if(choice?.finishReason!=='STOP')throw new Error('invalid_output');
-      try{return JSON.parse(choice.content.parts.filter(p=>!p.thought).map(p=>p.text??'').join(''));}
-      catch{throw new Error('invalid_output');}
+      if(choice?.finishReason!=='STOP')throw new Error(choice?.finishReason==='MAX_TOKENS'?'output_truncated':'provider_finish');
+      let answer;
+      try{answer=JSON.parse(choice.content.parts.filter(p=>!p.thought).map(p=>p.text??'').join(''));}
+      catch{throw new Error('invalid_json');}
+      const retrieval=choice.urlContextMetadata?.urlMetadata??[];
+      if(!retrieval.some(r=>r.urlRetrievalStatus==='URL_RETRIEVAL_STATUS_SUCCESS'))throw new Error('url_unreadable');
+      return {...answer,_retrieval:retrieval.map(r=>({url:r.retrievedUrl,status:r.urlRetrievalStatus})),
+        _usage:{input_tokens:tokens,output_tokens:output,overrun:tokens>MODEL_LIMITS.input}};
     }catch(error){
-      reason=['input_bound','output_bound','runtime_bound','invalid_output','provider_unavailable','provider_unknown','quota'].includes(error.message)?error.message:'provider_unknown';
-      if(dispatched&&['provider_unknown','output_bound'].includes(reason))state='unknown';
-      throw Object.assign(new Error(reason),{reason,dispatched,...(retryAt||error.deferred?{deferred:{reason,retry_at:retryAt??error.deferred.retry_at}}:{})});
+      reason=['input_bound','output_bound','runtime_bound','invalid_json','output_truncated','provider_finish','url_unreadable','provider_unavailable','provider_unknown','quota'].includes(error.message)?error.message:'provider_unknown';
+      if(dispatched&&['provider_unknown','output_bound','provider_unavailable','invalid_json'].includes(reason))state='unknown';
+      throw Object.assign(new Error(reason),{reason,dispatched,usage:{input_tokens:tokens,output_tokens:output,uncertain:state==='unknown'},...(retryAt||error.deferred?{deferred:{reason,retry_at:retryAt??error.deferred.retry_at}}:{})});
     }finally{
       await ledger.query('update scout.quota_reservations set input_tokens=$2,output_tokens=$3,state=$4,reason=$5 where id=$1 returning id',[id,tokens,output,state,reason]);
       if(retryAt)await ledger.query('update scout.quota_policy set cooldown_until=greatest(cooldown_until,$1::timestamptz) where id returning id',[retryAt]);
