@@ -30,6 +30,14 @@ Estimated initial extraction-only operation: up to three model generations, zero
 
 Credential preflight on 12 October: read-only `/v1/models` requests returned `401 invalid_api_key` for both process and `.env.local` keys. Zero generation calls/charges. A valid project API key must be installed securely in ignored `.env.local`; verify existing API credit and project model/rate limits before generation. Never print keys, save model traffic or use unsupported internal account tokens.
 
+## Restricted key and token economy
+
+Use a project-scoped Scout key with Restricted permissions: **Responses API Write** (`api.responses.write`, `POST /v1/responses`) and **Models Read** (`api.model.read`, `GET /v1/models`) for access verification. Set all other endpoint permissions to None, including stored-response reads, files, vector stores, assistants/threads, agents, batch, fine-tuning, other inference endpoints, usage administration and project/key management. The owning user/service account's project role must also permit those two scopes. Billing/limit verification uses the owner's dashboard; the runtime key needs no administration privileges. See [permissions](https://developers.openai.com/api/docs/guides/rbac) and the [minimal response-writer example](https://developers.openai.com/api/docs/guides/terraform/service-accounts).
+
+Use the project's model allowlist to permit only `gpt-6-luna` for this pilot; configure it through owner settings, keeping administration permissions off the runtime key. Set a small project hard spend limit as an additional control, while retaining Scout's $0.10 experiment ceiling and numeric reservations. Spend alerts alone do not stop traffic; hard-limit enforcement can lag. See [model access controls](https://developers.openai.com/api/docs/guides/admin-apis) and [spend limits](https://developers.openai.com/api/docs/guides/spend-limits).
+
+Stretch tokens by preserving unchanged-input skipping, using OpenAI only for explicit retrieval gaps, supplying bounded useful source text once, and avoiding repeated diagnostic variants or automatic retries. Keep `gpt-6-luna` with reasoning `none`, no paid built-in tools and one extraction before expansion. Configure the first single-record OpenAI pilot with a **1,500-output-token limit**, within the existing 4,096 maximum; increase it only when the workload demonstrates a need and remaining verified allowance permits. Input/output reservations are conservative ceilings; actual usage is settled separately. Keep the complete rubric, URLs, native JSON and uncertainty behavior intact when reducing budgets.
+
 ## Frozen comparison and acceptance
 
 Use `.cache/scout-refactor/oct12-evaluation-manifest.json` expectations in memory. Preserve native CBD identity `cbd:side-event:6915` as caller/source metadata; extraction-only comparison must neither create a duplicate nor claim the separate F08 identity defect is fixed.
@@ -65,6 +73,12 @@ Independent verification: **73 gateway checks and 321 total repository checks pa
 **Live recovery is blocked:** E02, E09 and A07 were not sent to OpenAI, so no new result proves these pages read or their expected dates/names extracted. Two read-only authentication requests returned `401 invalid_api_key`. This task made zero live generations/tool calls, zero inference tokens/charges and zero production SQL/mutations/WAL; no source/model traffic was persisted. Real extraction latency, credit consumption and factual correctness remain unmeasured. The compact ignored checkpoint holds only current ownership/status and numeric results.
 
 Next action: securely replace `.env.local`'s invalid API key; verify candidate model access, existing API credit and actual rate/token headroom; use fresh atomic current accounting for one extraction-only E02 call within the $0.10 total ceiling. Continue to E09/A07 only after independent E02 acceptance and remaining budget verification. F09/F10 and provider F12 live acceptance remain open. The heartbeat stays paused; no deployment, Slack activation or recurring-work change is included.
+
+## Completion cleanup — test bloat
+
+Before declaring this plan complete, audit the gateway and affected intake/model tests for duplicate coverage, obsolete pipeline expectations and brittle checks that merely mirror implementation. Consolidate or remove redundant cases, repeated setup and unused fixtures; prefer a smaller set of behavior-focused tests and existing test patterns, without adding a replacement harness. Coordinate overlapping files with the storage and F06/F11 owners before edits.
+
+Preserve distinct coverage for real URL recovery and correct dates/names, source-read proof, restricted dispatch, shared attempt/spending limits, uncertain charges/cooldowns, useful partials, unchanged inputs, identity/human corrections and provider failures. Keep the mocked-mechanics versus live-correctness distinction explicit. Measure before/after test lines, fixture bytes and runtime; rerun retained regressions and the build. Current gateway baseline is 287 test lines / 73 checks; reducing test count alone is not acceptance. This cleanup is a required completion step, not performed by this plan update.
 
 ## Official documentation inspected
 
