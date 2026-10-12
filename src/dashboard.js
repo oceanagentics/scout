@@ -213,7 +213,7 @@ export function mountDashboard(root, load) {
       data = next; loadedAt = new Date().toISOString();
       renderRecords(); renderTrackers();
       const discoveries=root.querySelector('#discoveries');discoveries.replaceChildren(node('p',`${data.jobs.length} pending items on this page.`));
-      for(const job of data.jobs){const item=node('article',null,'record');item.append(link(job.title,job.url),node('p',job.explanation??job.state),node('p',job.reopen_when??''));discoveries.append(item);}
+      for(const job of data.jobs){const item=node('article',null,'record');item.append(link(job.title,job.url),node('p',job.explanation??job.state),node('p',job.state==='parked'?'Reconsider explicitly.':'Retry after due time.'));discoveries.append(item);}
       for(const [label,cursor,disabled]of [['First page',null,!jobsAfter],['Next page',data.jobsNext,!data.jobsNext]]){
         const button=node('button',label,'secondary');button.type='button';button.disabled=disabled;button.addEventListener('click',()=>{jobsAfter=cursor;void reload();});discoveries.append(button);
       }

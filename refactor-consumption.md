@@ -1,5 +1,11 @@
 # Scout refactor consumption plan
 
+## URL-only core — 12 October 2026
+
+The user's latest direction shuts down local source reading/preparation and fingerprint change detection while proving the core. Hosted manual and due-source collection both pass the source URL and shared instructions directly to the model; the hosted collector no longer enters the legacy document-discovery adapters. Model-requested research supplies URLs and existing findings to the model, without application-side support reads. Legacy reader modules remain outside this active route.
+
+Completed and parked sources require explicit reopening through the existing state reset/correction path. Page changes alone no longer reopen them, and a skipped completed source is reported as complete rather than claiming its content is unchanged. Keep finite retries, quota accounting, useful records and human corrections. No source bodies or new hashes are retained; existing database columns remain for compatibility. Recurring collection and notifications stay paused. This supersedes earlier requirements below for automatic fingerprint checks; it does not resolve relevance selection, URL-provider reading failures or programme completeness.
+
 ## Current failure status and ownership — 12 October
 
 This snapshot supersedes older next-action/status descriptions below; historical test results remain unchanged. **Seven solved, eight open.** Open items include implemented work awaiting live proof, blocked validation and pending decisions; they are not eight new implementation projects. Solved means the item's stated implementation or diagnostic scope has evidence; it does not imply complete intake reliability or permission for recurring operation.

@@ -2,7 +2,7 @@ import {verifyAuth} from '@supabase/server/core';
 import postgres from 'postgres';
 import {Buffer} from 'node:buffer';
 import {randomUUID} from 'node:crypto';
-import {collectHSA,readPublic,sourceURL} from './hsa.js';
+import {sourceURL} from './octo-documents.js';
 import {gemini} from './model.js';
 import {processDocument} from './finding-jobs.js';
 import {correctFinding} from './corrections.js';
@@ -33,7 +33,7 @@ export function database(sql,inTransaction=false,metrics={statements:0,mutations
   };
   return db;
 }
-export async function hostedHSA(request,{databaseURL,apiKey,webhook,env,connect=postgres,read=readPublic,modelFetch=fetch,post}={}){
+export async function hostedHSA(request,{databaseURL,apiKey,webhook,env,connect=postgres,modelFetch=fetch,post}={}){
   const {error}=await verifyAuth(request,{auth:'secret:default',env});
   if(error)return Response.json({error:'Backend secret required'},{status:401});
   if(request.method!=='POST')return Response.json({error:'POST required'},{status:405});
@@ -74,13 +74,8 @@ export async function hostedHSA(request,{databaseURL,apiKey,webhook,env,connect=
     // Manual pilots use the same bounded accounting retention as scheduled work.
     await db.query('select * from scout.expire_quota()');
     const invocation=randomUUID(),model=gemini({apiKey,ledger:db,invocation,deadline,fetch:modelFetch});
-    let result;
-    if(rotation&&selected.source_identity==='tracker'){
-      result=await collectHSA(db,{trackerId:selected.id,documents:'process',rotation:true,model,read,deadline});
-    }else{
-      const source={tracker_id:selected.id,identity:rotation?selected.source_identity:url,url:rotation?selected.source_url:url},budget={requests:0,support:true,deadline};
-      result=await processDocument(db,{source,model,deadline,read:url=>read(url,budget)});
-    }
+    const source={tracker_id:selected.id,identity:rotation?selected.source_identity:url,url:rotation?selected.source_url:url};
+    const result=await processDocument(db,{source,model,deadline});
     return Response.json({...result,cost:db.metrics});
   }catch(error){
     return Response.json({error:[400,409].includes(error.status)?error.message:'Collection interrupted; compact state retains the retry and quota charge.'},{status:error.status??500});

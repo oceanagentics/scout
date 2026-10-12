@@ -256,7 +256,7 @@ test('second configured task uses the same dispatcher and cannot overlap invocat
   finish();const output=await pending;assert.equal(calls,1);assert.equal(output._diagnostics.model,OPENAI_MODEL);
 });
 
-test('gateway intake saves a partial, skips unchanged input and preserves a human correction on changed input (mock model/PGlite)',async()=>{
+test('gateway intake saves a partial, skips completed work and preserves a human correction after explicit reopening (mock model/PGlite)',async()=>{
   const db=new PGlite();
   try{
     await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;
@@ -278,7 +278,7 @@ test('gateway intake saves a partial, skips unchanged input and preserves a huma
     let record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.completeness.state,'provisional');
     const originalID=record.id,version=record.version;
     await db.exec("update scout.source_state set due_at=clock_timestamp()-interval '1 second'");
-    assert.deepEqual(await processDocument(db,{source,read,model}),{state:'unchanged',created:0,changed:0});
+    assert.deepEqual(await processDocument(db,{source,read,model}),{state:'complete',created:0,changed:0});
     assert.equal(generations,1);assert.equal(logs.reserved.length,1);assert.equal((await db.query('select version from scout.records')).rows[0].version,version);
     await correctFinding(db,{record_id:record.id,version:record.version,field:'organizations',value:[{name:'Human organization'}],url});
     body='<p>Changed source body (discard me too)</p>';await db.exec("update scout.source_state set due_at=clock_timestamp()-interval '1 second'");
