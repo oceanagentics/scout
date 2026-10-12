@@ -6,7 +6,7 @@ import {normalizeDate,dateInterval} from '../src/finding.js';
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const normalize=value=>value.normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').trim().toLowerCase();
 const fail=reason=>Object.assign(new Error(reason),{reason});
-const REVISION='url-intake-v1';
+const REVISION='url-intake-research-v2';
 
 export async function claimSource(db,source){
   return (await db.query(`insert into scout.source_state(tracker_id,identity,url,state,attempts,lease_id,lease_until,native_id,native_ref)
@@ -108,14 +108,15 @@ export async function processDocument(db,{source,prepared,read,model,deadline=Da
   const leased=await claimSource(db,source);
   if(!leased)return {state:'idle',created:0,changed:0};
   const counts={created:0,changed:0,captured:0,ambiguous:0},usage={generations:0,input_tokens:0,output_tokens:0},diagnostics=[];
-  let observed,research={revision:REVISION},attempts=leased.attempts,captured=false,improvement='not_requested';
+  let observed,research={...leased.research,revision:REVISION},attempts=leased.attempts,captured=false,improvement='not_requested',improvementStart;
+  const signature=()=>hash({revision:REVISION,main:research.main,supports:research.supports.map(({url,hash})=>({url,hash}))});
   const fingerprint=async(url,value)=>{
     try{const page=value??await read?.(url);return page&&(!page.status||page.status===200)?hash(page.text??page.body??page):null;}catch{return null;}
   };
   try{
     research.main=await fingerprint(source.url,prepared);
-    research.supports=await Promise.all((leased.research?.supports??[]).slice(0,3).map(async s=>({url:s.url,hash:await fingerprint(s.url)})));
-    observed=hash(research);
+    research.supports=await Promise.all((leased.research?.supports??[]).slice(0,3).map(async s=>({...s,hash:s.url?await fingerprint(s.url):null})));
+    observed=signature();
     const changed=leased.research?.revision!==REVISION||observed!==leased.observed_hash;
     if(changed)attempts=1;
     if(research.main&&observed===leased.processed_hash){
@@ -123,13 +124,15 @@ export async function processDocument(db,{source,prepared,read,model,deadline=Da
     }
     if(!changed&&leased.state==='parked'){
       await finishSource(db,leased,{observed,research,state:'parked',reason:leased.reason,attempts,retryAt:new Date(Date.now()+86400000).toISOString()});
-      return {state:'parked',reason:leased.reason,...counts};
+      return {state:'parked',reason:leased.reason,...counts,improvement:research.improvement,research};
     }
+    research={revision:REVISION,main:research.main,supports:[]};
     const call=async(prompt,input=[])=>{
+      if(usage.generations>=2)throw fail('generation_bound');
       if(Date.now()+10000>=deadline)throw fail('runtime_bound');
       let answer;
-      try{answer=await model(prompt,input,RESPONSE_SCHEMA);usage.generations++;}
-      catch(error){if(error.diagnostics)diagnostics.push(error.diagnostics);if(error.dispatched){usage.generations++;usage.input_tokens+=error.usage?.input_tokens??0;usage.output_tokens+=error.usage?.output_tokens??0;}throw error;}
+      try{answer=await model(prompt,input,RESPONSE_SCHEMA);usage.generations+=answer._usage?.generations??1;}
+      catch(error){if(error.diagnostics)diagnostics.push(error.diagnostics);if(error.dispatched){usage.generations+=error.usage?.generations??1;usage.input_tokens+=error.usage?.input_tokens??0;usage.output_tokens+=error.usage?.output_tokens??0;}throw error;}
       if(answer._diagnostics)diagnostics.push(answer._diagnostics);
       usage.input_tokens+=answer._usage?.input_tokens??0;usage.output_tokens+=answer._usage?.output_tokens??0;
       if(!['found','none','unreadable'].includes(answer.status)||!Array.isArray(answer.records))throw fail('invalid_output');
@@ -142,33 +145,54 @@ export async function processDocument(db,{source,prepared,read,model,deadline=Da
     counts.created+=saved.created;counts.changed+=saved.changed;counts.captured=saved.saved;counts.ambiguous+=saved.ambiguous;
     captured=saved.saved>0;
     if(answer.status==='found'&&!findings.length)throw fail('empty_findings');
-    const wanted=[...new Map((answer.follow_up_requests??[]).slice(0,3).flatMap(r=>{
-      const url=publicURL(r?.url),question=text(r?.question,280);return url&&url!==source.url&&question?[[url,{url,question}]]:[];
-    })).values()];
-    research.supports=wanted.map(({url})=>({url,hash:null}));
-    if(wanted.length){
+    const requests=Array.isArray(answer.follow_up_requests)?answer.follow_up_requests.slice(0,3):null;
+    research.supports=(requests??[]).flatMap(r=>{
+      const url=publicURL(r?.url),question=text(r?.question,280);return question?[{url:url===source.url?null:url,question,hash:null}]:[];
+    });
+    research.note=text(answer.note,280);
+    research.decision=typeof answer.further_research==='boolean'&&requests&&
+      (answer.further_research?requests.length>0&&research.supports.length===requests.length:!requests.length&&research.note)?answer.further_research:null;
+    improvement=research.decision===false?'not_requested':'pending';
+    // Only current questions/URLs are retained. Do not let oversized optional research lose the saved facts.
+    research.supports=await Promise.all(research.supports.map(async s=>({...s,hash:s.url?await fingerprint(s.url):null})));
+    if(Buffer.byteLength(JSON.stringify(research))>7800){research.supports=[];research.note=null;throw fail('research_bound');}
+    observed=signature();
+    if(research.decision===null)throw fail('research_decision_invalid');
+    const wanted=research.supports.filter(s=>s.url).map(({url,question})=>({url,question}));
+    if(research.decision){
       improvement='pending';
+      if(!wanted.length)throw fail('research_source_missing');
       if(answer._usage?.overrun)throw fail('token_reservation_overrun');
       if(db.metrics?.statements>40)throw fail('sql_bound');
+      improvementStart=usage.generations;
       const improved=await call(prompt+'\n\nImprove the findings below by reading only the requested links. Return the same developments with the same titles, keeping previously established facts and correcting mistakes. Answer the specific questions; leave unresolved fields partial. Do not add unrelated developments.',
         {records:findings,requested_links:wanted});
       const next=improved.records.slice(0,8).map(r=>normalizeFinding(r,source.url)).filter(Boolean);
       const matched=next.filter(f=>findings.some(old=>old.kind===f.kind&&normalize(old.title)===normalize(f.title)));
+      if(!matched.length)throw fail('improvement_unmatched');
       const urls=[source.url,...(improved._retrieval??[]).filter(r=>r.status==='URL_RETRIEVAL_STATUS_SUCCESS'&&wanted.some(w=>w.url===publicURL(r.url))).map(r=>publicURL(r.url))];
       const enriched=await saveFindings(db,leased,matched,[...new Set(urls)]);
       counts.created+=enriched.created;counts.changed+=enriched.changed;counts.ambiguous+=enriched.ambiguous;
       improvement=enriched.changed?'improved':'no_change';
-      research.supports=await Promise.all(wanted.map(async({url})=>({url,hash:await fingerprint(url)})));
+      // One investigation only. A remaining question or invalid judgment needs deliberate review.
+      research.note=text((Array.isArray(improved.follow_up_requests)?improved.follow_up_requests.map(r=>text(r?.question,280)).filter(Boolean).join('; '):null)||improved.note,480);
+      if(improved.further_research!==false||!research.note||!Array.isArray(improved.follow_up_requests)||improved.follow_up_requests.length||enriched.saved<saved.saved)
+        throw fail('research_exhausted');
     }
-    observed=hash(research);
+    research.improvement=improvement;
+    if(Buffer.byteLength(JSON.stringify(research))>7800)research.note=null;
     if(!await finishSource(db,leased,{observed,processed:observed,research}))throw fail('stale_lease');
-    return {state:captured?'captured':counts.ambiguous?'ambiguous':'no_findings',...counts,improvement,usage,diagnostics};
+    return {state:captured?'captured':counts.ambiguous?'ambiguous':'no_findings',...counts,improvement,research,usage,diagnostics};
   }catch(error){
     const reason=/^[a-z_]{1,48}$/.test(error.reason??error.message??'')?error.reason??error.message:'invalid_output';
     if(reason==='quota'&&!usage.generations&&!error.dispatched)attempts=Math.max(0,attempts-1);
-    const parked=attempts>=3;
+    if(improvementStart!==undefined&&usage.generations>improvementStart)improvement='exhausted';
+    research.improvement=improvement;
+    if(Buffer.byteLength(JSON.stringify(research))>7800)research.note=null;
+    observed=signature();
+    const parked=captured||attempts>=3;
     await finishSource(db,leased,{observed,research,state:parked?'parked':'deferred',reason,attempts,
       retryAt:new Date(Math.max(Date.parse(error.deferred?.retry_at)||0,Date.now()+(parked?86400000:3600000))).toISOString()});
-    return {state:captured?'captured':parked?'parked':'deferred',reason,...counts,improvement:captured?'pending':improvement,usage,diagnostics};
+    return {state:captured?'captured':parked?'parked':'deferred',reason,...counts,improvement,research,usage,diagnostics};
   }
 }

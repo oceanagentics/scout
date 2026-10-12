@@ -30,7 +30,8 @@ function driver(raw,inspect=()=>{}){
 
 const sourceFor=tr=>({tracker_id:tr.id,identity:'https://example.org/a',url:'https://example.org/a'});
 const event={type:'event',title:'BBNJ implementation workshop',summary:'Discussion of the Clearing-House Mechanism.',priority:'high',relevance_reason:'Technical BBNJ Clearing-House design workshop (https://example.org/a).',organizations:[],dates:[],missing_information:[]};
-const answer=(records=[event],follow_up_requests=[])=>({status:'found',records,follow_up_requests});
+const answer=(records=[event],follow_up_requests=[])=>({status:'found',records,follow_up_requests,further_research:follow_up_requests.length>0,
+ note:follow_up_requests.length?null:'The useful development is established; unannounced optional details do not materially change it.'});
 const due=db=>db.exec("update scout.source_state set due_at=clock_timestamp()-interval '1 second'");
 const read=async()=>({status:200,body:'PRIVATE_SOURCE_BODY'});
 
@@ -56,29 +57,84 @@ test('one partial capture uses one generation, stores no traffic, and unchanged 
   assert.deepEqual(await processDocument(db,{source,read,model}),{state:'unchanged',created:0,changed:0});
   assert.equal(http,1);assert.equal(db.metrics.mutations-initial.mutations,2);
   assert.equal((await raw.query('select version from scout.records')).rows[0].version,record.version);
-  t.diagnostic(JSON.stringify({mocked:true,first:initial,unchanged_mutations:2}));
+  const retained=(await raw.query('select octet_length(research::text) research_bytes from scout.source_state')).rows[0];
+  t.diagnostic(JSON.stringify({mocked:true,first:initial,unchanged_mutations:2,...retained}));
  }finally{await raw.close();}
 });
 
-test('requested improvement updates the saved partial, while failed improvement leaves its record intact',async()=>{
- for(const broken of [false,true]){
+test('requested improvement updates the saved partial, while failed improvement leaves its record intact',async t=>{
+ for(const outcome of ['improved','failed','unresolved']){
   const db=await setup();try{
-   const tr=await tracker(db),source=sourceFor(tr),support='https://example.org/programme';let calls=0;
+   const tr=await tracker(db),source=sourceFor(tr),support='https://example.org/programme',measured=boundary(driver(db));let calls=0,firstId;
    const model=async(prompt,input)=>{
     calls++;
     if(calls===1)return answer([event],[{url:support,question:'Who hosts the workshop and when does it start?'}]);
-    assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,1);
+    const first=(await db.query('select * from scout.records')).rows;assert.equal(first.length,1);firstId=first[0].id;
+    await correctFinding(db,{record_id:firstId,version:first[0].version,field:'organizations',value:[{name:'Human institute'}],url:source.url});
     assert.deepEqual(input.requested_links,[{url:support,question:'Who hosts the workshop and when does it start?'}]);
     assert.ok(!JSON.stringify(input).includes('PRIVATE_SOURCE_BODY'));
-    if(broken)throw Object.assign(new Error('provider_unavailable'),{reason:'provider_unavailable'});
-    return answer([{...event,organizations:[{name:'Institute A'}],dates:[{meaning:'event_start',date:'2026-10-22',time:'13:30',timezone:'UTC'}]}]);
+    if(outcome==='failed')throw Object.assign(new Error('provider_unavailable'),{reason:'provider_unavailable',dispatched:true});
+    return answer([{...event,organizations:[{name:'Institute A'}],dates:[{meaning:'event_start',date:'2026-10-22',time:'13:30',timezone:'UTC'}]}],
+     outcome==='unresolved'?[{url:null,question:'Can non-members attend?'}]:[]);
    };
-   const result=await processDocument(db,{source,read,model});assert.equal(calls,2);assert.equal(result.state,'captured');assert.equal(result.created,1);
-   const rows=(await db.query('select * from scout.records')).rows;assert.equal(rows.length,1);
-   if(broken){assert.equal(result.improvement,'pending');assert.deepEqual(rows[0].organizations,[]);}
-   else{assert.equal(result.improvement,'improved');assert.equal(rows[0].details.start.utc,'2026-10-22T13:30:00.000Z');}
+   const result=await processDocument(measured,{source,read,model});assert.equal(calls,2);assert.equal(result.state,'captured');assert.equal(result.created,1);
+   const rows=(await db.query('select * from scout.records')).rows;assert.equal(rows.length,1);assert.equal(rows[0].id,firstId);
+   assert.deepEqual(rows[0].organizations,[{name:'Human institute'}]);
+   assert.equal(result.improvement,outcome==='improved'?'improved':'exhausted');
+   if(outcome==='failed')assert.equal(rows[0].details.start,undefined);
+   else assert.equal(rows[0].details.start.utc,'2026-10-22T13:30:00.000Z');
+   if(outcome==='unresolved'){assert.equal(result.reason,'research_exhausted');assert.match(result.research.note,/non-members/);}
+   t.diagnostic(JSON.stringify({mocked:true,improvement:result.improvement,collector:measured.metrics,research_bytes:(await db.query('select octet_length(research::text) n from scout.source_state')).rows[0].n}));
+   await due(db);
+   assert.equal((await processDocument(db,{source,read,model})).state,outcome==='improved'?'unchanged':'parked');assert.equal(calls,2);
+   if(outcome==='failed'){
+    await due(db);
+    const reopened=await processDocument(db,{source,read:async url=>({body:url===support?'Changed programme':'PRIVATE_SOURCE_BODY'}),model:async()=>{calls++;return answer();}});
+    assert.equal(reopened.state,'captured');assert.equal(reopened.created,0);assert.equal(calls,3);
+   }
   }finally{await db.close();}
  }
+});
+
+test('missing or invalid judgment and yes without a source preserve partials, expose pending work, and require reconsideration',async()=>{
+ for(const [fields,reason] of [
+  [{further_research:undefined},'research_decision_invalid'],
+  [{further_research:false,note:null},'research_decision_invalid'],
+  [{further_research:true,follow_up_requests:[{url:null,question:'When will the registration deadline be announced?'}]},'research_source_missing']
+ ]){
+  const db=await setup();try{
+   const source=sourceFor(await tracker(db));let calls=0,reads=0;
+   const model=async()=>{calls++;return {...answer(),...fields};},reader=async()=>{reads++;return read();};
+   const result=await processDocument(db,{source,read:reader,model});assert.equal(result.state,'captured');assert.equal(result.reason,reason);assert.equal(calls,1);assert.equal(reads,1);
+   const before=(await db.query('select id,version from scout.records')).rows;
+   for(let i=0;i<4;i++){await due(db);assert.equal((await processDocument(db,{source,read:reader,model})).state,'parked');}
+   assert.equal(calls,1);assert.deepEqual((await db.query('select id,version from scout.records')).rows,before);
+   assert.equal((await db.query('select * from scout.finding_jobs()')).rows.length,0);
+   await db.query('insert into auth.users(id) values($1)',[source.tracker_id]);
+   await db.query("insert into auth.identities values($1,'google',$2)",[source.tracker_id,{iss:'https://accounts.google.com',email_verified:true,custom_claims:{hd:'oceanagentics.com'}}]);
+   await db.query("select set_config('request.jwt.claim.sub',$1,false)",[source.tracker_id]);
+   await db.exec('set role authenticated');const jobs=(await db.query('select * from scout.finding_jobs()')).rows;await db.exec('reset role');
+   assert.equal(jobs.length,1);assert.match(jobs[0].reopen_when,/explicitly/);
+   assert.match(jobs[0].explanation,reason==='research_source_missing'?/registration deadline.*No useful linked source/:/judgment was missing or invalid/);
+   // Existing administrative/correction reset deliberately reconsiders unchanged input.
+   await db.exec("update scout.source_state set processed_hash=null,attempts=0,state='due',due_at=clock_timestamp()");
+   assert.equal((await processDocument(db,{source,read:reader,model:async()=>{calls++;return answer();}})).state,'captured');assert.equal(calls,2);
+   assert.deepEqual((await db.query('select id,version from scout.records')).rows,before);
+  }finally{await db.close();}
+ }
+});
+
+test('gateway fallback consumes the second generation and leaves requested research pending without a third call',async()=>{
+ const db=await setup();try{
+  const source=sourceFor(await tracker(db));let callbacks=0;
+  const model=async()=>{callbacks++;return {...answer([event],[{url:'https://example.org/registration',question:'What year is the event?'}]),_usage:{generations:2,input_tokens:120,output_tokens:30}};};
+  const result=await processDocument(db,{source,read,model});assert.equal(result.state,'captured');assert.equal(result.reason,'generation_bound');assert.equal(result.improvement,'pending');
+  assert.deepEqual(result.usage,{generations:2,input_tokens:120,output_tokens:30});assert.equal(callbacks,1);
+  await due(db);assert.equal((await processDocument(db,{source,read,model})).state,'parked');assert.equal(callbacks,1);
+  const failure=await processDocument(db,{source:{...source,identity:'failed',url:'https://example.org/failed'},read,
+   model:async()=>{throw Object.assign(new Error('provider_unknown'),{reason:'provider_unknown',dispatched:true,usage:{generations:2,input_tokens:60000,output_tokens:0}});}});
+  assert.equal(failure.usage.generations,2);assert.equal(failure.usage.input_tokens,60000);
+ }finally{await db.close();}
 });
 
 test('source-side fetch failure does not block URL Context; malformed siblings and optional fields do not discard useful partials',async()=>{

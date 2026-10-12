@@ -268,7 +268,7 @@ test('gateway intake saves a partial, skips unchanged input and preserves a huma
     const read=async()=>page(body);
     const generate=openai({apiKey:'test',urls:[url],read,fetch:async()=>{
       generations++;const record=generations===1?partial:{...partial,organizations:[{name:'Model organization'}],dates:[{meaning:'event_start',date:'2026-10-15'}]};
-      return result(JSON.stringify({status:'found',records:[record],follow_up_requests:[]}));
+      return result(JSON.stringify({status:'found',records:[record],follow_up_requests:[],further_research:false,note:'The remaining optional details are not material.'}));
     }});
     const {model,logs}=setup({generate});
     const first=await processDocument(db,{source,read,model});assert.equal(first.created,1);assert.equal(first.state,'captured');

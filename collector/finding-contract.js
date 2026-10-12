@@ -24,7 +24,9 @@ For each development, provide:
 - Important information still missing or uncertain.
 - Any linked page you would request to resolve that uncertainty, and the specific question it could answer.
 
-Include useful partial findings. Do not invent missing information, confuse publication dates with event dates, or treat individual people as organizations.
+In this same response, decide: Would further research materially improve these records? Set further_research. If yes, give the specific questions in follow_up_requests and identify a useful linked page for each if available; use null for an unknown URL. A missing link does not mean further research is unhelpful. If no, return no requests and briefly explain why in note. Missing optional fields alone do not require research.
+
+Include useful partial findings. Do not invent missing information, confuse publication dates with event dates, or treat individual people as organizations. A publication date does not establish an event's year.
 
 If the page contains no relevant development, explain why. If you cannot access the page, report that explicitly.`;
 export const RESPONSE_SCHEMA={
@@ -180,14 +182,18 @@ export const RESPONSE_SCHEMA={
       },
       "maxItems": 8
     },
+    "further_research": {
+      "type": "boolean",
+      "description": "Would further research materially improve these records? Decide in this response, even when no useful linked page is known."
+    },
     "follow_up_requests": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
           "url": {
-            "type": "string",
-            "description": "Linked page requested for further research."
+            "type": ["string", "null"],
+            "description": "Useful linked page for this question, or null when no source is known. Never invent a URL."
           },
           "question": {
             "type": "string",
@@ -207,12 +213,15 @@ export const RESPONSE_SCHEMA={
         "string",
         "null"
       ],
-      "description": "Explanation when no record can be returned, or a material qualification."
+      "description": "Brief reason when further_research is false; otherwise an explanation when no record can be returned, or a material qualification."
     }
   },
   "required": [
     "status",
-    "records"
+    "records",
+    "further_research",
+    "follow_up_requests",
+    "note"
   ],
   "additionalProperties": false
 };
