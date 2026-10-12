@@ -41,13 +41,13 @@ export function sameEvent(current,desired){
 }
 
 // Reconcile a complete, bounded snapshot in one action. Never retry uncertain writes.
-export async function syncCalendar(records,{calendarId,accessToken,send=fetch,reserveWrites=async()=>{},metrics={requests:0,writes:0}}){
+export async function syncCalendar(records,{calendarId,accessToken,send=fetch,metrics={requests:0,writes:0}}){
   if(!calendarId||calendarId==='primary'||!accessToken)throw new Error('Explicit calendar ID and Google access token required');
   if(records.length>250)throw new Error('Event count exceeds the reviewed calendar limit');
   const base='https://www.googleapis.com/calendar/v3/calendars/'+encodeURIComponent(calendarId)+'/events';
   const deadline=Date.now()+90000;
   async function request(path,{method='GET',body,etag}={}){
-    if(metrics.requests>=51||Date.now()>=deadline||method!=='GET'&&metrics.writes>=50)throw new Error('Calendar trial request limit');
+    if(metrics.requests>=51||Date.now()>=deadline||method!=='GET'&&metrics.writes>=50)throw new Error('Calendar sync request limit');
     metrics.requests++;if(method!=='GET')metrics.writes++;
     let response;
     try{response=await send(base+path,{method,headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json',...(etag?{'If-Match':etag}:{})},
@@ -79,7 +79,6 @@ export async function syncCalendar(records,{calendarId,accessToken,send=fetch,re
     actions.push({id,record,current,event});
   }
   if(actions.length>50)throw new Error('More than 50 changes need review before syncing');
-  if(actions.length)await reserveWrites(actions.length);
   // Validate every planned change before making the first write.
   for(const {id,record,current,event} of actions){
     if(!event){await request('/'+id+'?sendUpdates=none',{method:'DELETE',etag:current.etag});result.removed++;}

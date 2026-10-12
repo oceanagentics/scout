@@ -1,5 +1,6 @@
 # Scout engineering constraints
 
+- Do not add trial expirations or lifetime-use allowances to working features unless the user explicitly requests them.
 - Scout saves useful findings, source URLs and minimal operational state. Read source bodies and model traffic in memory, then discard them. Do not persist captures, prepared documents, prompts, responses, quoted proof trails or operation reports.
 - Work within the existing $0/month stack and shared project allowances. Before changing persistence or recurring work, estimate model calls, SQL statements/row mutations, retained bytes and daily activity; measure them before unattended operation. Actual account quotas and usage take precedence over public plan ceilings.
 - Completed unchanged inputs make no model calls or finding writes. Keep retries finite, respect provider deadlines and preserve charges for uncertain requests. Missing or unverified budgets must not enable unlimited work.

@@ -11,8 +11,8 @@ const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',version:1,updated_at:'20
   title:'Calendar test',description:'Test fixture',organizations:[],canonical_url:'https://example.org/event',
   details:{start:{value:'2001-10-22',precision:'day'}}};
 
-test('hosted calendar with real SQL: access boundaries, finite allowance, feed and repeat sync',async()=>{
-  const db=new PGlite(),queries=[];let signedIn=true,googleEvents=[],googleCalls=0,googleProfile=profile,calendarFailure;
+test('hosted calendar with real SQL: access boundaries, expired trial does not block feed or sync',async()=>{
+  const db=new PGlite(),queries=[];let signedIn=true,googleEvents=[],googleProfile=profile,calendarFailure;
   // Vault here is a test double for SQL contracts, not a test of production encryption.
   await db.exec(`create role anon;create role authenticated;create role service_role;create schema scout;create schema auth;create schema vault;
     create table auth.identities(user_id uuid,provider text,provider_id text,identity_data jsonb);
@@ -29,7 +29,6 @@ test('hosted calendar with real SQL: access boundaries, finite allowance, feed a
       queries.push(sql);const result=await db.query(sql,params);return Object.assign(result.rows,{count:result.affectedRows});
     },release(){}}),end:async()=>{}}),
     send:async(url,options)=>{
-      googleCalls++;
       if(url.includes('/userinfo'))return Response.json(googleProfile);
       assert.ok(url.startsWith('https://www.googleapis.com/calendar/v3/calendars/danny%40oceanagentics.com/events'));
       if(calendarFailure)return Response.json(calendarFailure.body,{status:calendarFailure.status});
@@ -42,8 +41,8 @@ test('hosted calendar with real SQL: access boundaries, finite allowance, feed a
   const run=(action,body,headers)=>hostedCalendar(request(action,body,headers),config);
   try{
     signedIn=false;assert.equal((await run('status')).status,401);assert.equal(queries.length,0);signedIn=true;
-    assert.equal((await run('sync',{access_token:'test'})).status,503);assert.equal(googleCalls,0);
-    await db.query("update scout.calendar_trial set remaining=64,expires_at=now()+interval '7 days'");
+    await db.query("update scout.calendar_trial set remaining=0,expires_at='2000-01-01T00:00:00Z'");
+    assert.deepEqual(await (await run('status')).json(),{manager:true,connected:false,backend_ready:false,calendar_id:profile.email});
     await db.query('select scout.save_calendar_secret($1,$2)',['scout_calendar_feed',token]);
     await assert.rejects(db.query('select scout.save_calendar_secret($1,$2)',[null,'bad']),/Invalid calendar secret/);
     await db.exec('set role authenticated');
@@ -54,8 +53,10 @@ test('hosted calendar with real SQL: access boundaries, finite allowance, feed a
     assert.equal((await run('feed.ics?token='+'b'.repeat(64))).status,404);assert.equal(queries.length,1);
     queries.length=0;
     const feed=await run('feed.ics?token='+token);assert.equal(feed.status,200);assert.match(await feed.text(),/SUMMARY:\[Scout\] Calendar test/);
-    assert.equal(queries.length,3);assert.equal(queries.filter(sql=>sql.startsWith('update')).length,1);
+    assert.equal(queries.length,2);assert.equal(queries.filter(sql=>sql.startsWith('update')).length,0);
     assert.equal((await run('feed.ics?token='+token,null,{'if-none-match':feed.headers.get('etag')})).status,304);
+    const subscription=await (await run('feed-link')).json();assert.ok(subscription.url.endsWith('?token='+token));
+    assert.equal(subscription.expires_at,undefined);
 
     googleProfile={...profile,sub:'someone-else'};
     assert.equal((await run('connect',{access_token:'test',refresh_token:'refresh'})).status,403);
@@ -75,16 +76,11 @@ test('hosted calendar with real SQL: access boundaries, finite allowance, feed a
     assert.equal((await run('connect',{access_token:'test'})).status,200,'Foreground sync works without a refresh token');
     assert.equal((await db.query("select count(*)::int n from vault.secrets where name='scout_calendar_google'")).rows[0].n,0);
     assert.equal((await run('connect',{access_token:'test',refresh_token:'refresh'})).status,200);
-    await db.query('update scout.calendar_trial set remaining=1');
-    assert.equal((await run('sync',{access_token:'test'})).status,503);assert.equal(googleEvents.length,0);
-    assert.equal((await db.query('select remaining from scout.calendar_trial')).rows[0].remaining,0,'The list read stays charged when writes cannot be reserved');
-    await db.query('update scout.calendar_trial set remaining=2');
     const synced=await run('sync',{access_token:'test'});assert.equal(synced.status,200);
-    const first=await synced.json();assert.equal(first.created,1);assert.deepEqual(first.cost,{sql_statements:4,row_mutations:2,google_calendar_requests:2,google_calendar_writes:1});
+    const first=await synced.json();assert.equal(first.created,1);assert.deepEqual(first.cost,{sql_statements:2,row_mutations:0,google_calendar_requests:2,google_calendar_writes:1});
     assert.equal(googleEvents[0].start.date,'2001-10-22');
-    await db.query('update scout.calendar_trial set remaining=1');
     const repeat=await (await run('sync',{access_token:'test'})).json();assert.equal(repeat.unchanged,1);
-    assert.deepEqual(repeat.cost,{sql_statements:3,row_mutations:1,google_calendar_requests:1,google_calendar_writes:0});
+    assert.deepEqual(repeat.cost,{sql_statements:2,row_mutations:0,google_calendar_requests:1,google_calendar_writes:0});
     assert.equal(googleEvents.length,1);
 
     await db.query('update auth.identities set identity_data=$1',[{...identity,email:'teammate@oceanagentics.com'}]);
@@ -92,8 +88,8 @@ test('hosted calendar with real SQL: access boundaries, finite allowance, feed a
     assert.equal((await run('feed-link')).status,403);
     await db.query('update auth.identities set identity_data=$1',[{...identity,email_verified:false}]);
     assert.equal((await run('status')).status,403);
-    await db.query('update scout.calendar_trial set remaining=0');
-    assert.equal((await run('feed.ics?token='+token)).status,503);
+    assert.equal((await run('feed.ics?token='+token)).status,200);
+    assert.equal(queries.some(sql=>sql.includes('calendar_trial')),false);
     assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,1);
   }finally{await db.close();}
 });

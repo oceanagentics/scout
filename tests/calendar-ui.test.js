@@ -14,12 +14,14 @@ test('calendar consent uses existing Google sign-in; callback connects once and 
   const client={auth:{signInWithOAuth:async value=>{oauth=value;return {};}},functions:{invoke:async(path,options)=>{
     calls.push({path,options});
     if(apiDisabled&&path.endsWith('connect'))return {error:{context:Response.json({error:'Calendar API must be enabled by the administrator.',code:'calendar_api_disabled'},{status:503})}};
-    return {data:path.endsWith('status')?{manager:true,connected:false,calendar_id:'danny@oceanagentics.com',remaining:64,expires_at:'2099-10-22'}:
+    return {data:path.endsWith('status')?{manager:true,connected:false,calendar_id:'danny@oceanagentics.com'}:
       path.endsWith('connect')?{connected:true,backend_ready:false}:
       path.endsWith('sync')?{created:15,updated:0,removed:0,unchanged:0}:{url:'https://example.org/private-feed'}};
   }}};
   try{
     let close=mountCalendar(client,{},root);await tick();assert.equal(root.hidden,false);
+    assert.equal(nodes.connect.disabled,false);assert.equal(nodes.feed.disabled,false);
+    assert.doesNotMatch(nodes.status.textContent,/trial|allowance|ends/i);
     await nodes.connect.events.click();
     assert.equal(oauth.options.redirectTo,'https://bbnj-scout.web.app/');
     assert.match(oauth.options.scopes,/calendar.events/);assert.equal(oauth.options.queryParams.access_type,'offline');

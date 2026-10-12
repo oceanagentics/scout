@@ -13,11 +13,10 @@ export function mountCalendar(client,session,root){
       <p class="hint">If you try both options, hide one calendar to avoid seeing each event twice.</p></div>`;
   const get=id=>root.querySelector('#calendar-'+id),message=get('status');
   const buttons=['connect','sync','feed'].map(get);
-  const active=()=>state?.expires_at&&Date.parse(state.expires_at)>Date.now()&&state.remaining>0;
   const controls=()=>{
-    buttons.forEach(button=>button.disabled=busy||!active());
-    get('connect').disabled=busy||!active()||connectionBlocked;
-    get('sync').disabled=busy||!active()||!(accessToken||state?.connected&&state?.backend_ready);
+    buttons.forEach(button=>button.disabled=busy||!state?.manager);
+    get('connect').disabled=busy||!state?.manager||connectionBlocked;
+    get('sync').disabled=busy||!state?.manager||!(accessToken||state?.connected&&state?.backend_ready);
   };
   async function call(action,body){
     const {data,error}=await client.functions.invoke('scout-calendar/'+action,{method:action==='status'?'GET':'POST',...(body?{body}:{})});
@@ -69,10 +68,8 @@ export function mountCalendar(client,session,root){
         accessToken=session.provider_token;Object.assign(state,connected);
       }
     }
-    if(!active())message.textContent='The calendar trial is paused. Its allowance needs review before continuing.';
-    else message.textContent=(state.connected&&!accessToken&&!state.backend_ready?'Reconnect Google Calendar to sync in this session. ':state.connected?'Google Calendar connected. ':'')+
-      'Direct sync runs when you click Sync all events now. Subscription updates are automatic. Trial ends '+
-      new Date(state.expires_at).toLocaleDateString()+'.';
+    message.textContent=(state.connected&&!accessToken&&!state.backend_ready?'Reconnect Google Calendar to sync in this session. ':state.connected?'Google Calendar connected. ':'')+
+      'Direct sync runs when you click Sync all events now. Subscription updates are automatic.';
   });
   return ()=>{closed=true;accessToken=null;root.hidden=true;root.replaceChildren();};
 }

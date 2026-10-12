@@ -37,10 +37,6 @@ export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,
     const query=async(sql,params=[])=>{cost.sql_statements++;const rows=await session.unsafe(sql,params);
       if(/^\s*(insert|update|delete)/i.test(sql))cost.row_mutations+=Number(rows.count??rows.length);return rows;};
     const secret=async name=>(await query('select decrypted_secret from vault.decrypted_secrets where name=$1',[name]))[0]?.decrypted_secret;
-    const reserve=async count=>{
-      if(!(await query('update scout.calendar_trial set remaining=remaining-$1 where id and expires_at>clock_timestamp() and remaining>=$1 returning remaining',[count])).length)
-        throw fail('Calendar trial is paused or its allowance is used up; review before continuing',503);
-    };
     const records=async()=>{
       const rows=await query(`select ${columns} from scout.records where kind='event' order by id limit 251`);
       if(rows.length>250)throw fail('Event count exceeds the reviewed calendar limit',503);
@@ -49,7 +45,6 @@ export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,
     if(action==='feed.ics'){
       const token=await secret('scout_calendar_feed'),supplied=url.searchParams.get('token');
       if(!token||token.length!==supplied.length||!timingSafeEqual(Buffer.from(token),Buffer.from(supplied)))throw fail('Not found',404);
-      await reserve(1);
       const body=calendarFeed(await records()),etag='"'+createHash('sha256').update(body).digest('hex')+'"';
       if(Buffer.byteLength(body)>524288)throw fail('Feed exceeds the reviewed size limit',503);
       const feedHeaders={...headers,'Content-Type':'text/calendar; charset=utf-8',ETag:etag};
@@ -58,25 +53,22 @@ export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,
     const identity=(await query(`select provider_id,identity_data->>'email' email from auth.identities
       where user_id=$1 and provider='google' and identity_data @> '{"iss":"https://accounts.google.com","email_verified":true,"custom_claims":{"hd":"oceanagentics.com"}}'`,[auth.userClaims.id]))[0];
     if(!identity)throw fail('Ocean Agentics Google identity required',403);
-    if(identity.email!==owner)return action==='status'?json({manager:false}):json({error:'Only the calendar owner can configure this trial'},403);
+    if(identity.email!==owner)return action==='status'?json({manager:false}):json({error:'Only the calendar owner can configure this calendar'},403);
     if(action==='status'){
-      const trial=(await query('select expires_at,remaining from scout.calendar_trial where id'))[0];
       const connected=(await query("select exists(select 1 from vault.secrets where name='scout_calendar_google') connected"))[0].connected;
-      return json({manager:true,connected,backend_ready:Boolean(clientId&&clientSecret),calendar_id:owner,...trial});
+      return json({manager:true,connected,backend_ready:Boolean(clientId&&clientSecret),calendar_id:owner});
     }
     const raw=await request.text();
     if(Buffer.byteLength(raw)>16384)throw fail('Request too large');
     const body=raw?JSON.parse(raw):{};
     if(!body||typeof body!=='object'||Array.isArray(body))throw fail('Invalid request');
     if(action==='feed-link'){
-      const trial=(await query('select expires_at,remaining from scout.calendar_trial where id'))[0];
-      if(!trial.expires_at||Date.parse(trial.expires_at)<=Date.now()||!trial.remaining)throw fail('Feed trial is not enabled yet',503);
       let token=await secret('scout_calendar_feed');
       if(!token){
         await query('select scout.save_calendar_secret($1,$2)',['scout_calendar_feed',randomBytes(32).toString('hex')]);cost.row_mutations++;
         token=await secret('scout_calendar_feed');
       }
-      return json({url:project+'/functions/v1/scout-calendar/feed.ics?token='+token,expires_at:trial.expires_at});
+      return json({url:project+'/functions/v1/scout-calendar/feed.ics?token='+token});
     }
     const checkIdentity=async token=>{
       const profile=await send('https://openidconnect.googleapis.com/v1/userinfo',{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(10000)});
@@ -88,7 +80,6 @@ export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,
     if(action==='connect'){
       if(typeof body.access_token!=='string'||!body.access_token)throw fail('Google did not return Calendar authorization; reconnect with consent');
       if(body.refresh_token!=null&&(typeof body.refresh_token!=='string'||!body.refresh_token||body.refresh_token.length>4096))throw fail('Invalid offline authorization');
-      await reserve(1);
       const google=await checkIdentity(body.access_token);
       const check=await send('https://www.googleapis.com/calendar/v3/calendars/'+encodeURIComponent(owner)+'/events?maxResults=1&fields=kind',{
         headers:{Authorization:'Bearer '+body.access_token},signal:AbortSignal.timeout(10000)});
@@ -110,23 +101,15 @@ export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,
     }
     if(body.access_token!==undefined&&(typeof body.access_token!=='string'||!body.access_token))throw fail('Invalid Google authorization');
     if(!body.access_token&&(!clientId||!clientSecret))throw fail('Reconnect Google Calendar to sync during this session',409);
-    await reserve(1);
     const metrics={requests:0,writes:0};
-    let result,reserved=1;
-    try{
-      let token=body.access_token;
-      if(!token){
-        const saved=await secret('scout_calendar_google');
-        if(!saved)throw fail('Connect Google Calendar first',409);
-        token=await googleAccessToken({clientId,clientSecret,refreshToken:JSON.parse(saved).refresh_token},send);
-      }
-      await checkIdentity(token);
-      result=await syncCalendar(await records(),{calendarId:owner,accessToken:token,send,metrics,
-        reserveWrites:async count=>{await reserve(count);reserved+=count;}});
-    }finally{
-      // Requests whose responses are uncertain remain charged; only undispatched capacity returns.
-      if(reserved>metrics.requests)await query('update scout.calendar_trial set remaining=remaining+$1 where id',[reserved-metrics.requests]);
+    let token=body.access_token;
+    if(!token){
+      const saved=await secret('scout_calendar_google');
+      if(!saved)throw fail('Connect Google Calendar first',409);
+      token=await googleAccessToken({clientId,clientSecret,refreshToken:JSON.parse(saved).refresh_token},send);
     }
+    await checkIdentity(token);
+    const result=await syncCalendar(await records(),{calendarId:owner,accessToken:token,send,metrics});
     return json({...result,cost:{...cost,google_calendar_requests:metrics.requests,google_calendar_writes:metrics.writes}});
   }catch(error){return json({error:error.status?error.message:'Calendar operation interrupted; no automatic retry',...(error.status&&error.code?{code:error.code}:{})},error.status??502);}
   finally{session?.release();await sql?.end({timeout:1}).catch(()=>{});}

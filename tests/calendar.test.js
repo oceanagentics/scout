@@ -45,24 +45,21 @@ test('DST ambiguity stays a date entry, and derived UTC is rechecked',()=>{
 });
 
 test('complete batch creates 37 past and future events; repeat makes one read and no writes',async()=>{
-  let saved=[],calls=[],reservations=[];
+  let saved=[],calls=[];
   const send=async(url,request)=>{
     calls.push({url,request});assert.ok(url.startsWith('https://www.googleapis.com/calendar/v3/calendars/danny%40oceanagentics.com/events'));
     if(request.method==='GET'){
       assert.equal(new URL(url).searchParams.get('privateExtendedProperty'),'scout=events-v1');return response({items:saved});
     }
-    assert.deepEqual(reservations,[37],'Reserve every planned write before dispatch');
     assert.equal(new URL(url).searchParams.get('sendUpdates'),'none');
     const event={...JSON.parse(request.body),etag:'"1"'};saved.push(event);return response(event);
   };
   const records=Array.from({length:37},(_,i)=>({...record,id:'aaaaaaaa-aaaa-4aaa-aaaa-'+String(i).padStart(12,'0'),
     details:{start:{value:i<22?'2001-09-01':'2099-10-22',precision:'day'}}}));
-  const reserveWrites=async count=>{reservations.push(count);assert.equal(saved.length,0);};
-  assert.equal((await syncCalendar(records,{...options,send,reserveWrites})).created,37);
+  assert.equal((await syncCalendar(records,{...options,send})).created,37);
   assert.equal(saved.length,37);assert.equal(new Set(saved.map(event=>event.id)).size,37);
   calls=[];
-  assert.equal((await syncCalendar(records,{...options,send,reserveWrites})).unchanged,37);assert.equal(calls.length,1);
-  assert.deepEqual(reservations,[37]);
+  assert.equal((await syncCalendar(records,{...options,send})).unchanged,37);assert.equal(calls.length,1);
 });
 
 test('correction clears old date form, matches revision, and cancellation removes its entry',async()=>{
@@ -97,12 +94,10 @@ test('foreign entries, guest changes, recurrence and missing revisions fail befo
   }
 });
 
-test('bounded batch refuses truncated results and excessive changes; uncertain writes stay charged',async()=>{
+test('bounded batch refuses truncated results and excessive changes; uncertain writes are not retried',async()=>{
   await assert.rejects(syncCalendar([record],{...options,send:async()=>response({items:[],nextPageToken:'more'})}),/limit/);
   const many=Array.from({length:51},(_,i)=>({...record,id:'aaaaaaaa-aaaa-4aaa-aaaa-'+String(i).padStart(12,'0')}));
   let calls=0;await assert.rejects(syncCalendar(many,{...options,send:async()=>{calls++;return response({items:[]});}}),/50 changes/);assert.equal(calls,1);
-  calls=0;await assert.rejects(syncCalendar([record],{...options,send:async()=>{calls++;return response({items:[]});},
-    reserveWrites:async()=>{throw new Error('No allowance');}}),/No allowance/);assert.equal(calls,1);
   const metrics={requests:0,writes:0};
   await assert.rejects(syncCalendar([record],{...options,metrics,send:async(_,request)=>{
     if(request.method==='GET')return response({items:[]});throw new Error('network with private details');
