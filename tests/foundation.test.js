@@ -170,7 +170,7 @@ test('tracker seeds preserve app edits and remain idempotent on the final schema
     for (const [, sql] of migrations) await db.exec(sql);
     await db.exec(trackerSeed);
     const initial = (await db.query('select * from scout.trackers order by seed_key')).rows;
-    assert.equal(initial.length, 32);
+    assert.equal(initial.length, 41);
     assert.deepEqual(initial.filter(r=>r.enabled).map(r=>r.seed_key), [17,18,19,20].map(n=>'bbnj-trackers-2026-10-01:'+n));
     assert.ok(initial.filter(r=>!r.url).every(r=>!r.enabled));
     assert.ok((await db.query('select * from scout.tracker_status')).rows.every(r=>r.last_attempt_at===null&&r.last_success_at===null));

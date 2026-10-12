@@ -47,4 +47,18 @@ insert into scout.trackers (seed_key,name,coverage,url,collector,cadence,enabled
   ('bbnj-trackers-2026-10-08:cbd-cop17', 'CBD COP17 — Yerevan, Armenia', 'CBD COP17 programmes, sessions, participation information and schedule changes in Yerevan, Armenia, 19–30 October 2026.', 'https://www.cbd.int/conferences/2026', 'web', '1 day', false)
 on conflict (seed_key) do nothing;
 
+-- COP17 programme sources for Aaron and Brandon. Use the shared intake/rubric;
+-- keep disabled until collection is verified. No recurring activity is enabled.
+insert into scout.trackers (seed_key,name,coverage,url,collector,cadence,enabled) values
+  ('bbnj-trackers-2026-10-12:cop17-parallel', 'CBD COP17 — parallel events', 'COP17 forums, workshops, Action Zone, GBF Pavilion and linked associated-event programmes.', 'https://www.cbd.int/conferences/2026/parallel-meetings', 'web', '1 day', false),
+  ('bbnj-trackers-2026-10-12:cop17-agenda', 'CBD COP17 — official agenda', 'COP17 formal meeting agenda, programme documents and updates.', 'https://www.cbd.int/conferences/2026/cop-17', 'web', '1 day', false),
+  ('bbnj-trackers-2026-10-12:cop17-data-pavilion', 'COP17 — Data to Action Pavilion', 'Full Data to Action Pavilion partner programme beyond the GEO schedule; dynamic programme retrieval remains unverified.', 'https://cop17pavilion.org/', 'web', '1 day', false),
+  ('bbnj-trackers-2026-10-12:cop17-nature-positive', 'COP17 — Nature Positive Pavilion', 'Nature Positive Pavilion sessions across both rooms, with schedules, organizations and participation details.', 'https://www.naturepositive.org/events/nature-positive-at-the-un-cbd-cop/cop17-armenia/pavilion/', 'web', '1 day', false),
+  ('bbnj-trackers-2026-10-12:cop17-iucn', 'IUCN — COP17 programme', 'IUCN Unite for Nature Pavilion programme and official COP17 side events.', 'https://iucn.org/cbdcop17/programme-iucn-events-cbd-cop17', 'web', '1 day', false),
+  ('bbnj-trackers-2026-10-12:cop17-un-pavilion', 'COP17 — UN Pavilion timetable', 'Provisional UN Pavilion timetable for both COP17 weeks; preserve tentative schedules and later revisions.', 'https://armenia.un.org/en/download/217945/324020', 'web', '1 day', false),
+  ('bbnj-trackers-2026-10-12:cop17-tnfd', 'COP17 — TNFD Hive', 'TNFD Hive off-site programme, 23–24 October 2026, including session registration and access requirements.', 'https://tnfd.global/cop17-landing-page-tnfd-hive/', 'web', '1 day', false),
+  ('bbnj-trackers-2026-10-12:cop17-green-zone', 'COP17 — official Green Zone', 'Public Green Zone activities and programme updates; detailed session programme not yet verified.', 'https://www.cop17yerevangreenzone.com/', 'web', '1 day', false),
+  ('bbnj-trackers-2026-10-12:cop17-icri', 'ICRI — COP17 coral reef and ocean events', 'Supplementary discovery guide to CBD side events, Ocean Pavilion sessions and organizer announcements; follow original source URLs for current details.', 'https://icriforum.org/meetings/cop17-events/', 'web', '1 day', false)
+on conflict (seed_key) do nothing;
+
 commit;
