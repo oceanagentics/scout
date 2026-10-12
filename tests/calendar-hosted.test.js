@@ -12,7 +12,7 @@ const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',version:1,updated_at:'20
   details:{start:{value:'2099-10-22',precision:'day'}}};
 
 test('hosted calendar with real SQL: access boundaries, finite allowance, feed and repeat sync',async()=>{
-  const db=new PGlite(),queries=[];let signedIn=true,googleEvents=[],googleCalls=0,googleProfile=profile;
+  const db=new PGlite(),queries=[];let signedIn=true,googleEvents=[],googleCalls=0,googleProfile=profile,calendarFailure;
   // Vault here is a test double for SQL contracts, not a test of production encryption.
   await db.exec(`create role anon;create role authenticated;create role service_role;create schema scout;create schema auth;create schema vault;
     create table auth.identities(user_id uuid,provider text,provider_id text,identity_data jsonb);
@@ -32,6 +32,7 @@ test('hosted calendar with real SQL: access boundaries, finite allowance, feed a
       googleCalls++;
       if(url.includes('/userinfo'))return Response.json(googleProfile);
       assert.ok(url.startsWith('https://www.googleapis.com/calendar/v3/calendars/danny%40oceanagentics.com/events'));
+      if(calendarFailure)return Response.json(calendarFailure.body,{status:calendarFailure.status});
       if(options.method==='POST'){const saved={...JSON.parse(options.body),etag:'"1"'};googleEvents.push(saved);return Response.json(saved);}
       return Response.json({items:googleEvents});
     }};
@@ -60,6 +61,17 @@ test('hosted calendar with real SQL: access boundaries, finite allowance, feed a
     assert.equal((await run('connect',{access_token:'test',refresh_token:'refresh'})).status,403);
     assert.equal((await db.query("select count(*)::int n from vault.secrets where name='scout_calendar_google'")).rows[0].n,0);
     googleProfile=profile;
+    for(const [reason,status,message] of [
+      ['accessNotConfigured',503,/administrator must enable/],['SERVICE_DISABLED',503,/Reconnecting will not fix/],
+      ['ACCESS_TOKEN_SCOPE_INSUFFICIENT',403,/permission was not granted/],['userRateLimitExceeded',429,/request limit/],
+    ]){
+      calendarFailure={status:403,body:{error:{message:'Private provider details',details:[{reason}]}}};
+      const failed=await run('connect',{access_token:'test',refresh_token:'refresh'}),detail=await failed.json();
+      assert.equal(failed.status,status);assert.match(detail.error,message);assert.doesNotMatch(detail.error,/Private provider/);
+      if(status===503)assert.equal(detail.code,'calendar_api_disabled');
+      assert.equal((await db.query("select count(*)::int n from vault.secrets where name='scout_calendar_google'")).rows[0].n,0);
+    }
+    calendarFailure=null;
     assert.equal((await run('connect',{access_token:'test'})).status,200,'Foreground sync works without a refresh token');
     assert.equal((await db.query("select count(*)::int n from vault.secrets where name='scout_calendar_google'")).rows[0].n,0);
     assert.equal((await run('connect',{access_token:'test',refresh_token:'refresh'})).status,200);

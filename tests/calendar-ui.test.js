@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mountCalendar} from '../src/calendar.js';
 
 test('calendar consent uses existing Google sign-in; callback connects once and one click syncs all',async()=>{
-  const previous=globalThis.window,storage=new Map(),calls=[];let oauth;
+  const previous=globalThis.window,storage=new Map(),calls=[];let oauth,apiDisabled=false;
   const nodes=Object.fromEntries(['status','connect','sync','feed','url','subscription'].map(id=>[id,{
     hidden:true,events:{},addEventListener(name,callback){this.events[name]=callback;},focus(){},select(){},
   }]));
@@ -13,6 +13,7 @@ test('calendar consent uses existing Google sign-in; callback connects once and 
   const tick=()=>new Promise(setImmediate);
   const client={auth:{signInWithOAuth:async value=>{oauth=value;return {};}},functions:{invoke:async(path,options)=>{
     calls.push({path,options});
+    if(apiDisabled&&path.endsWith('connect'))return {error:{context:Response.json({error:'Calendar API must be enabled by the administrator.',code:'calendar_api_disabled'},{status:503})}};
     return {data:path.endsWith('status')?{manager:true,connected:false,calendar_id:'danny@oceanagentics.com',remaining:64,expires_at:'2099-10-22'}:
       path.endsWith('connect')?{connected:true,backend_ready:false}:
       path.endsWith('sync')?{created:15,updated:0,removed:0,unchanged:0}:{url:'https://example.org/private-feed'}};
@@ -30,5 +31,11 @@ test('calendar consent uses existing Google sign-in; callback connects once and 
     assert.deepEqual(calls.find(call=>call.path.endsWith('sync')).options.body,{access_token:'access'});
     await nodes.feed.events.click();assert.equal(nodes.url.value,'https://example.org/private-feed');
     close();assert.equal(root.hidden,true);assert.equal(root.innerHTML,'');
+    apiDisabled=true;storage.set('scout-calendar-connect',String(Date.now()));
+    close=mountCalendar(client,{provider_token:'access'},root);await tick();
+    assert.equal(nodes.connect.disabled,true,'Do not offer repeated consent for a disabled API');
+    assert.equal(nodes.feed.disabled,false,'The subscription remains available');
+    assert.match(nodes.status.textContent,/administrator/);
+    assert.equal(storage.has('scout-calendar-connect'),false);close();
   }finally{globalThis.window=previous;}
 });

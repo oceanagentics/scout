@@ -7,7 +7,7 @@ import {googleAccessToken,syncCalendar} from './google.js';
 
 const owner='danny@oceanagentics.com',project='https://vhlfumeyhkeospnemukq.supabase.co';
 const columns='id,version,updated_at,kind,title,description,organizations,details,canonical_url';
-const fail=(message,status=400)=>Object.assign(new Error(message),{status});
+const fail=(message,status=400,code)=>Object.assign(new Error(message),{status,code});
 
 export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,env,connect=postgres,authenticate=verifyAuth,send=fetch}={}){
   const url=new URL(request.url),action=url.pathname.split('/').at(-1),origin=request.headers.get('origin');
@@ -92,7 +92,17 @@ export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,
       const google=await checkIdentity(body.access_token);
       const check=await send('https://www.googleapis.com/calendar/v3/calendars/'+encodeURIComponent(owner)+'/events?maxResults=1&fields=kind',{
         headers:{Authorization:'Bearer '+body.access_token},signal:AbortSignal.timeout(10000)});
-      if(!check.ok)throw fail(check.status===403?'Google Calendar API or Calendar permission is not enabled':'Google Calendar access could not be verified',403);
+      if(!check.ok){
+        const problem=(await check.json().catch(()=>null))?.error;
+        const reasons=[...(problem?.errors??[]),...(problem?.details??[])].map(item=>item.reason);
+        if(reasons.some(reason=>['accessNotConfigured','SERVICE_DISABLED'].includes(reason)))
+          throw fail('Google Calendar API is disabled in Scout’s Google Cloud project. Reconnecting will not fix this; the project administrator must enable it. You can still use the subscription link.',503,'calendar_api_disabled');
+        if(reasons.some(reason=>['insufficientPermissions','ACCESS_TOKEN_SCOPE_INSUFFICIENT'].includes(reason)))
+          throw fail('Google sign-in succeeded, but Calendar permission was not granted. Reconnect and approve Calendar access.',403);
+        if(check.status===429||reasons.some(reason=>['rateLimitExceeded','userRateLimitExceeded','quotaExceeded'].includes(reason)))
+          throw fail('Google Calendar’s request limit was reached. Wait before trying again; reconnecting will not help.',429);
+        throw fail(check.status===401?'Google authorization expired. Reconnect Google Calendar.':'Google denied access to this calendar. Check your Workspace Calendar access; repeated sign-ins will not fix this.',check.status===401?401:403);
+      }
       if(body.refresh_token){
         await query('select scout.save_calendar_secret($1,$2)',['scout_calendar_google',JSON.stringify({refresh_token:body.refresh_token,sub:google.sub})]);cost.row_mutations++;
       }
@@ -117,6 +127,6 @@ export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,
       await query('update scout.calendar_trial set remaining=remaining+$1 where id',[26-metrics.requests]);
     }
     return json({...result,cost:{...cost,google_calendar_requests:metrics.requests,google_calendar_writes:metrics.writes}});
-  }catch(error){return json({error:error.status?error.message:'Calendar operation interrupted; no automatic retry'},error.status??502);}
+  }catch(error){return json({error:error.status?error.message:'Calendar operation interrupted; no automatic retry',...(error.status&&error.code?{code:error.code}:{})},error.status??502);}
   finally{session?.release();await sql?.end({timeout:1}).catch(()=>{});}
 }

@@ -1,6 +1,6 @@
 export function mountCalendar(client,session,root){
   if(!root)return ()=>{};
-  let closed=false,busy=false,state,accessToken;
+  let closed=false,busy=false,state,accessToken,connectionBlocked=false;
   root.innerHTML=`<summary>Scout calendar</summary>
     <p>All upcoming events with a known date. Choose direct sync to your calendar or a separate calendar subscription.</p>
     <div class="actions"><button id="calendar-connect" type="button">Connect Google Calendar</button>
@@ -16,20 +16,24 @@ export function mountCalendar(client,session,root){
   const active=()=>state?.expires_at&&Date.parse(state.expires_at)>Date.now()&&state.remaining>0;
   const controls=()=>{
     buttons.forEach(button=>button.disabled=busy||!active());
+    get('connect').disabled=busy||!active()||connectionBlocked;
     get('sync').disabled=busy||!active()||!(accessToken||state?.connected&&state?.backend_ready);
   };
   async function call(action,body){
     const {data,error}=await client.functions.invoke('scout-calendar/'+action,{method:action==='status'?'GET':'POST',...(body?{body}:{})});
     if(error){
       const detail=await error.context?.json?.().catch(()=>null);
-      throw new Error(detail?.error??'Calendar service is unavailable. Try again later.');
+      throw Object.assign(new Error(detail?.error??'Calendar service is unavailable. Try again later.'),{code:detail?.code});
     }
     if(data?.error)throw new Error(data.error);
     return data;
   }
   async function run(work){
     if(busy||closed)return;busy=true;controls();
-    try{await work();}catch(error){if(!closed){root.hidden=false;message.textContent=error.message;}}
+    try{await work();}catch(error){if(!closed){
+      if(error.code==='calendar_api_disabled')connectionBlocked=true;
+      root.hidden=false;message.textContent=error.message;
+    }}
     finally{busy=false;if(!closed)controls();}
   }
   get('connect').addEventListener('click',()=>run(async()=>{
