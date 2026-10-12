@@ -17,7 +17,7 @@ For each development, provide:
 
 - Its name and a concise explanation of what is happening.
 - Whether it is an event, announcement, or official treaty development.
-- The organizations involved and their roles, where established.
+- Associated organization names, ranked with the most directly associated first. Do not assign role labels or numeric scores.
 - Relevant dates and times, explaining what each refers to.
 - Its priority under the rubric and the source-supported reason.
 - Any registration URLs
@@ -87,19 +87,13 @@ export const RESPONSE_SCHEMA={
           },
           "organizations": {
             "type": "array",
+            "description": "Associated organizations in ranked order, most directly associated first. Names only; no role labels.",
             "items": {
               "type": "object",
               "properties": {
                 "name": {
                   "type": "string",
                   "description": "Organization name, not a person or product."
-                },
-                "role": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "Stated role, preferably organizer, host, participant, partner, issuer, publisher, subject, funder, or authority; null if unclear."
                 }
               },
               "required": [
@@ -249,7 +243,7 @@ export function normalizeFinding(raw,url){
   const registration=(Array.isArray(raw?.registration_urls)?raw.registration_urls:[]).map(publicURL).find(Boolean);
   if(registration)details.registration_url=registration;
   const organizations=[...new Map((Array.isArray(raw?.organizations)?raw.organizations:[]).slice(0,12).flatMap(o=>{
-    const name=text(o?.name,200);return name?[[name.toLowerCase(),{name,role:text(o.role,120)||'unspecified'}]]:[];
+    const name=text(o?.name,200);return name?[[name.toLowerCase(),{name}]]:[];
   })).values()];
   if(!organizations.length)unknowns.organizations={reason:'not_established'};
   for(const key of DATE_FIELDS[kind])if(!details[key])unknowns['details.'+key]={reason:'not_established'};

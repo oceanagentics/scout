@@ -4,10 +4,10 @@ import {eventLabel,eventTiming,recordDates,sourceLink,trackerState,fieldLabel,or
 import {loadScout} from '../src/dashboard.js';
 import {normalizeDate} from '../src/finding.js';
 
-test('typed reader displays local dates, partial precision, roles and independent date meanings',()=>{
-  const event={id:'event',kind:'event',organizations:[{name:'Ocean Institute',role:'partner'}],details:{start:normalizeDate({value:'2026-10-15',precision:'day',time:'00:30',zone:'+08:00'})}};
+test('typed reader displays local dates, ranked organization names and independent date meanings',()=>{
+  const event={id:'event',kind:'event',organizations:[{name:'Ocean Institute',role:'partner'},{name:'Second Institute'}],details:{start:normalizeDate({value:'2026-10-15',precision:'day',time:'00:30',zone:'+08:00'})}};
   assert.deepEqual(recordDates(event),['2026-10-15','2026-10-15']);assert.ok(eventLabel(event).includes('2026-10-15 · 00:30 +08:00'));
-  assert.equal(fieldLabel(event,'organization'),'Ocean Institute (partner)');
+  assert.equal(fieldLabel(event,'organization'),'Ocean Institute; Second Institute');
   assert.equal(eventTiming(event,new Date('2026-10-14T16:00:00Z')),'Upcoming');
   const day={...event,details:{start:{value:'2026-10-03',precision:'day'},end:{value:'2026-10-05',precision:'day'}}};
   assert.equal(eventTiming(day,new Date('2026-10-04T12:00:00Z')),'Date known · time unknown');

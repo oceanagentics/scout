@@ -25,11 +25,13 @@ export function gemini({apiKey,ledger,invocation=randomUUID(),maxCalls=2,fetch:s
     };
     await reserve(MODEL_LIMITS.input); // URL retrieval is unknown: reserve headroom before dispatch
     let tokens=MODEL_LIMITS.input,output=0,state='settled',reason=null,dispatched=false,retryAt;
+    const diagnostics={};
     const request=async(suffix,payload)=>{
       let response;
       try{response=await send(endpoint+suffix,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},body:payload,
         signal:AbortSignal.timeout(Math.max(1,deadline-Date.now()-3000))});}
       catch{throw Object.assign(new Error('provider_unknown'),{reason:'provider_unknown'});}
+      diagnostics.http_status=response.status;
       const reader=response.body?.getReader(),decoder=new TextDecoder();let raw='',bytes=0;
       try{for(;;){const part=await reader?.read();if(!part||part.done)break;bytes+=part.value.byteLength;if(bytes>131072)throw new Error('output_bound');raw+=decoder.decode(part.value,{stream:true});}raw+=decoder.decode();}
       finally{await reader?.cancel();}
@@ -48,24 +50,33 @@ export function gemini({apiKey,ledger,invocation=randomUUID(),maxCalls=2,fetch:s
       dispatched=true;
       const result=await request(':generateContent',body);
       const usage=result.usageMetadata;
+      const choice=result.candidates?.[0],retrieval=choice?.urlContextMetadata?.urlMetadata??[];
+      Object.assign(diagnostics,{response_id:result.responseId??null,model_version:result.modelVersion??null,
+        finish_reason:choice?.finishReason??null,finish_message:choice?.finishMessage?.slice(0,512)??null,
+        prompt_block_reason:result.promptFeedback?.blockReason??null,
+        retrieval_metadata_present:choice?.urlContextMetadata!=null,
+        retrieval:retrieval.slice(0,20).map(r=>({url:r.retrievedUrl,status:r.urlRetrievalStatus})),
+        tokens:{prompt:usage?.promptTokenCount??null,tool:usage?.toolUsePromptTokenCount??null,
+          output:usage?.candidatesTokenCount??null,thinking:usage?.thoughtsTokenCount??null,total:usage?.totalTokenCount??null}});
       if(Number.isSafeInteger(usage?.promptTokenCount)&&Number.isSafeInteger(usage?.totalTokenCount)){
         tokens=usage.promptTokenCount+(usage.toolUsePromptTokenCount??0);
         output=(usage.candidatesTokenCount??0)+(usage.thoughtsTokenCount??0);
       }else state='unknown';
       if(tokens>MODEL_LIMITS.input){reason='token_reservation_overrun';retryAt=new Date(Date.now()+120000).toISOString();}
-      const choice=result.candidates?.[0];
       if(choice?.finishReason!=='STOP')throw new Error(choice?.finishReason==='MAX_TOKENS'?'output_truncated':'provider_finish');
       let answer;
       try{answer=JSON.parse(choice.content.parts.filter(p=>!p.thought).map(p=>p.text??'').join(''));}
       catch{throw new Error('invalid_json');}
-      const retrieval=choice.urlContextMetadata?.urlMetadata??[];
-      if(!retrieval.some(r=>r.urlRetrievalStatus==='URL_RETRIEVAL_STATUS_SUCCESS'))throw new Error('url_unreadable');
-      return {...answer,_retrieval:retrieval.map(r=>({url:r.retrievedUrl,status:r.urlRetrievalStatus})),
+      diagnostics.model_status=['found','none','unreadable'].includes(answer.status)?answer.status:null;
+      diagnostics.record_count=Array.isArray(answer.records)?answer.records.length:null;
+      if(!retrieval.length)throw new Error('retrieval_metadata_missing');
+      if(!retrieval.some(r=>r.urlRetrievalStatus==='URL_RETRIEVAL_STATUS_SUCCESS'))throw new Error('url_retrieval_failed');
+      return {...answer,_retrieval:diagnostics.retrieval,_diagnostics:diagnostics,
         _usage:{input_tokens:tokens,output_tokens:output,overrun:tokens>MODEL_LIMITS.input}};
     }catch(error){
-      reason=['input_bound','output_bound','runtime_bound','invalid_json','output_truncated','provider_finish','url_unreadable','provider_unavailable','provider_unknown','quota'].includes(error.message)?error.message:'provider_unknown';
+      reason=['input_bound','output_bound','runtime_bound','invalid_json','output_truncated','provider_finish','retrieval_metadata_missing','url_retrieval_failed','provider_unavailable','provider_unknown','quota'].includes(error.message)?error.message:'provider_unknown';
       if(dispatched&&['provider_unknown','output_bound','provider_unavailable','invalid_json'].includes(reason))state='unknown';
-      throw Object.assign(new Error(reason),{reason,dispatched,usage:{input_tokens:tokens,output_tokens:output,uncertain:state==='unknown'},...(retryAt||error.deferred?{deferred:{reason,retry_at:retryAt??error.deferred.retry_at}}:{})});
+      throw Object.assign(new Error(reason),{reason,dispatched,diagnostics,usage:{input_tokens:tokens,output_tokens:output,uncertain:state==='unknown'},...(retryAt||error.deferred?{deferred:{reason,retry_at:retryAt??error.deferred.retry_at}}:{})});
     }finally{
       await ledger.query('update scout.quota_reservations set input_tokens=$2,output_tokens=$3,state=$4,reason=$5 where id=$1 returning id',[id,tokens,output,state,reason]);
       if(retryAt)await ledger.query('update scout.quota_policy set cooldown_until=greatest(cooldown_until,$1::timestamptz) where id returning id',[retryAt]);

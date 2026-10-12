@@ -101,7 +101,7 @@ async function saveFindings(db,source,findings,urls){
 export async function processDocument(db,{source,prepared,read,model,deadline=Date.now()+100000}){
   const leased=await claimSource(db,source);
   if(!leased)return {state:'idle',created:0,changed:0};
-  const counts={created:0,changed:0,captured:0,ambiguous:0},usage={generations:0,input_tokens:0,output_tokens:0};
+  const counts={created:0,changed:0,captured:0,ambiguous:0},usage={generations:0,input_tokens:0,output_tokens:0},diagnostics=[];
   let observed,research={revision:REVISION},attempts=leased.attempts,captured=false,improvement='not_requested';
   const fingerprint=async(url,value)=>{
     try{const page=value??await read?.(url);return page&&(!page.status||page.status===200)?hash(page.text??page.body??page):null;}catch{return null;}
@@ -123,10 +123,11 @@ export async function processDocument(db,{source,prepared,read,model,deadline=Da
       if(Date.now()+10000>=deadline)throw fail('runtime_bound');
       let answer;
       try{answer=await model(prompt,input,RESPONSE_SCHEMA);usage.generations++;}
-      catch(error){if(error.dispatched){usage.generations++;usage.input_tokens+=error.usage?.input_tokens??0;usage.output_tokens+=error.usage?.output_tokens??0;}throw error;}
+      catch(error){if(error.diagnostics)diagnostics.push(error.diagnostics);if(error.dispatched){usage.generations++;usage.input_tokens+=error.usage?.input_tokens??0;usage.output_tokens+=error.usage?.output_tokens??0;}throw error;}
+      if(answer._diagnostics)diagnostics.push(answer._diagnostics);
       usage.input_tokens+=answer._usage?.input_tokens??0;usage.output_tokens+=answer._usage?.output_tokens??0;
       if(!['found','none','unreadable'].includes(answer.status)||!Array.isArray(answer.records))throw fail('invalid_output');
-      if(answer.status==='unreadable')throw fail('url_unreadable');
+      if(answer.status==='unreadable')throw fail('model_unreadable');
       return answer;
     };
     const prompt=INTAKE_INSTRUCTION.replace('[URL]',source.url),answer=await call(prompt);
@@ -155,13 +156,13 @@ export async function processDocument(db,{source,prepared,read,model,deadline=Da
     }
     observed=hash(research);
     if(!await finishSource(db,leased,{observed,processed:observed,research}))throw fail('stale_lease');
-    return {state:captured?'captured':counts.ambiguous?'ambiguous':'no_findings',...counts,improvement,usage};
+    return {state:captured?'captured':counts.ambiguous?'ambiguous':'no_findings',...counts,improvement,usage,diagnostics};
   }catch(error){
     const reason=/^[a-z_]{1,48}$/.test(error.reason??error.message??'')?error.reason??error.message:'invalid_output';
     if(reason==='quota'&&!usage.generations&&!error.dispatched)attempts=Math.max(0,attempts-1);
     const parked=attempts>=3;
     await finishSource(db,leased,{observed,research,state:parked?'parked':'deferred',reason,attempts,
       retryAt:new Date(Math.max(Date.parse(error.deferred?.retry_at)||0,Date.now()+(parked?86400000:3600000))).toISOString()});
-    return {state:captured?'captured':parked?'parked':'deferred',reason,...counts,improvement:captured?'pending':improvement,usage};
+    return {state:captured?'captured':parked?'parked':'deferred',reason,...counts,improvement:captured?'pending':improvement,usage,diagnostics};
   }
 }

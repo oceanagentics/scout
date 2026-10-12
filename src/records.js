@@ -2,7 +2,7 @@ export const KINDS = { event: 'Event', announcement: 'Announcement', treaty_stat
 export const PRIORITIES = { high:'High', normal:'Normal', low:'Low' };
 export function fieldLabel(record, field) {
   if (field==='priority') return PRIORITIES[record.priority]??'Not yet assessed';
-  if(field==='organization')return (record.organizations??[]).map(o=>`${o.name} (${o.role})`).join('; ')||'Unknown';
+  if(field==='organization')return (record.organizations??[]).map(o=>o.name).join('; ')||'Unknown';
   if(['starts_at','ends_at'].includes(field))return dateLabel(record.details?.[field==='starts_at'?DATE_FIELDS[record.kind]?.[0]:record.kind==='event'?'end':'effective']);
   if(field==='completeness')return record.completeness?.state??'Unknown';
   if(field==='details')return JSON.stringify(record.details);

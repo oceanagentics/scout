@@ -19,6 +19,24 @@ const enable=db=>db.exec("update scout.quota_policy set enabled=true,verified_un
 const boundary=raw=>database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
 const reserve=(db,invocation=randomUUID(),id=randomUUID(),tokens=null)=>db.query('select * from scout.reserve_model($1,$2,$3,2)',[invocation,id,tokens]);
 
+test('URL diagnostics distinguish absent metadata, provider failure and a model unreadable answer without persisting traffic',async()=>{
+ for(const retrieval of [undefined,[],[{retrievedUrl:'https://example.org',urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}],
+  [{retrievedUrl:'https://example.org',urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]]){
+  const writes=[],ledger={query:async(q,p)=>{writes.push([q,p]);return {rows:[{allowed:true}]};}};
+  const model=gemini({apiKey:'test',ledger,fetch:async()=>Response.json({responseId:'test-response',modelVersion:'test-version',
+   usageMetadata:{promptTokenCount:10,toolUsePromptTokenCount:20,candidatesTokenCount:5,totalTokenCount:35},
+   candidates:[{finishReason:'STOP',...retrieval===undefined?{}:{urlContextMetadata:{urlMetadata:retrieval}},
+    content:{parts:[{text:JSON.stringify({status:'unreadable',records:[],note:'PRIVATE_MODEL_ANSWER'})}]}}]})});
+  const result=await model('PRIVATE_PROMPT',[]).catch(e=>e),d=result._diagnostics??result.diagnostics;
+  assert.equal(d.retrieval_metadata_present,retrieval!==undefined);assert.equal(d.model_status,'unreadable');
+  assert.deepEqual(d.tokens,{prompt:10,tool:20,output:5,thinking:null,total:35});
+  if(!retrieval?.length)assert.equal(result.reason,'retrieval_metadata_missing');
+  else if(retrieval[0].urlRetrievalStatus.endsWith('_ERROR'))assert.equal(result.reason,'url_retrieval_failed');
+  else assert.equal(result.status,'unreadable');
+  assert.ok(!JSON.stringify(writes).includes('PRIVATE_'));assert.ok(!JSON.stringify(writes).includes('test-response'));
+ }
+});
+
 test('fresh finite shared headroom and database size are required before any model HTTP',async()=>{
  const raw=await setup();try{
   let http=0;

@@ -1,4 +1,4 @@
-import {DATE_FIELDS,ORGANIZATION_ROLES,normalizeDate,dateInterval} from '../src/finding.js';
+import {DATE_FIELDS,normalizeDate,dateInterval} from '../src/finding.js';
 import {sameClaim} from './finding-contract.js';
 import {sourceURL} from './hsa.js';
 
@@ -14,7 +14,7 @@ export async function correctFinding(db,{record_id,version,field,value,url}){
       if(typeof value!=='string'||!value.trim()||value.length>280)throw invalid();
       values[field]=value;
     }else if(field==='organizations'){
-      if(!Array.isArray(value)||value.length>12||value.some(o=>Object.keys(o).sort().join(',')!=='name,role'||typeof o.name!=='string'||!o.name.trim()||o.name.length>160||!ORGANIZATION_ROLES[record.kind].includes(o.role)))throw invalid();
+      if(!Array.isArray(value)||value.length>12||value.some(o=>!o||Object.keys(o).join(',')!=='name'||typeof o.name!=='string'||!o.name.trim()||o.name.length>200))throw invalid();
       values.organizations=value;
     }else if(DATE_FIELDS[record.kind].some(k=>'details.'+k===field)){
       try{details[field.slice(8)]=normalizeDate(value);}catch{throw invalid();}
