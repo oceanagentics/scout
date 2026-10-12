@@ -250,7 +250,7 @@ export function normalizeFinding(raw,url){
     const name=text(o?.name,200);return name?[[name.toLowerCase(),{name}]]:[];
   })).values()];
   if(!organizations.length)unknowns.organizations={reason:'not_established'};
-  for(const key of DATE_FIELDS[kind])if(!details[key])unknowns['details.'+key]={reason:'not_established'};
+  for(const key of DATE_FIELDS[kind])if(key!=='end'&&!details[key])unknowns['details.'+key]={reason:'not_established'};
   const missing=(Array.isArray(raw?.missing_information)?raw.missing_information:[]).map(s=>text(s,180)).filter(Boolean).slice(0,6);
   if(missing.length)unknowns.research={reason:'not_established',explanation:missing.join('; ').slice(0,480)};
   const priority=['high','normal','low'].includes(raw?.priority)?raw.priority:null,reason=text(raw?.relevance_reason,600);
