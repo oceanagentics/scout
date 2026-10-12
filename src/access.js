@@ -1,14 +1,16 @@
 import { loadScout, mountDashboard } from './dashboard.js';
+import { mountCalendar } from './calendar.js';
 
 export function mountAccess(client, root, mount = mountDashboard) {
   const status = root.querySelector('#status'), form = root.querySelector('#sign-in');
   const signOut = root.querySelector('#sign-out'), workspace = root.querySelector('#workspace');
-  let generation = 0, signingOut = false, closeDashboard;
+  let generation = 0, signingOut = false, closeDashboard, closeCalendar;
 
   async function showSession(session) {
     if (signingOut) session = null;
     const current = ++generation;
     closeDashboard?.(); closeDashboard = null;
+    closeCalendar?.(); closeCalendar = null;
     workspace.replaceChildren(); workspace.hidden = true;
     form.hidden = Boolean(session);
     signOut.hidden = !session;
@@ -37,6 +39,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
     }
     window.sessionStorage.removeItem('scout-record');
     closeDashboard = mount(workspace, options => loadScout(client,options));
+    closeCalendar = mountCalendar(client, session, root.querySelector('#calendar-tools'));
   }
 
   client.auth.onAuthStateChange((_event, session) => { void showSession(session); });
@@ -63,6 +66,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
       window.sessionStorage.removeItem('scout-auth');
       window.sessionStorage.removeItem('scout-auth-code-verifier');
       window.sessionStorage.removeItem('scout-record');
+      window.sessionStorage.removeItem('scout-calendar-connect');
       window.location.replace('/');
     }
   });

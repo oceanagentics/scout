@@ -13,7 +13,18 @@ if (!url || !key) {
 } else {
   const client = createClient(url, key, {
     db: { schema: 'scout' },
-    auth: { flowType: 'pkce', persistSession: true, storage: window.sessionStorage,
+    auth: { flowType: 'pkce', persistSession: true, storage: {
+      getItem: key => window.sessionStorage.getItem(key),
+      removeItem: key => window.sessionStorage.removeItem(key),
+      setItem(key,value) {
+        if (key === 'scout-auth') {
+          const session = JSON.parse(value);
+          delete session.provider_token; delete session.provider_refresh_token;
+          value = JSON.stringify(session);
+        }
+        window.sessionStorage.setItem(key,value);
+      },
+    },
       storageKey: 'scout-auth', detectSessionInUrl: true },
   });
   mountAccess(client, document);
