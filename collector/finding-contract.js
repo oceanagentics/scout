@@ -22,9 +22,8 @@ For each development, provide:
 - Its priority under the rubric and the source-supported reason.
 - Any registration URLs
 - Important information still missing or uncertain.
-- Any linked page you would request to resolve that uncertainty, and the specific question it could answer.
 
-In this same response, decide: Would further research materially improve these records? Set further_research. If yes, give the specific questions in follow_up_requests and identify a useful linked page for each if available; use null for an unknown URL. A missing link does not mean further research is unhelpful. If no, return no requests and briefly explain why in note. Missing optional fields alone do not require research.
+Request further research in follow_up_requests only when you think it is necessary to understand the event or announcement. Give the specific questions and identify a useful linked page for each if available; omit the URL or use null when unknown. Research fields are optional; no decision or explanation is required when no research is requested. Missing optional fields alone do not require research.
 
 Include useful partial findings. Do not invent missing information, confuse publication dates with event dates, or treat individual people as organizations. A publication date does not establish an event's year.
 
@@ -184,7 +183,7 @@ export const RESPONSE_SCHEMA={
     },
     "further_research": {
       "type": "boolean",
-      "description": "Would further research materially improve these records? Decide in this response, even when no useful linked page is known."
+      "description": "Optional indication that further research is necessary to understand the development. Follow-up questions can request research without this flag."
     },
     "follow_up_requests": {
       "type": "array",
@@ -201,7 +200,6 @@ export const RESPONSE_SCHEMA={
           }
         },
         "required": [
-          "url",
           "question"
         ],
         "additionalProperties": false
@@ -213,15 +211,12 @@ export const RESPONSE_SCHEMA={
         "string",
         "null"
       ],
-      "description": "Brief reason when further_research is false; otherwise an explanation when no record can be returned, or a material qualification."
+      "description": "Optional explanation when no record can be returned, or a material qualification."
     }
   },
   "required": [
     "status",
-    "records",
-    "further_research",
-    "follow_up_requests",
-    "note"
+    "records"
   ],
   "additionalProperties": false
 };

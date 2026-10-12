@@ -145,19 +145,16 @@ export async function processDocument(db,{source,prepared,read,model,deadline=Da
     counts.created+=saved.created;counts.changed+=saved.changed;counts.captured=saved.saved;counts.ambiguous+=saved.ambiguous;
     captured=saved.saved>0;
     if(answer.status==='found'&&!findings.length)throw fail('empty_findings');
-    const requests=Array.isArray(answer.follow_up_requests)?answer.follow_up_requests.slice(0,3):null;
-    research.supports=(requests??[]).flatMap(r=>{
+    research.supports=(Array.isArray(answer.follow_up_requests)?answer.follow_up_requests.slice(0,3):[]).flatMap(r=>{
       const url=publicURL(r?.url),question=text(r?.question,280);return question?[{url:url===source.url?null:url,question,hash:null}]:[];
     });
     research.note=text(answer.note,280);
-    research.decision=typeof answer.further_research==='boolean'&&requests&&
-      (answer.further_research?requests.length>0&&research.supports.length===requests.length:!requests.length&&research.note)?answer.further_research:null;
-    improvement=research.decision===false?'not_requested':'pending';
+    research.decision=research.supports.length?true:typeof answer.further_research==='boolean'?answer.further_research:null;
+    improvement=research.decision?'pending':'not_requested';
     // Only current questions/URLs are retained. Do not let oversized optional research lose the saved facts.
     research.supports=await Promise.all(research.supports.map(async s=>({...s,hash:s.url?await fingerprint(s.url):null})));
     if(Buffer.byteLength(JSON.stringify(research))>7800){research.supports=[];research.note=null;throw fail('research_bound');}
     observed=signature();
-    if(research.decision===null)throw fail('research_decision_invalid');
     const wanted=research.supports.filter(s=>s.url).map(({url,question})=>({url,question}));
     if(research.decision){
       improvement='pending';
@@ -174,9 +171,9 @@ export async function processDocument(db,{source,prepared,read,model,deadline=Da
       const enriched=await saveFindings(db,leased,matched,[...new Set(urls)]);
       counts.created+=enriched.created;counts.changed+=enriched.changed;counts.ambiguous+=enriched.ambiguous;
       improvement=enriched.changed?'improved':'no_change';
-      // One investigation only. A remaining question or invalid judgment needs deliberate review.
+      // One investigation only. Remaining requested research needs deliberate review.
       research.note=text((Array.isArray(improved.follow_up_requests)?improved.follow_up_requests.map(r=>text(r?.question,280)).filter(Boolean).join('; '):null)||improved.note,480);
-      if(improved.further_research!==false||!research.note||!Array.isArray(improved.follow_up_requests)||improved.follow_up_requests.length||enriched.saved<saved.saved)
+      if(improved.further_research===true||(Array.isArray(improved.follow_up_requests)&&improved.follow_up_requests.some(r=>text(r?.question,280)))||enriched.saved<saved.saved)
         throw fail('research_exhausted');
     }
     research.improvement=improvement;

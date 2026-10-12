@@ -1,4 +1,10 @@
-# F06/F11 — explicit research judgment and finite partials
+# F06/F11 — optional research and finite partials
+
+## Current correction — 12 October 2026
+
+The user authorized removing mandatory research metadata. This supersedes the required-judgment portions of the original plan/results below. Request research only when the agent considers it necessary to understand the event or announcement. Decision, requests and note are optional; a question can request research without a decision flag or URL. Missing or malformed optional metadata no longer parks a useful capture, and enrichment needs no explicit “no” or explanation to complete. Actual unresolved requests retain the existing finite pending/review behavior, saved records and human overrides.
+
+Local regressions cover omitted/declined/null/malformed metadata, question-only requests, failed enrichment, unchanged inputs and the two-generation ceiling. The new schema/workflow checks failed before the correction and pass afterward; all 336 checkout tests and the frontend build pass. Mocked capture remains one generation, 14 SQL statements and 5 mutations including quota accounting; current research state is 194 B (previously 289 B). Requested enrichment remains 14 statements/4 mutations, with 367 B of state; unchanged repeats make zero model calls or finding writes. No SQL migration, live model call, deployment or recurring activation is part of this correction. Live model judgment remains unverified under the revised prompt.
 
 ## Scope and baseline
 

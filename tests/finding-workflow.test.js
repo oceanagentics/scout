@@ -30,8 +30,7 @@ function driver(raw,inspect=()=>{}){
 
 const sourceFor=tr=>({tracker_id:tr.id,identity:'https://example.org/a',url:'https://example.org/a'});
 const event={type:'event',title:'BBNJ implementation workshop',summary:'Discussion of the Clearing-House Mechanism.',priority:'high',relevance_reason:'Technical BBNJ Clearing-House design workshop (https://example.org/a).',organizations:[],dates:[],missing_information:[]};
-const answer=(records=[event],follow_up_requests=[])=>({status:'found',records,follow_up_requests,further_research:follow_up_requests.length>0,
- note:follow_up_requests.length?null:'The useful development is established; unannounced optional details do not materially change it.'});
+const answer=(records=[event],follow_up_requests)=>({status:'found',records,follow_up_requests});
 const due=db=>db.exec("update scout.source_state set due_at=clock_timestamp()-interval '1 second'");
 const read=async()=>({status:200,body:'PRIVATE_SOURCE_BODY'});
 
@@ -68,7 +67,7 @@ test('requested improvement updates the saved partial, while failed improvement 
    const tr=await tracker(db),source=sourceFor(tr),support='https://example.org/programme',measured=boundary(driver(db));let calls=0,firstId;
    const model=async(prompt,input)=>{
     calls++;
-    if(calls===1)return answer([event],[{url:support,question:'Who hosts the workshop and when does it start?'}]);
+    if(calls===1)return answer([event],[null,{url:support,question:'Who hosts the workshop and when does it start?'}]);
     const first=(await db.query('select * from scout.records')).rows;assert.equal(first.length,1);firstId=first[0].id;
     await correctFinding(db,{record_id:firstId,version:first[0].version,field:'organizations',value:[{name:'Human institute'}],url:source.url});
     assert.deepEqual(input.requested_links,[{url:support,question:'Who hosts the workshop and when does it start?'}]);
@@ -96,16 +95,28 @@ test('requested improvement updates the saved partial, while failed improvement 
  }
 });
 
-test('missing or invalid judgment and yes without a source preserve partials, expose pending work, and require reconsideration',async()=>{
- for(const [fields,reason] of [
-  [{further_research:undefined},'research_decision_invalid'],
-  [{further_research:false,note:null},'research_decision_invalid'],
-  [{further_research:true,follow_up_requests:[{url:null,question:'When will the registration deadline be announced?'}]},'research_source_missing']
- ]){
+test('absent, declined, or malformed optional research completes a partial without more calls or pending work',async()=>{
+ for(const fields of [{},{further_research:false},{further_research:null,follow_up_requests:null,note:null},
+  {further_research:'unknown',follow_up_requests:[null,{url:'https://example.org/programme',question:null}],note:42}]){
   const db=await setup();try{
    const source=sourceFor(await tracker(db));let calls=0,reads=0;
    const model=async()=>{calls++;return {...answer(),...fields};},reader=async()=>{reads++;return read();};
-   const result=await processDocument(db,{source,read:reader,model});assert.equal(result.state,'captured');assert.equal(result.reason,reason);assert.equal(calls,1);assert.equal(reads,1);
+   const result=await processDocument(db,{source,read:reader,model});
+   assert.equal(result.state,'captured');assert.equal(result.created,1);assert.equal(result.reason,undefined);assert.equal(result.improvement,'not_requested');
+   const state=(await db.query('select state,reason from scout.source_state')).rows[0];assert.deepEqual(state,{state:'complete',reason:null});
+   const before=(await db.query('select id,version from scout.records')).rows;
+   await due(db);assert.deepEqual(await processDocument(db,{source,read:reader,model}),{state:'unchanged',created:0,changed:0});
+   assert.equal(calls,1);assert.equal(reads,2);assert.deepEqual((await db.query('select id,version from scout.records')).rows,before);
+  }finally{await db.close();}
+ }
+});
+
+test('a research question without a URL preserves the partial, exposes pending work, and requires reconsideration',async()=>{
+ for(const url of [undefined,null]){
+  const db=await setup();try{
+   const source=sourceFor(await tracker(db));let calls=0,reads=0;
+   const model=async()=>{calls++;return answer([event],[{url,question:'What does participation in this workshop involve?'}]);},reader=async()=>{reads++;return read();};
+   const result=await processDocument(db,{source,read:reader,model});assert.equal(result.state,'captured');assert.equal(result.reason,'research_source_missing');assert.equal(calls,1);assert.equal(reads,1);
    const before=(await db.query('select id,version from scout.records')).rows;
    for(let i=0;i<4;i++){await due(db);assert.equal((await processDocument(db,{source,read:reader,model})).state,'parked');}
    assert.equal(calls,1);assert.deepEqual((await db.query('select id,version from scout.records')).rows,before);
@@ -115,7 +126,7 @@ test('missing or invalid judgment and yes without a source preserve partials, ex
    await db.query("select set_config('request.jwt.claim.sub',$1,false)",[source.tracker_id]);
    await db.exec('set role authenticated');const jobs=(await db.query('select * from scout.finding_jobs()')).rows;await db.exec('reset role');
    assert.equal(jobs.length,1);assert.match(jobs[0].reopen_when,/explicitly/);
-   assert.match(jobs[0].explanation,reason==='research_source_missing'?/registration deadline.*No useful linked source/:/judgment was missing or invalid/);
+   assert.match(jobs[0].explanation,/participation.*No useful linked source/);
    // Existing administrative/correction reset deliberately reconsiders unchanged input.
    await db.exec("update scout.source_state set processed_hash=null,attempts=0,state='due',due_at=clock_timestamp()");
    assert.equal((await processDocument(db,{source,read:reader,model:async()=>{calls++;return answer();}})).state,'captured');assert.equal(calls,2);

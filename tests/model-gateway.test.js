@@ -39,6 +39,9 @@ test('strict schema keeps common schema untouched and closes nested nullable opt
   assert.deepEqual(next.properties.nested.items.properties.extra.anyOf,[{$ref:'#/$defs/text'},{type:'null'}]);
   assert.deepEqual(next.properties.variant.anyOf.at(-1),{type:'null'});assert.equal(next.$defs.text.additionalProperties,false);
   const transport=strictSchema(RESPONSE_SCHEMA);
+  assert.deepEqual(RESPONSE_SCHEMA.required,['status','records']);
+  assert.deepEqual(RESPONSE_SCHEMA.properties.follow_up_requests.items.required,['question']);
+  for(const key of ['further_research','follow_up_requests','note'])assert.ok(transport.properties[key].type.includes('null'));
   assert.deepEqual(transport.properties.records.items.properties.priority.enum,['high','normal','low',null]);
   assert.deepEqual(transport.properties.records.items.properties.dates.items.required,['meaning','date','time','timezone']);
   assert.deepEqual(strictSchema(schema).properties.records.items,{type:'object',properties:{},required:[],additionalProperties:false});
@@ -268,7 +271,7 @@ test('gateway intake saves a partial, skips unchanged input and preserves a huma
     const read=async()=>page(body);
     const generate=openai({apiKey:'test',urls:[url],read,fetch:async()=>{
       generations++;const record=generations===1?partial:{...partial,organizations:[{name:'Model organization'}],dates:[{meaning:'event_start',date:'2026-10-15'}]};
-      return result(JSON.stringify({status:'found',records:[record],follow_up_requests:[],further_research:false,note:'The remaining optional details are not material.'}));
+      return result(JSON.stringify({status:'found',records:[record]}));
     }});
     const {model,logs}=setup({generate});
     const first=await processDocument(db,{source,read,model});assert.equal(first.created,1);assert.equal(first.state,'captured');
