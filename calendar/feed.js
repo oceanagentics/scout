@@ -4,11 +4,11 @@ const text=value=>String(value??'').replaceAll('\\','\\\\').replace(/\r\n|\r|\n/
 const stamp=value=>new Date(value).toISOString().replaceAll('-','').replaceAll(':','').replace(/\.\d{3}/,'');
 const plain=value=>value.replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&');
 
-export function calendarFeed(records,{now=new Date(),timeZone='America/Kralendijk'}={}){
+export function calendarFeed(records){
   const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Ocean Agentics//Scout//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH','X-WR-CALNAME:Scout Events'];
   for(const record of records){
     const cancelled=record.details?.status==='cancelled';
-    const event=calendarEvent(cancelled?{...record,details:{...record.details,status:null}}:record,now,timeZone);
+    const event=calendarEvent(cancelled?{...record,details:{...record.details,status:null}}:record);
     if(!event)continue;
     lines.push('BEGIN:VEVENT','UID:'+record.id+'@scout.oceanagentics.com',
       'DTSTAMP:'+stamp(record.updated_at),'LAST-MODIFIED:'+stamp(record.updated_at),

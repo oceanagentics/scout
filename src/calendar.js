@@ -2,7 +2,7 @@ export function mountCalendar(client,session,root){
   if(!root)return ()=>{};
   let closed=false,busy=false,state,accessToken,connectionBlocked=false;
   root.innerHTML=`<summary>Scout calendar</summary>
-    <p>All upcoming events with a known date. Choose direct sync to your calendar or a separate calendar subscription.</p>
+    <p>All past and upcoming events with a known date. Choose direct sync to your calendar or a separate calendar subscription.</p>
     <div class="actions"><button id="calendar-connect" type="button">Connect Google Calendar</button>
       <button id="calendar-sync" type="button" disabled>Sync all events now</button>
       <button id="calendar-feed" class="secondary" type="button">Get subscription link</button></div>

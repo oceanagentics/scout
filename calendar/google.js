@@ -7,17 +7,14 @@ const marker=id=>'Scout record: '+recordLink(id);
 const eventId=id=>'scout'+id.replaceAll('-','');
 const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 
-// undefined preserves past entries; null withdraws a cancelled/undated finding.
-export function calendarEvent(record,now=new Date(),timeZone='America/Kralendijk',includePast=false){
+export function calendarEvent(record){
   if(!uuid.test(record.id))throw new Error('Invalid Scout record ID');
   if(record.kind!=='event'||record.details?.status==='cancelled')return null;
   const date=value=>value&&normalizeDate(Object.fromEntries(Object.entries(value).filter(([k])=>k!=='utc')));
   const start=date(record.details?.start),end=date(record.details?.end);
   if(start?.precision!=='day')return null;
-  const today=new Intl.DateTimeFormat('en-CA',{timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
   if(end&&(dateInterval(end)[1]<start.value||start.utc&&end.utc&&end.utc<start.utc))throw new Error('Invalid event date range');
   const last=end?.precision==='day'?end.value:start.value;
-  if(!includePast&&(end?.utc?Date.parse(end.utc)<=+now:last<today))return undefined;
   // Calendar requires an end. Incomplete clocks use an explicitly labelled date entry.
   const timed=Boolean(start.utc&&end?.utc&&end.utc>start.utc);
   const timing=timed?[]:[`Calendar date entry; ${start.time?'complete timing unavailable':'time unknown'}.`,
@@ -44,13 +41,13 @@ export function sameEvent(current,desired){
 }
 
 // Reconcile a complete, bounded snapshot in one action. Never retry uncertain writes.
-export async function syncCalendar(records,{calendarId,accessToken,send=fetch,now=new Date(),timeZone='America/Kralendijk',metrics={requests:0,writes:0}}){
+export async function syncCalendar(records,{calendarId,accessToken,send=fetch,reserveWrites=async()=>{},metrics={requests:0,writes:0}}){
   if(!calendarId||calendarId==='primary'||!accessToken)throw new Error('Explicit calendar ID and Google access token required');
   if(records.length>250)throw new Error('Event count exceeds the reviewed calendar limit');
   const base='https://www.googleapis.com/calendar/v3/calendars/'+encodeURIComponent(calendarId)+'/events';
   const deadline=Date.now()+90000;
   async function request(path,{method='GET',body,etag}={}){
-    if(metrics.requests>=26||Date.now()>=deadline||method!=='GET'&&metrics.writes>=25)throw new Error('Calendar trial request limit');
+    if(metrics.requests>=51||Date.now()>=deadline||method!=='GET'&&metrics.writes>=50)throw new Error('Calendar trial request limit');
     metrics.requests++;if(method!=='GET')metrics.writes++;
     let response;
     try{response=await send(base+path,{method,headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json',...(etag?{'If-Match':etag}:{})},
@@ -70,9 +67,8 @@ export async function syncCalendar(records,{calendarId,accessToken,send=fetch,no
   for(const id of new Set([...source.keys(),...existing.keys()])){
     const record=source.get(id),current=existing.get(id);
     if(current?.status==='cancelled'){result.skipped++;continue;}
-    // Existing entries may need correcting even if a revised date is now in the past.
-    const event=record?calendarEvent(record,now,timeZone,Boolean(current)):null;
-    if(event===undefined||!event&&!current){result.skipped++;continue;}
+    const event=record?calendarEvent(record):null;
+    if(!event&&!current){result.skipped++;continue;}
     if(current){
       const recordId=current.extendedProperties?.private?.record_id;
       if(!uuid.test(recordId??'')||id!==eventId(recordId)||!current.description?.split(/\r?\n/).includes(marker(recordId)))throw new Error('Calendar entry is not owned by Scout');
@@ -82,7 +78,8 @@ export async function syncCalendar(records,{calendarId,accessToken,send=fetch,no
     }
     actions.push({id,record,current,event});
   }
-  if(actions.length>25)throw new Error('More than 25 changes need review before syncing');
+  if(actions.length>50)throw new Error('More than 50 changes need review before syncing');
+  if(actions.length)await reserveWrites(actions.length);
   // Validate every planned change before making the first write.
   for(const {id,record,current,event} of actions){
     if(!event){await request('/'+id+'?sendUpdates=none',{method:'DELETE',etag:current.etag});result.removed++;}

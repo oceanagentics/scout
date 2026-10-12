@@ -110,9 +110,9 @@ export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,
     }
     if(body.access_token!==undefined&&(typeof body.access_token!=='string'||!body.access_token))throw fail('Invalid Google authorization');
     if(!body.access_token&&(!clientId||!clientSecret))throw fail('Reconnect Google Calendar to sync during this session',409);
-    await reserve(26);
+    await reserve(1);
     const metrics={requests:0,writes:0};
-    let result;
+    let result,reserved=1;
     try{
       let token=body.access_token;
       if(!token){
@@ -121,10 +121,11 @@ export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,
         token=await googleAccessToken({clientId,clientSecret,refreshToken:JSON.parse(saved).refresh_token},send);
       }
       await checkIdentity(token);
-      result=await syncCalendar(await records(),{calendarId:owner,accessToken:token,send,metrics});
+      result=await syncCalendar(await records(),{calendarId:owner,accessToken:token,send,metrics,
+        reserveWrites:async count=>{await reserve(count);reserved+=count;}});
     }finally{
       // Requests whose responses are uncertain remain charged; only undispatched capacity returns.
-      await query('update scout.calendar_trial set remaining=remaining+$1 where id',[26-metrics.requests]);
+      if(reserved>metrics.requests)await query('update scout.calendar_trial set remaining=remaining+$1 where id',[reserved-metrics.requests]);
     }
     return json({...result,cost:{...cost,google_calendar_requests:metrics.requests,google_calendar_writes:metrics.writes}});
   }catch(error){return json({error:error.status?error.message:'Calendar operation interrupted; no automatic retry',...(error.status&&error.code?{code:error.code}:{})},error.status??502);}

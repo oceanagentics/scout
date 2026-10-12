@@ -9,7 +9,7 @@ const profile={sub:'google-owner',email:'danny@oceanagentics.com',email_verified
 const identity={...profile,iss:'https://accounts.google.com',custom_claims:{hd:'oceanagentics.com'}};
 const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',version:1,updated_at:'2026-10-12T10:00:00Z',kind:'event',
   title:'Calendar test',description:'Test fixture',organizations:[],canonical_url:'https://example.org/event',
-  details:{start:{value:'2099-10-22',precision:'day'}}};
+  details:{start:{value:'2001-10-22',precision:'day'}}};
 
 test('hosted calendar with real SQL: access boundaries, finite allowance, feed and repeat sync',async()=>{
   const db=new PGlite(),queries=[];let signedIn=true,googleEvents=[],googleCalls=0,googleProfile=profile,calendarFailure;
@@ -75,9 +75,16 @@ test('hosted calendar with real SQL: access boundaries, finite allowance, feed a
     assert.equal((await run('connect',{access_token:'test'})).status,200,'Foreground sync works without a refresh token');
     assert.equal((await db.query("select count(*)::int n from vault.secrets where name='scout_calendar_google'")).rows[0].n,0);
     assert.equal((await run('connect',{access_token:'test',refresh_token:'refresh'})).status,200);
+    await db.query('update scout.calendar_trial set remaining=1');
+    assert.equal((await run('sync',{access_token:'test'})).status,503);assert.equal(googleEvents.length,0);
+    assert.equal((await db.query('select remaining from scout.calendar_trial')).rows[0].remaining,0,'The list read stays charged when writes cannot be reserved');
+    await db.query('update scout.calendar_trial set remaining=2');
     const synced=await run('sync',{access_token:'test'});assert.equal(synced.status,200);
     const first=await synced.json();assert.equal(first.created,1);assert.deepEqual(first.cost,{sql_statements:4,row_mutations:2,google_calendar_requests:2,google_calendar_writes:1});
-    const repeat=await (await run('sync',{access_token:'test'})).json();assert.equal(repeat.unchanged,1);assert.equal(repeat.cost.google_calendar_writes,0);
+    assert.equal(googleEvents[0].start.date,'2001-10-22');
+    await db.query('update scout.calendar_trial set remaining=1');
+    const repeat=await (await run('sync',{access_token:'test'})).json();assert.equal(repeat.unchanged,1);
+    assert.deepEqual(repeat.cost,{sql_statements:3,row_mutations:1,google_calendar_requests:1,google_calendar_writes:0});
     assert.equal(googleEvents.length,1);
 
     await db.query('update auth.identities set identity_data=$1',[{...identity,email:'teammate@oceanagentics.com'}]);
