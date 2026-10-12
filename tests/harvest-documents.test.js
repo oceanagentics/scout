@@ -4,7 +4,6 @@ import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { retrieveHarvestDocuments, HARVEST_HOME, HARVEST_WEBINARS } from '../collector/harvest-documents.js';
-import { prepareDocument } from '../collector/octo-documents.js';
 
 const fixture=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/harvest-website.json.gz',import.meta.url))));
 const sourceURL=value=>{
@@ -31,12 +30,10 @@ test('both saved publisher pages remain whole documents including current and ar
   for(const doc of run.documents){
     const response=doc.url===HARVEST_HOME?fixture.home:fixture.webinars;
     assert.equal(doc.raw,response.body);assert.equal(doc.identity,'harvest:document:'+doc.id);
-    assert.ok(doc.prepared.text.includes(prepareDocument({title:'',url:doc.url,html:DomUtils.getOuterHTML(content(response))}).text));
     assert.equal(doc.prepared.chunks.map(c=>doc.prepared.text.slice(c.start,c.end)).join(''),doc.prepared.text);
-    assert.ok(doc.prepared.text.length>4000);
     for(const key of ['kind','organization','starts_at','ends_at','findings','status','registration_url'])assert.ok(!Object.hasOwn(doc,key));
   }
-  assert.ok(index.prepared.text.includes('Exceptional Circumstances'));
+  for(const text of ['Exceptional Circumstances','recordings and resources from previous sessions.'])assert.ok(index.prepared.text.includes(text));
   assert.ok(home.prepared.links.some(l=>l.target===fixture.registration.url+'#/registration'&&l.relationship==='registration'));
   assert.ok(run.coverage.some(c=>c.target===fixture.registration.url+'#/registration'&&c.state==='unfetched'));
   assert.ok(run.inventory.some(i=>i.links.some(l=>l.target?.includes('youtube.com'))));

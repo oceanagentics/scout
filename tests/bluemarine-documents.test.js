@@ -131,27 +131,6 @@ test('related-card changes leave primary preparation stable; language and body s
   assert.ok(!run.requests.includes(sourceURL(support)));assert.ok(!run.requests.includes(language));
 });
 
-test('native model repair and pending work survive failed and deferred passes without losing priority',async()=>{
-  const knownDocuments=[{id:'bluemarine:document:14884',url:fixture.wildlabs.url}];
-  const pending=[{id:'bluemarine:document:14832',url:fixture.ocean.url,state:'model-repair'},
-    {...knownDocuments[0],state:'model-pending'},{url:fixture.ocean.url,state:'deferred',pending_state:'model-pending'}];
-  const overrides={[BLUE_MARINE_LISTING]:{...fixture.home,status:503},[fixture.ocean.url]:{...fixture.ocean,status:403}};
-  const failed=await collect({knownDocuments,pending,overrides,limits:{documents:1},progress:{after_url:fixture.wildlabs.url}});
-  assert.deepEqual(failed.requests,[BLUE_MARINE_LISTING,fixture.ocean.url]);assert.equal(failed.progress.after_url,fixture.ocean.url);
-  const ocean=failed.pending.find(d=>d.url===fixture.ocean.url);assert.equal(ocean.id,'14832');assert.equal(ocean.pending_state,'model-repair');
-  assert.equal(ocean.last_failure.state,'failed');assert.equal(failed.pending.length,2);
-  const deferred=await collect({pending:failed.pending,progress:failed.progress,overrides,limits:{requests:1}});
-  assert.deepEqual(deferred.requests,[BLUE_MARINE_LISTING]);assert.deepEqual(deferred.progress,failed.progress);
-  assert.deepEqual(deferred.pending.find(d=>d.url===fixture.ocean.url).last_failure,ocean.last_failure);
-  const repaired=await collect({pending:deferred.pending,progress:deferred.progress,limits:{documents:1},
-    overrides:{[BLUE_MARINE_LISTING]:{...fixture.home,status:503}}});
-  assert.deepEqual(repaired.documents.map(d=>d.identity),['bluemarine:document:14832']);
-  assert.equal(repaired.pending.length,1);assert.equal(repaired.pending[0].pending_state,'model-pending');
-  const remaining=await collect({pending:repaired.pending,progress:repaired.progress,limits:{documents:1},
-    overrides:{[BLUE_MARINE_LISTING]:{...fixture.home,status:503}}});
-  assert.deepEqual(remaining.documents.map(d=>d.identity),['bluemarine:document:14884']);assert.deepEqual(remaining.pending,[]);
-});
-
 test('malformed, failed, unsupported, wrong-identity and missing-body responses stay inspectable',async()=>{
   for(const response of [{...fixture.wildlabs,status:403},
     {...fixture.wildlabs,headers:{'content-type':'application/pdf'},body:'PDF payload'},

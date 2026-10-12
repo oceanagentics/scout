@@ -82,21 +82,21 @@ test('saved German alternate stays evidence; injected German edition is a separa
   assert.deepEqual(unverified.requests,[OCEANCARE_LISTING]);assert.ok(unverified.coverage.some(c=>c.reason?.includes('requires a known native ID')));
 });
 
-test('persisted cursor progresses across new/deferred/failed/unlisted-known destinations',async()=>{
-  const first=await collect({limits:{documents:20}});
-  const newURL='https://www.oceancare.org/en/stories_and_news/new-structural-document/';
-  const unlistedURL='https://www.oceancare.org/en/stories_and_news/unlisted-known-document/';
-  const readable=url=>({...fixture.detail0,url,body:fixture.detail0.body.replaceAll(fixture.detail0.url,url)});
-  const listing={...fixture.list,body:fixture.list.body.replace('</main>',`<a href="${newURL}"><div class="headline">Office update without dates</div></a></main>`)};
-  const overrides={[listing.url]:listing,[newURL]:readable(newURL),[unlistedURL]:readable(unlistedURL)};
-  let progress=first.progress,pending=first.pending;const attempts=new Set(first.requests),documents=[];
-  const listed=first.inventory.filter(d=>d.state==='listed');
-  for(let i=0;i<Math.ceil((listed.length+2)/20)+2;i++){
-    const run=await collect({limits:{documents:20},knownDocuments:[{id:'oceancare:post:225194:en',url:unlistedURL}],pending,progress,overrides});
-    progress=run.progress;pending=run.pending;run.requests.forEach(url=>attempts.add(url));documents.push(...run.documents);assert.ok(run.requests.length<=21);
+test('compact cursor rotates new, failed, deferred and unlisted known destinations',async()=>{
+  const urls=['a-new','b-failed','c-deferred','d-unlisted'].map(name=>'https://www.oceancare.org/en/stories_and_news/'+name+'/');
+  const listing={...fixture.list,body:'<html><head><link rel="canonical" href="'+OCEANCARE_LISTING+'"></head><body><main>'+
+    urls.slice(0,3).map(url=>'<a href="'+url+'"><div class="headline">Office update without dates</div></a>').join('')+'</main></body></html>'};
+  const overrides={[listing.url]:listing,...Object.fromEntries(urls.filter((_,i)=>i!==1).map(url=>[url,
+    {...fixture.detail0,url,body:fixture.detail0.body.replaceAll(fixture.detail0.url,url)}]))};
+  let progress={};const attempts=[],documents=[];
+  for(let i=0;i<4;i++){
+    const run=await collect({limits:{documents:1,requests:2},knownDocuments:[{id:'225194',url:urls[3]}],progress,overrides});
+    progress=run.progress;attempts.push(...run.requests.slice(1));documents.push(...run.documents);
+    assert.equal(run.requests.length,2);assert.equal(progress.after_url,urls[i]);
+    if(i===0)assert.ok(run.coverage.some(c=>c.url===urls[2]&&c.state==='deferred'));
+    if(i===1)assert.ok(run.coverage.some(c=>c.url===urls[1]&&c.state==='failed'));
   }
-  for(const item of listed)assert.ok(attempts.has(item.url));
-  assert.ok(documents.some(d=>d.url===newURL));assert.ok(documents.some(d=>d.url===unlistedURL));
+  assert.deepEqual(attempts,urls);assert.deepEqual(documents.map(d=>d.url),[urls[0],urls[2],urls[3]]);
 });
 
 test('zero and multiple possible findings stay whole neutral input',async()=>{

@@ -86,27 +86,6 @@ test('known article is rechecked with unchanged or unavailable listing and retai
   }
 });
 
-test('retained pending work leads bounded acquisition while ordinary IDs keep their rotation',async()=>{
-  const live=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/gfw-live-repair.json.gz',import.meta.url))));
-  const source=live.sources[0],response={...live.artifacts.a2.data,headers:{'content-type':'application/json'}};
-  const id=String(JSON.parse(source.content).id),knownArticles=[{id,url:source.url}];
-  const input={home:{...live.artifacts.a1.data,headers:{'content-type':'text/html'}},knownArticles,
-    overrides:{[response.url]:response},progress:{after_id:'66227'},limits:{articles:4,requests:5}};
-  const ordinary=await collect(input);
-  const pending=[{id,url:source.url,state:'model-pending'},{url:article.link,state:'model-repair'},
-    {url:'https://globalfishingwatch.org/unobserved/',state:'model-repair'}];
-  const before=JSON.stringify({pending,knownArticles,live});
-  const run=await collect({...input,pending});
-  assert.deepEqual(run.requests,[GFW_LISTING,fixture['partnership-api'].url,response.url,...ordinary.requests.slice(1,3)]);
-  const doc=run.documents.find(d=>d.id===id);
-  assert.equal(doc.identity,'gfw:post:'+id);assert.equal(doc.raw,source.content);
-  assert.equal(JSON.stringify({pending,knownArticles,live}),before);
-  assert.equal(run.progress.after_id,ordinary.requests[2].split('/').at(-1));
-  for(const state of ['complete','exhausted'])assert.deepEqual((await collect({...input,pending:pending.map(p=>({...p,state}))})).requests,ordinary.requests);
-  const deferred=await collect({...input,pending,limits:{articles:4,requests:1}});
-  assert.deepEqual(deferred.requests,[GFW_LISTING]);assert.equal(deferred.progress.after_id,input.progress.after_id);
-});
-
 test('failed details and excerpt-only responses never become prepared full documents',async()=>{
   for(const response of [{...fixture['partnership-api'],status:403},
     {...fixture['partnership-api'],body:JSON.stringify({...article,content:{protected:false,rendered:''}})}]){

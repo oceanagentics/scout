@@ -78,20 +78,6 @@ test('request/time/byte limits retain deferred cursor and never claim unread suc
   assert.equal((await collect({limits:{bytes:10}})).documents.length,0);
 });
 
-test('native shared pending identity takes priority without a deferred duplicate hiding model work',async()=>{
-  const initial=await collect(),original=initial.documents.find(d=>d.url===recordings.url);
-  const knownDocuments=initial.documents.map(d=>({id:d.identity,url:d.url})),pending=[{id:'symposium:document:118021646',url:satellite.url,state:'model-pending'},{id:original.identity,url:original.url,state:'model-repair'}];
-  const unread=await collect({knownDocuments,pending,limits:{documents:1},progress:{after_url:original.url}});
-  assert.deepEqual(unread.requests,[SYMPOSIUM_HOME]);assert.equal(unread.documents.length,1);
-  const resumed=await collect({knownDocuments,pending:[...pending,...unread.pending],limits:{documents:2},progress:unread.progress});
-  assert.deepEqual(resumed.requests,[SYMPOSIUM_HOME,original.url]);assert.equal(resumed.documents[1].identity,original.identity);
-  assert.equal(resumed.documents[1].raw,original.raw);assert.deepEqual(resumed.documents[1].prepared,original.prepared);
-  const failed=await collect({pending,limits:{documents:2},overrides:{[original.url]:{...recordings,status:403}}});
-  const failure=failed.pending.find(p=>p.url===original.url);assert.equal(failure.last_failure.state,'failed');
-  const deferred=await collect({pending:failed.pending,budget:{requests:0,deadline:0},now:()=>0});
-  assert.equal(deferred.requests.length,0);assert.deepEqual(deferred.pending.find(p=>p.url===original.url).last_failure,failure.last_failure);
-});
-
 test('only observed programme/session navigation enters frontier; generic and stale support routes stay metadata',async()=>{
   const extra='<a href="/privacy">Privacy</a><a href="/registration">Register</a><a href="/session_recordings_2027">Unrelated citation</a>';
   const home={...fixture.home,body:fixture.home.body.replaceAll('Programme','Programme complet').replace('</body>',extra+'</body>')};

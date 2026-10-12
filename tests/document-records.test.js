@@ -1,6 +1,5 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
 import {prepareDocument,prepareResponse} from '../collector/octo-documents.js';
 import {packDocument} from '../collector/finding-jobs.js';
 import {validateFinding} from '../collector/finding-contract.js';
@@ -15,9 +14,9 @@ const proposal=(text,kind='event')=>({occurrence:{kind,anchor:'Ocean workshop',t
 
 test('malformed final claim wrappers fail as invalid output',()=>{
   const text='Ocean workshop.',input=packet(prepareDocument({url:'https://example.org/event',html:'<p>'+text+'</p>'}));
-  for(const bad of [1,'claim',[],{sources:claim(null,text).sources}]){
-    const raw=proposal(text);raw.description=bad;
-    assert.throws(()=>validateFinding(raw,input),{invalid:true,message:'Claim object and value required: description'});
+  for(const field of ['description','canonical_url'])for(const bad of [1,'claim',[],{sources:claim(null,text).sources}]){
+    const raw=proposal(text);raw[field]=bad;
+    assert.throws(()=>validateFinding(raw,input),{invalid:true,message:'Claim object and value required: '+field});
   }
   for(const key of ['organizations','identities'])for(const bad of [null,1,[]]){const raw=proposal(text);raw[key]=[bad];assert.throws(()=>validateFinding(raw,input),{invalid:true});}
   for(const kind of ['constructor','toString','unknown',['event'],{toString:null,valueOf:null}]){const raw=proposal(text);raw.occurrence.kind=kind;assert.throws(()=>validateFinding(raw,input),{invalid:true});}
@@ -30,6 +29,7 @@ test('ordinary details require claim wrappers and citation pages must match supp
     const bad=structuredClone(raw);bad.details[field]='bare value';
     assert.throws(()=>validateFinding(bad,input),{message:'Claim object and value required: details.'+field});
   }
+  const missing=structuredClone(raw);delete missing.details;assert.throws(()=>validateFinding(missing,input),{invalid:true});
   const bad=structuredClone(raw);bad.occurrence.sources[0].page=1;
   assert.throws(()=>validateFinding(bad,input),{message:'PDF citation page does not match its source'});
   assert.equal(validateFinding(raw,input).kind,'event');
@@ -168,23 +168,4 @@ test('final source-linked native claims retain both sides of the association',()
   const accepted=validateFinding(raw,input);
   assert.equal(raw.organizations[0].sources.length,2);
   assert.deepEqual(accepted.proofs['organizations.0'].sources.map(p=>p.url),[primary.url,organization.url]);
-});
-test('retained failed P01 responses stay immutable; corrected final facts omit the platform role',async()=>{
-  const retained=JSON.parse(await readFile(new URL('./fixtures/P01-retained-extraction.json',import.meta.url),'utf8'));
-  for(const [index,response]of retained.responses.entries()){
-    const actual=response.findings[0];assert.throws(()=>validateFinding(actual,retained.packet),/co-located/);
-    if(index===0){assert.deepEqual(actual.evidence.kind,[10]);assert.equal(actual.citations[10],undefined);}
-    else {assert.deepEqual(actual.evidence.organizations,[1]);assert.equal(actual.evidence['organizations.0'],undefined);}
-    const titleSource=actual.citations[index===0?0:1],bodySource=actual.citations[index===0?1:0],dateSource=actual.citations[index===0?3:1];
-    // Explicit offline re-expression, never an alias or replacement model answer.
-    const diagnostic={occurrence:{kind:actual.kind,anchor:actual.anchor,title:actual.title,sources:[titleSource]},
-      description:{value:actual.description,sources:[bodySource]},canonical_url:null,organizations:actual.organizations.map(o=>({...o,sources:[titleSource]})),
-      details:Object.fromEntries(Object.entries(actual.details).map(([key,value])=>[key,value==null?null:{...['start','end'].includes(key)?value:{value},sources:[key==='registration_url'&&index===0?actual.citations[6]:key==='location'||key==='mode'?actual.citations[index===0?5:1]:dateSource]}])),
-      identities:actual.identities.map(i=>({scheme:i.scheme,value:i.value,sources:index===0?[{doc:'P',block:999,quote:i.value}]:[actual.citations[1]]})),unknowns:{}};
-    const final=structuredClone(diagnostic);final.organizations=[];final.identities=[];final.details.status=null;
-    for(const field of ['organizations','identities','details.status'])final.unknowns[field]={reason:'unverified_evidence',explanation:'Injected final rejection of unsupported facts.'};
-    const accepted=validateFinding(final,retained.packet);
-    assert.equal(accepted.title,actual.title);assert.equal(accepted.details.start.utc,'2026-10-22T13:30:00.000Z');assert.deepEqual(accepted.organizations,[]);assert.deepEqual(accepted.identities,[]);assert.equal(accepted.details.status,null);
-    assert.equal(accepted.completeness.state,'provisional');assert.equal(accepted.details.end?.utc,index===0?undefined:'2026-10-22T14:15:00.000Z');
-  }
 });

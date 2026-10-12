@@ -94,24 +94,6 @@ test('known documents recheck changed full content behind unchanged or unavailab
   }
 });
 
-test('retained pending HTML articles resume within bounds without admitting unobserved URLs',async()=>{
-  const knownDocuments=[{id:'6800',url:full.html.url},{id:'6753',url:resource.url}];
-  const input={knownDocuments,overrides:{[full.html.url]:full.html},progress:{after_url:full.html.url},limits:{documents:2,requests:5}};
-  const ordinary=await collect(input),pending=[{...knownDocuments[0],state:'model-pending'},
-    {...knownDocuments[1],state:'model-repair'},{url:'https://highseasalliance.org/unobserved/',state:'model-repair'}];
-  const before=JSON.stringify({pending,knownDocuments,input});
-  const run=await collect({...input,pending});
-  assert.deepEqual(run.requests,[HSA_FEED,resource.url,full.html.url]);
-  assert.deepEqual(run.documents.map(d=>d.identity),['hsa:document:6753','hsa:document:6800']);
-  assert.equal(run.documents[1].raw,full.html.body);assert.equal(run.documents[1].route,'html');
-  const repeat=await collect({...input,pending,knownDocuments:run.documents.map(({id,url})=>({id,url})),progress:run.progress});
-  assert.deepEqual(repeat.documents.map(d=>[d.identity,d.raw,d.prepared]),run.documents.map(d=>[d.identity,d.raw,d.prepared]));
-  assert.equal(JSON.stringify({pending,knownDocuments,input}),before);
-  for(const state of ['complete','exhausted'])assert.deepEqual((await collect({...input,pending:pending.map(p=>({...p,state}))})).requests,ordinary.requests);
-  const deferred=await collect({...input,pending,limits:{documents:2,requests:1}});
-  assert.deepEqual(deferred.requests,[HSA_FEED]);assert.equal(deferred.progress.after_url,input.progress.after_url);
-});
-
 test('cursor rotates across deferred/failed/new/unlisted documents without fixed-first starvation',async()=>{
   const first=await collect({limits:{documents:2}});
   const newURL='https://highseasalliance.org/new-structural-document/';

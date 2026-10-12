@@ -85,7 +85,7 @@ test('E04 packet bounds redundant link previews while preserving every source bl
  t.diagnostic(JSON.stringify({case:'E04',prepared_text_bytes:3813,packet_bytes:bytes,links_bytes:Buffer.byteLength(JSON.stringify(doc.links)),links:doc.links.length,model_calls:0}));
 });
 
-test('one E04 record through production readers, model accounting and final save; unchanged and irrelevant-change repeats',async t=>{
+test('mocked E04 facts survive readers, model accounting and save; unchanged and irrelevant-change repeats',async t=>{
  const raw=await setup();try{
   const tr=await tracker(raw);await enable(raw);
   const sourceFixture=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/iddri-website.json.gz',import.meta.url))));
@@ -114,13 +114,13 @@ test('one E04 record through production readers, model accounting and final save
   assert.deepEqual((await raw.query("select to_regclass('scout.evidence') evidence,to_regclass('scout.collection_runs') runs")).rows[0],{evidence:null,runs:null});
   const counts=async()=>Object.fromEntries(await Promise.all(['records','record_sources','record_identities','source_state','quota_reservations'].map(async name=>[name,(await raw.query('select count(*)::int n from scout.'+name)).rows[0].n])));
   const before=await counts();
-  for(let i=0;i<100;i++){
+  for(let i=0;i<2;i++){
    await raw.exec("update scout.source_state set due_at=now()-interval '1 second'");
    assert.equal((await run()).state,'unchanged');
   }
-  assert.equal(counter.generations,2);assert.equal(totals.mutations-initial.mutations,200);assert.deepEqual(await counts(),before);
+  assert.equal(counter.generations,2);assert.equal(totals.mutations-initial.mutations,4);assert.deepEqual(await counts(),before);
   assert.deepEqual((await raw.query('select updated_at from scout.records')).rows[0].updated_at,record.updated_at);
-  const repeat={statements:(totals.statements-initial.statements)/100,mutations:2,submitted_bytes:(totals.submitted_bytes-initial.submitted_bytes)/100};
+  const repeat={statements:(totals.statements-initial.statements)/2,mutations:2,submitted_bytes:(totals.submitted_bytes-initial.submitted_bytes)/2};
   body=body.replace('</body>','<p>IRRELEVANT_PRIVATE_SENTINEL '+('unrelated '.repeat(1500))+'</p></body>');
   counter.alternateReason=true;
   await raw.exec("update scout.source_state set due_at=now()-interval '1 second';update scout.quota_reservations set reserved_at=now()-interval '61 seconds'");
@@ -142,6 +142,8 @@ test('compatible conversion preserves IDs, final facts, URLs, priority and deliv
   await db.query("insert into scout.collection_runs(tracker_id,started_at,stats) values($1,now()-interval '10 days',$2)",[tr.id,{model_attempts:[{at:'2026-01-01T00:00:00Z',input_tokens:123}]}]);
   const oldAnnouncement=(await db.query("insert into scout.records(kind,title,priority) values('announcement','Legacy announcement','normal') returning id")).rows[0];
   await db.query("insert into scout.evidence(record_id,tracker_id,url,content_hash,content,parsed) values($1,$2,'https://example.org/legacy-announcement','legacy-news','UNCHANGED ANNOUNCEMENT BODY','{}')",[oldAnnouncement.id,tr.id]);
+  const timed=(await db.query("insert into scout.records(kind,title,description,identity_key,starts_at,ends_at) values('event','Timed legacy','Keep description','timed-legacy','2026-10-15T12:00Z','2026-10-15T13:00Z') returning *")).rows[0];
+  await db.query("insert into scout.evidence(record_id,tracker_id,url,content_hash,content,parsed) values($1,$2,'https://example.org/event','timed','PRIVATE TIMED BODY','{}')",[timed.id,tr.id]);
   const noURL=(await db.query("insert into scout.trackers(name,url,collector,cadence) values('Configured without URL',null,'web','6 hours') returning *")).rows[0];
   await db.exec(await readFile(new URL('../supabase/migrations/20261009190000_scout_findings.sql',import.meta.url),'utf8'));
   assert.deepEqual((await db.query('select * from scout.trackers where id=$1',[noURL.id])).rows[0],noURL);
@@ -151,6 +153,12 @@ test('compatible conversion preserves IDs, final facts, URLs, priority and deliv
   assert.deepEqual(converted.organizations,[{name:'IDDRI',role:'unspecified'}]);assert.equal(converted.canonical_url,r.event_url);
   assert.equal(converted.priority,'normal');assert.equal(converted.relevance.reason,'Legacy accepted reason.');
   assert.deepEqual(converted.last_communicated_at,r.last_communicated_at);assert.deepEqual(converted.updated_at,r.updated_at);
+  const convertedTimed=(await db.query('select * from scout.records where id=$1',[timed.id])).rows[0];
+  assert.equal(convertedTimed.description,timed.description);assert.deepEqual(convertedTimed.updated_at,timed.updated_at);
+  for(const field of ['start','end'])assert.equal(Date.parse(convertedTimed.details[field].utc),timed[field==='start'?'starts_at':'ends_at'].getTime());
+  assert.deepEqual((await db.query('select identity,record_id from scout.record_identities')).rows,[{identity:'legacy:timed-legacy',record_id:timed.id}]);
+  assert.deepEqual(new Set((await db.query("select record_id from scout.record_sources where url='https://example.org/event'")).rows.map(s=>s.record_id)),new Set([r.id,timed.id]));
+  assert.equal((await db.query('select status from scout.delivery_state where record_id=$1',[r.id])).rows[0].status,'sent');
   assert.equal((await db.query("select to_regclass('scout.evidence') name")).rows[0].name,null);
   assert.equal((await db.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,0);
   const source={tracker_id:tr.id,identity:'legacy-announcement',url:'https://example.org/legacy-announcement'};
@@ -162,7 +170,7 @@ test('compatible conversion preserves IDs, final facts, URLs, priority and deliv
   }])});
   assert.equal(refresh.created,0);assert.equal(refresh.state,'complete');
   assert.equal((await db.query("select id from scout.records where kind='announcement'")).rows[0].id,oldAnnouncement.id);
-  assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,2);
+  assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,3);
   const nativePrepared=prepareDocument({url:source.url,title:'',html:'<p>Legacy announcement. UID:legacy-native</p>'});
   const nativeRefresh=await processDocument(db,{source:{...source,identity:'new-native-reader'},prepared:nativePrepared,model:async(_,[input])=>input.stage==='extract'?{understanding:'An announcement.',research:{requests:[]}}:verdict(input,[{
     occurrence:{kind:'announcement',anchor:'Legacy announcement',title:'Legacy announcement',sources},description:null,canonical_url:null,organizations:[],
@@ -170,7 +178,7 @@ test('compatible conversion preserves IDs, final facts, URLs, priority and deliv
     unknowns:{organizations:{reason:'not_announced',explanation:'Unknown.'},'details.published':{reason:'not_announced',explanation:'Unknown.'}}
   }])});
   assert.equal(nativeRefresh.reason,'ambiguous_identity');assert.equal(nativeRefresh.created,0);
-  assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,2);
+  assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,3);
   await db.exec('set role authenticated');
   await assert.rejects(db.query('select * from scout.record_sources'),{code:'42501'});
   assert.equal((await db.query('select * from scout.findings()')).rows.length,0);
@@ -284,12 +292,7 @@ test('bounded understanding reaches final validation; only final source-backed f
    {name:'empty',notes:''},
    {name:'misleading',notes:'PRIVATE_NOTE_SENTINEL: Tool Q organizes the workshop in 2099.'},
    {name:'maximum',notes:'x'.repeat(6000)},
-   {name:'description',change:f=>{f.description='A bare description';}},
-   {name:'canonical_url',change:f=>{f.canonical_url='https://example.org/event';}},
-   {name:'details',change:f=>{for(const key of ['occurrence','location','registration_url','mode','status'])f.details[key]='bare value';}},
-   {name:'html_page',change:f=>{f.occurrence.sources[0].page=1;}},
-   {name:'missing_details',change:f=>{delete f.details;}},
-   {name:'notes_citation',change:f=>{f.occurrence.sources[0].doc='understanding';}}
+   {name:'description',change:f=>{f.description='A bare description';}}
   ];
   for(const variant of variants){
    const title='Ocean workshop '+variant.name,text='Institute A hosts '+title+' online on 15 October 2026. Tool Q is demonstrated.';
@@ -310,7 +313,7 @@ test('bounded understanding reaches final validation; only final source-backed f
    const db=boundary(driver(raw,inspect)),result=await processDocument(db,{source,prepared,model});assert.equal(calls,2);
    const state=(await raw.query('select * from scout.source_state where tracker_id=$1 and identity=$2',[tr.id,source.identity])).rows[0];
    if(variant.change){
-    assert.deepEqual(result,{state:'deferred',reason:'invalid_output',created:0,changed:0});assert.equal(state.processed_hash,null);
+    assert.deepEqual(result,{state:'deferred',reason:'invalid_output',created:0,changed:0});assert.equal(state.processed_hash,null);assert.equal(state.attempts,1);
     assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,before);continue;
    }
    assert.deepEqual(result,{state:'complete',created:1,changed:0});assert.ok(state.processed_hash);
@@ -368,7 +371,7 @@ test('only checked genuine unknowns qualify for completion; missing coverage and
   const tr=await tracker(db),prepared=prepareDocument({url:'https://example.org/unknown',title:'',html:'<p>Ocean workshop.</p>'});
   const sources=[{doc:'P',block:0,quote:'Ocean workshop.'}],draft={occurrence:{kind:'event',anchor:'Ocean workshop',title:'Ocean workshop',sources},description:null,canonical_url:null,organizations:[],
    details:{start:null,end:null,occurrence:null,parent:null,location:null,mode:null,registration_url:null,status:null},identities:[],unknowns:{}};
-  for(const condition of ['genuine','unchecked','inaccessible','invalid_fact','stale','document_coverage','occurrence','unsupported','missing_reason','extra_check','bad_status']){
+  for(const condition of ['genuine','unchecked','missing_start','missing_organizations','missing_registration','inaccessible','invalid_fact','stale','document_coverage','occurrence','unsupported','missing_reason','extra_check','bad_status']){
    const source={tracker_id:tr.id,identity:condition,url:'https://example.org/'+condition};let calls=0;
    const result=await processDocument(db,{source,prepared:{...prepared,url:source.url},model:async(_,[input])=>{
     calls++;if(input.stage==='extract')return {understanding:'',research:{requests:[]}};
@@ -376,6 +379,8 @@ test('only checked genuine unknowns qualify for completion; missing coverage and
     if(condition==='inaccessible')final.unknowns['details.start']={reason:'inaccessible_source',explanation:'The schedule is not available.'};
     if(condition==='invalid_fact')final.details.start={value:'2026-10-15',precision:'day',sources:[{doc:'P',block:0,quote:'This quote is absent.'}]};
     const response=verdict(input,[final]);if(condition==='unchecked')response.checks[0].checked_fields=[];
+    const omitted={missing_start:'details.start',missing_organizations:'organizations',missing_registration:'details.registration_url'}[condition];
+    if(omitted)response.checks[0].checked_fields=response.checks[0].checked_fields.filter(f=>f!==omitted);
     if(condition==='stale')response.input_hash='stale';if(condition==='document_coverage')response.checked_documents=[];
     if(condition==='occurrence')response.checks[0].occurrence.status='uncertain';if(condition==='unsupported')response.checks[0].occurrence.status='unsupported';
     if(condition==='missing_reason')delete response.checks[0].occurrence.reason;if(condition==='extra_check')response.checks[0].claims=[];

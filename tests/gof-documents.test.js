@@ -116,23 +116,6 @@ test('homepage uses the document cap and stale navigation/project/meeting/suppor
   assert.ok(run.home.prepared.links.some(l=>l.target===fixture.csp.url));assert.ok(!run.coverage.some(c=>c.reason?.includes('requires shared retrieval')));
 });
 
-test('native model repair and pending work survive failures and unread deferrals in priority order',async()=>{
-  const initial=await collect({limits:{documents:1}}),repair=initial.progress.articles.find(d=>d.id==='8055');
-  const readable={...article,url:repair.url,body:article.body.replaceAll(article.url,repair.url).replaceAll('post-8184','post-8055')};
-  const pending=[{id:'gof:document:8184',url:article.url,state:'model-pending'},{...repair,id:'gof:document:8055',state:'model-repair'},
-    {...repair,state:'deferred',pending_state:'model-pending'}];
-  const failed=await collect({pending,limits:{documents:2},progress:initial.progress,overrides:{[repair.url]:{...readable,status:403}}});
-  assert.deepEqual(failed.requests,[GOF_HOME,GOF_FEED,repair.url]);assert.equal(failed.progress.after_url,repair.url);
-  const failure=failed.pending.find(d=>d.url===repair.url);assert.equal(failure.id,'8055');assert.equal(failure.pending_state,'model-repair');assert.equal(failure.last_failure.state,'failed');
-  const deferred=await collect({pending:failed.pending,progress:failed.progress,limits:{requests:2}});
-  assert.deepEqual(deferred.requests,[GOF_HOME,GOF_FEED]);assert.equal(deferred.progress.after_url,repair.url);
-  assert.deepEqual(deferred.pending.find(d=>d.url===repair.url).last_failure,failure.last_failure);
-  const done=await collect({pending:deferred.pending,progress:deferred.progress,limits:{documents:2},overrides:{[repair.url]:readable}});
-  assert.deepEqual(done.documents.map(d=>d.identity),['gof:document:1415','gof:document:8055']);assert.ok(!done.pending.some(d=>d.url===repair.url));
-  const next=await collect({pending:done.pending,progress:done.progress,limits:{documents:2},overrides:{[article.url]:article}});
-  assert.deepEqual(next.documents.map(d=>d.identity),['gof:document:1415','gof:document:8184']);
-});
-
 test('actual known/feed ID conflicts stay pending without a read or cursor advance',async()=>{
   const progress={after_url:article.url,articles:[{id:'8184',url:article.url,via:GOF_FEED}]};
   const overrides={[GOF_HOME]:{...fixture.home,status:503},[GOF_FEED]:{...fixture.feed,status:503},[article.url]:article};

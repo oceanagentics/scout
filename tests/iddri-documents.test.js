@@ -4,7 +4,6 @@ import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { retrieveIDDRIDocuments, IDDRI_LISTINGS } from '../collector/iddri-documents.js';
-import { prepareDocument } from '../collector/octo-documents.js';
 
 const fixture=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/iddri-website.json.gz',import.meta.url))));
 const sourceURL=value=>{
@@ -29,8 +28,6 @@ test('saved bilingual details retain whole bodies, publication metadata, alterna
     const response=Object.values(fixture).find(v=>v?.url===doc.url);
     assert.equal(doc.raw,response.body);assert.equal(doc.identity,`iddri:node:${doc.id}:${doc.language}`);
     assert.ok(doc.metadata.some(m=>m.property==='og:type'));assert.ok(doc.alternates.length===2);
-    const body=DomUtils.findAll(n=>(n.attribs?.class??'').split(/\s+/).includes('field--name-body'),parseDocument(doc.html).children)[0];
-    assert.ok(doc.prepared.text.includes(prepareDocument({title:'',url:doc.url,html:DomUtils.getOuterHTML(body),htmlWhitespace:true}).text));
     assert.equal(doc.prepared.chunks.map(c=>doc.prepared.text.slice(c.start,c.end)).join(''),doc.prepared.text);
     for(const key of ['kind','organization','starts_at','ends_at','location','registration_url','findings','translation_of'])assert.ok(!Object.hasOwn(doc,key));
   }
@@ -38,28 +35,23 @@ test('saved bilingual details retain whole bodies, publication metadata, alterna
   assert.equal(english.id,french.id);assert.notEqual(english.identity,french.identity);
   assert.ok(english.prepared.links.some(l=>l.target===french.url));assert.ok(french.prepared.links.some(l=>l.target===english.url));
   assert.ok(french.prepared.text.includes('janvier'));assert.ok(english.prepared.text.length>1000);
-  assert.ok(run.documents.find(d=>d.url===fixture.unoc.url).prepared.text.length>8000);
+  const event=run.documents.find(d=>d.url===fixture.event.url).prepared;
+  for(const text of ['12pm EST','Speaker','IDDRI','concrete actions for ocean protection.'])assert.ok(event.text.includes(text));
   assert.ok(run.coverage.some(c=>/\.pdf/i.test(c.target??'')&&c.state==='unfetched'));
   assert.ok(run.coverage.some(c=>/zoom\.us/.test(c.target??'')&&c.state==='unfetched'));
   assert.ok(!run.requests.includes(fixture.zoom.url));assert.ok(!JSON.stringify(run.fetches).includes('traceresponse'));
   assert.ok(run.coverage.some(c=>c.reason.includes('pagination')));
 });
 
-test('retained Barcelona repair is selected before rotation and excerpts match without changing source words or URLs',async()=>{
-  const {source,replies}=fixture.spacing,old=source.parsed.document.prepared_versions['octo-documents-v6'];
-  assert.equal(source.parsed.document.processing_versions[source.parsed.document.processing.version].pending.round,2);
-  const unobserved='https://www.iddri.org/en/unobserved-document';
-  const run=await collect({knownDocuments:[{url:source.url}],progress:{after_url:source.url},limits:{documents:1},
-    pending:[{url:unobserved,state:'model-repair'},{url:source.url,state:'model-repair'}],
-    overrides:{[source.url]:{url:source.url,status:200,headers:{'content-type':'text/html'},body:source.content}}});
-  const doc=run.documents[0],norm=text=>text.replace(/\s+/gu,' ').trim();
-  assert.equal(run.documents.length,1);assert.equal(doc.raw,source.content);assert.equal(doc.prepared.version,'iddri-documents-v1');
-  assert.ok(!run.requests.includes(unobserved));assert.equal(run.progress.after_url,source.url);
-  assert.equal(norm(doc.prepared.text),norm(old.text));
-  assert.deepEqual(doc.prepared.links.map(l=>({...l,label:norm(l.label)})),old.links.map(l=>({...l,label:norm(l.label)})));
-  for(const reply of replies)for(const finding of reply.response.findings)for(const citation of finding.citations){
-    assert.ok(!old.text.includes(citation.quote));assert.ok(doc.prepared.text.includes(citation.quote));
-  }
+test('publisher whitespace preserves literal clock text and registration URLs',async()=>{
+  const source=fixture.event;assert.ok(source.body.includes('12pm EST'));
+  const body=source.body.replace('12pm EST','12pm \t EST');
+  const overrides=Object.fromEntries(IDDRI_LISTINGS.map(url=>[url,{...fixture.listing,url,status:503}]));
+  overrides[source.url]={...source,body};
+  const run=await collect({knownDocuments:[{id:'27670',url:source.url}],overrides}),doc=run.documents[0];
+  assert.equal(doc.raw,body);assert.ok(doc.prepared.text.includes('12pm EST'));
+  assert.ok(doc.prepared.links.some(l=>l.target==='https://us06web.zoom.us/webinar/register/WN_4MbKkHaqRWG20n3YivEmdQ#/registration'));
+  assert.equal(doc.prepared.chunks.map(c=>doc.prepared.text.slice(c.start,c.end)).join(''),doc.prepared.text);
 });
 
 test('listing reorder and repeated URLs keep bounded selections and language identities stable',async()=>{

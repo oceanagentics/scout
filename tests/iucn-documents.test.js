@@ -1,11 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
-import { PGlite } from '@electric-sql/pglite';
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { retrieveIUCNDocuments, IUCN_LISTING, PREPARATION_VERSION } from '../collector/iucn-documents.js';
-import { collectDocuments, prepareDocument } from '../collector/octo-documents.js';
+import { prepareDocument } from '../collector/octo-documents.js';
 
 const fixture=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/iucn-website.json.gz',import.meta.url))));
 const sourceURL=value=>{
@@ -58,40 +57,29 @@ test('real fixture preserves whole articles, metadata, featured/listing identiti
   assert.ok(run.coverage.some(c=>c.state==='failed'));assert.ok(!JSON.stringify(run.fetches).includes('set-cookie'));
 });
 
-test('retained contact-token changes preserve literal content, ordinary links, raw offsets and preparation continuity',async()=>{
-  const documents=[];
-  for(const capture of fixture.retained_contacts){
-    const response={url:capture.url,status:200,headers:{'content-type':'text/html'},body:capture.content};
-    const run=await collect({home:{...fixture.home,status:503},knownDocuments:[{id:capture.parsed.document.id,url:capture.url}],overrides:{[capture.url]:response}});
-    assert.deepEqual(run.requests,[IUCN_LISTING,capture.url]);assert.equal(run.documents.length,1);
-    const doc=run.documents[0],old=capture.parsed.document.prepared_versions['iucn-documents-v1'];documents.push(doc);
-    assert.equal(doc.raw,capture.content);assert.equal(doc.html,doc.regions.map(r=>doc.raw.slice(r.start,r.end)).join('\n'));
-    assert.equal(doc.prepared.text,old.text.replace(/ <https:\/\/iucn\.org\/cdn-cgi\/l\/email-protection#[\da-f]+>/gi,''));
-    assert.deepEqual(doc.prepared.links,old.links.filter(l=>!l.target.startsWith('https://iucn.org/cdn-cgi/l/email-protection#')));
-    assert.deepEqual(doc.prepared.blocks.map(b=>[b.html_start,b.html_end]),old.blocks.map(b=>[b.html_start,b.html_end]));
-    assert.equal(doc.prepared.chunks.map(c=>doc.prepared.text.slice(c.start,c.end)).join(''),doc.prepared.text);
+test('contact token rotation is inert while ordinary links, visible text and raw offsets survive',async()=>{
+  const url=fixture.blog.url,documents=[];
+  for(const [token,hour] of [['aabbccdd','10'],['00112233','10'],['00112233','11']]){
+    const body='<html><head><link rel="canonical" href="'+url+'"><link rel="shortlink" href="https://iucn.org/node/45913"></head><body>'+
+      '<article class="node--type-article" data-history-node-id="45913"><div class="col-md-10"><h1>Ocean workshop</h1><div class="content-body"><div class="field--name-field-body">'+
+      '<p>Contact hours: '+hour+':00 UTC. <a title="Contact > transport" href="/cdn-cgi/l/email-protection#'+token+'"><span class="__cf_email__" data-cfemail="'+token+'">Visible contact</span></a></p>'+
+      '<p><a href="mailto:public@example.org">Public contact</a> <a href="/cdn-cgi/l/email-protection#aabbccdd">Ordinary link</a> '+
+      '<a href="/cdn-cgi/l/email-protection#aabbccdd"><span class="__cf_email__" data-cfemail="not-a-token">Malformed marker</span></a> '+
+      '<a href="https://example.org/cdn-cgi/l/email-protection#aabbccdd"><span class="__cf_email__" data-cfemail="aabbccdd">External link</span></a></p></div></div></div></article></body></html>';
+    const run=await collect({home:{...fixture.home,status:503},knownDocuments:[{id:'45913',url}],
+      overrides:{[url]:{url,status:200,headers:{'content-type':'text/html'},body}}}),doc=run.documents[0];
+    assert.deepEqual(run.requests,[IUCN_LISTING,url]);assert.equal(doc.raw,body);
+    assert.equal(doc.html,doc.regions.map(r=>body.slice(r.start,r.end)).join('\n'));
+    assert.ok(doc.prepared.text.includes('Visible contact'));
+    for(const block of doc.prepared.blocks)assert.ok(doc.html.slice(block.html_start,block.html_end).includes('<'+block.tag));
+    const links=doc.prepared.links;
+    assert.equal(links.filter(l=>l.target==='https://iucn.org/cdn-cgi/l/email-protection#aabbccdd').length,2);
+    assert.ok(links.some(l=>l.target==='mailto:public@example.org'));
+    assert.ok(links.some(l=>l.target==='https://example.org/cdn-cgi/l/email-protection#aabbccdd'));
+    documents.push(doc.prepared);
   }
-  for(const offset of [0,3])for(const doc of documents.slice(offset,offset+3)){
-    assert.equal(doc.prepared.version,PREPARATION_VERSION);
-    assert.deepEqual(doc.prepared,documents[offset].prepared);
-  }
-  assert.deepEqual(documents[6].prepared,fixture.retained_contacts[6].parsed.document.prepared_versions['iucn-documents-v1']);
-  const capture=fixture.retained_contacts[0],doc=documents[0];
-  const body=DomUtils.findAll(n=>(n.attribs?.class??'').split(/\s+/).includes('field--name-field-body'),parseDocument(capture.content,{withStartIndices:true}).children)[0];
-  const start=capture.content.indexOf('>',body.startIndex)+1;
-  const extra='<p>New contact hours: 10:00 UTC. <a href="mailto:public@example.org">Public contact</a> '+
-    '<a href="/cdn-cgi/l/email-protection#aabbccdd">Ordinary unverified link</a> '+
-    '<a href="/cdn-cgi/l/email-protection#aabbccdd"><span class="__cf_email__" data-cfemail="not-a-token">Malformed marker</span></a> '+
-    '<a href="https://example.org/cdn-cgi/l/email-protection#aabbccdd"><span class="__cf_email__" data-cfemail="aabbccdd">External link</span></a> '+
-    '<a title="Contact > transport" href="/cdn-cgi/l/email-protection#aabbccdd"><span class="__cf_email__" data-cfemail="aabbccdd">New visible contact text</span></a></p>';
-  const changed=await collect({home:{...fixture.home,status:503},knownDocuments:[{id:doc.id,url:doc.url}],overrides:{[doc.url]:{
-    url:doc.url,status:200,headers:{'content-type':'text/html'},body:capture.content.slice(0,start)+extra+capture.content.slice(start)}}});
-  const prepared=changed.documents[0].prepared;assert.notDeepEqual(prepared,doc.prepared);
-  assert.ok(prepared.text.includes('New contact hours: 10:00 UTC.'));assert.ok(prepared.text.includes('New visible contact text'));
-  assert.ok(prepared.links.some(l=>l.target==='mailto:public@example.org'));
-  assert.equal(prepared.links.filter(l=>l.target==='https://iucn.org/cdn-cgi/l/email-protection#aabbccdd').length,2);
-  assert.ok(prepared.links.some(l=>l.target==='https://example.org/cdn-cgi/l/email-protection#aabbccdd'));
-  assert.deepEqual(changed.requests,[IUCN_LISTING,doc.url]);
+  assert.deepEqual(documents[0],documents[1]);assert.notDeepEqual(documents[1],documents[2]);
+  assert.ok(documents[2].text.includes('Contact hours: 11:00 UTC.'));
 });
 
 test('structural listing reorder and duplicate cards preserve identities and bounded selection',async()=>{
@@ -113,17 +101,6 @@ test('known changed document is independently rechecked behind unchanged or fail
   for(const home of [fixture.home,{...fixture.home,status:503}]){
     const run=await collect({home,knownDocuments:[{id:'45913',url:fixture.blog.url}],overrides:{[fixture.blog.url]:changed}});
     const doc=run.documents.find(d=>d.id==='45913');assert.match(doc.prepared.text,/New implementation appendix/);
-  }
-});
-
-test('pending model work leads known/listed documents without admitting unobserved URLs',async()=>{
-  const pending=[{url:fixture.forum.url,state:'model-pending'},{url:fixture.blog.url,state:'model-repair'},
-    {url:'https://iucn.org/story/unobserved',state:'model-repair'}];
-  for(const home of [fixture.home,{...fixture.home,status:503}]){
-    const run=await collect({home,pending,knownDocuments:[{id:'45913',url:fixture.blog.url},{id:'46802',url:fixture.forum.url}],
-      progress:{after_url:fixture.blog.url},limits:{documents:2}});
-    assert.deepEqual(run.requests,[IUCN_LISTING,fixture.blog.url,fixture.forum.url]);
-    assert.equal(run.progress.after_url,fixture.forum.url);
   }
 });
 
