@@ -1,191 +1,177 @@
 # Scout database optimization plan
 
-Status: proposal; database changes are not authorized by this document. Prepared 12 October 2026 from the deployed URL-intake implementation, existing numeric evaluation artifacts, and read-only production measurements at approximately 15:24–15:29 UTC. The only requested change is to document the review.
+Updated 12 October 2026. **Approach: compare the current design with one compact alternative before choosing implementation changes.** This replaces the earlier list of incremental optimizations. The user has authorized this plan rewrite; schema, collector, data migration and recurring-work changes remain proposals.
 
-The earlier estimate of about 40,000 additional records was not a measured capacity. A working estimate for similarly sized records is **3–6 KB of additional physical storage per record**, including indexes, links, identities, an allowance for operational state, and page slack. That suggests approximately **65,000–130,000 additional records** before Scout's 400,000,000-byte operational ceiling. This is a planning range, not a demonstrated storage guarantee.
+The objective is to keep useful findings well within the existing free allowances by deciding what deserves durable storage, representing it simply, and writing only when necessary. Record capacity is an outcome to measure, not a fixed 100,000-record ceiling or a promised 500,000-record target.
 
-## 1. Current database state, shape and content
+## 1. Current database state and content
 
-### Deployment and operating constraints
+Scout uses PostgreSQL 17.11 with 8 KiB pages, autovacuum enabled, default `pglz` TOAST compression and `zstd` WAL compression. Findings and compact operational state live in the `scout` schema. Source bodies, prepared documents, prompts, responses, quoted proof trails and operation reports must not be persisted.
 
-- PostgreSQL 17.11; 8,192-byte pages; autovacuum enabled; default TOAST compression is `pglz`; WAL compression is `zstd`.
-- Collector v135 corresponds to committed refactor `242878490ec4c770306ecee02ccc8fb4ee649841`.
-- All four Scout cron jobs and the model policy were disabled at measurement time. Collection and notifications remain paused until separately reviewed and authorized.
-- Scout's model gate requires fresh model and database budget verification and a database size below 400,000,000 bytes. A disabled or expired policy permits no research calls.
-- The recorded provider allowances were 500 generations/day, 15/minute and 250,000 input tokens/minute. These are provider allowances, not an allocation for this review or permission to resume work. The saved policy's daily Scout limit was 42 for the bounded test; the code's maximum is 250/day. Current shared headroom must be verified before further live research.
-- The organization-entitlements endpoint returned HTTP 403. Project API-count analytics were readable, but those counts do not establish organization-wide allowances or count the collector's direct SQL work. This plan uses Scout's existing 400 MB ceiling, not an assumed public-plan entitlement.
-- Another chat owns intake correctness. This plan does not authorize concurrent collector changes, historical-content cleanup, quota resets, migrations, deployments or new recurring jobs.
+The latest implementation checkpoint is collector **v136**, commit `663c8cb`. Organization intake now retains ranked names without role labels; existing records can still contain older role-bearing objects. The live E04 check updated the same record and preserved its date/time and registration. Storage work must follow this current contract rather than rebuild the retired role model. Broader intake correctness remains separate work; see [refactor-consumption.md](refactor-consumption.md).
 
-### Tables and relationships
+Read-only verification at **16:02 UTC on 12 October** found **84 records**, a database size of **14,153,395 bytes**, no active Scout cron jobs and a disabled model policy. Collection and notifications remain paused.
 
-Scout stores findings and compact current operational state in the `scout` schema. Source bodies, prepared documents, prompts, model responses, quoted proof trails and operation reports must not be persisted.
+The earlier detailed relation inventory at 15:24–15:29 UTC provides the following baseline. Row counts, especially quota accounting, are dated observations rather than current operating limits.
 
-| Table | Measured rows | Heap bytes | Total relation bytes | Purpose and retained content |
-| --- | ---: | ---: | ---: | --- |
-| `records` | 84 | 139,264 | 458,752 | Current findings: event, announcement or treaty status; title, short description, canonical URL, organizations/roles, typed details, relevance, completeness, human overrides, provenance and version metadata. |
-| `record_sources` | 106 | 24,576 | 98,304 | Supporting URLs, linked to a record and optionally a tracker, with a relationship such as primary, support or human review. Primary key: `(record_id, url)`. |
-| `record_identities` | 87 | 16,384 | 81,920 | Stable lookup/alias strings mapped to record UUIDs. Identity is the primary key; record ownership is separately indexed. |
-| `source_state` | 46 | 16,384 | 98,304 | One current row per tracker/source identity: URL, compact native reference, hashes, lease, attempts, scheduling/retry state and bounded research metadata. |
-| `trackers` | 35 | 16,384 | 106,496 | Source configuration and cadence; 30 enabled in configuration, while global execution remains paused. |
-| `quota_policy` | 1 | 8,192 | 57,344 | Verified budgets and expiry, enablement, cooldown and accumulated numeric uncertain-call charges. |
-| `quota_reservations` | 30 | 8,192 | 98,304 | Current model-call accounting: invocation, reservation time, input/output tokens, state and compact reason. |
-| `delivery_state` | 12 | 8,192 | 32,768 | Latest delivery version, status and timestamp per record, including uncertain delivery needed for deduplication. |
-
-Total relation bytes include indexes, TOAST and auxiliary forks; they are not the size of live values alone. `finding_reader`, `findings`, `finding_jobs` and `tracker_status` expose bounded projections or queries rather than stored copies. Preserve row-level security, role checks and the restricted backend write path.
-
-The 84 findings include 58 events; 26 events have dates and 68 findings have organizations, according to the post-batch snapshot. Records can remain useful while provisional. Storage success does not establish that extracted dates, organization roles or identity matching are correct: the twelve-source evaluation has known correctness failures.
-
-The record envelope uses ordinary columns for identity, kind, title, description, canonical URL, priority and version/timestamps; JSONB holds organizations, typed details, overrides, provenance, completeness and relevance. A stored generated `date_span` supports date filtering. Typed dates retain their meaning and precision; local clocks, explicit zones and derived UTC values must remain distinguishable.
-
-The table also retains legacy columns, including `organization`, `location`, `event_url`, `registration_url`, `starts_at`, `ends_at`, `status`, `identity_key`, `evidence_rank` and `evidence_at`. New intake generally leaves these unset except for defaults. `last_communicated_at` remains read by notification eligibility code and must not be treated as obsolete merely because delivery state also exists.
-
-### What occupies the space
-
-| Measurement | Bytes | Interpretation |
-| --- | ---: | --- |
-| Current `postgres` database | 14,153,395 | The database measured by Scout's operational gate. |
-| All Scout tables and their indexes | 1,032,192 | About 7.3% of the database; most remaining space is catalog/service infrastructure. |
-| Records + source links + identities | 638,976 | Includes fixed relation overhead and page slack. |
-| `records` indexes | 262,144 | Twelve indexes; larger than the current 139,264-byte record heap. |
-| Record TOAST relation including its index | 24,576 | Only one current field was externally stored; TOAST is not the principal current cost. |
-| Current WAL directory | 134,218,098 | Cluster-level retained WAL, separate from database size and from cumulative WAL generated by a batch. |
-
-The two template databases together occupy another 15,115,294 bytes. They are outside `pg_database_size(current_database())`; do not present the 14.15 MB number as all cluster disk usage or a verified organization billing measurement.
-
-The twelve record indexes cover primary identity, legacy identity, legacy kind/update ordering, canonical URL, lowercased title, kind/priority, two pagination orders, primary/effective dates, organizations and full-text search. The full-text index is 90,112 bytes; many other indexes occupy only one or two pages. Dividing these allocations by 84 overstates their likely marginal cost at larger volumes.
-
-Other measured characteristics:
-
-- Provenance occupies **36,691 stored bytes** across existing records. It contains **477 URL mentions**, representing 41,892 bytes of URL text; every mention is also present in `record_sources`. Thirteen provenance values are compressed. These are source-reference mappings, not source-body archives.
-- The listed legacy scalar columns occupy approximately **11,509 bytes** in total. All 71 legacy identity keys have corresponding `legacy:` entries in `record_identities`. This is evidence for a future dependency review, not authorization to remove either representation.
-- There are 106 source links but 87 distinct URLs. Some sharing is legitimate: one source can support multiple findings. Canonical URLs and linked sources also serve different read/matching purposes; repetition alone does not justify a new URL registry.
-- PostgreSQL estimated three dead record tuples, 42 dead source-state tuples and 34 dead reservation tuples. These are statistics estimates, not an exact bloat measurement. Exact free space, GIN pending-list occupancy and index bloat were not measured.
-- Ordinary vacuum makes obsolete tuple space reusable; it does not generally shrink allocated files. No vacuum, reindex or table rewrite was performed for this review.
-
-## 2. How record research writes data
-
-The current path is **select/gate → claim source → compare fingerprints → reserve/call model → normalize/match/save → optional improvement → finish source**. The collector uses a direct database connection; model/source traffic is kept in invocation memory.
-
-| Stage | Reads and processing | Database writes |
-| --- | --- | --- |
-| Select work and verify budget | Read tracker or next due source, then current policy. A failed gate returns before source/model work. | None from selection or the gate itself. |
-| Expire old accounting | Inspect reservations outside both the current provider day and the 120-second safety window. | Delete at most 32 eligible rows; first accumulate numeric uncertain-call/token totals in `quota_policy` when necessary. Active charges are preserved. |
-| Claim source | Check tracker/source identity, due time, capacity and expired lease. | Insert or update one `source_state` row with running/parked state, bounded attempt count, lease UUID and 120-second lease deadline. |
-| Read and fingerprint | Read the main source and up to three previously requested support URLs in memory. Compute hashes and compare with processed state. | No body, prompt or response write. Hashes are retained when source state is finished. |
-| Unchanged shortcut | A successfully fingerprinted input matching the processed hash returns before the model and finding-save path. | Finish the same source row; no reservation, record, source-link or identity writes. The live check measured two source-state mutations in total, including the claim. |
-| Reserve a model call | Lock/read policy and count current-window and invocation charges. Maximum two generations per invocation. | Insert a `quota_reservations` row in dispatched state, reserving 60,000 input tokens before the current URL-context request. |
-| Call and settle | Send URL/rubric/schema, parse structured output and retrieval metadata in memory. No `countTokens` call in this path. | Update that reservation with actual input/tool and output/thinking tokens when available, or preserve conservative unknown charges. Update policy cooldown when a provider deadline or overrun requires it. |
-| Normalize and match | Normalize at most eight findings. Query existing identities, title/date candidates, canonical URL and linked source URL; resolve or leave ambiguous. | Matching reads do not create a second finding. A transaction checks the lease, takes the findings advisory lock and performs the saves below. |
-| Save first-pass findings | Merge supported values with existing facts and protected human fields. Compare current values before updating. | Insert a new `records` row or update a changed row and increment its version. Add identity and source-link rows using `ON CONFLICT DO NOTHING`. |
-| Optional improvement | Read at most three model-requested links in one additional model call. Match returned developments back to first-pass titles/kinds. | A second quota reservation/settlement, and another save transaction for matched findings. Successfully retrieved requested URLs can be added as support links. A failed improvement preserves first-pass records. |
-| Finish or defer | Determine completion, retry reason and next due time; attempts remain finite. | Update the leased `source_state` row with current hashes, research metadata, state, attempts and schedule; clear the lease. Successful work records the processed hash. Failure retains compact retry state. |
-
-### Exactly what a finding save retains
-
-`saveFindings` writes `kind`, `title`, `description`, `canonical_url`, `organizations`, `details`, `provenance`, `completeness`, `priority` and `relevance`. New IDs and timestamps use database defaults. An assessed insert has accepted version 1; an assessed update advances `accepted_version` with `version`. An update uses the existing version as a concurrency condition and refreshes `updated_at`.
-
-Current normalization caps title at 300 characters, description at 280, relevance reason at 600, organizations at 12, and joined missing-information explanation at 480. The save rejects a candidate whose serialized save parameters exceed 12,288 bytes. This is not a whole-record physical storage cap: indexes, links, source state, retained overrides and allocation overhead are separate.
-
-Missing or empty optional output does not erase established values. Fields protected by `overrides` retain their human-corrected values. Current automated intake preserves existing provenance, but starts new records with `{}` rather than generating per-field source mappings. The six new records each have only the five-byte empty JSONB provenance value.
-
-The current generated identity is a `source:` prefix plus SHA-256 hex digest of tracker ID, source identity, finding kind and normalized title. Because the title participates, a rephrased title can produce another alias for a matched record. Existing aliases must be preserved; avoiding unnecessary new aliases depends on the separately owned stable-identity work.
-
-The first pass links the input URL as `primary`. Improvement can link successfully retrieved requested URLs as `support`. The `(record_id, url)` key prevents duplicate link rows. Conflict attempts remain SQL statements even when they create no row or change.
-
-The finding update guard already avoids a record update when compared values are equal. It excludes provenance from the change comparison. This is separate from the earlier fingerprint shortcut: reaching a save transaction can still attempt identity/source inserts even if the record itself is unchanged.
-
-### What `source_state.research` means
-
-Despite the name, this field is compact processing state, not a research report. The current value contains an intake revision, a main-source hash, and up to three support entries containing URL and hash. Source-level observed and processed hashes are also retained. Requested questions, response prose and source text are not stored in this field.
-
-The schema bounds research JSON to 8,192 serialized bytes, native-reference JSON to 512 bytes, and cursor text to 512 characters. In this sample, completed source rows averaged approximately 583 tuple bytes and research values were 136 bytes. Longer URLs and support lists can cost more.
-
-### Discovery, corrections and delivery
-
-Discovery is a separate write source around record research. It leases a tracker-root state row, reads existing known sources, processes at most one document per invocation, and can insert at most 16 URL/native-reference inventory rows before finishing the root cursor. It keeps about 200 documents per tracker; `claimSource` allows 201 total state rows including the root. There is no demonstrated completed-source eviction strategy. At 30 enabled trackers, approximately 6,000 known document slots can fill before storage capacity is reached; this is not a hard count of findings because a document can contain several findings or later change.
-
-A human correction updates the same finding under a version check, stores the corrected field's source URL in `overrides` and provenance, increments the version, clears accepted status and marks relevance pending. It inserts a `human_review` source link when absent and reopens associated non-running source states by clearing their processed hash and attempts. These preservation and re-research behaviors must survive optimization.
-
-Notifications are not part of record research. Their separate path claims/updates one `delivery_state` row per record and then settles its status. Sending/unknown delivery states are required for deduplication. Do not remove them to save space.
-
-Quota reservations retain a current window, with bounded expiry on permitted work; uncertain historical charges survive as numeric totals. Delivery state retains the latest state rather than a delivery history. Scheduled cron-run cleanup is scoped to Scout's collection job, retains one day, and removes at most 48 completed rows per wake. Pausing collection stops new research writes; it does not authorize deleting accounting or fingerprints.
-
-## 3. Measured cost and the faulty 40,000-record extrapolation
-
-The fixed twelve-source URL-intake batch created six findings, updated three and made twelve model generations. It measured **252 collector SQL statements**, **71 collector row mutations** and **221,839 bytes of attributable statement WAL**. Harness/control writes were additional and separate.
-
-| Finding storage change | Six created records | Three updated records | Total |
-| --- | ---: | ---: | ---: |
-| Record/link/identity logical JSON growth | 14,201 B | 1,308 B | 15,509 B |
-| Record/link/identity tuple-byte change in batch artifacts | 10,874 B | 680 B | 11,554 B |
-| Physical relation allocation growth | 32,768 B | 24,576 B | 57,344 B |
-
-All measured logical growth, including operational state, was 19,166 bytes. Whole-database growth was 57,344 bytes. Thus **24 KiB of the 56 KiB allocation occurred during updates**, and must not be assigned to the six inserts.
-
-Read-only measurements of the six new records found:
-
-- **1,174 bytes per record** of useful JSON: kind, title, description, canonical URL, organizations, typed details, priority and relevance reason. This is a defined projection, not a claim that other fields have no value.
-- **1,533 bytes per record** for the record tuple alone.
-- **1,812 bytes per record** including its source-link and identity tuples, before index entries and page overhead. The live aggregate differs by three bytes from the earlier tuple delta; do not treat either as a byte-exact physical marginal estimate.
-- **2,367 bytes per record** of serialized record/link/identity logical growth in the batch artifact. JSON wire size is different from tuple size and retained relation allocation.
-
-The original calculation used `57,344 / 6`, approximately 9.56 KB per new record. Even the insert-only `32,768 / 6`, approximately 5.46 KB, is not a stable slope: some inserts reused pages while others triggered allocations, and source-state rows already existed for these test inputs.
-
-The unchanged live repeat measured **zero model calls, zero finding writes, no version changes, nine collector SQL statements and two source-state mutations**. This is a protected baseline. For scale context only, 24 such checks would mean 216 collector SQL statements and 48 state mutations; scheduler/control work would be additional. No daily workload is authorized here.
-
-WAL generated by a statement is not permanently retained record size. Full-page images, checkpoint timing, index maintenance and update churn affect it. Do not add cumulative WAL to database-growth projections or promise a WAL reduction solely from fewer SQL statements.
-
-## 4. Prioritized optimization proposals
-
-| Priority | Proposed change | Expected saving | SQL/WAL effect and tradeoff |
-| --- | --- | --- | --- |
-| 1 | Preserve unchanged-input skipping and resolve duplicate/unstable identities through the existing intake-correctness work. | Avoiding a duplicate saves roughly 3–6 KB of modeled physical storage. Avoiding an unnecessary alias saves its tuple and two index entries. | A merge can replace an insert with an update, so SQL counts need not decrease. Preserve distinct occurrences, existing aliases and human corrections; do not merge solely to reduce size. |
-| 2 | Stop writing unused `relevance.fields: []`. | **21 bytes per new record**, measured with JSONB size expressions on the six new records. | Same SQL count; smaller value on insert/update. Verify no current consumer needs the empty field. |
-| 3 | Infer ordinary missing-field markers instead of persisting repeated `{reason: "not_established"}` objects. | **About 88 bytes per new record on average** in this sample. | Same SQL count; smaller completeness value. Both merge/completeness logic and the reader must reconstruct the existing meaning. Never mark a record complete merely because redundant markers were omitted. Keep explicit conflicts, invalidity, uncertainty explanations and human corrections. |
-| 4 | Review retirement of `(kind, updated_at)` and, separately, the legacy identity constraint/index. | Both currently occupy 16 KiB. The timestamp index is estimated at **40–60 bytes per new record** at scale; the legacy index's marginal cost is smaller/uncertain because new identity keys are null. | No reduction in application SQL statements. Fewer index writes; removing the timestamp index can enable HOT for otherwise eligible metadata-only updates. Verify current reader/notification plans and dependencies. Low scan counts at 84 rows are not sufficient proof. Preserve identity uniqueness through the active identity table. |
-
-The metadata/index changes together plausibly save **0.15–0.25 KB per record**, or **15–25 MB per 100,000 records**. The JSONB expression savings are measured; index, page and WAL savings remain estimates. Do not count duplicate prevention again in this per-record saving.
-
-The proposed first scope is the empty relevance field, default missing-field representation with preserved reader semantics, and only demonstrably unused indexes. Coordinate any collector edits with the sole implementation writer. Stable-identity changes remain with intake correctness.
-
-Do not start with a paid upgrade, a new database, a URL/organization registry, compressed opaque record blobs, abbreviated JSON keys, new history tables, or a tracing/replay system. Existing search and typed data have useful behavior. Removing retained legacy provenance would mainly reclaim tens of kilobytes once; it is outside this task's historical-cleanup authorization and does not improve the new writer, which already avoids generating it. No table rewrite or aggressive vacuum is justified by this sample.
-
-## 5. Capacity model and limits
-
-Use the measured 1.81 KB of current tuples as a starting point, then allow for index entries, tuple/page overhead, operational state and space reuse between vacuum cycles. **3–6 KB per additional finding** is a deliberately broad working range for similarly short records with modest source/identity counts, not a measured large-volume slope. The observed insert-only allocation of 5.46 KB sits within it but did not include newly allocated source-state rows for every finding.
-
-For the proposed small changes, use **2.8–5.8 KB** as an illustrative range, subtracting about 0.2 KB. Longer URLs, more organizations, more support links, repeated updates, index fragmentation or a changed content mix can exceed these ranges. Existing caps bound some work but do not guarantee this storage rate.
-
-The estimates below use `14,153,395 + (total_records - 84) × marginal_bytes`. They conservatively retain the current database baseline and assume other service usage does not grow. KB/MB/GB here are decimal; KiB denotes 1,024 bytes.
-
-| Total findings | Current design, estimated database size | Small changes, estimated database size | Assessment against 400 MB gate |
+| Table | Baseline rows | Total relation bytes | Content and purpose |
 | --- | ---: | ---: | --- |
-| 10,000 | 44–74 MB | 42–72 MB | Comfortable under the storage model; intake and shared budgets are separate. |
-| 100,000 | 314–614 MB | 294–594 MB | May fit; cannot be promised without measuring a representative storage slope. |
-| 1,000,000 | 3–6 GB | 2.8–5.8 GB | Not credible within the current ceiling and representation. |
+| `records` | 84 | 458,752 | Current event, announcement or treaty-status findings; facts, relevance, completeness, human overrides, provenance and version metadata. |
+| `record_sources` | 106 | 98,304 | Source URL, record, optional tracker and relationship; unique on record/URL. |
+| `record_identities` | 87 | 81,920 | Identity/alias strings mapped to record UUIDs; globally unique identity and an owner index. |
+| `source_state` | 46 | 98,304 | Tracker/source identity, URL, compact native reference, hashes, attempts, lease, due time, retry state and bounded research metadata. |
+| `trackers` | 35 | 106,496 | Source configuration and cadence; 30 enabled in configuration, subject to the disabled global gate. |
+| `quota_policy` | 1 | 57,344 | Budget verification and expiry, enablement, cooldown and accumulated numeric uncertain-call charges. |
+| `quota_reservations` | 30 | 98,304 | Current model-call reservations and token usage, invocation, timestamp, state and compact reason. |
+| `delivery_state` | 12 | 32,768 | Latest delivery version/status/time per record, including uncertain delivery needed for deduplication. |
 
-The current range implies about **64,000–129,000 additional findings**, rounded to 65,000–130,000 for planning. The illustrative optimized range implies about **67,000–138,000 additional findings**. These are conditional storage estimates, not supported ingestion capacities or account entitlements. At one million records, the measured useful JSON projection alone would be approximately 1.17 GB before indexes and operational data.
+Relation totals include indexes, TOAST and auxiliary forks. Views and reader functions expose projections rather than stored copies. Preserve their access controls and the restricted backend write path.
 
-Source-state capacity and cadence must be reviewed independently before assuming 10k/100k intake. Increasing that cap without a reviewed retention/revisit design would change storage and daily work. Deleting completed fingerprints to make room could re-enable model calls on unchanged sources; do not do that implicitly.
+The record has ordinary columns for UUID, kind, title, description, canonical URL, priority and version/timestamps. JSONB contains organizations, typed details, overrides, provenance, completeness and relevance. A generated date range supports filtering. Legacy scalar fields and the legacy identity constraint also remain. Some apparently old fields still have consumers: notification eligibility reads `last_communicated_at`.
 
-## 6. Before/after verification plan
+Important baseline measurements:
 
-Implementation and live writes require separate user direction. Keep collection and notifications paused throughout verification.
+- All Scout tables and indexes occupied **1,032,192 bytes**; record/source/identity relations accounted for **638,976 bytes**. Most of the 14.15 MB database is catalog/service infrastructure.
+- The record heap was **139,264 bytes** and its twelve indexes occupied **262,144 bytes**. Small indexes include minimum page allocations; their current size divided by 84 is not their marginal cost.
+- Existing provenance occupied **36,691 bytes**, with 477 URL mentions already represented in source links. Legacy scalar columns accounted for about **11,509 bytes**. New automated records already start with empty provenance, so cleaning historical repetition would provide little future benefit.
+- PostgreSQL estimated three dead record tuples. Only one current field used external TOAST storage. Exact page slack and index bloat have not been measured.
+- Source state, quota policy, quota reservations and delivery state together occupied **286,720 bytes** at the later check: approximately **0.07% of the 400 MB ceiling**, not a demonstrated 30–50% operational overhead.
 
-1. Freeze a small baseline of numeric counts/sizes and the applicable code revision. Keep original IDs, facts, source URLs, human overrides, identity mappings, access controls and active quota/delivery accounting. Persist no source/model captures or new operation histories.
-2. Verify one representative finding end to end using the existing test setup: insert/read it, update a supported fact, preserve a human override, retain incomplete-field display, and confirm stable identity and authenticated reader behavior. Cover date, organization, search and pagination behavior when touching their dependencies. Label injected-output checks as mechanics, not live model correctness.
-3. Measure insert, changed update and unchanged repeat separately. Record model calls, collector SQL statements/row mutations, submitted bytes, live tuple sizes, heap/index/TOAST allocation and attributable WAL. Keep harness writes separate. The unchanged repeat must retain zero model calls and finding writes; compare against the current nine statements/two state mutations.
-4. Only after the one-record result passes, run a bounded local, in-memory volume experiment with representative final-record shapes and enough rows to cross many page boundaries. Vary URLs, titles and lexemes so repeated identical fixtures do not exaggerate index compression. Add an update cycle and measure steady reuse. This does not require a repository clone, worktree, source archive or new production tables. Label these as synthetic physical measurements, not production capacity.
-5. For candidate index removal, verify actual query plans and reader/notification behavior against representative data. For missing-field compaction, verify both merge-time state and UI explanations. Do not infer safety from an empty field or unused-index counter alone.
-6. After renewed model/SQL/account budget verification and explicit live-test authorization, confirm one deployed case and its unchanged repeat. Do not expand model research just to measure storage. Report physical slope and WAL uncertainty separately, then review capacity and recurring work before resumption.
+Historical cleanup is outside this plan's implementation scope. Preserve useful facts, URLs, identities, human corrections and active quota/delivery accounting.
 
-## Evidence and implementation references
+## 2. What is written during record research
 
-- Current direction and known intake limitations: [refactor-consumption.md](refactor-consumption.md).
-- Schema, indexes, access and quota retention: [findings migration](supabase/migrations/20261009190000_scout_findings.sql), [URL-intake quota migration](supabase/migrations/20261012150000_scout_url_intake.sql), [scheduler](supabase/scout-loop.sql).
-- Research/persistence flow: [finding-jobs.js](collector/finding-jobs.js), [finding-contract.js](collector/finding-contract.js), [model.js](collector/model.js), [hosted-hsa.js](collector/hosted-hsa.js), [discovery](collector/octo-documents.js).
-- Protected corrections and delivery: [corrections.js](collector/corrections.js), [notifications/slack.js](notifications/slack.js).
-- Existing local numeric artifacts, which may not be present in another checkout: `.cache/scout-refactor/oct12-url-evaluation-results.json`, `oct12-url-final-state.json`, `oct12-url-unchanged-check.json`, and `oct12-url-release.json` in the same directory.
-- Additional table/column/index measurements were read-only aggregates obtained during this review. They are transcribed above; no new capture files were created. Measurements are dated snapshots and should be refreshed before implementation if the database changes.
-- PostgreSQL documentation: [page layout](https://www.postgresql.org/docs/17/storage-page-layout.html), [size functions](https://www.postgresql.org/docs/17/functions-admin.html#FUNCTIONS-ADMIN-DBSIZE), [TOAST](https://www.postgresql.org/docs/17/storage-toast.html), [HOT updates](https://www.postgresql.org/docs/17/storage-hot.html), [vacuum and space reuse](https://www.postgresql.org/docs/17/routine-vacuuming.html).
-- Supabase documentation: [database versus disk/WAL size](https://supabase.com/docs/guides/platform/database-size). Public plan descriptions do not substitute for verified account allowances.
+Current flow: **select and gate → claim → fingerprint → reserve/call → normalize and save partial findings → optional improvement → finish or defer**.
+
+| Stage | Durable writes | Material retained only in memory |
+| --- | --- | --- |
+| Select due work and check policy | Selection and budget checks are reads. A failed gate stops research before source/model work. | Request-local control values. |
+| Expire accounting | Delete at most 32 reservations outside both the provider day and 120-second safety window; first preserve uncertain charges as numeric policy totals. | No accounting report. |
+| Claim a source | Insert/update its `source_state` row with bounded attempts, current state and a 120-second lease. | Source content has not been stored. |
+| Fingerprint source/support pages | Hashes are saved when finishing the state row. A matching processed fingerprint skips model and finding writes. | Source bodies and up to three support-page reads. |
+| Reserve and settle a model call | Insert a reservation before dispatch; settle token totals/state/reason afterward, retaining conservative charges when usage is unknown. Update cooldown when necessary. The current input reservation is 60,000 tokens, with at most two generations per invocation. | Prompt, schema, request, response and retrieval metadata. |
+| Match and save findings | In a lease-checked transaction, insert a finding or update a changed finding/version. Attempt identity and source-link inserts with conflict protection. | Normalized model output and candidate comparisons. |
+| Improve a partial finding | If requested, a second reservation/settlement and a second save for matching developments; successfully retrieved requested links can become support links. | Requested questions and intermediate response material. Failure preserves the first saved result. |
+| Finish or defer | Update current hashes, state, attempts, due time and compact research metadata; clear the lease. | Invocation counters are returned, not stored as an operation history. |
+
+A normal finding save writes kind, title, description, canonical URL, organizations, details, provenance, completeness, priority and relevance. Changes advance the version and accepted version as appropriate. Human overrides and established facts survive missing optional output. New records use database defaults for UUIDs/timestamps. Serialized save parameters are limited to 12,288 bytes; that is not a physical storage limit including indexes and related rows.
+
+The generated identity currently includes tracker, source identity, kind and normalized title. Title rephrasing can therefore introduce another alias even when the record matches. Source links retain the primary input URL and any successfully retrieved support URLs. Conflict attempts count as SQL statements even when no row is added. The record equality guard and the earlier fingerprint shortcut are separate protections.
+
+Despite its name, `source_state.research` stores a revision, main-source hash and up to three support URL/hash pairs, not a research narrative. Completed rows in the earlier sample averaged about 583 tuple bytes. The source row also holds observed/processed hashes needed to avoid repeat model work.
+
+Other writes around research must be included in a complete comparison:
+
+- Discovery leases a tracker-root row, processes at most one document per invocation, can add at most 16 inventory rows and saves a bounded cursor. It currently retains about 200 documents per tracker, or roughly 6,000 slots across 30 enabled trackers. No completed-source eviction strategy has been demonstrated; this is an intake constraint separate from record storage.
+- A human correction updates the same finding, stores its source URL and override, advances the version, clears acceptance and reopens associated non-running sources for research.
+- Notifications separately claim and settle the latest delivery state. Unknown/sending states protect against duplicate delivery.
+- Quota expiry is already bounded, and cron cleanup is scoped to Scout's collection job. Removing fingerprints or accounting to shrink state can cause duplicate research or lost charges; it is not a free optimization.
+
+The fixed twelve-source v135 batch measured **252 collector SQL statements, 71 row mutations and 221,839 bytes of attributable statement WAL**, producing six new findings and three updates. Harness/control writes were additional. The unchanged repeat measured **zero model calls, zero finding writes, nine SQL statements and two source-state mutations**. Preserve that zero-model/zero-finding-write behavior.
+
+## 3. Define the durable finding before designing its storage
+
+The baseline comparison must preserve the same useful information and reader behavior. A smaller representation is not an improvement if it silently removes facts or breaks matching.
+
+| Information | Requirement for the compact candidate |
+| --- | --- |
+| Stable internal identity, type, title and priority | Preserve record IDs and classification; maintain reliable lookup and concurrent deduplication. |
+| Factual description | Retain what the development is and why it is useful. Do not replace useful content with an opaque classification. |
+| Organizations | Preserve ranked names, including multiple organizations, under the current role-free intake contract. |
+| Dates and event/publication/treaty details | Preserve meaning, precision, explicit clock/timezone, location, registration and useful type-specific facts. Unknown dates must stay unknown. |
+| Source URLs and aliases | Preserve primary and supporting URLs, human-review associations and established identity mappings. |
+| Human corrections and explicit uncertainty | Retain protected values, their source associations and meaningful conflicts or missing-information explanations. Derive redundant defaults where behavior is equivalent. |
+| Concurrency and delivery eligibility | Preserve the minimum version/acceptance and delivery state required for safe updates and notifications. |
+| Separate priority explanation | Keep it for the equivalent-information comparison. Separately assess whether it adds useful information beyond the description. Combining/removing it is a product decision requiring review. |
+
+Source/model traffic remains transient. Partial findings remain saveable before optional improvement. “Only save finalized records” would discard an existing product requirement and is not the proposed optimization.
+
+## 4. Measured representation sizes, not a theoretical capacity claim
+
+A read-only comparison at 16:02 UTC used the same six newly created record IDs as the earlier batch, with their current values after the organization change.
+
+| Representation | Average bytes |
+| --- | ---: |
+| UUID, small type/priority values, title and canonical URL | **223** |
+| Above, plus description, organization-name array and current typed-details JSONB | **717** |
+| Above, plus priority-explanation text | **1,041** |
+| Compact envelope also retaining completeness, overrides, provenance, versions and discovery/update timestamps | **1,335** |
+| Current record tuple alone | **1,523** |
+
+The alternatives were measured with PostgreSQL `pg_column_size(row(...))` expressions. They are not created tables or disk-growth benchmarks. They exclude indexes, related source/identity rows, source state, page allocation and future correction cases. Details remain JSONB in these expressions; the sizes do not establish the result of a fully typed replacement.
+
+The sample's current source tuples averaged 167 bytes and identity tuples 109 bytes per record before their indexes. Its description averaged 232 text bytes and priority explanation 318 bytes. These two paragraphs alone account for approximately **550 bytes**. A native organization-name array averaged 85 bytes versus 113 bytes for equivalent role-free JSONB names: about **28 bytes saved**, rather than hundreds. Do not count retirement of old role labels again as a new architecture saving.
+
+A 250–350-byte title/link record is plausible; preserving all current finding information at that size has not been demonstrated. Lossless compression or shared representations could change the result, but an “absolute theoretical minimum” cannot be asserted without specifying the information, workload and access requirements.
+
+Earlier capacity numbers are superseded as design targets:
+
+- The original 40,000 estimate divided 56 KiB of whole-database growth by six inserts. Of that growth, **24 KiB occurred during updates** and 32 KiB during inserts.
+- Even the corrected insert allocation is affected by page boundaries and existing source-state allocations.
+- The prior 3–6 KB/record and 65,000–130,000 additional-record figures were broad estimates for the existing design, not measured physical slopes or hard limits on Scout.
+- Promised savings of 1.5–2 KB from indexes, 400–600 bytes from typed columns, or guaranteed 500,000-record capacity have not been established. Kind, priority, title and description are already ordinary columns.
+
+## 5. Compare two complete designs
+
+**A — current implementation:** measure the deployed shape and write behavior, including all related tables and indexes.
+
+**B — one compact alternative:** design the ordinary finding around a compact row, with additional relationships only where they carry information or enforce required behavior. Prefer less code and reuse existing reader/write patterns.
+
+The candidate should investigate these decisions together:
+
+1. **Typed common fields and small structured extras.** Use ordinary types for stable common attributes, an ordered array for organization names if it preserves filtering, and only the necessary structured detail/override data. Choose types and column layout from the contract above; do not shorten meaningful keys merely to claim savings.
+2. **Primary source and identity placement.** Evaluate storing the primary source on the finding and retaining separate rows for additional sources/aliases where needed. Avoid repeating the same primary URL automatically in every representation. Preserve tracker/relationship information and human-review provenance. The current identity map remains the correctness baseline until any replacement proves global uniqueness, lookup and race behavior.
+3. **Indexes justified by actual reads.** Include exact lookup, required organization/date filtering, sorting/pagination and text search. Measure representative query plans and latency. Removing an index must not quietly replace normal app operations with costly full scans. Low use counters in an 84-row database are insufficient evidence.
+4. **Writes driven by semantic changes.** Save the first useful partial finding; only write improvement when facts or meaningful review state change. Derive ordinary display defaults, retain explicit uncertainty, and avoid new aliases caused only by rephrasing. The current unchanged shortcut and equality guard already do useful work; measure any additional reduction rather than claiming them as new savings.
+5. **Small durable operational state.** Keep essential leases, rate-limit charges, retry deadlines, fingerprints and uncertain deliveries durable and bounded. They are shared current state, not inherently a full row of permanent overhead for every finding. Measure their growth separately.
+
+An array of identity strings does not by itself enforce uniqueness across records, and searching its elements may need an index. Moving relationships into arrays is therefore a hypothesis to test, not an automatic 500–800-byte saving. Similarly, moving quota state to worker memory, Redis or unlogged tables is not the starting approach: it introduces dependencies or weakens recovery. PostgreSQL unlogged tables can be truncated after a crash.
+
+The comparison should produce one proposed schema/write path, one dependency/removal list and measured costs. The small empty-field/default/index cleanups from the previous plan may fall out of that design; they are no longer the implementation roadmap. No growing queue of unrelated micro-optimizations, new registry, history system or paid service.
+
+## 6. Storage budgets and free-limit headroom
+
+Scout's existing operational gate is **400,000,000 bytes for the current database**, subject to fresh verification. The organization-entitlements check returned HTTP 403; actual shared allowances remain to be verified before live operation. Readable project API counts do not measure the collector's direct SQL workload or establish account-wide headroom.
+
+Supabase documents database-size quota separately from total disk, which includes WAL. The earlier WAL-directory measurement was 134,218,098 bytes; this is neither permanent finding size nor cumulative batch growth. Monitor both relevant limits using existing bounded checks. Do not add every generated WAL byte to the retained-database model.
+
+With the measured 14,153,395-byte baseline, the following are **maximum average marginal budgets to reach the 400 MB gate**, not forecasts or comfortable operating targets:
+
+| Desired total findings | Available average bytes per additional finding |
+| --- | ---: |
+| 10,000 | 38,911 |
+| 100,000 | 3,861 |
+| 250,000 | 1,543 |
+| 500,000 | 771 |
+| 1,000,000 | 385 |
+
+Formula: `floor((400000000 - 14153395) / (target_records - 84))`. Bytes must cover all growing finding, relationship, index and operational storage. The calculation assumes other service usage remains constant; actual growth there reduces the budget. KB/MB/GB are decimal; KiB is 1,024 bytes.
+
+Staying well within free limits requires an explicit reserve below this gate for other consumers, update churn and measurement uncertainty. Choose that reserve from verified account usage and the measured workload before acceptance. Do not describe fitting just below 400 MB as comfortable headroom or claim that the product inherently stops at 100,000 records.
+
+The decision must consider SQL/row mutations, compute/reader latency, model calls and daily activity as well as bytes. For context, 24 repeats of the measured unchanged path would cause 216 collector SQL statements and 48 state mutations; scheduler/control work would be additional. No daily schedule is authorized. Increasing discovery's approximately 200-document-per-tracker bound also needs a reviewed revisit/retention policy; deleting completed fingerprints can cause new charges on unchanged inputs.
+
+## 7. Verification and decision sequence
+
+Implementation and live writes require further user direction. Work in the existing checkout with one authorized implementation writer, coordinated with the intake-correctness work. Keep recurring collection and notifications paused.
+
+1. **Fix the information and query contract.** Map current fields to their product purpose and current readers. Specify candidate B and every intentional behavior change. Keep the priority explanation in the equivalent-information comparison; show a content-reduction variant separately if proposed.
+2. **Prove one record end to end before increasing volume.** Use the existing local test setup to save/read a partial finding, improve it under the same ID, preserve a human correction/source, and repeat unchanged input. Check date precision, multiple ranked organizations, source links, acceptance and access controls. Injected model output proves mechanics, not extraction correctness.
+3. **Measure a bounded local physical comparison.** Use final-record shapes in memory, with explicit finite row/batch/time bounds, no production writes and no model calls. After the one-record result passes, compare enough rows to cross page boundaries. Vary titles, URLs, lengths, lexemes, organizations and additional-source counts rather than cloning one highly compressible row. Include representative updates and source-state activity. Use the existing harness rather than creating a new benchmarking subsystem.
+4. **Account for the complete cost.** Separate insertion, semantic update, partial improvement, unchanged repeat, failure/recovery and human correction. Measure model calls, SQL statements, row mutations, submitted bytes, live tuple sizes, heap/index/TOAST allocation, state growth and attributable WAL where supported. Separate harness/control work. State any unmeasured production/WAL effects; synthetic results are not a live capacity guarantee.
+5. **Check read performance and preservation.** Compare required lookup/filter/search/pagination plans and latency at the tested volume. Verify all useful facts, URLs, IDs/aliases and overrides round-trip; all active quota/delivery charges and access rules survive. Default-field compaction must preserve both merge-time completeness and displayed uncertainty.
+6. **Review the result before migration.** Select the simpler design only if complete measurements show a worthwhile storage/write improvement with acceptable reads and recovery. Estimate retained bytes and daily activity under the proposed cadence against actual shared limits, retaining explicit reserve. If gains are small, keep the current design; do not expand complexity to force an improvement.
+7. **Authorize and verify live separately.** After schema/backend review and renewed model/SQL/account budget checks, confirm one deployed record and its unchanged repeat. Keep useful first-pass capture and finite retries. Do not perform extra live model research solely to measure storage. Review production evidence and any remaining uncertainty before resuming recurring work.
+
+Acceptance requires equivalent useful information, protected human corrections, reliable identities, unchanged-input zero model/finding writes, preserved accounting/access, measured complete storage/write cost, acceptable reader performance and verified headroom. A smaller JSON payload or a passing mock alone is insufficient.
+
+## Evidence and references
+
+- Current product direction and deployment: [refactor-consumption.md](refactor-consumption.md).
+- Current schema/retention: [findings migration](supabase/migrations/20261009190000_scout_findings.sql), [URL-intake quota migration](supabase/migrations/20261012150000_scout_url_intake.sql), [scheduler](supabase/scout-loop.sql).
+- Research writes and normalization: [finding-jobs.js](collector/finding-jobs.js), [finding-contract.js](collector/finding-contract.js), [model.js](collector/model.js), [hosted-hsa.js](collector/hosted-hsa.js), [discovery](collector/octo-documents.js).
+- Corrections and delivery: [corrections.js](collector/corrections.js), [notifications](notifications/slack.js).
+- Existing local numeric artifacts: `.cache/scout-refactor/oct12-url-evaluation-results.json`, `oct12-url-final-state.json`, `oct12-url-unchanged-check.json` and `oct12-url-release.json` in the same directory. These v135 snapshots predate the organization change and may not exist in another checkout.
+- Read-only review aggregates at 15:24–15:29 and 16:02 UTC are transcribed above. No new source/model capture or benchmark files were created. Refresh dated measurements before implementation.
+- PostgreSQL: [page layout](https://www.postgresql.org/docs/17/storage-page-layout.html), [size functions](https://www.postgresql.org/docs/17/functions-admin.html#FUNCTIONS-ADMIN-DBSIZE), [arrays](https://www.postgresql.org/docs/17/arrays.html), [unlogged tables](https://www.postgresql.org/docs/17/sql-createtable.html), [HOT updates](https://www.postgresql.org/docs/17/storage-hot.html), [vacuum](https://www.postgresql.org/docs/17/routine-vacuuming.html).
+- Supabase: [database versus disk/WAL size](https://supabase.com/docs/guides/platform/database-size). Public limits do not replace verified account allowances.
