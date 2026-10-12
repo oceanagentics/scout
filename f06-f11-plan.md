@@ -6,6 +6,12 @@ The user authorized removing mandatory research metadata. This supersedes the re
 
 Local regressions cover omitted/declined/null/malformed metadata, question-only requests, failed enrichment, unchanged inputs and the two-generation ceiling. The new schema/workflow checks failed before the correction and pass afterward; all 336 checkout tests and the frontend build pass. Mocked capture remains one generation, 14 SQL statements and 5 mutations including quota accounting; current research state is 194 B (previously 289 B). Requested enrichment remains 14 statements/4 mutations, with 367 B of state; unchanged repeats make zero model calls or finding writes. No SQL migration, live model call, deployment or recurring activation is part of this correction. Live model judgment remains unverified under the revised prompt.
 
+## Completion cleanup — test bloat
+
+- [ ] Before declaring this plan complete, remove redundant or obsolete tests, repeated setup and unused fixtures in the affected finding-workflow and response-schema tests. Prefer existing patterns and fewer behavior-focused cases; do not add a replacement harness. Coordinate shared gateway-test edits with its owner.
+
+Preserve distinct coverage for optional research metadata, useful partials, requested/failed research, unchanged inputs, finite model budgets, record identity and human corrections. Compare test lines, fixture bytes and runtime before/after, then rerun retained regressions and the build. Fewer tests alone do not establish success; keep mocked mechanics separate from live correctness. This required completion step is pending, not performed by this plan update.
+
 ## Scope and baseline
 
 Authorized on 12 October 2026: implement after this plan, in the existing checkout, then independently review, verify and make one focused commit. Keep collection/notifications paused; no deployment, new workers, source archives or twelve-case rerun. The manager owns `refactor-consumption.md`.
