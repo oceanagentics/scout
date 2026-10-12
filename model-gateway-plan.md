@@ -74,6 +74,16 @@ Independent verification: **73 gateway checks and 321 total repository checks pa
 
 Next action: securely replace `.env.local`'s invalid API key; verify candidate model access, existing API credit and actual rate/token headroom; use fresh atomic current accounting for one extraction-only E02 call within the $0.10 total ceiling. Continue to E09/A07 only after independent E02 acceptance and remaining budget verification. F09/F10 and provider F12 live acceptance remain open. The heartbeat stays paused; no deployment, Slack activation or recurring-work change is included.
 
+## Current live proof — one E02 request
+
+The user explicitly requested one missing-URL Luna call now, superseding the preflight hold for this single manual probe. Account credit balance was not independently verified; this did not unlock recurring or production work. Used current source/rubric/schema helpers with one request, 1,500 output-token cap and a conservative reservation below $0.01. No automatic retry, model tool, finding/source write or production SQL.
+
+**E02 useful extraction demonstrated:** Scout's public reader fetched the exact HSA page (HTTP 200, 79,151 bytes; 16,248 supplied text bytes), and `gpt-6-luna` returned one event. Independent source review confirms explicit October 15, 2026 / 15:00 CEST (13:00Z) and `https://bit.ly/clhmreg1`. It left end time and organizers unresolved and retained High Seas Alliance as an associated name. One qualification: Luna supplied `Europe/Paris`, which the page does not explicitly name; the UTC result is correct, but a saved fact should retain the source-supported CEST/+02:00 meaning rather than assert that inferred IANA identifier. No response/source/proof trail was retained.
+
+Measured one generation: 5,989 input tokens (5,986 cache-write tokens), 413 output tokens, zero reasoning tokens; 6,712 ms provider latency and 7,353 ms total. Conservative estimated cost **$0.000955125**, not an invoice/balance measurement. Response headers reported request limit 30,000 and token limit 180,000,000 for the serving bucket; no project-specific token header was returned. One source read supplied the request and one additional read independently checked the facts. Production SQL/mutations/WAL and Scout-persisted source/model bytes were zero.
+
+This proves one manual source-text extraction, not a production gateway reservation/dispatch/persistence or native OpenAI URL-tool test. E09/A07 remain untested with OpenAI. No additional model request follows this one-shot authorization. Remaining work includes verified ongoing credit/project controls, gateway accounting/consumer integration, the inferred-zone qualification, other accepted URL tests and completion cleanup. The heartbeat stays paused.
+
 ## Completion cleanup — test bloat
 
 Before declaring this plan complete, audit the gateway and affected intake/model tests for duplicate coverage, obsolete pipeline expectations and brittle checks that merely mirror implementation. Consolidate or remove redundant cases, repeated setup and unused fixtures; prefer a smaller set of behavior-focused tests and existing test patterns, without adding a replacement harness. Coordinate overlapping files with the storage and F06/F11 owners before edits.
