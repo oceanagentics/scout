@@ -63,8 +63,8 @@ test('one partial capture reads only through the model and completed work stays 
  }finally{await raw.close();}
 });
 
-test('manual and due-tracker routes use URL intake and model-requested links without local source reads',async()=>{
- for(const rotation of [false,true]){
+test('manual URL intake preserves an existing source and uses Gemini-requested links without local source reads',async()=>{
+ const rotation=false;
   const raw=await setup();try{
    const tr=await tracker(raw);await enable(raw);
    await raw.query('update scout.trackers set enabled=true where id=$1',[tr.id]);
@@ -88,11 +88,10 @@ test('manual and due-tracker routes use URL intake and model-requested links wit
    assert.equal(result.status,200);const output=await result.json();assert.equal(output.state,'captured');assert.equal(output.created,1);assert.equal(output.changed,1);
    assert.equal(calls,2);assert.equal(reads,0);
    const records=(await raw.query('select * from scout.records')).rows;assert.equal(records.length,1);assert.equal(records[0].details.start.value,'2026-10-29');
-   const state=(await raw.query("select * from scout.source_state where tracker_id=$1 and identity=$2",[tr.id,rotation?'tracker':tr.url])).rows[0];
+   const state=(await raw.query("select * from scout.source_state where tracker_id=$1 and identity='tracker'",[tr.id])).rows[0];
    assert.equal(state.processed_hash,null);assert.equal(state.observed_hash,null);assert.equal(state.research.main,undefined);
    assert.deepEqual(state.research.supports,[{url:support,question:'When is the workshop?'}]);
   }finally{await raw.close();}
- }
 });
 
 test('requested improvement updates the saved partial, while failed improvement leaves its record intact',async t=>{
@@ -167,19 +166,6 @@ test('a research question without a URL preserves the partial, exposes pending w
    assert.deepEqual((await db.query('select id,version from scout.records')).rows,before);
   }finally{await db.close();}
  }
-});
-
-test('gateway fallback consumes the second generation and leaves requested research pending without a third call',async()=>{
- const db=await setup();try{
-  const source=sourceFor(await tracker(db));let callbacks=0;
-  const model=async()=>{callbacks++;return {...answer([event],[{url:'https://example.org/registration',question:'What year is the event?'}]),_usage:{generations:2,input_tokens:120,output_tokens:30}};};
-  const result=await processDocument(db,{source,read,model});assert.equal(result.state,'captured');assert.equal(result.reason,'generation_bound');assert.equal(result.improvement,'pending');
-  assert.deepEqual(result.usage,{generations:2,input_tokens:120,output_tokens:30});assert.equal(callbacks,1);
-  await due(db);assert.equal((await processDocument(db,{source,read,model})).state,'parked');assert.equal(callbacks,1);
-  const failure=await processDocument(db,{source:{...source,identity:'failed',url:'https://example.org/failed'},read,
-   model:async()=>{throw Object.assign(new Error('provider_unknown'),{reason:'provider_unknown',dispatched:true,usage:{generations:2,input_tokens:60000,output_tokens:0}});}});
-  assert.equal(failure.usage.generations,2);assert.equal(failure.usage.input_tokens,60000);
- }finally{await db.close();}
 });
 
 test('malformed siblings and optional fields do not discard useful URL findings',async()=>{

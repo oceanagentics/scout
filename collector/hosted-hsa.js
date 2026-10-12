@@ -3,7 +3,8 @@ import postgres from 'postgres';
 import {Buffer} from 'node:buffer';
 import {randomUUID} from 'node:crypto';
 import {sourceURL} from './octo-documents.js';
-import {gemini} from './model.js';
+import {trackerModel} from './model-gateway.js';
+import {readPublic} from './hsa.js';
 import {processDocument} from './finding-jobs.js';
 import {correctFinding} from './corrections.js';
 import {prepareMessage,sendMessage,webhookTransport} from '../notifications/slack.js';
@@ -33,7 +34,7 @@ export function database(sql,inTransaction=false,metrics={statements:0,mutations
   };
   return db;
 }
-export async function hostedHSA(request,{databaseURL,apiKey,webhook,env,connect=postgres,modelFetch=fetch,post}={}){
+export async function hostedHSA(request,{databaseURL,apiKey,openaiApiKey,webhook,env,connect=postgres,modelFetch=fetch,read=readPublic,post}={}){
   const {error}=await verifyAuth(request,{auth:'secret:default',env});
   if(error)return Response.json({error:'Backend secret required'},{status:401});
   if(request.method!=='POST')return Response.json({error:'POST required'},{status:405});
@@ -59,11 +60,13 @@ export async function hostedHSA(request,{databaseURL,apiKey,webhook,env,connect=
     // Due selection precedes HTTP, maintenance, reservations and source writes.
     let selected;
     if(rotation){
-      selected=(await db.query(`select t.*,s.identity source_identity,s.url source_url,s.native_ref source_ref from scout.source_state s join scout.trackers t on t.id=s.tracker_id
+      selected=(await db.query(`select t.*,s.identity source_identity,s.url source_url,s.native_id source_native_id,s.native_ref source_ref from scout.source_state s join scout.trackers t on t.id=s.tracker_id
         where t.enabled and s.due_at<=clock_timestamp() and (s.lease_until is null or s.lease_until<clock_timestamp())
         order by s.due_at,s.id limit 1`)).rows[0];
       if(!selected)return Response.json({outcome:'idle',cost:db.metrics});
-    }else if(!notify)selected=(await db.query('select * from scout.trackers where id=$1',[trackerId])).rows[0];
+    }else if(!notify)selected=(await db.query(`select t.*,s.identity source_identity,s.native_id source_native_id,s.native_ref source_ref
+      from scout.trackers t left join lateral (select identity,native_id,native_ref from scout.source_state where tracker_id=t.id and url=$2
+      order by native_id is not null desc,id limit 1) s on true where t.id=$1`,[trackerId,url])).rows[0];
     if(!notify&&!selected)return Response.json({error:'Existing tracker required'},{status:400});
     const policy=(await db.query('select enabled and verified_until>clock_timestamp() and verified_rpm>0 and verified_rpd>0 and verified_tpm>0 and database_verified_until>clock_timestamp() and database_bytes between 0 and 399999999 as allowed from scout.quota_policy where id')).rows[0];
     if(!policy?.allowed)return Response.json({outcome:'deferred',reason:'unverified_budget',cost:db.metrics});
@@ -73,8 +76,9 @@ export async function hostedHSA(request,{databaseURL,apiKey,webhook,env,connect=
     }
     // Manual pilots use the same bounded accounting retention as scheduled work.
     await db.query('select * from scout.expire_quota()');
-    const invocation=randomUUID(),model=gemini({apiKey,ledger:db,invocation,deadline,fetch:modelFetch});
-    const source={tracker_id:selected.id,identity:rotation?selected.source_identity:url,url:rotation?selected.source_url:url};
+    const invocation=randomUUID(),source={tracker_id:selected.id,identity:selected.source_identity??url,url:rotation?selected.source_url:url,
+      native_id:selected.source_native_id,native_ref:selected.source_ref};
+    const model=trackerModel({apiKey,openaiApiKey,ledger:db,source,read,invocation,deadline,fetch:modelFetch});
     const result=await processDocument(db,{source,model,deadline});
     return Response.json({...result,cost:db.metrics});
   }catch(error){

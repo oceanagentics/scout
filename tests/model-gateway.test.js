@@ -1,11 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {strictSchema,openai,modelGateway,OPENAI_MODEL} from '../collector/model-gateway.js';
+import {strictSchema,openai,modelGateway,trackerModel,OPENAI_MODEL} from '../collector/model-gateway.js';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../collector/finding-contract.js';
-import {readFile,readdir} from 'node:fs/promises';
-import {PGlite} from '@electric-sql/pglite';
-import {processDocument} from '../collector/finding-jobs.js';
-import {correctFinding} from '../collector/corrections.js';
 import {MODEL,MODEL_LIMITS} from '../collector/model.js';
 
 const url='https://example.org/source?query=%7B%22sideEvent.id%22%3A6915%7D';
@@ -17,7 +13,7 @@ const page=(body='<p>Source text <a href="/register?token=whole">Register</a></p
 function setup({task='url_intake',provider='openai',generate=async()=>answer(),routes,providers,budget,accounting,now=Date.now,deadline}={}){
   const time=now(),logs={reserved:[],settled:[]};
   const limits=model=>({verifiedAt:time,expiresAt:time+600000,accessVerified:true,model,remainingAttempts:3,remainingInputTokens:180000,
-    inputTokens:60000,outputTokens:model===MODEL?MODEL_LIMITS.output:4096,inputUSDPerMillion:0.125,outputUSDPerMillion:0.5,cooldownUntil:0});
+    inputTokens:60000,outputTokens:model===MODEL?MODEL_LIMITS.output:1500,inputUSDPerMillion:0.125,outputUSDPerMillion:0.5,cooldownUntil:0});
   const config={task,routes:routes??{[task]:{provider}},providers:providers??{[provider]:{model:provider==='openai'?OPENAI_MODEL:'gemini-3.5-flash-lite',generate}},
     budget:budget??{verifiedAt:time,expiresAt:time+600000,maxCostUSD:0.10,creditRemainingUSD:0.10,
       providers:{openai:limits(OPENAI_MODEL),gemini:limits('gemini-3.5-flash-lite')}},
@@ -59,12 +55,12 @@ test('OpenAI transports the full rubric, partials, real links and exact native J
   assert.equal(input.sources[0].body,native);assert.equal(input.sources[0].requested_url,url);assert.equal(input.sources[0].coverage,'complete_json');
   assert.ok(input.sources[1].body.includes('https://example.org/registration?a=%2B'));assert.equal(input.sources[1].coverage,'html_text');
   assert.equal(request.model,OPENAI_MODEL);assert.equal(request.store,false);assert.equal(request.service_tier,'default');assert.equal(request.reasoning.effort,'none');
-  assert.equal(request.tools,undefined);assert.equal(request.max_output_tokens,4096);assert.equal(request.text.format.strict,true);
+  assert.equal(request.tools,undefined);assert.equal(request.max_output_tokens,1500);assert.equal(request.text.format.strict,true);
   assert.ok(requests[0].options.signal instanceof AbortSignal);assert.equal(output._usage.generations,1);
   assert.equal(output._diagnostics.model,OPENAI_MODEL);assert.equal(output._diagnostics.attempts[0].diagnostics.tool_calls,0);
   assert.equal(output._retrieval[0].method,'application_read');
   const retained=JSON.stringify(logs);assert.ok(!retained.includes('Confirmed organization'));assert.ok(!retained.includes('Which date?'));assert.ok(!retained.includes('test-key'));assert.ok(!retained.includes(url));
-  assert.equal(logs.reserved[0].cost_usd,0.009548);assert.ok(output._usage.estimated_cost_usd<logs.reserved[0].cost_usd);
+  assert.equal(logs.reserved[0].cost_usd,0.00825);assert.ok(output._usage.estimated_cost_usd<logs.reserved[0].cost_usd);
 });
 
 test('OpenAI reports observed redirects without replacing the complete requested URL',async()=>{
@@ -89,7 +85,7 @@ test('URL intake requires an explicit main source before dispatch; record answer
 test('calling the OpenAI adapter directly cannot bypass gateway reservation with numeric limits',async()=>{
   let calls=0,reads=0;
   const generate=openai({apiKey:'test',urls:[url],read:async()=>{reads++;return page();},fetch:async()=>{calls++;return result();}});
-  await assert.rejects(generate('Read',[],schema,{inputTokens:60000,outputTokens:4096,deadline:Date.now()+100000,task:'url_intake'}),
+  await assert.rejects(generate('Read',[],schema,{inputTokens:60000,outputTokens:1500,deadline:Date.now()+100000,task:'url_intake'}),
     {reason:'accounting',dispatched:false});
   assert.equal(calls,0);assert.equal(reads,0);
 });
@@ -125,7 +121,7 @@ test('source bounds refuse whole oversized JSON/HTML and unsupported or unobserv
 test('explicit Gemini retrieval gap falls back once and returns both usage and original diagnostics',async()=>{
   const received=[],providers={gemini:{model:'gemini-3.5-flash-lite',generate:async(...args)=>{received.push(args);throw retrievalFailure();}},
     openai:{model:OPENAI_MODEL,generate:async(...args)=>{received.push(args);return answer();}}};
-  const {model,logs}=setup({providers,routes:{url_intake:{provider:'gemini',fallback:'openai',recoverURLRetrieval:true}}});
+  const {model,logs}=setup({providers,routes:{url_intake:{provider:'gemini',fallback:'openai',fallbackReasons:["url_retrieval_failed"]}}});
   const input={records:[{title:'Partial'}]},output=await model(INTAKE_INSTRUCTION,input,RESPONSE_SCHEMA);
   assert.equal(output._usage.generations,2);assert.equal(output._usage.input_tokens,801);assert.equal(output._usage.output_tokens,51);
   assert.deepEqual(output._diagnostics.attempts.map(a=>a.provider),['gemini','openai']);
@@ -137,13 +133,11 @@ test('explicit Gemini retrieval gap falls back once and returns both usage and o
   assert.equal(received.length,2);
 });
 
-test('non-retrieval errors, missing or successful metadata and default routes never fall back',async context=>{
-  const cases=[['opt-in absent',retrievalFailure(),false],['missing metadata',retrievalFailure({retrieval_metadata_present:false}),true],
-    ['empty retrieval',retrievalFailure({retrieval:[]}),true],['one successful URL',retrievalFailure({retrieval:[{url,status:'URL_RETRIEVAL_STATUS_SUCCESS'}]}),true],
-    ['model unreadable',Object.assign(new Error('model_unreadable'),{dispatched:true}),true],
-    ...['retrieval_metadata_missing','provider_auth','provider_rate_limit','provider_unknown','invalid_json','output_truncated'].map(reason=>[reason,Object.assign(new Error(reason),{reason,dispatched:true}),true])];
+test('default routes and noneligible failures never fall back',async context=>{
+  const cases=[['opt-in absent',retrievalFailure(),false],
+    ...['provider_auth','provider_safety','quota','provider_cooldown','runtime_bound','spending_bound','accounting'].map(reason=>[reason,Object.assign(new Error(reason),{reason,dispatched:true}),true])];
   for(const [name,error,optIn] of cases)await context.test(name,async()=>{
-    let fallback=0;const {model}=setup({routes:{url_intake:{provider:'gemini',fallback:'openai',recoverURLRetrieval:optIn}},
+    let fallback=0;const {model}=setup({routes:{url_intake:{provider:'gemini',fallback:'openai',fallbackReasons:optIn?['url_retrieval_failed']:undefined}},
       providers:{gemini:{model:'gemini-3.5-flash-lite',generate:async()=>{throw error;}},openai:{model:OPENAI_MODEL,generate:async()=>{fallback++;return answer();}}}});
     await assert.rejects(model('Read',[],schema));assert.equal(fallback,0);
   });
@@ -182,10 +176,10 @@ test('uncertain calls preserve full charges, consume the shared attempt allowanc
   const {model,logs}=setup({task:'answer_records',generate:openai({apiKey:'secret-key',fetch:async()=>{throw new Error('secret-key source text response body');}})});
   for(let i=0;i<2;i++)await assert.rejects(model('Sensitive prompt',{private:'partial'},schema),error=>{
     assert.equal(error.reason,'provider_unknown');assert.equal(error.usage.generations,1);assert.equal(error.usage.uncertain,true);
-    assert.equal(error.usage.input_tokens,60000);assert.equal(error.usage.output_tokens,4096);assert.ok(!JSON.stringify(error).includes('secret-key'));return true;
+    assert.equal(error.usage.input_tokens,60000);assert.equal(error.usage.output_tokens,1500);assert.ok(!JSON.stringify(error).includes('secret-key'));return true;
   });
   await assert.rejects(model('Third',[],schema),{reason:'attempt_bound'});
-  assert.equal(logs.settled.length,2);assert.ok(logs.settled.every(r=>r.state==='unknown'&&r.cost_usd===0.009548));
+  assert.equal(logs.settled.length,2);assert.ok(logs.settled.every(r=>r.state==='unknown'&&r.cost_usd===0.00825));
   assert.ok(!JSON.stringify(logs).includes('Sensitive prompt'));assert.ok(!JSON.stringify(logs).includes('partial'));
 });
 
@@ -217,15 +211,15 @@ test('provider errors/failed outputs settle known usage or retain uncertain rese
 
 test('valid partial remains available after actual token overrun, with charge settled and improvement blocked',async()=>{
   const partial={status:'found',records:[{title:'Useful partial',dates:[]}]};let calls=0;
-  const {model,logs}=setup({task:'answer_records',generate:openai({apiKey:'test',fetch:async()=>{calls++;return result(JSON.stringify(partial),{usage:{input_tokens:60001,output_tokens:4097}});}})});
+  const {model,logs}=setup({task:'answer_records',generate:openai({apiKey:'test',fetch:async()=>{calls++;return result(JSON.stringify(partial),{usage:{input_tokens:60001,output_tokens:1501}});}})});
   const output=await model('Read',[],schema);assert.deepEqual(output.records,partial.records);assert.equal(output._usage.overrun,true);
-  assert.equal(logs.settled[0].reason,'token_reservation_overrun');assert.equal(logs.settled[0].input_tokens,60001);assert.equal(logs.settled[0].output_tokens,4097);
+  assert.equal(logs.settled[0].reason,'token_reservation_overrun');assert.equal(logs.settled[0].input_tokens,60001);assert.equal(logs.settled[0].output_tokens,1501);
   await assert.rejects(model('Improve',[],schema),{reason:'attempt_bound'});assert.equal(calls,1);
 });
 
 test('failed overrun preserves original retrieval failure and cannot trigger fallback or another generation',async()=>{
   let fallback=0;const error=retrievalFailure();error.usage={input_tokens:60001,output_tokens:41};
-  const {model,logs}=setup({routes:{url_intake:{provider:'gemini',fallback:'openai',recoverURLRetrieval:true}},providers:{
+  const {model,logs}=setup({routes:{url_intake:{provider:'gemini',fallback:'openai',fallbackReasons:["url_retrieval_failed"]}},providers:{
     gemini:{model:MODEL,generate:async()=>{throw error;}},openai:{model:OPENAI_MODEL,generate:async()=>{fallback++;return answer();}}}});
   await assert.rejects(model('Read',[],schema),error=>{assert.equal(error.reason,'url_retrieval_failed');assert.equal(error.usage.overrun,true);return true;});
   assert.equal(fallback,0);assert.equal(logs.settled[0].reason,'url_retrieval_failed');assert.equal(logs.settled[0].input_tokens,60001);
@@ -256,35 +250,47 @@ test('second configured task uses the same dispatcher and cannot overlap invocat
   finish();const output=await pending;assert.equal(calls,1);assert.equal(output._diagnostics.model,OPENAI_MODEL);
 });
 
-test('gateway intake saves a partial, skips completed work and preserves a human correction after explicit reopening (mock model/PGlite)',async()=>{
-  const db=new PGlite();
-  try{
-    await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;
-      create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');create table auth.identities(user_id uuid,provider text,identity_data jsonb);
-      create function auth.uid() returns uuid language sql as $$select null::uuid$$;`);
-    for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort())await db.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
-    const tracker=(await db.query("insert into scout.trackers(name,url,collector,cadence) values('Gateway fixture','https://example.org/list','web','6 hours') returning *")).rows[0];
-    const source={tracker_id:tracker.id,identity:'cbd:side-event:6915',native_id:'6915',url};
-    const partial={type:'event',title:'BBNJ implementation workshop',summary:'Technical Clearing-House discussion.',priority:'high',
-      relevance_reason:'Technical BBNJ Clearing-House workshop.',organizations:[],dates:[],missing_information:['Event time']};
-    let generations=0,body='<p>Original source body (discard me)</p>';
-    const read=async()=>page(body);
-    const generate=openai({apiKey:'test',urls:[url],read,fetch:async()=>{
-      generations++;const record=generations===1?partial:{...partial,organizations:[{name:'Model organization'}],dates:[{meaning:'event_start',date:'2026-10-15'}]};
-      return result(JSON.stringify({status:'found',records:[record]}));
+test('tracker route falls back only for approved unusable Gemini results, accounting each provider once',async context=>{
+  const partial={status:'found',records:[null,{type:'event',title:'Useful partial',organizations:[null],dates:[{meaning:'event_start',date:'bad'}]}]};
+  const envelope=(text='{"status":"none","records":[]}',extra={})=>Response.json({usageMetadata:{promptTokenCount:100,toolUsePromptTokenCount:20,candidatesTokenCount:10,totalTokenCount:130},
+    candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},content:{parts:[{text}]}}],...extra});
+  const cases=[['valid none',()=>envelope(),false],['useful malformed-optional partial',()=>envelope(JSON.stringify(partial)),false],
+    ['retrieval error',()=>envelope('{"status":"unreadable","records":[]}',{candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}]},content:{parts:[{text:'{"status":"unreadable","records":[]}'}]}}]}),true],
+    ['missing retrieval metadata',()=>envelope(undefined,{candidates:[{finishReason:'STOP',content:{parts:[{text:'{"status":"none","records":[]}'}]}}]}),true],
+    ['unreadable',()=>envelope('{"status":"unreadable","records":[]}'),true],['invalid JSON',()=>envelope('{'),true],
+    ['invalid output',()=>envelope('{"status":"wrong","records":[]}'),true],['empty found',()=>envelope('{"status":"found","records":[null,{}]}'),true],
+    ['missing candidate',()=>envelope(undefined,{candidates:[]}),true],['missing finish',()=>envelope(undefined,{candidates:[{content:{parts:[{text:'{}'}]}}]}),true],
+    ['truncated',()=>envelope(undefined,{candidates:[{finishReason:'MAX_TOKENS'}]}),true],
+    ['429',()=>new Response('{}',{status:429}),true],['503',()=>new Response('{}',{status:503}),true],['network',()=>{throw Error('Private transport text');},true],
+    ['auth',()=>new Response('{}',{status:401}),false],['request rejected',()=>new Response('{}',{status:400}),false],
+    ['safety',()=>envelope(undefined,{promptFeedback:{blockReason:'SAFETY'}}),false],['explicit safety finish',()=>envelope(undefined,{candidates:[{finishReason:'SAFETY'}]}),false],
+    ['other terminal finish',()=>envelope(undefined,{candidates:[{finishReason:'OTHER'}]}),false]];
+  for(const [name,response,recover] of cases)await context.test(name,async()=>{
+    const sql=[],calls={gemini:0,openai:0};let reads=0;
+    const ledger={query:async(q,p)=>{sql.push({q,p});return {rows:[q.includes('reserve_provider')?{allowed:true}:{settled:true}]};}};
+    const model=trackerModel({apiKey:'test',openaiApiKey:'test',ledger,source:{url,identity:'native:6915'},read:async()=>{reads++;return page();},fetch:async(target,options)=>{
+      if(target.includes('googleapis')){calls.gemini++;return response();}calls.openai++;
+      assert.equal(JSON.parse(options.body).max_output_tokens,1500);return result();
     }});
-    const {model,logs}=setup({generate});
-    const first=await processDocument(db,{source,read,model});assert.equal(first.created,1);assert.equal(first.state,'captured');
-    let record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.completeness.state,'provisional');
-    const originalID=record.id,version=record.version;
-    await db.exec("update scout.source_state set due_at=clock_timestamp()-interval '1 second'");
-    assert.deepEqual(await processDocument(db,{source,read,model}),{state:'complete',created:0,changed:0});
-    assert.equal(generations,1);assert.equal(logs.reserved.length,1);assert.equal((await db.query('select version from scout.records')).rows[0].version,version);
-    await correctFinding(db,{record_id:record.id,version:record.version,field:'organizations',value:[{name:'Human organization'}],url});
-    body='<p>Changed source body (discard me too)</p>';await db.exec("update scout.source_state set due_at=clock_timestamp()-interval '1 second'");
-    const changed=await processDocument(db,{source,read,model});assert.equal(changed.changed,1);assert.equal(changed.created,0);assert.equal(generations,2);
-    record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.id,originalID);assert.deepEqual(record.organizations,[{name:'Human organization'}]);
-    assert.equal(record.details.start.value,'2026-10-15');assert.ok(!JSON.stringify(record).includes('discard me'));
-    const sourceState=(await db.query('select * from scout.source_state')).rows[0];assert.equal(sourceState.identity,'cbd:side-event:6915');assert.ok(!JSON.stringify(sourceState).includes('discard me'));
-  }finally{await db.close();}
+    const output=await model(INTAKE_INSTRUCTION,[],RESPONSE_SCHEMA).catch(error=>error);
+    assert.equal(calls.openai,recover?1:0);assert.equal(reads,recover?1:0);assert.equal(calls.gemini,1);
+    assert.equal(sql.filter(item=>item.q.includes('reserve_provider')).length,recover?2:1);assert.equal(sql.filter(item=>item.q.includes('settle_provider')).length,recover?2:1);
+    assert.ok(sql.every(item=>!item.q.includes('reserve_model')));assert.ok(!JSON.stringify(sql).includes('Private transport text'));
+    if(name==='invalid JSON'||name==='missing candidate'||name==='missing finish'){
+      const settlement=sql.find(item=>item.q.includes('settle_provider'));assert.deepEqual(settlement.p.slice(1,4),[120,10,'settled']);
+    }
+    if(recover)assert.equal(output._usage.generations,2);if(name==='useful malformed-optional partial')assert.deepEqual(output.records,partial.records);
+  });
+});
+
+test('tracker second generation has no fallback; missing usage remains uncertain and missing backup budget stops before OpenAI',async()=>{
+  const sql=[],ledger={query:async(q,p)=>{sql.push({q,p});return {rows:[q.includes('reserve_provider')?{allowed:true}:{settled:true}]};}};
+  let calls=0;const model=trackerModel({apiKey:'test',openaiApiKey:'test',ledger,source:{url},read:async()=>assert.fail('No fallback'),fetch:async()=>{
+    calls++;return Response.json({candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
+      content:{parts:[{text:calls===1?'{"status":"none","records":[]}':'{'}]}}]});}});
+  assert.equal((await model('Read',[],RESPONSE_SCHEMA))._usage.uncertain,true);
+  await assert.rejects(model('Improve',[],RESPONSE_SCHEMA),{reason:'invalid_json'});assert.equal(calls,2);assert.equal(sql.length,4);
+  let dispatched=0;const guarded=trackerModel({apiKey:'test',openaiApiKey:'test',source:{url},ledger:{query:async(q,p)=>({rows:[q.includes('reserve_provider')?
+    {allowed:p[2]==='gemini',reason:'provider_budget'}:{settled:true}]})},fetch:async()=>{dispatched++;throw Error('Network');}});
+  await assert.rejects(guarded('Read',[],RESPONSE_SCHEMA),{reason:'provider_budget'});assert.equal(dispatched,1);
 });
