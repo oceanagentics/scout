@@ -24,12 +24,12 @@ export async function correctFinding(db,{record_id,version,field,value,url}){
     if(sameClaim(prior,value)&&record.overrides[field]?.url===url)return {id:record.id,version:record.version};
     const overrides={...record.overrides,[field]:{url}},provenance={...record.provenance,[field]:[url]},unknowns={...record.completeness.unknowns};
     delete unknowns[field];
+    const sources=record.sources.some(s=>s.url===url)?record.sources:[...record.sources,{url,tracker_id:null,relationship:'human_review'}];
     const saved=(await tx.query(`update scout.records set title=$3,description=$4,organizations=$5,details=$6,overrides=$7,provenance=$8,
-      completeness=$9,version=version+1,accepted_version=null,relevance='{"state":"pending"}',updated_at=clock_timestamp()
+      completeness=$9,sources=$10,version=version+1,accepted_version=null,relevance='{"state":"pending"}',updated_at=clock_timestamp()
       where id=$1 and version=$2 returning id,version`,[record.id,version,values.title,values.description,values.organizations,details,overrides,provenance,
-      {state:Object.keys(unknowns).length?'provisional':'complete',unknowns}])).rows[0];
-    await tx.query("insert into scout.record_sources(record_id,url,relationship) values($1,$2,'human_review') on conflict do nothing returning record_id",[record.id,url]);
-    await tx.query("update scout.source_state s set processed_hash=null,due_at=clock_timestamp(),attempts=0,state='due' where s.url in (select url from scout.record_sources where record_id=$1) and s.state<>'running' returning id",[record.id]);
+      {state:Object.keys(unknowns).length?'provisional':'complete',unknowns},sources])).rows[0];
+    await tx.query("update scout.source_state set processed_hash=null,due_at=clock_timestamp(),attempts=0,state='due' where url in (select value->>'url' from jsonb_array_elements($1::jsonb)) and state<>'running' returning id",[sources]);
     return saved;
   });
 }

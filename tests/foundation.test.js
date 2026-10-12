@@ -78,10 +78,10 @@ for (const shared of [false, true]) {
         { other: 'keep', scout: { preference: 'keep', admin: true } });
       const tracker = (await db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Source','https://example.org','web','1 day',true) returning id")).rows[0].id;
       const record = (await db.query("insert into scout.records(kind,title) values('announcement','Private finding') returning id")).rows[0].id;
-      await db.query("insert into scout.record_sources(record_id,tracker_id,url) values($1,$2,'https://example.org/source')", [record, tracker]);
+      await db.query("update scout.records set sources=$2 where id=$1", [record,[{url:'https://example.org/source',tracker_id:tracker,relationship:'source'}]]);
       await db.query("insert into scout.source_state(tracker_id,identity,url,state,reason) values($1,'item','https://example.org/source','parked','attempt_bound')", [tracker]);
       const publicReads = ['scout.records','scout.finding_reader','scout.findings()','scout.finding_jobs()','scout.tracker_status'];
-      const privateTables = ['source_state','record_sources','record_identities','quota_policy','quota_reservations','delivery_state'];
+      const privateTables = ['source_state','quota_policy','quota_reservations','delivery_state'];
       await db.exec('set role anon');
       for (const view of publicReads) await assert.rejects(db.query('select * from ' + view), { code: '42501' });
       await assert.rejects(db.query('select scout.access_role()'), { code: '42501' });

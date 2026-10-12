@@ -57,14 +57,16 @@ async function saveFindings(db,source,findings,urls){
   return db.transaction(async tx=>{
     if(!(await tx.query("select id from scout.source_state where id=$1 and lease_id=$2 and lease_until>clock_timestamp() for update",[source.id,source.lease_id])).rows.length)throw fail('stale_lease');
     await tx.query("select pg_advisory_xact_lock(hashtextextended('scout:findings',0))");
-    const counts={created:0,changed:0,saved:0,ambiguous:0},used=new Set();
+    const counts={created:0,changed:0,saved:0,ambiguous:0},used=new Set(),seen=new Set();
     for(const f of findings){
       const identity='source:'+hash([source.tracker_id,source.identity,f.kind,normalize(f.title)]);
+      if(seen.has(identity))continue;
       // Match stable identities first, then the same source/title. A single development of a kind
       // can enrich its existing source record even when the model rephrases its title.
-      const candidates=(await tx.query(`select distinct r.* from scout.records r left join scout.record_identities i on i.record_id=r.id
-        where r.kind=$1 and (i.identity=$2 or (lower(r.title)=lower($3) and ($5::text is null or r.details#>>'{start,value}' is null or r.details#>>'{start,value}'=$5)) or r.canonical_url=$4 or exists(
-          select 1 from scout.record_sources s where s.record_id=r.id and s.url=$4)) order by r.discovered_at,r.id limit 20`,
+      const candidates=(await tx.query(`select r.* from scout.records r
+        where r.kind=$1 and (r.identities @> array[$2::text] or (lower(r.title)=lower($3) and ($5::text is null or r.details#>>'{start,value}' is null or r.details#>>'{start,value}'=$5))
+          or r.canonical_url=$4 or r.sources @> jsonb_build_array(jsonb_build_object('url',$4::text)))
+        order by (r.identities @> array[$2::text]) desc,r.discovered_at,r.id limit 20`,
         [f.kind,identity,f.title,source.url,f.details.start?.value??null])).rows.filter(r=>!used.has(r.id));
       const exact=candidates.filter(r=>normalize(r.title)===normalize(f.title));
       const words=new Set(normalize(f.title).split(' '));
@@ -73,25 +75,29 @@ async function saveFindings(db,source,findings,urls){
         return common/Math.max(words.size,other.size)>=0.8;
       });
       const sole=findings.filter(r=>r.kind===f.kind).length===1;
-      const target=exact.length?exact[0]:similar.length===1?similar[0]:sole&&candidates.length===1?candidates[0]:null;
+      const target=candidates.find(r=>r.identities.includes(identity))??(exact.length?exact[0]:similar.length===1?similar[0]:sole&&candidates.length===1?candidates[0]:null);
       if(!target&&candidates.length&&sole){counts.ambiguous++;continue;}
       const values=merge(f,target),keys=['kind','title','description','canonical_url','organizations','details','provenance','completeness','priority','relevance'];
+      const sources=new Map((target?.sources??[]).map(s=>[s.url,s]));
+      for(const url of urls)if(!sources.has(url))sources.set(url,{url,tracker_id:source.tracker_id,relationship:url===source.url?'primary':'support'});
+      values.sources=[...sources.values()];
+      values.identities=[...new Set([...(target?.identities??[]),identity])];
+      const changed=!target||keys.filter(k=>k!=='provenance').some(k=>!sameClaim(target[k],values[k]));
+      keys.push('sources','identities');
       let record=target;
-      if(!target||keys.filter(k=>k!=='provenance').some(k=>!sameClaim(target[k],values[k]))){
+      if(changed||!sameClaim(target.sources,values.sources)||!sameClaim(target.identities,values.identities)){
         const params=keys.map(k=>values[k]);
         if(Buffer.byteLength(JSON.stringify(params))>12288){counts.ambiguous++;continue;}
         record=target?(await tx.query(`update scout.records set kind=$3,title=$4,description=$5,canonical_url=$6,organizations=$7,details=$8,provenance=$9,
-          completeness=$10,priority=$11,relevance=$12,version=version+1,accepted_version=case when $11::text is null then null else version+1 end,
-          updated_at=clock_timestamp() where id=$1 and version=$2 returning *`,[target.id,target.version,...params])).rows[0]
-          :(await tx.query(`insert into scout.records(${keys.join(',')},accepted_version) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,case when $9::text is null then null else 1 end) returning *`,params)).rows[0];
+          completeness=$10,priority=$11,relevance=$12,sources=$13,identities=array(select jsonb_array_elements_text($14::jsonb)),
+          version=version+$15,accepted_version=case when $15=0 then accepted_version when $11::text is null then null else version+1 end,
+          updated_at=case when $15=0 then updated_at else clock_timestamp() end where id=$1 and version=$2 returning *`,[target.id,target.version,...params,Number(changed)])).rows[0]
+          :(await tx.query(`insert into scout.records(${keys.join(',')},accepted_version)
+            values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,array(select jsonb_array_elements_text($12::jsonb)),case when $9::text is null then null else 1 end) returning *`,params)).rows[0];
         if(!record)throw fail('stale_record');
-        counts[target?'changed':'created']++;
+        if(changed)counts[target?'changed':'created']++;
       }
-      used.add(record.id);counts.saved++;
-      await tx.query('insert into scout.record_identities(identity,record_id) values($1,$2) on conflict do nothing',[identity,record.id]);
-      await tx.query(`insert into scout.record_sources(record_id,url,tracker_id,relationship)
-        select $1,u,$2,case when u=$3 then 'primary' else 'support' end from unnest($4::text[]) u on conflict do nothing`,
-        [record.id,source.tracker_id,source.url,urls]);
+      used.add(record.id);seen.add(identity);counts.saved++;
     }
     return counts;
   });

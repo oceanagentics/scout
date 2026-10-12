@@ -123,7 +123,7 @@ test('failed inputs retry finitely, parked sources reopen on changes, and quota 
 test('multiple same-kind developments save separately and repeated input preserves their IDs',async()=>{
  const db=await setup();try{
   const tr=await tracker(db),source=sourceFor(tr);
-  const records=[event,{...event,title:'A different BBNJ workshop',dates:[{meaning:'event_start',date:'2026-12-01'}]}];
+  const records=[event,{...event,title:'A different BBNJ workshop',dates:[{meaning:'event_start',date:'2026-12-01'}]},event];
   assert.equal((await processDocument(db,{source,read,model:async()=>answer(records)})).created,2);
   const before=(await db.query('select id from scout.records order by id')).rows;
   await due(db);

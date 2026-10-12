@@ -5,8 +5,7 @@ export const CHANNEL='C0C5PE21KN1';
 const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('|','%7C');
 
 export async function readRecords(db){
-  return (await db.query(`select r.*,r.relevance->>'reason' priority_reason,
-    coalesce((select jsonb_agg(jsonb_build_object('url',s.url)) from scout.record_sources s where s.record_id=r.id),'[]') sources
+  return (await db.query(`select r.*,r.relevance->>'reason' priority_reason
     from scout.records r where accepted_version=version and priority in ('high','normal')
     and not exists(select 1 from scout.delivery_state d where d.record_id=r.id and (d.version=r.version or d.status in ('sending','unknown')))
     order by updated_at desc,id limit 100`)).rows;
