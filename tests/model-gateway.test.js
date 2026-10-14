@@ -46,7 +46,7 @@ test('OpenAI sends shared instructions, schema and URLs to provider web access w
   const output=await model(INTAKE_INSTRUCTION,partial,RESPONSE_SCHEMA),request=JSON.parse(requests[0].options.body),input=JSON.parse(request.input);
   assert.equal(request.instructions,INTAKE_INSTRUCTION+'\nFor this API, return the array inside an object with the single key records.');
   assert.deepEqual(input,{input:partial,urls:[url,partial.requested_links[0].url]});
-  assert.deepEqual(request.tools,[{type:'web_search'}]);assert.equal(request.tool_choice,'required');assert.equal(request.max_tool_calls,OPENAI_WEB_CALLS);
+  assert.deepEqual(request.tools,[{type:'web_search',search_content_types:['text','image']}]);assert.equal(request.tool_choice,'required');assert.equal(request.max_tool_calls,OPENAI_WEB_CALLS);
   assert.deepEqual(request.include,['web_search_call.action.sources']);assert.equal(request.store,false);assert.equal(request.reasoning.effort,'low');
   assert.deepEqual(request.text.format.schema.properties.records,strictSchema({type:'object',properties:{records:RESPONSE_SCHEMA},required:['records']}).properties.records);
   assert.equal(output.status,'none');assert.deepEqual(output.records,[]);assert.equal(output._retrieval[0].url,url);
