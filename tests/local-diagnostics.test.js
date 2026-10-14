@@ -56,11 +56,11 @@ test('local source diagnostic captures intake, search and follow-up with only qu
   const result=await diagnoseSource({tracker,source,output:path,env:{GEMINI_API_KEY:'gemini-key',TAVILY_API_KEY:'tavily-key'},ledger,fetch:async(url,request)=>{
     if(url.endsWith('/usage'))return Response.json({account:{plan_limit:1000,plan_usage:0},key:{limit:null}});
     if(url.endsWith('/search')){searches++;return Response.json({results:[{url:support,content:'Time in search body: 13:30 UTC'}]});}
-    generations++;const body=JSON.parse(request.body),event={description:'BBNJ data workshop',type:'event',priority:'high',organizations:['Organizer'],date:'2026-10-22',time:null,timezone:null};
+    generations++;const body=JSON.parse(request.body),event={description:'BBNJ data workshop',type:'event',priority:'high',organizations:['Organizer'],date:'2026-10-22',starttime:null,timezone:null};
     if(generations===2){
       const input=JSON.parse(body.contents[0].parts[1].text);savedId=input.records[0].record_id;
       assert.equal(input.research,'event_schedule');assert.deepEqual(input.search_results[0].urls,[support]);
-      Object.assign(event,{record_id:savedId,date_source_url:support,time:'13:30',timezone:'UTC'});
+      Object.assign(event,{record_id:savedId,date_source_url:support,starttime:'13:30',timezone:'UTC'});
     }
     return Response.json({responseId:'response-'+generations,usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:100,candidatesTokenCount:200,totalTokenCount:700},
       candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:generations===1?source:support,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},

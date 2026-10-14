@@ -1,5 +1,5 @@
 // Shared typed values. Calendar dates never pass through the viewer's timezone.
-export const DATE_FIELDS={event:['start','end'],announcement:['published','effective','response_due'],treaty_status:['action_date','effective']};
+export const DATE_FIELDS={event:['start','end','response_due'],announcement:['published','effective','response_due'],treaty_status:['action_date','effective','response_due']};
 export function dateInterval(date){
   if(!date||typeof date.value!=='string')return null;
   const {value,precision}=date;

@@ -28,7 +28,7 @@ function driver(raw,inspect=()=>{}){
 }
 
 const sourceFor=tr=>({tracker_id:tr.id,identity:'https://example.org/a',url:'https://example.org/a'});
-const event={description:'BBNJ implementation workshop',type:'event',priority:'high',organizations:[],date:'2026',time:null,timezone:null};
+const event={description:'BBNJ implementation workshop',type:'event',priority:'high',organizations:[],date:'2026',starttime:null,timezone:null};
 const answer=(records=[event])=>({status:'found',records});
 const due=db=>db.exec("update scout.source_state set due_at=clock_timestamp()-interval '1 second'");
 const read=async()=>({status:200,body:'PRIVATE_SOURCE_BODY'});
@@ -42,7 +42,7 @@ test('new events without starts trigger one search, enrich saved IDs, and preser
    if(url==='https://api.tavily.com/search'){searches++;assert.equal(JSON.parse(options.body).search_depth,'basic');return Response.json({results:[{url:support,content:'PRIVATE_SEARCH_BODY'}]});}
    http++;assert.ok(url.endsWith(':generateContent'));
    const body=JSON.parse(options.body);assert.deepEqual(body.tools,[{urlContext:{}}]);assert.equal(body.store,false);assert.ok(!options.body.includes('PRIVATE_SEARCH_BODY'));
-   let output=answer(['First workshop','Second workshop'].map(description=>({...event,description,date:null})));
+   let output=answer(['First workshop','Second workshop'].map(description=>({...event,description,date:null,deadline:'2026-10-01'})));
    if(http===2){
     const saved=(await raw.query('select * from scout.records order by title')).rows;ids=saved.map(r=>r.id);
     assert.ok(saved.every(r=>!r.details.start));assert.match(body.contents[0].parts[0].text,/When is this event scheduled\?/);
@@ -58,6 +58,7 @@ test('new events without starts trigger one search, enrich saved IDs, and preser
   const first=await processDocument(db,options);assert.equal(first.created,2);assert.equal(first.changed,1);assert.equal(first.improvement,'improved');assert.equal(http,2);assert.equal(reads,0);
   const records=(await raw.query('select * from scout.records order by title')).rows;
   assert.deepEqual(records.map(r=>r.id),ids);assert.deepEqual(records.map(r=>r.details.start.value),['2026-10-23','2026-10-22']);
+  assert.ok(records.every(r=>r.details.response_due.value==='2026-10-01'));
   assert.ok(records.every(r=>r.sources.some(s=>s.url===support)));assert.equal(records[0].title,'First workshop');
   assert.equal(first.diagnostics[1].search_queries,2);assert.equal(searches,2);
   const initial={...db.metrics};await due(raw);
@@ -83,7 +84,7 @@ test('manual URL intake maps a flat record and preserves the existing source wit
     assert.ok(body.contents[0].parts[0].text.includes(tr.url));assert.equal(body.contents[0].parts.length,1);
     return Response.json({usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:1000,candidatesTokenCount:300,totalTokenCount:1700},
      candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:tr.url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
-      content:{parts:[{text:JSON.stringify([{...event,organizations:['Institute A'],date:'2026-10-29',time:'13:30',timezone:'UTC'}])}]}}]});
+      content:{parts:[{text:JSON.stringify([{...event,organizations:['Institute A'],date:'2026-10-29',starttime:'13:30',timezone:'UTC'}])}]}}]});
    }};
   const query=new URLSearchParams({tracker_id:tr.id,source_url:tr.url});
   const response=await hostedHSA(new Request('https://example.org?'+query,{method:'POST',headers:{apikey:secret}}),options);
@@ -99,9 +100,9 @@ test('manual URL intake maps a flat record and preserves the existing source wit
 });
 
 test('any missing date, time or timezone triggers one follow-up; complete events and announcements do not',async()=>{
- for(const missing of ['date','time','timezone',null,'announcement']){
+ for(const missing of ['date','starttime','timezone',null,'announcement']){
   const db=await setup();try{
-   const source=sourceFor(await tracker(db)),complete={...event,date:'2026-10-22',time:'13:30',timezone:'UTC'};
+   const source=sourceFor(await tracker(db)),complete={...event,date:'2026-10-22',starttime:'13:30',timezone:'UTC'};
    const record=missing==='announcement'?{...event,type:'announcement',date:null}:missing?{...complete,[missing]:null}:complete;
    const needsResearch=missing!==null&&missing!=='announcement';let calls=0,savedId;
    const model=async(prompt,input)=>{

@@ -162,7 +162,7 @@ test('hosted selected/direct sources save a bounded fallback once, preserve nati
   const url='https://example.org/6915';await raw.query("insert into scout.source_state(tracker_id,identity,url,native_id,native_ref,due_at) values($1,'cbd:side-event:6915',$2,'6915',$3,now()-interval '1 second')",[tracker.id,url,{api_url:url}]);
   const counts={gemini:0,openai:0,read:0},secret='sb_secret_scout_test_only',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
   const connect=()=>({reserve:async()=>({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;},release(){}}),end:async()=>{}});
-  const record={description:'BBNJ Clearing-House workshop: technical design discussion.',type:'event',priority:'high',organizations:[],date:'2026-10-15',time:'15:00',timezone:'+02:00'};
+  const record={description:'BBNJ Clearing-House workshop: technical design discussion.',type:'event',priority:'high',organizations:[],date:'2026-10-15',starttime:'15:00',timezone:'+02:00'};
   const options={databaseURL:'mock',env,connect,apiKey:'test',openaiApiKey:'test',read:async()=>{counts.read++;return {url,status:200,headers:{'content-type':'text/html'},body:'<p>PRIVATE SOURCE BODY</p>'};},modelFetch:async(target,options)=>{
    if(target.includes('googleapis')){counts.gemini++;return Response.json({usageMetadata:{promptTokenCount:100,candidatesTokenCount:10,totalTokenCount:110},
     candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}]},content:{parts:[{text:'[]'}]}}]});}

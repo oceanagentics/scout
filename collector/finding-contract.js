@@ -14,16 +14,17 @@ For each development, provide:
 - organizations: Associated organization names, most directly associated
   first. List each organization once; do not include individual people.
 - date: (events only) The event’s start date.
-- time: (events only) The time that event starts.
-- timezone: (events only) The timezone stated for the event’s start time.
+- starttime: (events only) The time that event starts.
+- timezone: (events only) The timezone the event takes place in.
+- deadline: The date submissions are required by.
 
 For events, look carefully for the scheduled date, time, and timezone.
 Use the schedule for that specific event, not its parent conference.
 Do not substitute the page’s publication date for an event date.
-Use YYYY-MM-DD for dates, or YYYY-MM / YYYY when only that much is known.
-Use HH:MM for time, and UTC, a numeric offset, or an IANA timezone.
+Use YYYY-MM-DD for date and deadline, or YYYY-MM / YYYY for partial dates.
+Use HH:MM for starttime, and UTC, a numeric offset, or an IANA timezone.
 Use null for unsupported values; do not guess. Use [] for unknown organizations.
-For announcements and treaty developments, date, time and timezone are null.
+For announcements and treaty developments, date, starttime and timezone are null.
 
 **High:** technical BBNJ Clearing-House Mechanism (ChM) developments, including architecture, data standards, interoperability and implementation workshops/consultations; officially verified BBNJ ratifications and important official treaty changes; substantive ocean-related funder information, including funding calls, grants and funder announcements.
 
@@ -34,8 +35,8 @@ For announcements and treaty developments, date, time and timezone are null.
 Judge priority by the development’s substance. Missing scheduling
 details do not lower priority. Use null when relevance is unclear.
 
-Return a JSON array containing one object per development, with exactly
-description, type, priority, organizations, date, time and timezone.
+Return a JSON array containing one object per development, with
+description, type, priority, organizations, date, starttime, timezone and deadline.
 Return [] when the page contains no developments.`;
 export const RESPONSE_SCHEMA={
   type:'array',
@@ -48,10 +49,11 @@ export const RESPONSE_SCHEMA={
       priority:{type:['string','null'],enum:['high','normal','low',null]},
       organizations:{type:'array',items:{type:'string'}},
       date:{type:['string','null']},
-      time:{type:['string','null']},
-      timezone:{type:['string','null']}
+      starttime:{type:['string','null']},
+      timezone:{type:['string','null']},
+      deadline:{type:['string','null']}
     },
-    required:['description','type','priority','organizations','date','time','timezone'],
+    required:['description','type','priority','organizations','date','starttime','timezone'],
     additionalProperties:false
   }
 };
@@ -71,11 +73,16 @@ export function normalizeFinding(raw,url){
     const precision={4:'year',7:'month',10:'day'}[raw.date.length],value={value:raw.date,precision};
     try{
       details.start=normalizeDate(value);
-      if(raw.time)try{details.start=normalizeDate({...value,time:raw.time});}
+      if(raw.starttime)try{details.start=normalizeDate({...value,time:raw.starttime});}
         catch{unknowns['details.start.time']={reason:'invalid_clock'};}
-      if(raw.timezone&&details.start.time)try{details.start=normalizeDate({...value,time:raw.time,zone:raw.timezone});}
+      if(raw.timezone&&details.start.time)try{details.start=normalizeDate({...value,time:raw.starttime,zone:raw.timezone});}
         catch{unknowns['details.start.zone']={reason:'invalid_timezone'};}
     }catch{unknowns['details.start']={reason:'invalid_date'};}
+  }
+  if(typeof raw.deadline==='string'){
+    const precision={4:'year',7:'month',10:'day'}[raw.deadline.length];
+    try{details.response_due=normalizeDate({value:raw.deadline,precision});}
+    catch{unknowns['details.response_due']={reason:'invalid_date'};}
   }
   const organizations=[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).slice(0,12).flatMap(o=>{
     const name=text(o,200);return name?[[name.toLowerCase(),{name}]]:[];

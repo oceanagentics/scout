@@ -52,8 +52,9 @@ test('OpenAI transports the full rubric, partials, real links and exact native J
   assert.equal(request.tools,undefined);assert.equal(request.max_output_tokens,1500);assert.equal(request.text.format.strict,true);
   assert.deepEqual(request.text.format.schema.required,['records']);
   assert.deepEqual(Object.keys(request.text.format.schema.properties),['records']);
-  assert.deepEqual(request.text.format.schema.properties.records,RESPONSE_SCHEMA);
-  assert.deepEqual(Object.keys(RESPONSE_SCHEMA.items.properties),['description','type','priority','organizations','date','time','timezone']);
+  const transportRecords=structuredClone(RESPONSE_SCHEMA);transportRecords.items.required.push('deadline');
+  assert.deepEqual(request.text.format.schema.properties.records,transportRecords);
+  assert.deepEqual(Object.keys(RESPONSE_SCHEMA.items.properties),['description','type','priority','organizations','date','starttime','timezone','deadline']);
   assert.equal(output.status,'none');assert.deepEqual(output.records,[]);
   assert.ok(requests[0].options.signal instanceof AbortSignal);assert.equal(output._usage.generations,1);
   assert.equal(output._diagnostics.model,OPENAI_MODEL);assert.equal(output._diagnostics.attempts[0].diagnostics.tool_calls,0);
