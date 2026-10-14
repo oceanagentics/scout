@@ -34,7 +34,7 @@ export function database(sql,inTransaction=false,metrics={statements:0,mutations
   };
   return db;
 }
-export async function hostedHSA(request,{databaseURL,apiKey,openaiApiKey,webhook,env,connect=postgres,modelFetch=fetch,read=readPublic,post}={}){
+export async function hostedHSA(request,{databaseURL,apiKey,tavilyApiKey,openaiApiKey,webhook,env,connect=postgres,modelFetch=fetch,read=readPublic,post}={}){
   const {error}=await verifyAuth(request,{auth:'secret:default',env});
   if(error)return Response.json({error:'Backend secret required'},{status:401});
   if(request.method!=='POST')return Response.json({error:'POST required'},{status:405});
@@ -78,7 +78,7 @@ export async function hostedHSA(request,{databaseURL,apiKey,openaiApiKey,webhook
     await db.query('select * from scout.expire_quota()');
     const invocation=randomUUID(),source={tracker_id:selected.id,identity:selected.source_identity??url,url:rotation?selected.source_url:url,
       native_id:selected.source_native_id,native_ref:selected.source_ref};
-    const model=trackerModel({apiKey,openaiApiKey,ledger:db,source,read,invocation,deadline,fetch:modelFetch});
+    const model=trackerModel({apiKey,tavilyApiKey,openaiApiKey,ledger:db,source,read,invocation,deadline,fetch:modelFetch});
     const result=await processDocument(db,{source,model,deadline});
     return Response.json({...result,cost:db.metrics});
   }catch(error){

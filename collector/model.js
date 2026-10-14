@@ -14,13 +14,13 @@ export function requestBody(instruction,input,schema){
 }
 
 // All request/response material is invocation-local. No automatic provider retries.
-export function gemini({apiKey,ledger,invocation=randomUUID(),maxCalls=2,fetch:send=fetch,deadline=Date.now()+100000}){
+export function gemini({apiKey,tavilyApiKey,ledger,invocation=randomUUID(),maxCalls=2,fetch:send=fetch,deadline=Date.now()+100000}){
   if(!Number.isInteger(maxCalls)||maxCalls<1||maxCalls>2)throw new Error('invocation_bound');
   return async(instruction,input,schema,limits)=>{
     const owned=!isAccounted(limits),end=Math.min(deadline,limits?.deadline??deadline);
     if(!apiKey||owned&&!ledger)throw Object.assign(new Error('configuration'),{reason:'configuration',dispatched:false});
     if(Date.now()+5000>=end)throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound',dispatched:false});
-    let body;try{body=requestBody(instruction,input,schema);}catch(error){throw Object.assign(error,{dispatched:false});}
+    let body,searches=0;try{body=requestBody(instruction,input,schema);}catch(error){throw Object.assign(error,{dispatched:false});}
     const id=randomUUID(),endpoint=`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}`;
     const reserve=async(tokens)=>{
       const result=(await ledger.query('select * from scout.reserve_model($1,$2,$3,$4)',[invocation,id,tokens,maxCalls])).rows[0];
@@ -51,6 +51,31 @@ export function gemini({apiKey,ledger,invocation=randomUUID(),maxCalls=2,fetch:s
     };
     try{
       if(Date.now()+5000>=end)throw new Error('runtime_bound');
+      if(input?.research==='event_schedule'){
+        if(!tavilyApiKey)throw new Error('search_configuration');
+        const search=async(path,payload)=>{
+          if(Date.now()+5000>=end)throw new Error('runtime_bound');
+          const response=await send('https://api.tavily.com/'+path,{method:payload?'POST':'GET',
+            headers:{Authorization:'Bearer '+tavilyApiKey,'Content-Type':'application/json'},...(payload?{body:JSON.stringify(payload)}:{}),
+            signal:AbortSignal.timeout(Math.min(10000,end-Date.now()-3000))});
+          if(!response.ok)throw new Error('search_unavailable');
+          return response.json();
+        };
+        const records=input.records.slice(0,8),{account,key}=await search('usage');
+        if(!Number.isSafeInteger(account?.plan_limit)||!Number.isSafeInteger(account?.plan_usage)||account.plan_limit-account.plan_usage<records.length||
+          key?.limit!=null&&(!Number.isSafeInteger(key.limit)||!Number.isSafeInteger(key.usage)||key.limit-key.usage<records.length))throw new Error('search_quota');
+        // Basic searches cost one included credit each. Retain only URLs; Gemini reads the pages.
+        let remaining=19-records.filter(r=>r.details?.registration_url).length;
+        const search_results=[];
+        for(const record of records){
+          const result=await search('search',{query:(record.title+' event date programme schedule').slice(0,400),search_depth:'basic',max_results:2,include_answer:false,include_raw_content:false});
+          searches++;
+          const urls=(result.results??[]).map(r=>r.url).filter(url=>typeof url==='string'&&url.length<=2048&&/^https?:\/\//.test(url)).slice(0,remaining);
+          remaining-=urls.length;search_results.push({record_id:record.record_id,urls});
+        }
+        input={...input,search_results};
+      }
+      if(searches)body=requestBody(instruction,input,schema);
       dispatched=true;
       const result=await request(':generateContent',body);
       const usage=result.usageMetadata;
@@ -60,6 +85,7 @@ export function gemini({apiKey,ledger,invocation=randomUUID(),maxCalls=2,fetch:s
         prompt_block_reason:result.promptFeedback?.blockReason??null,
         retrieval_metadata_present:choice?.urlContextMetadata!=null,
         retrieval:retrieval.slice(0,20).map(r=>({url:r.retrievedUrl,status:r.urlRetrievalStatus})),
+        search_queries:searches,
         tokens:{prompt:usage?.promptTokenCount??null,tool:usage?.toolUsePromptTokenCount??null,
           output:usage?.candidatesTokenCount??null,thinking:usage?.thoughtsTokenCount??null,total:usage?.totalTokenCount??null}});
       if([usage?.promptTokenCount,usage?.totalTokenCount,usage?.toolUsePromptTokenCount??0,usage?.candidatesTokenCount??0,usage?.thoughtsTokenCount??0].every(n=>Number.isSafeInteger(n)&&n>=0)){
@@ -81,7 +107,7 @@ export function gemini({apiKey,ledger,invocation=randomUUID(),maxCalls=2,fetch:s
       return {...answer,_retrieval:diagnostics.retrieval,_diagnostics:diagnostics,
         _usage:{input_tokens:tokens,output_tokens:output,uncertain:state==='unknown',overrun:tokens>MODEL_LIMITS.input}};
     }catch(error){
-      reason=['input_bound','output_bound','runtime_bound','invalid_json','invalid_output','output_truncated','provider_safety','provider_finish','provider_auth','provider_rate_limit','provider_rejected','retrieval_metadata_missing','url_retrieval_failed','provider_unavailable','provider_unknown','quota','database_operation','sql_bound'].includes(error.message)?error.message:'provider_unknown';
+      reason=['input_bound','output_bound','runtime_bound','invalid_json','invalid_output','output_truncated','provider_safety','provider_finish','provider_auth','provider_rate_limit','provider_rejected','retrieval_metadata_missing','url_retrieval_failed','provider_unavailable','provider_unknown','quota','search_configuration','search_quota','search_unavailable','database_operation','sql_bound'].includes(error.message)?error.message:'provider_unknown';
       if(!dispatched){tokens=output=0;state='settled';}
       throw Object.assign(new Error(reason),{reason,dispatched,diagnostics,usage:{input_tokens:tokens,output_tokens:output,uncertain:state==='unknown'},...(retryAt||error.deferred?{deferred:{reason,retry_at:retryAt??error.deferred.retry_at}}:{})});
     }finally{

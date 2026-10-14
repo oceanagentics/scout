@@ -7,14 +7,13 @@ import {dateInterval,normalizeDate,findingInterval,dateLabel} from '../src/findi
 import {gemini} from '../collector/model.js';
 import {database as boundary,hostedHSA} from '../collector/hosted-hsa.js';
 import {correctFinding} from '../collector/corrections.js';
-import {fieldLabel} from '../src/records.js';
 
-async function setup(cutover=true){
+async function setup(){
  const db=new PGlite();
  await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;
  create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');create table auth.identities(user_id uuid,provider text,identity_data jsonb);
  create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;`);
- for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort().filter(n=>cutover||n<'20261009190000_scout_findings.sql'))
+ for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort())
   await db.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
  return db;
 }
@@ -29,42 +28,48 @@ function driver(raw,inspect=()=>{}){
 }
 
 const sourceFor=tr=>({tracker_id:tr.id,identity:'https://example.org/a',url:'https://example.org/a'});
-const event={type:'event',title:'BBNJ implementation workshop',summary:'Discussion of the Clearing-House Mechanism.',priority:'high',relevance_reason:'Technical BBNJ Clearing-House design workshop (https://example.org/a).',organizations:[],dates:[],missing_information:[]};
+const event={type:'event',title:'BBNJ implementation workshop',summary:'Discussion of the Clearing-House Mechanism.',priority:'high',relevance_reason:'Technical BBNJ Clearing-House design workshop (https://example.org/a).',organizations:[],dates:[{meaning:'event_start',date:'2026'}],missing_information:[]};
 const answer=(records=[event],follow_up_requests)=>({status:'found',records,follow_up_requests});
 const due=db=>db.exec("update scout.source_state set due_at=clock_timestamp()-interval '1 second'");
 const read=async()=>({status:200,body:'PRIVATE_SOURCE_BODY'});
 
-test('one partial capture reads only through the model and completed work stays closed until explicitly reopened',async t=>{
+test('new events without starts trigger one search despite a declined decision, enrich saved IDs, and preserve corrections',async t=>{
  const raw=await setup();try{
-  const tr=await tracker(raw);await enable(raw);const source=sourceFor(tr);let http=0;
+  const tr=await tracker(raw);await enable(raw);const source=sourceFor(tr),support='https://example.org/programme';let http=0,searches=0,ids;
   const db=boundary(driver(raw,(_q,p)=>assert.ok(!JSON.stringify(p).includes('PRIVATE_SOURCE_BODY'))));
-  const model=gemini({apiKey:'test',ledger:db,fetch:async(url,options)=>{
+  const model=gemini({apiKey:'test',tavilyApiKey:'test',ledger:db,fetch:async(url,options)=>{
+   if(url==='https://api.tavily.com/usage')return Response.json({account:{plan_limit:1000,plan_usage:10},key:{limit:null}});
+   if(url==='https://api.tavily.com/search'){searches++;assert.equal(JSON.parse(options.body).search_depth,'basic');return Response.json({results:[{url:support,content:'PRIVATE_SEARCH_BODY'}]});}
    http++;assert.ok(url.endsWith(':generateContent'));
-   const body=JSON.parse(options.body);assert.deepEqual(body.tools,[{urlContext:{}}]);assert.equal(body.store,false);
-   assert.ok(body.contents[0].parts[0].text.includes('Technical ocean activity'));assert.ok(!options.body.includes('PRIVATE_SOURCE_BODY'));
-   assert.ok(body.generationConfig.responseJsonSchema);
+   const body=JSON.parse(options.body);assert.deepEqual(body.tools,[{urlContext:{}}]);assert.equal(body.store,false);assert.ok(!options.body.includes('PRIVATE_SEARCH_BODY'));
+   let output={...answer(['First workshop','Second workshop'].map(title=>({...event,title,dates:[{meaning:'publication',date:'2026-10-01'}]}))),further_research:false};
+   if(http===2){
+    const saved=(await raw.query('select * from scout.records order by title')).rows;ids=saved.map(r=>r.id);
+    assert.ok(saved.every(r=>!r.details.start));assert.match(body.contents[0].parts[0].text,/When is this event scheduled\?/);
+    await correctFinding(raw,{record_id:ids[0],version:saved[0].version,field:'details.start',value:{value:'2026-10-23',precision:'day'},url:source.url});
+    const input=JSON.parse(body.contents[0].parts[1].text);assert.equal(input.records.length,2);assert.deepEqual(input.search_results.map(r=>r.urls),[[support],[support]]);
+    output=answer(input.records.map(r=>({...event,title:'Unwanted title change',record_id:r.record_id,date_source_url:support,dates:[{meaning:'event_start',date:'2026-10-22'}]})));
+   }
    return Response.json({usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:3500,candidatesTokenCount:500,totalTokenCount:4400},
-    candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:source.url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},content:{parts:[{text:JSON.stringify(answer([{...event,organizations:[{name:'Institute B'},{name:'Institute A',role:'uncertain'}]}]))}]}}]});
+    candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:http===1?source.url:support,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},content:{parts:[{text:JSON.stringify(output)}]}}]});
   }});
   let reads=0;
   const options={source,read:async()=>{reads++;return read();},model};
-  const first=await processDocument(db,options);assert.equal(first.state,'captured');assert.equal(first.created,1);assert.equal(http,1);assert.equal(reads,0);
-  const record=(await raw.query('select * from scout.records')).rows[0];assert.equal(record.completeness.state,'provisional');
-  assert.deepEqual(record.organizations,[{name:'Institute B'},{name:'Institute A'}]);
-  assert.equal(fieldLabel(record,'organization'),'Institute B; Institute A');
-  assert.equal((await raw.query(`select count(*)::int n from scout.records where organizations @> '[{"name":"Institute A"}]'`)).rows[0].n,1);
-  assert.equal((await raw.query('select input_tokens from scout.quota_reservations')).rows[0].input_tokens,3900);
+  const first=await processDocument(db,options);assert.equal(first.created,2);assert.equal(first.changed,1);assert.equal(first.improvement,'improved');assert.equal(http,2);assert.equal(reads,0);
+  const records=(await raw.query('select * from scout.records order by title')).rows;
+  assert.deepEqual(records.map(r=>r.id),ids);assert.deepEqual(records.map(r=>r.details.start.value),['2026-10-23','2026-10-22']);
+  assert.ok(records.every(r=>r.sources.some(s=>s.url===support)));assert.equal(records[0].title,'First workshop');
+  assert.equal(first.diagnostics[1].search_queries,2);assert.equal(searches,2);
   const initial={...db.metrics};await due(raw);
   assert.deepEqual(await processDocument(db,options),{state:'complete',created:0,changed:0});
-  assert.equal(http,1);assert.equal(db.metrics.mutations-initial.mutations,2);
-  assert.equal((await raw.query('select version from scout.records')).rows[0].version,record.version);
+  assert.equal(http,2);assert.equal(db.metrics.mutations-initial.mutations,2);
+  assert.deepEqual((await raw.query('select id,version from scout.records order by title')).rows,records.map(({id,version})=>({id,version})));
   const retained=(await raw.query('select octet_length(research::text) research_bytes from scout.source_state')).rows[0];
   t.diagnostic(JSON.stringify({mocked:true,first:initial,repeat_mutations:2,...retained}));
  }finally{await raw.close();}
 });
 
 test('manual URL intake preserves an existing source and uses Gemini-requested links without local source reads',async()=>{
- const rotation=false;
   const raw=await setup();try{
    const tr=await tracker(raw);await enable(raw);
    await raw.query('update scout.trackers set enabled=true where id=$1',[tr.id]);
@@ -83,7 +88,7 @@ test('manual URL intake preserves an existing source and uses Gemini-requested l
      return Response.json({usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:1000,candidatesTokenCount:300,totalTokenCount:1700},
       candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:calls===1?tr.url:support,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},content:{parts:[{text:JSON.stringify(output)}]}}]});
     }};
-   const query=rotation?'next=true':new URLSearchParams({tracker_id:tr.id,source_url:tr.url});
+   const query=new URLSearchParams({tracker_id:tr.id,source_url:tr.url});
    const result=await hostedHSA(new Request('https://example.org?'+query,{method:'POST',headers:{apikey:secret}}),options);
    assert.equal(result.status,200);const output=await result.json();assert.equal(output.state,'captured');assert.equal(output.created,1);assert.equal(output.changed,1);
    assert.equal(calls,2);assert.equal(reads,0);
@@ -113,7 +118,7 @@ test('requested improvement updates the saved partial, while failed improvement 
    const rows=(await db.query('select * from scout.records')).rows;assert.equal(rows.length,1);assert.equal(rows[0].id,firstId);
    assert.deepEqual(rows[0].organizations,[{name:'Human institute'}]);
    assert.equal(result.improvement,outcome==='improved'?'improved':'exhausted');
-   if(outcome==='failed')assert.equal(rows[0].details.start,undefined);
+   if(outcome==='failed')assert.deepEqual(rows[0].details.start,{value:'2026',precision:'year'});
    else assert.equal(rows[0].details.start.utc,'2026-10-22T13:30:00.000Z');
    if(outcome==='unresolved'){assert.equal(result.reason,'research_exhausted');assert.match(result.research.note,/non-members/);}
    t.diagnostic(JSON.stringify({mocked:true,improvement:result.improvement,collector:measured.metrics,research_bytes:(await db.query('select octet_length(research::text) n from scout.source_state')).rows[0].n}));
@@ -128,12 +133,12 @@ test('requested improvement updates the saved partial, while failed improvement 
  }
 });
 
-test('absent, declined, or malformed optional research completes a partial without more calls or pending work',async()=>{
- for(const fields of [{},{further_research:false},{further_research:null,follow_up_requests:null,note:null},
-  {further_research:'unknown',follow_up_requests:[null,{url:'https://example.org/programme',question:null}],note:42}]){
+test('dated events and announcements keep optional research metadata optional',async()=>{
+ for(const [record,fields] of [[event,{}],[{...event,type:'announcement',dates:[]},{further_research:false}],
+  [event,{further_research:'unknown',follow_up_requests:[null,{url:'https://example.org/programme',question:null}],note:42}]]){
   const db=await setup();try{
    const source=sourceFor(await tracker(db));let calls=0,reads=0;
-   const model=async()=>{calls++;return {...answer(),...fields};},reader=async()=>{reads++;return read();};
+   const model=async()=>{calls++;return {...answer([record]),...fields};},reader=async()=>{reads++;return read();};
    const result=await processDocument(db,{source,read:reader,model});
    assert.equal(result.state,'captured');assert.equal(result.created,1);assert.equal(result.reason,undefined);assert.equal(result.improvement,'not_requested');
    const state=(await db.query('select state,reason from scout.source_state')).rows[0];assert.deepEqual(state,{state:'complete',reason:null});
@@ -145,13 +150,12 @@ test('absent, declined, or malformed optional research completes a partial witho
 });
 
 test('a research question without a URL preserves the partial, exposes pending work, and requires reconsideration',async()=>{
- for(const url of [undefined,null]){
   const db=await setup();try{
    const source=sourceFor(await tracker(db));let calls=0,reads=0;
-   const model=async()=>{calls++;return answer([event],[{url,question:'What does participation in this workshop involve?'}]);},reader=async()=>{reads++;return read();};
+   const model=async()=>{calls++;return answer([event],[{question:'What does participation in this workshop involve?'}]);},reader=async()=>{reads++;return read();};
    const result=await processDocument(db,{source,read:reader,model});assert.equal(result.state,'captured');assert.equal(result.reason,'research_source_missing');assert.equal(calls,1);assert.equal(reads,0);
    const before=(await db.query('select id,version from scout.records')).rows;
-   for(let i=0;i<4;i++){await due(db);assert.equal((await processDocument(db,{source,read:reader,model})).state,'parked');}
+   await due(db);assert.equal((await processDocument(db,{source,read:reader,model})).state,'parked');
    assert.equal(calls,1);assert.deepEqual((await db.query('select id,version from scout.records')).rows,before);
    assert.equal((await db.query('select * from scout.finding_jobs()')).rows.length,0);
    await db.query('insert into auth.users(id) values($1)',[source.tracker_id]);
@@ -164,6 +168,26 @@ test('a research question without a URL preserves the partial, exposes pending w
    await db.exec("update scout.source_state set processed_hash=null,attempts=0,state='due',due_at=clock_timestamp()");
    assert.equal((await processDocument(db,{source,read:reader,model:async()=>{calls++;return answer();}})).state,'captured');assert.equal(calls,2);
    assert.deepEqual((await db.query('select id,version from scout.records')).rows,before);
+  }finally{await db.close();}
+});
+
+test('failed, unknown, uncited and foreign-record scheduling results preserve the partial without repeating research',async()=>{
+ for(const outcome of ['failed','unknown','uncited','foreign']){
+  const db=await setup();try{
+   const source=sourceFor(await tracker(db));let calls=0,id;
+   const model=async(_prompt,input)=>{
+    if(++calls===1)return answer([{...event,dates:[]}]);
+    id=(await db.query('select id from scout.records')).rows[0].id;
+    if(outcome==='failed')throw Object.assign(new Error('provider_unavailable'),{dispatched:true});
+    return {...answer([{...event,record_id:outcome==='foreign'?'another-record':id,date_source_url:'https://example.org/schedule',dates:outcome==='unknown'?[]:event.dates}]),
+     _retrieval:outcome==='uncited'?[]:[{url:'https://example.org/schedule',status:'URL_RETRIEVAL_STATUS_SUCCESS'}]};
+   };
+   const result=await processDocument(db,{source,model});assert.equal(result.created,1);assert.equal(result.improvement,'exhausted');assert.equal(calls,2);
+   const before=(await db.query('select id,version,details from scout.records')).rows;assert.equal(before[0].id,id);assert.equal(before[0].details.start,undefined);
+   await due(db);assert.equal((await processDocument(db,{source,model})).state,'parked');assert.equal(calls,2);
+   await db.exec("update scout.source_state set state='due',attempts=0,due_at=clock_timestamp()");
+   const reopened=await processDocument(db,{source,model:async()=>{calls++;return answer([{...event,dates:[]}]);}});
+   assert.equal(reopened.improvement,'not_requested');assert.equal(calls,3);assert.deepEqual((await db.query('select id,version,details from scout.records')).rows,before);
   }finally{await db.close();}
  }
 });

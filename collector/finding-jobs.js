@@ -7,6 +7,7 @@ const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex
 const normalize=value=>value.normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').trim().toLowerCase();
 const fail=reason=>Object.assign(new Error(reason),{reason});
 const REVISION='url-intake-only-v1';
+const SCHEDULE_QUESTION='When is this event scheduled? Check the event’s registration or programme page and identify the source supporting the date. Follow links or search the internet if necessary to find the scheduling.';
 
 export async function claimSource(db,source){
   return (await db.query(`insert into scout.source_state(tracker_id,identity,url,state,attempts,lease_id,lease_until,native_id,native_ref)
@@ -57,13 +58,13 @@ async function saveFindings(db,source,findings,urls){
   return db.transaction(async tx=>{
     if(!(await tx.query("select id from scout.source_state where id=$1 and lease_id=$2 and lease_until>clock_timestamp() for update",[source.id,source.lease_id])).rows.length)throw fail('stale_lease');
     await tx.query("select pg_advisory_xact_lock(hashtextextended('scout:findings',0))");
-    const counts={created:0,changed:0,saved:0,ambiguous:0},used=new Set(),seen=new Set();
+    const counts={created:0,changed:0,saved:0,ambiguous:0,newRecords:[]},used=new Set(),seen=new Set();
     for(const f of findings){
       const identity='source:'+hash([source.tracker_id,source.identity,f.kind,normalize(f.title)]);
       if(seen.has(identity))continue;
       // Match stable identities first, then the same source/title. A single development of a kind
       // can enrich its existing source record even when the model rephrases its title.
-      const candidates=(await tx.query(`select r.* from scout.records r
+      const candidates=(f.id?await tx.query('select * from scout.records where id=$1 for update',[f.id]):await tx.query(`select r.* from scout.records r
         where r.kind=$1 and (r.identities @> array[$2::text] or (lower(r.title)=lower($3) and ($5::text is null or r.details#>>'{start,value}' is null or r.details#>>'{start,value}'=$5))
           or r.canonical_url=$4 or r.sources @> jsonb_build_array(jsonb_build_object('url',$4::text)))
         order by (r.identities @> array[$2::text]) desc,r.discovered_at,r.id limit 20`,
@@ -75,11 +76,12 @@ async function saveFindings(db,source,findings,urls){
         return common/Math.max(words.size,other.size)>=0.8;
       });
       const sole=findings.filter(r=>r.kind===f.kind).length===1;
-      const target=candidates.find(r=>r.identities.includes(identity))??(exact.length?exact[0]:similar.length===1?similar[0]:sole&&candidates.length===1?candidates[0]:null);
+      const target=f.id?candidates[0]:candidates.find(r=>r.identities.includes(identity))??(exact.length?exact[0]:similar.length===1?similar[0]:sole&&candidates.length===1?candidates[0]:null);
+      if(f.id&&!target)continue; // Scheduling research can only update its saved record.
       if(!target&&candidates.length&&sole){counts.ambiguous++;continue;}
-      const values=merge(f,target),keys=['kind','title','description','canonical_url','organizations','details','provenance','completeness','priority','relevance'];
+      const values=merge(f.id?{...target,details:{...target.details,...f.details},completeness:structuredClone(target.completeness)}:f,target),keys=['kind','title','description','canonical_url','organizations','details','provenance','completeness','priority','relevance'];
       const sources=new Map((target?.sources??[]).map(s=>[s.url,s]));
-      for(const url of urls)if(!sources.has(url))sources.set(url,{url,tracker_id:source.tracker_id,relationship:url===source.url?'primary':'support'});
+      for(const url of f.id?f.urls:urls)if(!sources.has(url))sources.set(url,{url,tracker_id:source.tracker_id,relationship:url===source.url?'primary':'support'});
       values.sources=[...sources.values()];
       values.identities=[...new Set([...(target?.identities??[]),identity])];
       const changed=!target||keys.filter(k=>k!=='provenance').some(k=>!sameClaim(target[k],values[k]));
@@ -98,6 +100,7 @@ async function saveFindings(db,source,findings,urls){
         if(changed)counts[target?'changed':'created']++;
       }
       used.add(record.id);seen.add(identity);counts.saved++;
+      if(!target)counts.newRecords.push(record);
     }
     return counts;
   });
@@ -119,11 +122,11 @@ export async function processDocument(db,{source,model,deadline=Date.now()+10000
       return {state:'parked',reason:leased.reason,...counts,improvement:research.improvement,research};
     }
     research={revision:REVISION,supports:[]};
-    const call=async(prompt,input=[])=>{
+    const call=async(prompt,input=[],schema=RESPONSE_SCHEMA)=>{
       if(usage.generations>=2)throw fail('generation_bound');
       if(Date.now()+10000>=deadline)throw fail('runtime_bound');
       let answer;
-      try{answer=await model(prompt,input,RESPONSE_SCHEMA);usage.generations+=answer._usage?.generations??1;}
+      try{answer=await model(prompt,input,schema);usage.generations+=answer._usage?.generations??1;}
       catch(error){if(error.diagnostics)diagnostics.push(error.diagnostics);if(error.dispatched){usage.generations+=error.usage?.generations??1;usage.input_tokens+=error.usage?.input_tokens??0;usage.output_tokens+=error.usage?.output_tokens??0;}throw error;}
       if(answer._diagnostics)diagnostics.push(answer._diagnostics);
       usage.input_tokens+=answer._usage?.input_tokens??0;usage.output_tokens+=answer._usage?.output_tokens??0;
@@ -136,12 +139,17 @@ export async function processDocument(db,{source,model,deadline=Date.now()+10000
     const saved=await saveFindings(db,leased,findings,[source.url]);
     counts.created+=saved.created;counts.changed+=saved.changed;counts.captured=saved.saved;counts.ambiguous+=saved.ambiguous;
     captured=saved.saved>0;
+    const undated=saved.newRecords.filter(r=>r.kind==='event'&&!r.details.start);
+    const scheduleSchema={...RESPONSE_SCHEMA,properties:{...RESPONSE_SCHEMA.properties,records:{type:'array',items:{...RESPONSE_SCHEMA.properties.records.items,
+      properties:{...RESPONSE_SCHEMA.properties.records.items.properties,record_id:{type:'string'},date_source_url:{type:['string','null']}},
+      required:[...RESPONSE_SCHEMA.properties.records.items.required,'record_id']}}}};
     if(answer.status==='found'&&!findings.length)throw fail('empty_findings');
     research.supports=(Array.isArray(answer.follow_up_requests)?answer.follow_up_requests.slice(0,3):[]).flatMap(r=>{
       const url=publicURL(r?.url),question=text(r?.question,280);return question?[{url:url===source.url?null:url,question}]:[];
     });
     research.note=text(answer.note,280);
     research.decision=research.supports.length?true:typeof answer.further_research==='boolean'?answer.further_research:null;
+    if(undated.length){research.decision=true;research.supports=[{url:source.url,question:SCHEDULE_QUESTION}];}
     improvement=research.decision?'pending':'not_requested';
     // Only current questions/URLs are retained. Do not let oversized optional research lose the saved facts.
     if(Buffer.byteLength(JSON.stringify(research))>7800){research.supports=[];research.note=null;throw fail('research_bound');}
@@ -152,18 +160,27 @@ export async function processDocument(db,{source,model,deadline=Date.now()+10000
       if(answer._usage?.overrun)throw fail('token_reservation_overrun');
       if(db.metrics?.statements>40)throw fail('sql_bound');
       improvementStart=usage.generations;
-      const improved=await call(prompt+'\n\nImprove the findings below by reading only the requested links. Return the same developments with the same titles, keeping previously established facts and correcting mistakes. Answer the specific questions; leave unresolved fields partial. Do not add unrelated developments.',
-        {records:findings,requested_links:wanted});
+      const improved=undated.length?await call(SCHEDULE_QUESTION+'\nResearch each supplied event. Return the same record_id, title and event type. Include only source-supported scheduling dates for that exact event. A session or town hall must not inherit the dates of its parent conference or workshop; leave its dates empty unless its own schedule is established. A publication date does not establish the event date or year. Set date_source_url to the retrieved page establishing the schedule. Leave dates empty if unresolved. Do not add other events.',
+        {research:'event_schedule',records:undated.map(r=>({record_id:r.id,title:r.title,summary:r.description,source_url:source.url,details:r.details})),requested_links:wanted},scheduleSchema):
+        await call(prompt+'\n\nImprove the findings below by reading only the requested links. Return the same developments with the same titles, keeping previously established facts and correcting mistakes. Answer the specific questions; leave unresolved fields partial. Do not add unrelated developments.',
+          {records:findings,requested_links:wanted});
       const next=improved.records.slice(0,8).map(r=>normalizeFinding(r,source.url)).filter(Boolean);
-      const matched=next.filter(f=>findings.some(old=>old.kind===f.kind&&normalize(old.title)===normalize(f.title)));
-      if(!matched.length)throw fail('improvement_unmatched');
+      const retrieved=(improved._retrieval??[]).filter(r=>r.status==='URL_RETRIEVAL_STATUS_SUCCESS').map(r=>publicURL(r.url)).filter(Boolean);
+      const matched=undated.length?improved.records.slice(0,8).flatMap(r=>{
+        const old=undated.find(f=>f.id===r?.record_id),url=publicURL(r?.date_source_url);
+        if(!old||!url||!retrieved.includes(url))return [];
+        const f=normalizeFinding({...r,type:'event',title:old.title,summary:old.description},source.url);
+        if(!f?.details.start)return [];
+        return [{id:old.id,kind:old.kind,title:old.title,details:{start:f.details.start,...(f.details.end?{end:f.details.end}:{})},urls:[url]}];
+      }):next.filter(f=>findings.some(old=>old.kind===f.kind&&normalize(old.title)===normalize(f.title)));
+      if(!matched.length)throw fail(undated.length?'research_exhausted':'improvement_unmatched');
       const urls=[source.url,...(improved._retrieval??[]).filter(r=>r.status==='URL_RETRIEVAL_STATUS_SUCCESS'&&wanted.some(w=>w.url===publicURL(r.url))).map(r=>publicURL(r.url))];
       const enriched=await saveFindings(db,leased,matched,[...new Set(urls)]);
       counts.created+=enriched.created;counts.changed+=enriched.changed;counts.ambiguous+=enriched.ambiguous;
       improvement=enriched.changed?'improved':'no_change';
       // One investigation only. Remaining requested research needs deliberate review.
       research.note=text((Array.isArray(improved.follow_up_requests)?improved.follow_up_requests.map(r=>text(r?.question,280)).filter(Boolean).join('; '):null)||improved.note,480);
-      if(improved.further_research===true||(Array.isArray(improved.follow_up_requests)&&improved.follow_up_requests.some(r=>text(r?.question,280)))||enriched.saved<saved.saved)
+      if(improved.further_research===true||(Array.isArray(improved.follow_up_requests)&&improved.follow_up_requests.some(r=>text(r?.question,280)))||enriched.saved<(undated.length||saved.saved))
         throw fail('research_exhausted');
     }
     research.improvement=improvement;
