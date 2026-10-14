@@ -1,12 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,readdir} from 'node:fs/promises';
-import {gunzipSync} from 'node:zlib';
-import {PGlite} from '@electric-sql/pglite';
-import {collectHSA,LIMITS} from '../collector/hsa.js';
 import {prepareDocument,CHUNK_BYTES} from '../collector/octo-documents.js';
 
-const fixture=JSON.parse(gunzipSync(await readFile(new URL('./fixtures/octo-webinars.json.gz',import.meta.url))));
 test('rotating protected-contact tokens do not reset supporting source text, while ordinary links remain literal',()=>{
   const url='https://example.org/event',html=token=>'<p>The conference is on June 16-18.</p><p>Contact <a href="/cdn-cgi/l/email-protection#'+token+'"><span class="__cf_email__" data-cfemail="'+token+'">[email protected]</span></a></p><p><a href="/registration">Register</a></p><a href="/cdn-cgi/l/email-protection#aabb">Ordinary link</a>';
   const a=prepareDocument({title:'Event',url,html:html('aabb'),protectedContacts:true}),b=prepareDocument({title:'Event',url,html:html('ccdd'),protectedContacts:true});

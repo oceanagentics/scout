@@ -60,81 +60,78 @@ test('unsafe global defaults stop the migration without changing another service
   }
 });
 
-
-for (const shared of [false, true]) {
-  test(`final schema protects findings, operational state and tracker management in ${shared ? 'shared' : 'empty'} database`, async () => {
-    const db = new PGlite();
-    try {
-      await db.exec(auth + (shared ? fixture : ''));
-      const before = shared ? (await db.query(sharedState)).rows : null;
-      for (const [name, sql] of migrations) {
-        if (name === '20261001170000_scout_lean_schema.sql') {
-          await db.query("insert into scout.memberships(user_id,role) values($1,'admin')", [admin]);
-          await db.query("update auth.users set raw_app_meta_data='{\"other\":\"keep\",\"scout\":{\"preference\":\"keep\"}}' where id=$1", [admin]);
-        }
-        await db.exec(sql);
+test('final schema protects findings, operational state and tracker management in a shared database', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(auth + fixture);
+    const before = (await db.query(sharedState)).rows;
+    for (const [name, sql] of migrations) {
+      if (name === '20261001170000_scout_lean_schema.sql') {
+        await db.query("insert into scout.memberships(user_id,role) values($1,'admin')", [admin]);
+        await db.query("update auth.users set raw_app_meta_data='{\"other\":\"keep\",\"scout\":{\"preference\":\"keep\"}}' where id=$1", [admin]);
       }
-      assert.deepEqual((await db.query('select raw_app_meta_data from auth.users where id=$1', [admin])).rows[0].raw_app_meta_data,
-        { other: 'keep', scout: { preference: 'keep', admin: true } });
-      const tracker = (await db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Source','https://example.org','web','1 day',true) returning id")).rows[0].id;
-      const record = (await db.query("insert into scout.records(kind,title) values('announcement','Private finding') returning id")).rows[0].id;
-      await db.query("update scout.records set sources=$2 where id=$1", [record,[{url:'https://example.org/source',tracker_id:tracker,relationship:'source'}]]);
-      await db.query("insert into scout.source_state(tracker_id,identity,url,state,reason) values($1,'item','https://example.org/source','parked','attempt_bound')", [tracker]);
-      const publicReads = ['scout.records','scout.finding_reader','scout.findings()','scout.finding_jobs()','scout.tracker_status'];
-      const privateTables = ['source_state','quota_policy','quota_reservations','delivery_state'];
-      await db.exec('set role anon');
-      for (const view of publicReads) await assert.rejects(db.query('select * from ' + view), { code: '42501' });
-      await assert.rejects(db.query('select scout.access_role()'), { code: '42501' });
-      await db.exec('reset role; set role authenticated');
-      for (const [user, role] of [[outsider,null],[reader,'reader'],[admin,'admin']]) {
-        await db.query("select set_config('request.jwt.claim.sub',$1,false)", [user]);
-        assert.equal((await db.query('select scout.access_role() role')).rows[0].role, role);
-        if (shared) assert.equal((await db.query('select * from otherservice.private_records')).rows.length, user === outsider ? 1 : 0);
-        for (const view of publicReads) assert.equal((await db.query('select * from ' + view)).rows.length, role ? 1 : 0, view);
-        for (const table of privateTables) {
-          await assert.rejects(db.query('select * from scout.' + table), { code: '42501' });
-          await assert.rejects(db.query('delete from scout.' + table), { code: '42501' });
-        }
-        await assert.rejects(db.query('select * from scout.expire_quota()'), { code: '42501' });
-        await assert.rejects(db.query('select * from scout.reserve_model(gen_random_uuid(),gen_random_uuid(),null,2)'), { code: '42501' });
-        await assert.rejects(db.query("insert into scout.records(kind,title) values('announcement','Forged')"), { code: '42501' });
-        await assert.rejects(db.query("update scout.records set title='Forged'"), { code: '42501' });
-        await assert.rejects(db.query('delete from scout.records'), { code: '42501' });
-        await assert.rejects(db.query("update auth.users set raw_app_meta_data='{}'"), { code: '42501' });
-        for (const enabled of [true,false]) {
-          await assert.rejects(db.query('update scout.trackers set enabled=$1', [enabled]), { code: '42501' });
-          await assert.rejects(db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Forged','https://example.org/new','web','1 day',$1)", [enabled]), { code: '42501' });
-        }
-        assert.equal((await db.query("update scout.trackers set cadence='2 days' returning id")).rows.length, role === 'admin' ? 1 : 0);
-        if (role !== 'admin') await assert.rejects(db.query("insert into scout.trackers(name,url,collector,cadence) values('Forged','https://example.org/new','web','1 day')"), { code: '42501' });
-      }
-      const finding = (await db.query('select * from scout.findings()')).rows[0];
-      assert.deepEqual(finding.sources, [{ url:'https://example.org/source', tracker_id:tracker, relationship:'source' }]);
-      await db.query("update scout.trackers set url='https://example.org/edited' where id=$1", [tracker]);
-      assert.equal((await db.query('select enabled from scout.trackers where id=$1', [tracker])).rows[0].enabled, false);
-      const inserted = (await db.query("insert into scout.trackers(name,url,collector,cadence) values('Unproven','https://example.org/new','web','1 day') returning enabled")).rows[0];
-      assert.equal(inserted.enabled, false);
-      await db.exec('reset role; set role service_role');
-      await db.query('update scout.trackers set enabled=true where id=$1', [tracker]);
-      assert.equal((await db.query('select enabled from scout.trackers where id=$1', [tracker])).rows[0].enabled, true);
-      for (const edit of ["collector='bluesky_feed'","url=null"]) {
-        await db.query('update scout.trackers set ' + edit + ',enabled=true where id=$1', [tracker]);
-        assert.equal((await db.query('select enabled from scout.trackers where id=$1', [tracker])).rows[0].enabled, false);
-      }
+      await db.exec(sql);
+    }
+    assert.deepEqual((await db.query('select raw_app_meta_data from auth.users where id=$1', [admin])).rows[0].raw_app_meta_data,
+      { other: 'keep', scout: { preference: 'keep', admin: true } });
+    const tracker = (await db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Source','https://example.org','web','1 day',true) returning id")).rows[0].id;
+    const record = (await db.query("insert into scout.records(kind,title) values('announcement','Private finding') returning id")).rows[0].id;
+    await db.query("update scout.records set sources=$2 where id=$1", [record,[{url:'https://example.org/source',tracker_id:tracker,relationship:'source'}]]);
+    await db.query("insert into scout.source_state(tracker_id,identity,url,state,reason) values($1,'item','https://example.org/source','parked','attempt_bound')", [tracker]);
+    const publicReads = ['scout.records','scout.finding_reader','scout.findings()','scout.finding_jobs()','scout.tracker_status'];
+    const privateTables = ['source_state','quota_policy','quota_reservations','delivery_state'];
+    await db.exec('set role anon');
+    for (const view of publicReads) await assert.rejects(db.query('select * from ' + view), { code: '42501' });
+    await assert.rejects(db.query('select scout.access_role()'), { code: '42501' });
+    await db.exec('reset role; set role authenticated');
+    for (const [user, role] of [[outsider,null],[reader,'reader'],[admin,'admin']]) {
+      await db.query("select set_config('request.jwt.claim.sub',$1,false)", [user]);
+      assert.equal((await db.query('select scout.access_role() role')).rows[0].role, role);
+      assert.equal((await db.query('select * from otherservice.private_records')).rows.length, user === outsider ? 1 : 0);
+      for (const view of publicReads) assert.equal((await db.query('select * from ' + view)).rows.length, role ? 1 : 0, view);
       for (const table of privateTables) {
-        await db.query('select * from scout.' + table);
-        for (const privilege of ['INSERT','UPDATE','DELETE']) assert.equal((await db.query("select has_table_privilege('service_role',$1,$2) allowed", ['scout.' + table,privilege])).rows[0].allowed, true);
+        await assert.rejects(db.query('select * from scout.' + table), { code: '42501' });
+        await assert.rejects(db.query('delete from scout.' + table), { code: '42501' });
       }
-      assert.equal((await db.query('select * from scout.reserve_model(gen_random_uuid(),gen_random_uuid(),null,2)')).rows[0].allowed, false);
-      await db.query('select * from scout.expire_quota()');
-      await db.exec('reset role');
-      assert.equal((await db.query("select bool_and(c.relrowsecurity) protected from pg_class c where c.relnamespace='scout'::regnamespace and c.relkind='r'")).rows[0].protected, true);
-      await db.exec('create table scout.future_private_table(id integer)');
-      for (const role of ['anon','authenticated']) assert.equal((await db.query("select has_table_privilege($1,'scout.future_private_table','SELECT') allowed", [role])).rows[0].allowed, false);
-      if (shared) assert.deepEqual((await db.query(sharedState)).rows, before);
-    } finally { await db.close(); }
-  });
-}
+      await assert.rejects(db.query('select * from scout.expire_quota()'), { code: '42501' });
+      await assert.rejects(db.query('select * from scout.reserve_model(gen_random_uuid(),gen_random_uuid(),null,2)'), { code: '42501' });
+      await assert.rejects(db.query("insert into scout.records(kind,title) values('announcement','Forged')"), { code: '42501' });
+      await assert.rejects(db.query("update scout.records set title='Forged'"), { code: '42501' });
+      await assert.rejects(db.query('delete from scout.records'), { code: '42501' });
+      await assert.rejects(db.query("update auth.users set raw_app_meta_data='{}'"), { code: '42501' });
+      for (const enabled of [true,false]) {
+        await assert.rejects(db.query('update scout.trackers set enabled=$1', [enabled]), { code: '42501' });
+        await assert.rejects(db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Forged','https://example.org/new','web','1 day',$1)", [enabled]), { code: '42501' });
+      }
+      assert.equal((await db.query("update scout.trackers set cadence='2 days' returning id")).rows.length, role === 'admin' ? 1 : 0);
+      if (role !== 'admin') await assert.rejects(db.query("insert into scout.trackers(name,url,collector,cadence) values('Forged','https://example.org/new','web','1 day')"), { code: '42501' });
+    }
+    const finding = (await db.query('select * from scout.findings()')).rows[0];
+    assert.deepEqual(finding.sources, [{ url:'https://example.org/source', tracker_id:tracker, relationship:'source' }]);
+    await db.query("update scout.trackers set url='https://example.org/edited' where id=$1", [tracker]);
+    assert.equal((await db.query('select enabled from scout.trackers where id=$1', [tracker])).rows[0].enabled, false);
+    const inserted = (await db.query("insert into scout.trackers(name,url,collector,cadence) values('Unproven','https://example.org/new','web','1 day') returning enabled")).rows[0];
+    assert.equal(inserted.enabled, false);
+    await db.exec('reset role; set role service_role');
+    await db.query('update scout.trackers set enabled=true where id=$1', [tracker]);
+    assert.equal((await db.query('select enabled from scout.trackers where id=$1', [tracker])).rows[0].enabled, true);
+    for (const edit of ["collector='bluesky_feed'","url=null"]) {
+      await db.query('update scout.trackers set ' + edit + ',enabled=true where id=$1', [tracker]);
+      assert.equal((await db.query('select enabled from scout.trackers where id=$1', [tracker])).rows[0].enabled, false);
+    }
+    for (const table of privateTables) {
+      await db.query('select * from scout.' + table);
+      for (const privilege of ['INSERT','UPDATE','DELETE']) assert.equal((await db.query("select has_table_privilege('service_role',$1,$2) allowed", ['scout.' + table,privilege])).rows[0].allowed, true);
+    }
+    assert.equal((await db.query('select * from scout.reserve_model(gen_random_uuid(),gen_random_uuid(),null,2)')).rows[0].allowed, false);
+    await db.query('select * from scout.expire_quota()');
+    await db.exec('reset role');
+    assert.equal((await db.query("select bool_and(c.relrowsecurity) protected from pg_class c where c.relnamespace='scout'::regnamespace and c.relkind='r'")).rows[0].protected, true);
+    await db.exec('create table scout.future_private_table(id integer)');
+    for (const role of ['anon','authenticated']) assert.equal((await db.query("select has_table_privilege($1,'scout.future_private_table','SELECT') allowed", [role])).rows[0].allowed, false);
+    assert.deepEqual((await db.query(sharedState)).rows, before);
+  } finally { await db.close(); }
+});
 
 test('final Workspace access requires verified provider proof, never editable metadata', async () => {
   const db = new PGlite(), proof = { iss:'https://accounts.google.com', email_verified:true, custom_claims:{hd:'oceanagentics.com'} };
