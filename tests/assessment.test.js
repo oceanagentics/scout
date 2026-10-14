@@ -20,7 +20,7 @@ const enable=db=>db.exec("update scout.quota_policy set enabled=true,verified_un
 const boundary=raw=>database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
 const reserve=(db,invocation=randomUUID(),id=randomUUID(),tokens=null)=>db.query('select * from scout.reserve_model($1,$2,$3,2)',[invocation,id,tokens]);
 const manual=()=>{const until=new Date(Date.now()+1800000).toISOString();return {enabled:true,mode:'manual',model:OPENAI_MODEL,expires_at:until,access_until:until,quota_until:until,
- verified_rpm:100,verified_rpd:100,verified_tpm:250000,rpm:2,rpd:10,tpm:125000,allocation_usd:0.10,invocation_usd:0.01,daily_usd:0.05};};
+ verified_rpm:100,verified_tpm:250000,rpm:2,tpm:125000,allocation_usd:0.10,invocation_usd:0.01,daily_usd:0.05};};
 const provider=(db,kind,invocation=randomUUID(),id=randomUUID(),max=2)=>db.query('select * from scout.reserve_provider($1,$2,$3,$4)',[invocation,id,kind,max]);
 
 test('URL diagnostics distinguish absent metadata, provider failure and a model unreadable answer without persisting traffic',async()=>{
@@ -152,6 +152,20 @@ test('provider reservations serialize shared attempts, keep independent cooldown
   assert.equal(calls,1);assert.equal(Number((await raw.query('select openai_spent_usd from scout.quota_policy')).rows[0].openai_spent_usd),Number(spent));
   const last=(await raw.query("select input_tokens,output_tokens,state from scout.quota_reservations where provider='openai' order by reserved_at desc limit 1")).rows[0];
   assert.deepEqual(last,{input_tokens:0,output_tokens:0,state:'settled'});
+ }finally{await raw.close();}
+});
+
+test('Luna can exceed ten daily calls while rate and spending limits still apply to both callers',async()=>{
+ const raw=await setup();try{
+  await enable(raw);await raw.query('update scout.quota_policy set openai=$1,openai_spent_usd=0.001',[{...manual(),invocation_usd:0.08,daily_usd:0.10}]);
+  await raw.exec("insert into scout.quota_reservations(id,invocation,reserved_at,input_tokens,output_tokens,state,provider,model,cost_usd) select gen_random_uuid(),gen_random_uuid(),now()-interval '2 minutes',100,10,'settled','openai','gpt-6-luna',0.0001 from generate_series(1,10)");
+  assert.equal((await provider(raw,'openai')).rows[0].allowed,true);
+  const reserveWeb=()=>raw.query('select * from scout.reserve_provider($1,$2,$3,1,3)',[randomUUID(),randomUUID(),'openai']);
+  assert.equal((await reserveWeb()).rows[0].allowed,true);
+  assert.equal((await reserveWeb()).rows[0].reason,'quota');
+  await raw.exec("update scout.quota_reservations set reserved_at=now()-interval '2 minutes';update scout.quota_policy set openai=jsonb_set(openai,'{allocation_usd}',to_jsonb(openai_spent_usd))");
+  assert.equal((await provider(raw,'openai')).rows[0].reason,'spending_bound');
+  assert.equal((await reserveWeb()).rows[0].reason,'spending_bound');
  }finally{await raw.close();}
 });
 
