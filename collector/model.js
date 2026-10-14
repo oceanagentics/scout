@@ -100,6 +100,11 @@ export function gemini({apiKey,tavilyApiKey,ledger,invocation=randomUUID(),maxCa
       let answer;
       try{answer=JSON.parse(choice.content.parts.filter(p=>!p.thought).map(p=>p.text??'').join(''));}
       catch{throw new Error('invalid_json');}
+      if(schema?.type==='array'){
+        if(!Array.isArray(answer))throw new Error('invalid_output');
+        answer={status:answer.length?'found':'none',records:answer};
+      }
+      if(!answer||typeof answer!=='object'||Array.isArray(answer))throw new Error('invalid_output');
       diagnostics.model_status=['found','none','unreadable'].includes(answer.status)?answer.status:null;
       diagnostics.record_count=Array.isArray(answer.records)?answer.records.length:null;
       if(!retrieval.length)throw new Error('retrieval_metadata_missing');

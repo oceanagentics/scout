@@ -34,10 +34,6 @@ test('strict schema keeps common schema untouched and closes nested nullable opt
   assert.deepEqual(next.properties.nested.type,['array','null']);assert.deepEqual(next.properties.nested.items.required,['id','extra']);
   assert.deepEqual(next.properties.nested.items.properties.extra.anyOf,[{$ref:'#/$defs/text'},{type:'null'}]);
   assert.deepEqual(next.properties.variant.anyOf.at(-1),{type:'null'});assert.equal(next.$defs.text.additionalProperties,false);
-  const transport=strictSchema(RESPONSE_SCHEMA);
-  assert.deepEqual(RESPONSE_SCHEMA.required,['status','records']);
-  assert.deepEqual(transport.properties.records.items.properties.priority.enum,['high','normal','low',null]);
-  assert.deepEqual(transport.properties.records.items.required,['description','type','priority','organizations','date','time','timezone']);
   assert.deepEqual(strictSchema(schema).properties.records.items,{type:'object',properties:{},required:[],additionalProperties:false});
   for(const invalid of [undefined,null,{type:'array'},{type:'object',anyOf:[]}])assert.throws(()=>strictSchema(invalid),{reason:'invalid_schema'});
 });
@@ -46,7 +42,7 @@ test('OpenAI transports the full rubric, partials, real links and exact native J
   const requests=[],reads=[],native=JSON.stringify([{sideEvent:{id:6915},organizationIds:['CBD','DOALOS'],date:'2026-07-29'}]);
   const partial={records:[{title:'Existing title',organizations:[{name:'Confirmed organization'}]}],requested_links:[{url:'https://example.org/support?raw=%2B',question:'Which date?'}],native_identity:'cbd:side-event:6915'};
   const generate=openai({apiKey:'test-key',urls:[url],read:async target=>{reads.push(target);return page(target===url?native:'<p>July 29 <a href="/registration?a=%2B">Sign up</a></p>',
-    {url:target,headers:{'content-type':target===url?'application/json':'text/html'}});},fetch:async(target,options)=>{requests.push({target,options});return result();}});
+    {url:target,headers:{'content-type':target===url?'application/json':'text/html'}});},fetch:async(target,options)=>{requests.push({target,options});return result('{"records":[]}');}});
   const {model,logs}=setup({generate}),output=await model(INTAKE_INSTRUCTION,partial,RESPONSE_SCHEMA);
   const request=JSON.parse(requests[0].options.body),input=JSON.parse(request.input);
   assert.ok(request.instructions.startsWith(INTAKE_INSTRUCTION));assert.deepEqual(input.input,partial);assert.deepEqual(reads,[url,partial.requested_links[0].url]);
@@ -54,6 +50,11 @@ test('OpenAI transports the full rubric, partials, real links and exact native J
   assert.ok(input.sources[1].body.includes('https://example.org/registration?a=%2B'));assert.equal(input.sources[1].coverage,'html_text');
   assert.equal(request.model,OPENAI_MODEL);assert.equal(request.store,false);assert.equal(request.service_tier,'default');assert.equal(request.reasoning.effort,'none');
   assert.equal(request.tools,undefined);assert.equal(request.max_output_tokens,1500);assert.equal(request.text.format.strict,true);
+  assert.deepEqual(request.text.format.schema.required,['records']);
+  assert.deepEqual(Object.keys(request.text.format.schema.properties),['records']);
+  assert.deepEqual(request.text.format.schema.properties.records,RESPONSE_SCHEMA);
+  assert.deepEqual(Object.keys(RESPONSE_SCHEMA.items.properties),['description','type','priority','organizations','date','time','timezone']);
+  assert.equal(output.status,'none');assert.deepEqual(output.records,[]);
   assert.ok(requests[0].options.signal instanceof AbortSignal);assert.equal(output._usage.generations,1);
   assert.equal(output._diagnostics.model,OPENAI_MODEL);assert.equal(output._diagnostics.attempts[0].diagnostics.tool_calls,0);
   assert.equal(output._retrieval[0].method,'application_read');
@@ -250,13 +251,13 @@ test('second configured task uses the same dispatcher and cannot overlap invocat
 
 test('tracker route falls back only for approved unusable Gemini results, accounting each provider once',async context=>{
   const partial={status:'found',records:[null,{type:'event',description:'Useful partial',organizations:[null],date:'bad'}]};
-  const envelope=(text='{"status":"none","records":[]}',extra={})=>Response.json({usageMetadata:{promptTokenCount:100,toolUsePromptTokenCount:20,candidatesTokenCount:10,totalTokenCount:130},
+  const envelope=(text='[]',extra={})=>Response.json({usageMetadata:{promptTokenCount:100,toolUsePromptTokenCount:20,candidatesTokenCount:10,totalTokenCount:130},
     candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},content:{parts:[{text}]}}],...extra});
-  const cases=[['valid none',()=>envelope(),false],['useful malformed-optional partial',()=>envelope(JSON.stringify(partial)),false],
-    ['retrieval error',()=>envelope('{"status":"unreadable","records":[]}',{candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}]},content:{parts:[{text:'{"status":"unreadable","records":[]}'}]}}]}),true],
-    ['missing retrieval metadata',()=>envelope(undefined,{candidates:[{finishReason:'STOP',content:{parts:[{text:'{"status":"none","records":[]}'}]}}]}),true],
-    ['unreadable',()=>envelope('{"status":"unreadable","records":[]}'),true],['invalid JSON',()=>envelope('{'),true],
-    ['invalid output',()=>envelope('{"status":"wrong","records":[]}'),true],['empty found',()=>envelope('{"status":"found","records":[null,{}]}'),true],
+  const cases=[['valid none',()=>envelope(),false],['useful malformed-optional partial',()=>envelope(JSON.stringify(partial.records)),false],
+    ['retrieval error',()=>envelope('[]',{candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}]},content:{parts:[{text:'[]'}]}}]}),true],
+    ['missing retrieval metadata',()=>envelope(undefined,{candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]}),true],
+    ['invalid JSON',()=>envelope('{'),true],
+    ['invalid output',()=>envelope('{"status":"wrong","records":[]}'),true],['empty found',()=>envelope('[null,{}]'),true],
     ['missing candidate',()=>envelope(undefined,{candidates:[]}),true],['missing finish',()=>envelope(undefined,{candidates:[{content:{parts:[{text:'{}'}]}}]}),true],
     ['truncated',()=>envelope(undefined,{candidates:[{finishReason:'MAX_TOKENS'}]}),true],
     ['429',()=>new Response('{}',{status:429}),true],['503',()=>new Response('{}',{status:503}),true],['network',()=>{throw Error('Private transport text');},true],
@@ -268,7 +269,7 @@ test('tracker route falls back only for approved unusable Gemini results, accoun
     const ledger={query:async(q,p)=>{sql.push({q,p});return {rows:[q.includes('reserve_provider')?{allowed:true}:{settled:true}]};}};
     const model=trackerModel({apiKey:'test',openaiApiKey:'test',ledger,source:{url,identity:'native:6915'},read:async()=>{reads++;return page();},fetch:async(target,options)=>{
       if(target.includes('googleapis')){calls.gemini++;return response();}calls.openai++;
-      assert.equal(JSON.parse(options.body).max_output_tokens,1500);return result();
+      assert.equal(JSON.parse(options.body).max_output_tokens,1500);return result('{"records":[]}');
     }});
     const output=await model(INTAKE_INSTRUCTION,[],RESPONSE_SCHEMA).catch(error=>error);
     assert.equal(calls.openai,recover?1:0);assert.equal(reads,recover?1:0);assert.equal(calls.gemini,1);
@@ -285,7 +286,7 @@ test('tracker second generation has no fallback; missing usage remains uncertain
   const sql=[],ledger={query:async(q,p)=>{sql.push({q,p});return {rows:[q.includes('reserve_provider')?{allowed:true}:{settled:true}]};}};
   let calls=0;const model=trackerModel({apiKey:'test',openaiApiKey:'test',ledger,source:{url},read:async()=>assert.fail('No fallback'),fetch:async()=>{
     calls++;return Response.json({candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
-      content:{parts:[{text:calls===1?'{"status":"none","records":[]}':'{'}]}}]});}});
+      content:{parts:[{text:calls===1?'[]':'{'}]}}]});}});
   assert.equal((await model('Read',[],RESPONSE_SCHEMA))._usage.uncertain,true);
   await assert.rejects(model('Improve',[],RESPONSE_SCHEMA),{reason:'invalid_json'});assert.equal(calls,2);assert.equal(sql.length,4);
   let dispatched=0;const guarded=trackerModel({apiKey:'test',openaiApiKey:'test',source:{url},ledger:{query:async(q,p)=>({rows:[q.includes('reserve_provider')?

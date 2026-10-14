@@ -140,9 +140,9 @@ export async function processDocument(db,{source,model,deadline=Date.now()+10000
     counts.created+=saved.created;counts.changed+=saved.changed;counts.captured=saved.saved;counts.ambiguous+=saved.ambiguous;
     captured=saved.saved>0;
     const undated=saved.newRecords.filter(r=>r.kind==='event'&&(!r.details.start?.value||!r.details.start.time||!r.details.start.zone));
-    const scheduleSchema={...RESPONSE_SCHEMA,properties:{...RESPONSE_SCHEMA.properties,records:{type:'array',items:{...RESPONSE_SCHEMA.properties.records.items,
-      properties:{...RESPONSE_SCHEMA.properties.records.items.properties,record_id:{type:'string'},date_source_url:{type:['string','null']}},
-      required:[...RESPONSE_SCHEMA.properties.records.items.required,'record_id']}}}};
+    const scheduleSchema={...RESPONSE_SCHEMA,items:{...RESPONSE_SCHEMA.items,
+      properties:{...RESPONSE_SCHEMA.items.properties,record_id:{type:'string'},date_source_url:{type:['string','null']}},
+      required:[...RESPONSE_SCHEMA.items.required,'record_id','date_source_url']}};
     if(answer.status==='found'&&!findings.length)throw fail('empty_findings');
     research.decision=undated.length>0;
     if(undated.length)research.supports=[{url:source.url,question:SCHEDULE_QUESTION}];
@@ -152,7 +152,7 @@ export async function processDocument(db,{source,model,deadline=Date.now()+10000
       if(answer._usage?.overrun)throw fail('token_reservation_overrun');
       if(db.metrics?.statements>40)throw fail('sql_bound');
       improvementStart=usage.generations;
-      const improved=await call(SCHEDULE_QUESTION+'\nResearch each supplied event. Return its record_id and the seven development fields: description, type, priority, organizations, date, time, timezone. Include only source-supported scheduling for that exact event. Use YYYY-MM-DD (or YYYY-MM or YYYY for partial dates), HH:MM and an explicit UTC, numeric offset or IANA timezone. A session or town hall must not inherit its parent conference dates. A publication date does not establish the event date or year. Set date_source_url to the retrieved page establishing the schedule. Use null for unresolved dates, times and timezones. Do not add other events.',
+      const improved=await call(SCHEDULE_QUESTION+'\nResearch each supplied event. Return a JSON array of objects containing its record_id and the seven development fields: description, type, priority, organizations, date, time, timezone. Include only source-supported scheduling for that exact event. Use YYYY-MM-DD (or YYYY-MM or YYYY for partial dates), HH:MM and an explicit UTC, numeric offset or IANA timezone. A session or town hall must not inherit its parent conference dates. A publication date does not establish the event date or year. Set date_source_url to the retrieved page establishing the schedule. Use null for unresolved dates, times and timezones. Do not add other events.',
         {research:'event_schedule',records:undated.map(r=>({record_id:r.id,title:r.title,source_url:source.url,details:r.details})),requested_links:research.supports},scheduleSchema);
       const retrieved=(improved._retrieval??[]).filter(r=>r.status==='URL_RETRIEVAL_STATUS_SUCCESS').map(r=>publicURL(r.url)).filter(Boolean);
       const matched=improved.records.slice(0,8).flatMap(r=>{

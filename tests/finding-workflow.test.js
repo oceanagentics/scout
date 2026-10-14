@@ -51,7 +51,7 @@ test('new events without starts trigger one search, enrich saved IDs, and preser
     output=answer(input.records.map(r=>({...event,description:'Unwanted description change',record_id:r.record_id,date_source_url:support,date:'2026-10-22'})));
    }
    return Response.json({usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:3500,candidatesTokenCount:500,totalTokenCount:4400},
-    candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:http===1?source.url:support,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},content:{parts:[{text:JSON.stringify(output)}]}}]});
+    candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:http===1?source.url:support,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},content:{parts:[{text:JSON.stringify(output.records)}]}}]});
   }});
   let reads=0;
   const options={source,read:async()=>{reads++;return read();},model};
@@ -83,7 +83,7 @@ test('manual URL intake maps a flat record and preserves the existing source wit
     assert.ok(body.contents[0].parts[0].text.includes(tr.url));assert.equal(body.contents[0].parts.length,1);
     return Response.json({usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:1000,candidatesTokenCount:300,totalTokenCount:1700},
      candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:tr.url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
-      content:{parts:[{text:JSON.stringify(answer([{...event,organizations:['Institute A'],date:'2026-10-29',time:'13:30',timezone:'UTC'}]))}]}}]});
+      content:{parts:[{text:JSON.stringify([{...event,organizations:['Institute A'],date:'2026-10-29',time:'13:30',timezone:'UTC'}])}]}}]});
    }};
   const query=new URLSearchParams({tracker_id:tr.id,source_url:tr.url});
   const response=await hostedHSA(new Request('https://example.org?'+query,{method:'POST',headers:{apikey:secret}}),options);

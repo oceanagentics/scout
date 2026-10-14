@@ -165,9 +165,9 @@ test('hosted selected/direct sources save a bounded fallback once, preserve nati
   const record={description:'BBNJ Clearing-House workshop: technical design discussion.',type:'event',priority:'high',organizations:[],date:'2026-10-15',time:'15:00',timezone:'+02:00'};
   const options={databaseURL:'mock',env,connect,apiKey:'test',openaiApiKey:'test',read:async()=>{counts.read++;return {url,status:200,headers:{'content-type':'text/html'},body:'<p>PRIVATE SOURCE BODY</p>'};},modelFetch:async(target,options)=>{
    if(target.includes('googleapis')){counts.gemini++;return Response.json({usageMetadata:{promptTokenCount:100,candidatesTokenCount:10,totalTokenCount:110},
-    candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}]},content:{parts:[{text:'{"status":"unreadable","records":[]}'}]}}]});}
+    candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}]},content:{parts:[{text:'[]'}]}}]});}
    counts.openai++;const body=JSON.parse(options.body);assert.equal(body.max_output_tokens,1500);assert.equal(JSON.parse(body.input).source.identity,'cbd:side-event:6915');
-   return Response.json({status:'completed',model:OPENAI_MODEL,usage:{input_tokens:100,output_tokens:10},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({status:'found',records:[record]})}]}]});
+   return Response.json({status:'completed',model:OPENAI_MODEL,usage:{input_tokens:100,output_tokens:10},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({records:[record]})}]}]});
   }};
   const run=async(query='next=true')=>(await hostedHSA(new Request('https://example.test/collect?'+query,{method:'POST',headers:{apikey:secret}}),options)).json();
   const first=await run();assert.equal(first.state,'captured');assert.equal(first.reason,undefined);assert.equal(first.improvement,'not_requested');assert.equal(first.usage.generations,2);assert.deepEqual(counts,{gemini:1,openai:1,read:1});
