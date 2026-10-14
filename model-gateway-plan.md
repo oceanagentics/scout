@@ -12,7 +12,7 @@ The separately authorized completeness change excludes an absent event end from 
 - Storage `c30175f`, optional-research correction `e39e7d5` and subsequent F06/F11 handoff `ea5784e` are in this checkout. Current `processDocument` saves first-pass useful facts before optional research, counts actual `_usage.generations` and allows two generations. Current code controls where historical status prose disagrees.
 - The current `e2a9427` contract uses URL-only intake: complete/parked sources stay closed until explicitly reset; no legacy body fetching, preparation or content-change probes. `hostedHSA` now constructs the gateway for selected due sources and direct-source runs, preserving native source metadata. Only Luna recovery reads source content locally. Preserve native identities, source URLs, supported date precision, ranked organization names, relevance and human corrections.
 - One extraction-only E02 Luna request succeeded: 5,989 input / 413 output tokens, 6.7 s provider latency, conservative estimated cost $0.00096. It recovered the source-supported date and registration, leaving end unknown. Its inferred `Europe/Paris` identifier still needs source-grounding correction. This was not a production gateway/accounting/save test.
-- Ignored `.env.local` uses `OPENAI_SCOUTER_API_KEY`. Models Read and one Responses call succeeded. Serving-bucket headers reported 30,000 requests and 180,000,000 tokens; project headroom and available credit remain unverified. Last Gemini account check reported 500/day, 15/minute and 250,000 input/minute with billing disabled. Refresh actual controls before live use.
+- Ignored `.env.local` uses `SCOUT_OPENAI_API_KEY`, matching the Supabase Edge Function secret name. Use the same working Scouter key in both places; the former local name `OPENAI_SCOUTER_API_KEY` is retired. Models Read and one Responses call succeeded. Serving-bucket headers reported 30,000 requests and 180,000,000 tokens; project headroom and available credit remain unverified. Last Gemini account check reported 500/day, 15/minute and 250,000 input/minute with billing disabled. Refresh actual controls before live use.
 
 ## Tracker behavior
 
@@ -51,7 +51,7 @@ Initial pilot: **$0.10 total and $0.01/source invocation**, from verified existi
 
 The standalone gateway's test budget retains its 15-minute freshness rule. Production uses atomic database checks with explicit policy/access/quota expiry. The requested tests use a manual allocation capped at $0.10 and one hour, without claiming a verified credit balance. No more credit-balance questions are needed for these finite tests. Missing/expired OpenAI allocation disables backup while otherwise-authorized Gemini-only intake remains available; no polling or automatic budget renewal.
 
-Restricted key permissions remain Responses Write and List Models Read, everything else None. Use the working Scouter key in the approved backend secret store; never print or commit it. The invalid local `OPENAI_API_KEY` assignment has been retired. No purchases or paid overages.
+Restricted key permissions remain Responses Write and List Models Read, everything else None. Use only `SCOUT_OPENAI_API_KEY` from the project's `.env.local` for local Scout checks and the same named secret in Supabase for production; never use an inherited generic `OPENAI_API_KEY`, print the key or commit it. No purchases or paid overages.
 
 ## Cost and retention estimate
 
