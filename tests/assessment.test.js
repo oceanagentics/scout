@@ -146,7 +146,7 @@ test('provider reservations serialize shared attempts, keep independent cooldown
   }
   await assert.rejects(provider(raw,'gemini',randomUUID(),randomUUID(),null));
   await assert.rejects(raw.query('select * from scout.settle_provider($1,null,1,$2,null,null,0)',[oa,'settled']));
-  await raw.query('update scout.quota_policy set openai=$1',[manual()]);
+  await raw.query('update scout.quota_policy set openai=$1',[{...manual(),invocation_usd:0.08,daily_usd:0.10}]);
   let calls=0;const noKey=trackerModel({apiKey:'test',ledger:boundary(raw),source:{url:'https://example.org/a'},fetch:async()=>{calls++;throw Error('Network');}});
   await assert.rejects(noKey('Read',[],{type:'object',properties:{}}),error=>error.reason==='configuration'&&error.usage.generations===1);
   assert.equal(calls,1);assert.equal(Number((await raw.query('select openai_spent_usd from scout.quota_policy')).rows[0].openai_spent_usd),Number(spent));
@@ -155,9 +155,27 @@ test('provider reservations serialize shared attempts, keep independent cooldown
  }finally{await raw.close();}
 });
 
-test('hosted selected/direct sources save a bounded fallback once, preserve native identity and skip complete/parked work (mock providers/PGlite)',async t=>{
+test('web reservations include tool fees, reject old token-only allowances and settle actual or uncertain costs',async()=>{
  const raw=await setup();try{
   await enable(raw);await raw.query('update scout.quota_policy set openai=$1',[manual()]);
+  const reserveWeb=id=>raw.query('select * from scout.reserve_provider($1,$2,$3,1,3)',[randomUUID(),id,'openai']);
+  assert.equal((await reserveWeb(randomUUID())).rows[0].reason,'provider_budget');
+  await raw.query('update scout.quota_policy set openai=$1',[{...manual(),invocation_usd:0.08,daily_usd:0.10}]);
+  const first=randomUUID();assert.equal((await reserveWeb(first)).rows[0].allowed,true);
+  assert.equal(Number((await raw.query('select cost_usd from scout.quota_reservations where id=$1',[first])).rows[0].cost_usd),0.03825);
+  const paid=0.0100175;
+  await raw.query("select * from scout.settle_provider($1,100,10,'settled',null,null,$2)",[first,paid]);
+  assert.equal(Number((await raw.query('select openai_spent_usd from scout.quota_policy')).rows[0].openai_spent_usd),paid);
+  const second=randomUUID();assert.equal((await reserveWeb(second)).rows[0].allowed,true);
+  await raw.query("select * from scout.settle_provider($1,0,0,'unknown','provider_unknown',null,0)",[second]);
+  assert.equal(Number((await raw.query('select cost_usd from scout.quota_reservations where id=$1',[second])).rows[0].cost_usd),0.03825);
+  await raw.exec('set role authenticated');await assert.rejects(reserveWeb(randomUUID()),{code:'42501'});await raw.exec('reset role');
+ }finally{await raw.close();}
+});
+
+test('hosted selected/direct sources save a bounded fallback once, preserve native identity and skip complete/parked work (mock providers/PGlite)',async t=>{
+ const raw=await setup();try{
+  await enable(raw);await raw.query('update scout.quota_policy set openai=$1',[{...manual(),invocation_usd:0.08,daily_usd:0.10}]);
   const tracker=(await raw.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Gateway','https://example.org/list','web','6 hours',true) returning *")).rows[0];
   const url='https://example.org/6915';await raw.query("insert into scout.source_state(tracker_id,identity,url,native_id,native_ref,due_at) values($1,'cbd:side-event:6915',$2,'6915',$3,now()-interval '1 second')",[tracker.id,url,{api_url:url}]);
   const counts={gemini:0,openai:0,read:0},secret='sb_secret_scout_test_only',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
@@ -167,15 +185,15 @@ test('hosted selected/direct sources save a bounded fallback once, preserve nati
    if(target.includes('googleapis')){counts.gemini++;return Response.json({usageMetadata:{promptTokenCount:100,candidatesTokenCount:10,totalTokenCount:110},
     candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}]},content:{parts:[{text:'[]'}]}}]});}
    counts.openai++;const body=JSON.parse(options.body);assert.equal(body.max_output_tokens,1500);assert.equal(JSON.parse(body.input).source.identity,'cbd:side-event:6915');
-   return Response.json({status:'completed',model:OPENAI_MODEL,usage:{input_tokens:100,output_tokens:10},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({records:[record]})}]}]});
+   return Response.json({status:'completed',model:OPENAI_MODEL,usage:{input_tokens:100,output_tokens:10},output:[{type:'web_search_call',status:'completed',action:{type:'open_page',url}},{type:'message',content:[{type:'output_text',text:JSON.stringify({records:[record]})}]}]});
   }};
   const run=async(query='next=true')=>(await hostedHSA(new Request('https://example.test/collect?'+query,{method:'POST',headers:{apikey:secret}}),options)).json();
-  const first=await run();assert.equal(first.state,'captured');assert.equal(first.reason,undefined);assert.equal(first.improvement,'not_requested');assert.equal(first.usage.generations,2);assert.deepEqual(counts,{gemini:1,openai:1,read:1});
+  const first=await run();assert.equal(first.state,'captured');assert.equal(first.reason,undefined);assert.equal(first.improvement,'not_requested');assert.equal(first.usage.generations,2);assert.deepEqual(counts,{gemini:1,openai:1,read:0});
   const saved=(await raw.query('select * from scout.records')).rows[0];assert.equal(saved.details.start.utc,'2026-10-15T13:00:00.000Z');assert.ok(!JSON.stringify(saved).includes('PRIVATE SOURCE'));
   assert.deepEqual((await raw.query('select provider from scout.quota_reservations order by reserved_at')).rows.map(r=>r.provider),['gemini','openai']);
   await raw.exec("update scout.source_state set state='complete',due_at=now()-interval '1 second'");assert.equal((await run('tracker_id='+tracker.id+'&source_url='+encodeURIComponent(url))).state,'complete');
   await raw.exec("update scout.source_state set state='parked',reason='research_exhausted',due_at=now()-interval '1 second'");assert.equal((await run()).state,'parked');
-  assert.deepEqual(counts,{gemini:1,openai:1,read:1});assert.equal((await raw.query('select count(*)::int n from scout.source_state')).rows[0].n,1);assert.equal((await raw.query('select version from scout.records')).rows[0].version,saved.version);
+  assert.deepEqual(counts,{gemini:1,openai:1,read:0});assert.equal((await raw.query('select count(*)::int n from scout.source_state')).rows[0].n,1);assert.equal((await raw.query('select version from scout.records')).rows[0].version,saved.version);
   t.diagnostic(JSON.stringify({mocked:true,calls:counts,cost:first.cost,estimated_spent_usd:(await raw.query('select openai_spent_usd from scout.quota_policy')).rows[0].openai_spent_usd}));
  }finally{await raw.close();}
 });

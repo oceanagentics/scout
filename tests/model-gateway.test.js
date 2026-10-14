@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {strictSchema,openai,modelGateway,trackerModel,OPENAI_MODEL} from '../collector/model-gateway.js';
+import {strictSchema,openai,modelGateway,trackerModel,OPENAI_MODEL,OPENAI_WEB_CALLS} from '../collector/model-gateway.js';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../collector/finding-contract.js';
 import {MODEL,MODEL_LIMITS} from '../collector/model.js';
 
@@ -9,7 +9,8 @@ const schema={type:'object',properties:{status:{type:'string'},records:{type:'ar
 const answer=()=>({status:'none',records:[],_usage:{input_tokens:100,output_tokens:10}});
 const result=(text='{"status":"none","records":[]}',extra={})=>Response.json({model:OPENAI_MODEL,status:'completed',usage:{input_tokens:100,output_tokens:10},
   output:[{type:'message',content:[{type:'output_text',text}]}],...extra});
-const page=(body='<p>Source text <a href="/register?token=whole">Register</a></p>',extra={})=>({status:200,url,headers:{'content-type':'text/html; charset=utf-8'},body,...extra});
+const webResult=(text='{"status":"none","records":[]}',web=[{type:'web_search_call',status:'completed',action:{type:'open_page',url}}])=>
+  result(text,{output:[...web,{type:'message',content:[{type:'output_text',text}]}]});
 function setup({task='url_intake',provider='openai',generate=async()=>answer(),routes,providers,budget,accounting,now=Date.now,deadline}={}){
   const time=now(),logs={reserved:[],settled:[]};
   const limits=model=>({verifiedAt:time,expiresAt:time+600000,accessVerified:true,model,remainingAttempts:3,remainingInputTokens:180000,
@@ -38,36 +39,36 @@ test('strict schema keeps common schema untouched and closes nested nullable opt
   for(const invalid of [undefined,null,{type:'array'},{type:'object',anyOf:[]}])assert.throws(()=>strictSchema(invalid),{reason:'invalid_schema'});
 });
 
-test('OpenAI transports the full rubric, partials, real links and exact native JSON URL without tools',async()=>{
-  const requests=[],reads=[],native=JSON.stringify([{sideEvent:{id:6915},organizationIds:['CBD','DOALOS'],date:'2026-07-29'}]);
-  const partial={records:[{title:'Existing title',organizations:[{name:'Confirmed organization'}]}],requested_links:[{url:'https://example.org/support?raw=%2B',question:'Which date?'}],native_identity:'cbd:side-event:6915'};
-  const generate=openai({apiKey:'test-key',urls:[url],read:async target=>{reads.push(target);return page(target===url?native:'<p>July 29 <a href="/registration?a=%2B">Sign up</a></p>',
-    {url:target,headers:{'content-type':target===url?'application/json':'text/html'}});},fetch:async(target,options)=>{requests.push({target,options});return result('{"records":[]}');}});
-  const {model,logs}=setup({generate}),output=await model(INTAKE_INSTRUCTION,partial,RESPONSE_SCHEMA);
-  const request=JSON.parse(requests[0].options.body),input=JSON.parse(request.input);
-  assert.ok(request.instructions.startsWith(INTAKE_INSTRUCTION));assert.deepEqual(input.input,partial);assert.deepEqual(reads,[url,partial.requested_links[0].url]);
-  assert.equal(input.sources[0].body,native);assert.equal(input.sources[0].requested_url,url);assert.equal(input.sources[0].coverage,'complete_json');
-  assert.ok(input.sources[1].body.includes('https://example.org/registration?a=%2B'));assert.equal(input.sources[1].coverage,'html_text');
-  assert.equal(request.model,OPENAI_MODEL);assert.equal(request.store,false);assert.equal(request.service_tier,'default');assert.equal(request.reasoning.effort,'none');
-  assert.equal(request.tools,undefined);assert.equal(request.max_output_tokens,1500);assert.equal(request.text.format.strict,true);
-  assert.deepEqual(request.text.format.schema.required,['records']);
-  assert.deepEqual(Object.keys(request.text.format.schema.properties),['records']);
-  const transportRecords=structuredClone(RESPONSE_SCHEMA);transportRecords.items.required.push('deadline');
-  assert.deepEqual(request.text.format.schema.properties.records,transportRecords);
-  assert.deepEqual(Object.keys(RESPONSE_SCHEMA.items.properties),['description','type','priority','organizations','date','starttime','timezone','deadline']);
-  assert.equal(output.status,'none');assert.deepEqual(output.records,[]);
-  assert.ok(requests[0].options.signal instanceof AbortSignal);assert.equal(output._usage.generations,1);
-  assert.equal(output._diagnostics.model,OPENAI_MODEL);assert.equal(output._diagnostics.attempts[0].diagnostics.tool_calls,0);
-  assert.equal(output._retrieval[0].method,'application_read');
-  const retained=JSON.stringify(logs);assert.ok(!retained.includes('Confirmed organization'));assert.ok(!retained.includes('Which date?'));assert.ok(!retained.includes('test-key'));assert.ok(!retained.includes(url));
-  assert.equal(logs.reserved[0].cost_usd,0.00825);assert.ok(output._usage.estimated_cost_usd<logs.reserved[0].cost_usd);
+test('OpenAI sends shared instructions, schema and URLs to provider web access without preparing source text',async()=>{
+  const requests=[],partial={records:[{description:'Existing title'}],requested_links:[{url:'https://example.org/support?raw=%2B',question:'Which date?'}]};
+  const {model,logs}=setup({generate:openai({apiKey:'test-key',urls:[url],read:()=>assert.fail('No local source reads'),
+    fetch:async(target,options)=>{requests.push({target,options});return webResult('{"records":[]}');}})});
+  const output=await model(INTAKE_INSTRUCTION,partial,RESPONSE_SCHEMA),request=JSON.parse(requests[0].options.body),input=JSON.parse(request.input);
+  assert.equal(request.instructions,INTAKE_INSTRUCTION+'\nFor this API, return the array inside an object with the single key records.');
+  assert.deepEqual(input,{input:partial,urls:[url,partial.requested_links[0].url]});
+  assert.deepEqual(request.tools,[{type:'web_search'}]);assert.equal(request.tool_choice,'required');assert.equal(request.max_tool_calls,OPENAI_WEB_CALLS);
+  assert.deepEqual(request.include,['web_search_call.action.sources']);assert.equal(request.store,false);assert.equal(request.reasoning.effort,'low');
+  assert.deepEqual(request.text.format.schema.properties.records,strictSchema({type:'object',properties:{records:RESPONSE_SCHEMA},required:['records']}).properties.records);
+  assert.equal(output.status,'none');assert.deepEqual(output.records,[]);assert.equal(output._retrieval[0].url,url);
+  assert.equal(output._retrieval[0].method,'provider_web');assert.equal(output._diagnostics.attempts[0].diagnostics.tool_calls,1);
+  assert.equal(logs.reserved[0].cost_usd,0.03825);
+  assert.ok(!JSON.stringify(logs).includes('Which date?'));assert.ok(!JSON.stringify(logs).includes('test-key'));
 });
 
-test('OpenAI reports observed redirects without replacing the complete requested URL',async()=>{
-  const final='https://public.example.org/final';let request;
-  const {model}=setup({generate:openai({apiKey:'test',urls:[url],read:async()=>page('<p>Real page</p>',{url:final}),fetch:async(_,options)=>{request=JSON.parse(options.body);return result();}})});
-  const output=await model('Read this URL',[],schema),source=JSON.parse(request.input).sources[0];
-  assert.equal(source.requested_url,url);assert.equal(source.final_url,final);assert.equal(output._retrieval[0].url,url);
+test('provider web metadata supplies support URLs and accounts for search fees even when the final JSON fails',async()=>{
+  const support='https://example.org/register',web=[{type:'web_search_call',status:'completed',action:{type:'search',sources:[{type:'url',url:support}]}}];
+  const {model,logs}=setup({generate:openai({apiKey:'test',urls:[url],fetch:async()=>webResult('{',web)})});
+  await assert.rejects(model('Read',[],schema),error=>{
+    assert.equal(error.reason,'invalid_output');assert.equal(error.diagnostics.attempts[0].diagnostics.retrieval[0].url,support);return true;
+  });
+  assert.equal(logs.settled[0].state,'settled');assert.equal(logs.settled[0].cost_usd,0.0100175);
+});
+
+test('URL requests cannot claim retrieval when the provider returns no web results',async()=>{
+  for(const [response,reason] of [[result(),'retrieval_metadata_missing'],[webResult(undefined,[{type:'web_search_call',status:'failed',action:{type:'open_page',url}}]),'url_retrieval_failed']]){
+    const {model}=setup({generate:openai({apiKey:'test',urls:[url],fetch:async()=>response})});
+    await assert.rejects(model('Read',[],schema),{reason});
+  }
 });
 
 test('URL intake requires an explicit main source before dispatch; record answering can use its supplied snapshot',async()=>{
@@ -79,41 +80,18 @@ test('URL intake requires an explicit main source before dispatch; record answer
   assert.equal(calls,0);assert.ok(intake.logs.settled.every(value=>value.cost_usd===0));
   const records=setup({task:'answer_records',generate});
   const answer=await records.model('Answer using these authorized records',{records:[{title:'Authorized snapshot'}]},schema);
-  assert.equal(calls,1);assert.equal(answer._usage.generations,1);assert.equal(answer._diagnostics.attempts[0].diagnostics.source_reads.length,0);
+  assert.equal(calls,1);assert.equal(answer._usage.generations,1);assert.equal(answer._diagnostics.attempts[0].diagnostics.retrieval.length,0);
 });
 
 test('calling the OpenAI adapter directly cannot bypass gateway reservation with numeric limits',async()=>{
   let calls=0,reads=0;
-  const generate=openai({apiKey:'test',urls:[url],read:async()=>{reads++;return page();},fetch:async()=>{calls++;return result();}});
+  const generate=openai({apiKey:'test',urls:[url],read:async()=>{reads++;assert.fail('No local reader');},fetch:async()=>{calls++;return result();}});
   await assert.rejects(generate('Read',[],schema,{inputTokens:60000,outputTokens:1500,deadline:Date.now()+100000,task:'url_intake'}),
     {reason:'accounting',dispatched:false});
   assert.equal(calls,0);assert.equal(reads,0);
 });
 
-test('source failure is separate from provider output and never dispatches or saves response bodies',async()=>{
-  let http=0;
-  const sourceError=Object.assign(new Error('provider HTML includes secret'),{response:page('PRIVATE SOURCE BODY',{status:503,url:'https://example.org/final'})});
-  const {model,logs}=setup({generate:openai({apiKey:'test',urls:[url],read:async()=>{throw sourceError;},fetch:async()=>{http++;return result();}})});
-  await assert.rejects(model('Read',[],schema),error=>{
-    assert.equal(error.reason,'source_read_failed');assert.equal(error.dispatched,false);assert.equal(error.usage.generations,0);
-    assert.deepEqual(error.diagnostics.attempts[0].diagnostics.source_reads,[{requested_url:url,final_url:'https://example.org/final',status:503,coverage:'failed'}]);
-    assert.ok(!JSON.stringify(error).includes('PRIVATE SOURCE BODY'));return true;
-  });
-  assert.equal(http,0);assert.equal(logs.settled[0].cost_usd,0);assert.equal(logs.settled[0].state,'settled');
-});
-
-test('source bounds refuse whole oversized JSON/HTML and unsupported or unobserved pages',async context=>{
-  const variants=[['JSON too long',page(JSON.stringify({value:'x'.repeat(24001)}),{headers:{'content-type':'application/json'}}),'source_bound'],
-    ['HTML too long',page('<p>'+('é'.repeat(12500))+'<a href="/must-remain-whole">Register</a></p>'),'source_bound'],
-    ['truncated JSON',page('{"sideEvent":',{headers:{'content-type':'application/json'}}),'source_json_invalid'],
-    ['PDF',page('bytes',{headers:{'content-type':'application/pdf'}}),'source_type_unsupported'],
-    ['HTTP error',page('not read',{status:403}),'source_read_failed'],
-    ['missing URL',page('text',{url:undefined}),'source_read_failed'],
-    ['private final URL',page('text',{url:'https://127.0.0.1/'}),'source_read_failed']];
-  for(const [name,value,reason] of variants)await context.test(name,async()=>{
-    let http=0;const {model}=setup({generate:openai({apiKey:'test',urls:[url],read:async()=>value,fetch:async()=>{http++;return result();}})});
-    await assert.rejects(model('Read',[],schema),{reason,dispatched:false});assert.equal(http,0);
-  });
+test('source URL bounds remain enforced before provider dispatch',()=>{
   assert.throws(()=>openai({apiKey:'test',urls:['https://127.0.0.1/']}));
   assert.throws(()=>openai({apiKey:'test',urls:Array.from({length:5},(_,i)=>`https://example.org/${i}`)}),{reason:'source_bound'});
 });
@@ -179,12 +157,12 @@ test('uncertain calls preserve full charges, consume the shared attempt allowanc
     assert.equal(error.usage.input_tokens,60000);assert.equal(error.usage.output_tokens,1500);assert.ok(!JSON.stringify(error).includes('secret-key'));return true;
   });
   await assert.rejects(model('Third',[],schema),{reason:'attempt_bound'});
-  assert.equal(logs.settled.length,2);assert.ok(logs.settled.every(r=>r.state==='unknown'&&r.cost_usd===0.00825));
+  assert.equal(logs.settled.length,2);assert.ok(logs.settled.every(r=>r.state==='unknown'&&r.cost_usd===0.03825));
   assert.ok(!JSON.stringify(logs).includes('Sensitive prompt'));assert.ok(!JSON.stringify(logs).includes('partial'));
 });
 
 test('uncertain charge can exhaust credit before the second allowed generation',async()=>{
-  const {config,logs}=setup({generate:async()=>{throw new Error('provider_unknown');}});config.budget.maxCostUSD=0.01;
+  const {config,logs}=setup({generate:async()=>{throw new Error('provider_unknown');}});config.budget.maxCostUSD=0.04;
   const model=modelGateway(config);await assert.rejects(model('Read',[],schema),{reason:'provider_unknown'});
   await assert.rejects(model('Again',[],schema),{reason:'spending_bound'});assert.equal(logs.reserved.length,1);
 });
@@ -205,7 +183,7 @@ test('OpenAI HTTP errors reach the caller with bounded redacted details, never t
       typeof body==='string'?body:JSON.stringify(body),{status,headers:{'x-request-id':'req_auth_check'}})})});
     await assert.rejects(model('Read',[],schema),error=>{
       assert.equal(error.reason,'provider_auth');assert.equal(error.dispatched,true);
-      assert.deepEqual(error.diagnostics.attempts[0].diagnostics,{provider:'openai',model:OPENAI_MODEL,source_reads:[],tool_calls:0,
+      assert.deepEqual(error.diagnostics.attempts[0].diagnostics,{provider:'openai',model:OPENAI_MODEL,retrieval:[],tool_calls:0,
         http_status:status,request_id:'req_auth_check',...details});
       assert.ok(!/test-private-key|sk-proj-|RAW_RESPONSE_BODY/.test(JSON.stringify(error)));return true;
     });
@@ -225,7 +203,7 @@ test('provider errors/failed outputs settle known usage or retain uncertain rese
     ['broken JSON',()=>result('{'),'invalid_output',false],['array root',()=>result('[]'),'invalid_output',false],
     ['refusal',()=>result('',{output:[{type:'message',content:[{type:'refusal',refusal:'hidden private text'}]}]}),'provider_refused',false],
     ['incomplete',()=>result('',{status:'incomplete'}),'output_incomplete',false],
-    ['tool output',()=>result('',{output:[{type:'web_search_call'}]}),'unexpected_tool',false]];
+    ['tool output',()=>result('',{output:[{type:'function_call'}]}),'unexpected_tool',false]];
   for(const [name,response,reason,unknown] of cases)await context.test(name,async()=>{
     const {model,logs}=setup({task:'answer_records',generate:openai({apiKey:'test',fetch:async()=>response()})});
     await assert.rejects(model('Read',[],schema),error=>{assert.equal(error.reason,reason);assert.equal(error.dispatched,true);return true;});
@@ -293,12 +271,12 @@ test('tracker route falls back only for approved unusable Gemini results, accoun
   for(const [name,response,recover] of cases)await context.test(name,async()=>{
     const sql=[],calls={gemini:0,openai:0};let reads=0;
     const ledger={query:async(q,p)=>{sql.push({q,p});return {rows:[q.includes('reserve_provider')?{allowed:true}:{settled:true}]};}};
-    const model=trackerModel({apiKey:'test',openaiApiKey:'test',ledger,source:{url,identity:'native:6915'},read:async()=>{reads++;return page();},fetch:async(target,options)=>{
+    const model=trackerModel({apiKey:'test',openaiApiKey:'test',ledger,source:{url,identity:'native:6915'},read:async()=>{reads++;assert.fail('No local reader');},fetch:async(target,options)=>{
       if(target.includes('googleapis')){calls.gemini++;return response();}calls.openai++;
-      assert.equal(JSON.parse(options.body).max_output_tokens,1500);return result('{"records":[]}');
+      assert.equal(JSON.parse(options.body).max_output_tokens,1500);return webResult('{"records":[]}');
     }});
     const output=await model(INTAKE_INSTRUCTION,[],RESPONSE_SCHEMA).catch(error=>error);
-    assert.equal(calls.openai,recover?1:0);assert.equal(reads,recover?1:0);assert.equal(calls.gemini,1);
+    assert.equal(calls.openai,recover?1:0);assert.equal(reads,0);assert.equal(calls.gemini,1);
     assert.equal(sql.filter(item=>item.q.includes('reserve_provider')).length,recover?2:1);assert.equal(sql.filter(item=>item.q.includes('settle_provider')).length,recover?2:1);
     assert.ok(sql.every(item=>!item.q.includes('reserve_model')));assert.ok(!JSON.stringify(sql).includes('Private transport text'));
     if(name==='invalid JSON'||name==='missing candidate'||name==='missing finish'){

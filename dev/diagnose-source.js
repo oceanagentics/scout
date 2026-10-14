@@ -8,7 +8,6 @@ import {managementDatabase} from '../collector/remote.js';
 import {database} from '../collector/hosted-hsa.js';
 import {processDocument} from '../collector/finding-jobs.js';
 import {trackerModel} from '../collector/model-gateway.js';
-import {readPublic} from '../collector/hsa.js';
 
 export function captureTraffic(path,{fetch:send=fetch,secrets=[]}={}){
   mkdirSync(dirname(path),{recursive:true});
@@ -63,7 +62,7 @@ export async function diagnoseSource({tracker,source,env,ledger=managementDataba
     const db=database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
     const input={tracker_id:tracker,identity:source,url:source},deadline=Date.now()+100000;
     const model=trackerModel({source:input,ledger,deadline,apiKey:env.GEMINI_API_KEY,openaiApiKey:env.SCOUT_OPENAI_API_KEY,
-      tavilyApiKey:env.TAVILY_API_KEY,read:readPublic,fetch:traffic.fetch});
+      tavilyApiKey:env.TAVILY_API_KEY,fetch:traffic.fetch});
     const result=await processDocument(db,{source:input,model,deadline});
     const records=(await raw.query('select id,version,title,details,sources from scout.records order by id')).rows;
     return {traffic_file:output,result,records,cost:db.metrics};
