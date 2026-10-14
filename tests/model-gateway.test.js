@@ -188,6 +188,31 @@ test('uncertain charge can exhaust credit before the second allowed generation',
   await assert.rejects(model('Again',[],schema),{reason:'spending_bound'});assert.equal(logs.reserved.length,1);
 });
 
+test('OpenAI HTTP errors reach the caller with bounded redacted details, never the accounting ledger',async context=>{
+  const cases=[
+    ['invalid key',401,{error:{code:'invalid_api_key',type:'invalid_request_error',param:null,
+      message:'Incorrect API key: test-private-key or sk-proj-masked***suffix.\nCheck your key.'},private:'RAW_RESPONSE_BODY'},
+      {error_code:'invalid_api_key',error_type:'invalid_request_error',error_message:'Incorrect API key: [REDACTED] or [REDACTED] Check your key.'}],
+    ['missing permission',403,{error:{code:null,type:'invalid_request_error',param:'model',message:'Missing scopes: api.responses.write.'}},
+      {error_type:'invalid_request_error',error_param:'model',error_message:'Missing scopes: api.responses.write.'}],
+    ['malformed response',401,'<html>RAW_RESPONSE_BODY test-private-key</html>',{}],
+    ['bounded details',401,{error:{code:'x'.repeat(200),type:[],param:{private:'RAW_RESPONSE_BODY'},message:'test-private-key '.repeat(100)}},
+      {error_code:'x'.repeat(128),error_message:'[REDACTED] '.repeat(100).slice(0,512)}]
+  ];
+  for(const [name,status,body,details] of cases)await context.test(name,async()=>{
+    const {model,logs}=setup({task:'answer_records',generate:openai({apiKey:'test-private-key',fetch:async()=>new Response(
+      typeof body==='string'?body:JSON.stringify(body),{status,headers:{'x-request-id':'req_auth_check'}})})});
+    await assert.rejects(model('Read',[],schema),error=>{
+      assert.equal(error.reason,'provider_auth');assert.equal(error.dispatched,true);
+      assert.deepEqual(error.diagnostics.attempts[0].diagnostics,{provider:'openai',model:OPENAI_MODEL,source_reads:[],tool_calls:0,
+        http_status:status,request_id:'req_auth_check',...details});
+      assert.ok(!/test-private-key|sk-proj-|RAW_RESPONSE_BODY/.test(JSON.stringify(error)));return true;
+    });
+    assert.equal(logs.settled[0].state,'unknown');assert.equal(logs.settled[0].cost_usd,logs.reserved[0].cost_usd);
+    assert.ok(!/req_auth_check|error_message|test-private-key|RAW_RESPONSE_BODY/.test(JSON.stringify(logs)));
+  });
+});
+
 test('provider errors/failed outputs settle known usage or retain uncertain reservations',async context=>{
   const cases=[['401',()=>new Response('body',{status:401}),'provider_auth',true],['429',()=>new Response('{}',{status:429,headers:{'retry-after':'300'}}),'provider_rate_limit',true],
     ['503',()=>new Response('{}',{status:503}),'provider_unavailable',true],['broken envelope',()=>new Response('{broken'),'invalid_output',true],

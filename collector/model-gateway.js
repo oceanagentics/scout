@@ -102,6 +102,13 @@ export function openai({apiKey,read,urls=[],source,model=OPENAI_MODEL,fetch:send
       try{for(;;){const part=await reader?.read();if(!part||part.done)break;bytes+=part.value.byteLength;if(bytes>131072)throw fail('output_bound');raw+=decoder.decode(part.value,{stream:true});}raw+=decoder.decode();}
       finally{await reader?.cancel();}
       if(!response.ok){
+        let error;try{error=JSON.parse(raw)?.error;}catch{}
+        // Return bounded diagnostics only; OpenAI messages can echo full or masked keys.
+        for(const [name,value] of Object.entries({request_id:response.headers.get('x-request-id'),
+          error_code:error?.code,error_type:error?.type,error_param:error?.param,error_message:error?.message})){
+          if(typeof value==='string')diagnostics[name]=value.replaceAll(apiKey,'[REDACTED]')
+            .replace(/\bsk-[a-z0-9_.*-]+/gi,'[REDACTED]').replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,name==='error_message'?512:128);
+        }
         const retry=response.headers.get('retry-after'),retryAt=Number(retry)>0?now()+Number(retry)*1000:Date.parse(retry);
         throw fail(response.status===401||response.status===403?'provider_auth':response.status===429?'provider_rate_limit':'provider_unavailable',
           response.status===429||response.status>=500?{deferred:{retry_at:new Date(Math.max(retryAt||0,now()+60000)).toISOString()}}:{});
