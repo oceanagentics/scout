@@ -1,6 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {Buffer} from 'node:buffer';
-import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA,normalizeFinding,sameClaim,publicURL,text} from './finding-contract.js';
+import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA,normalizeFinding,sameClaim,publicURL} from './finding-contract.js';
 import {normalizeDate,dateInterval} from '../src/finding.js';
 
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -144,47 +144,31 @@ export async function processDocument(db,{source,model,deadline=Date.now()+10000
       properties:{...RESPONSE_SCHEMA.properties.records.items.properties,record_id:{type:'string'},date_source_url:{type:['string','null']}},
       required:[...RESPONSE_SCHEMA.properties.records.items.required,'record_id']}}}};
     if(answer.status==='found'&&!findings.length)throw fail('empty_findings');
-    research.supports=(Array.isArray(answer.follow_up_requests)?answer.follow_up_requests.slice(0,3):[]).flatMap(r=>{
-      const url=publicURL(r?.url),question=text(r?.question,280);return question?[{url:url===source.url?null:url,question}]:[];
-    });
-    research.note=text(answer.note,280);
-    research.decision=research.supports.length?true:typeof answer.further_research==='boolean'?answer.further_research:null;
-    if(undated.length){research.decision=true;research.supports=[{url:source.url,question:SCHEDULE_QUESTION}];}
+    research.decision=undated.length>0;
+    if(undated.length)research.supports=[{url:source.url,question:SCHEDULE_QUESTION}];
     improvement=research.decision?'pending':'not_requested';
-    // Only current questions/URLs are retained. Do not let oversized optional research lose the saved facts.
-    if(Buffer.byteLength(JSON.stringify(research))>7800){research.supports=[];research.note=null;throw fail('research_bound');}
-    const wanted=research.supports.filter(s=>s.url).map(({url,question})=>({url,question}));
     if(research.decision){
       improvement='pending';
-      if(!wanted.length)throw fail('research_source_missing');
       if(answer._usage?.overrun)throw fail('token_reservation_overrun');
       if(db.metrics?.statements>40)throw fail('sql_bound');
       improvementStart=usage.generations;
-      const improved=undated.length?await call(SCHEDULE_QUESTION+'\nResearch each supplied event. Return the same record_id, title and event type. Include only source-supported scheduling dates for that exact event. A session or town hall must not inherit the dates of its parent conference or workshop; leave its dates empty unless its own schedule is established. A publication date does not establish the event date or year. Set date_source_url to the retrieved page establishing the schedule. Leave dates empty if unresolved. Do not add other events.',
-        {research:'event_schedule',records:undated.map(r=>({record_id:r.id,title:r.title,summary:r.description,source_url:source.url,details:r.details})),requested_links:wanted},scheduleSchema):
-        await call(prompt+'\n\nImprove the findings below by reading only the requested links. Return the same developments with the same titles, keeping previously established facts and correcting mistakes. Answer the specific questions; leave unresolved fields partial. Do not add unrelated developments.',
-          {records:findings,requested_links:wanted});
-      const next=improved.records.slice(0,8).map(r=>normalizeFinding(r,source.url)).filter(Boolean);
+      const improved=await call(SCHEDULE_QUESTION+'\nResearch each supplied event. Return its record_id and the seven development fields: description, type, priority, organizations, date, time, timezone. Include only source-supported scheduling for that exact event. Use YYYY-MM-DD (or YYYY-MM or YYYY for partial dates), HH:MM and an explicit UTC, numeric offset or IANA timezone. A session or town hall must not inherit its parent conference dates. A publication date does not establish the event date or year. Set date_source_url to the retrieved page establishing the schedule. Use null for unresolved dates, times and timezones. Do not add other events.',
+        {research:'event_schedule',records:undated.map(r=>({record_id:r.id,title:r.title,source_url:source.url,details:r.details})),requested_links:research.supports},scheduleSchema);
       const retrieved=(improved._retrieval??[]).filter(r=>r.status==='URL_RETRIEVAL_STATUS_SUCCESS').map(r=>publicURL(r.url)).filter(Boolean);
-      const matched=undated.length?improved.records.slice(0,8).flatMap(r=>{
+      const matched=improved.records.slice(0,8).flatMap(r=>{
         const old=undated.find(f=>f.id===r?.record_id),url=publicURL(r?.date_source_url);
         if(!old||!url||!retrieved.includes(url))return [];
-        const f=normalizeFinding({...r,type:'event',title:old.title,summary:old.description},source.url);
+        const f=normalizeFinding({...r,type:'event',description:old.description},source.url);
         if(!f?.details.start)return [];
-        return [{id:old.id,kind:old.kind,title:old.title,details:{start:f.details.start,...(f.details.end?{end:f.details.end}:{})},urls:[url]}];
-      }):next.filter(f=>findings.some(old=>old.kind===f.kind&&normalize(old.title)===normalize(f.title)));
-      if(!matched.length)throw fail(undated.length?'research_exhausted':'improvement_unmatched');
-      const urls=[source.url,...(improved._retrieval??[]).filter(r=>r.status==='URL_RETRIEVAL_STATUS_SUCCESS'&&wanted.some(w=>w.url===publicURL(r.url))).map(r=>publicURL(r.url))];
-      const enriched=await saveFindings(db,leased,matched,[...new Set(urls)]);
+        return [{id:old.id,kind:old.kind,title:old.title,details:{start:f.details.start},urls:[url]}];
+      });
+      if(!matched.length)throw fail('research_exhausted');
+      const enriched=await saveFindings(db,leased,matched,[]);
       counts.created+=enriched.created;counts.changed+=enriched.changed;counts.ambiguous+=enriched.ambiguous;
       improvement=enriched.changed?'improved':'no_change';
-      // One investigation only. Remaining requested research needs deliberate review.
-      research.note=text((Array.isArray(improved.follow_up_requests)?improved.follow_up_requests.map(r=>text(r?.question,280)).filter(Boolean).join('; '):null)||improved.note,480);
-      if(improved.further_research===true||(Array.isArray(improved.follow_up_requests)&&improved.follow_up_requests.some(r=>text(r?.question,280)))||enriched.saved<(undated.length||saved.saved))
-        throw fail('research_exhausted');
+      if(enriched.saved<undated.length)throw fail('research_exhausted');
     }
     research.improvement=improvement;
-    if(Buffer.byteLength(JSON.stringify(research))>7800)research.note=null;
     if(!await finishSource(db,leased,{processed:null,research}))throw fail('stale_lease');
     return {state:captured?'captured':counts.ambiguous?'ambiguous':'no_findings',...counts,improvement,research,usage,diagnostics};
   }catch(error){
@@ -192,7 +176,6 @@ export async function processDocument(db,{source,model,deadline=Date.now()+10000
     if(reason==='quota'&&!usage.generations&&!error.dispatched)attempts=Math.max(0,attempts-1);
     if(improvementStart!==undefined&&usage.generations>improvementStart)improvement='exhausted';
     research.improvement=improvement;
-    if(Buffer.byteLength(JSON.stringify(research))>7800)research.note=null;
     const parked=captured||attempts>=3;
     await finishSource(db,leased,{research,state:parked?'parked':'deferred',reason,attempts,
       retryAt:new Date(Math.max(Date.parse(error.deferred?.retry_at)||0,Date.now()+(parked?86400000:3600000))).toISOString()});

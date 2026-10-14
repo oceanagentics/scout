@@ -36,10 +36,8 @@ test('strict schema keeps common schema untouched and closes nested nullable opt
   assert.deepEqual(next.properties.variant.anyOf.at(-1),{type:'null'});assert.equal(next.$defs.text.additionalProperties,false);
   const transport=strictSchema(RESPONSE_SCHEMA);
   assert.deepEqual(RESPONSE_SCHEMA.required,['status','records']);
-  assert.deepEqual(RESPONSE_SCHEMA.properties.follow_up_requests.items.required,['question']);
-  for(const key of ['further_research','follow_up_requests','note'])assert.ok(transport.properties[key].type.includes('null'));
   assert.deepEqual(transport.properties.records.items.properties.priority.enum,['high','normal','low',null]);
-  assert.deepEqual(transport.properties.records.items.properties.dates.items.required,['meaning','date','time','timezone']);
+  assert.deepEqual(transport.properties.records.items.required,['description','type','priority','organizations','date','time','timezone']);
   assert.deepEqual(strictSchema(schema).properties.records.items,{type:'object',properties:{},required:[],additionalProperties:false});
   for(const invalid of [undefined,null,{type:'array'},{type:'object',anyOf:[]}])assert.throws(()=>strictSchema(invalid),{reason:'invalid_schema'});
 });
@@ -251,7 +249,7 @@ test('second configured task uses the same dispatcher and cannot overlap invocat
 });
 
 test('tracker route falls back only for approved unusable Gemini results, accounting each provider once',async context=>{
-  const partial={status:'found',records:[null,{type:'event',title:'Useful partial',organizations:[null],dates:[{meaning:'event_start',date:'bad'}]}]};
+  const partial={status:'found',records:[null,{type:'event',description:'Useful partial',organizations:[null],date:'bad'}]};
   const envelope=(text='{"status":"none","records":[]}',extra={})=>Response.json({usageMetadata:{promptTokenCount:100,toolUsePromptTokenCount:20,candidatesTokenCount:10,totalTokenCount:130},
     candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},content:{parts:[{text}]}}],...extra});
   const cases=[['valid none',()=>envelope(),false],['useful malformed-optional partial',()=>envelope(JSON.stringify(partial)),false],

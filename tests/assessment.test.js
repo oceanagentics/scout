@@ -162,15 +162,15 @@ test('hosted selected/direct sources save a bounded fallback once, preserve nati
   const url='https://example.org/6915';await raw.query("insert into scout.source_state(tracker_id,identity,url,native_id,native_ref,due_at) values($1,'cbd:side-event:6915',$2,'6915',$3,now()-interval '1 second')",[tracker.id,url,{api_url:url}]);
   const counts={gemini:0,openai:0,read:0},secret='sb_secret_scout_test_only',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
   const connect=()=>({reserve:async()=>({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;},release(){}}),end:async()=>{}});
-  const record={type:'event',title:'BBNJ Clearing-House workshop',summary:'Technical BBNJ design discussion.',organizations:[],dates:[{meaning:'event_start',date:'2026-10-15',time:'15:00',timezone:'+02:00'}]};
+  const record={description:'BBNJ Clearing-House workshop: technical design discussion.',type:'event',priority:'high',organizations:[],date:'2026-10-15',time:'15:00',timezone:'+02:00'};
   const options={databaseURL:'mock',env,connect,apiKey:'test',openaiApiKey:'test',read:async()=>{counts.read++;return {url,status:200,headers:{'content-type':'text/html'},body:'<p>PRIVATE SOURCE BODY</p>'};},modelFetch:async(target,options)=>{
    if(target.includes('googleapis')){counts.gemini++;return Response.json({usageMetadata:{promptTokenCount:100,candidatesTokenCount:10,totalTokenCount:110},
     candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}]},content:{parts:[{text:'{"status":"unreadable","records":[]}'}]}}]});}
    counts.openai++;const body=JSON.parse(options.body);assert.equal(body.max_output_tokens,1500);assert.equal(JSON.parse(body.input).source.identity,'cbd:side-event:6915');
-   return Response.json({status:'completed',model:OPENAI_MODEL,usage:{input_tokens:100,output_tokens:10},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({status:'found',records:[record],follow_up_requests:[{url:'https://example.org/support',question:'Who is associated?'}]})}]}]});
+   return Response.json({status:'completed',model:OPENAI_MODEL,usage:{input_tokens:100,output_tokens:10},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({status:'found',records:[record]})}]}]});
   }};
   const run=async(query='next=true')=>(await hostedHSA(new Request('https://example.test/collect?'+query,{method:'POST',headers:{apikey:secret}}),options)).json();
-  const first=await run();assert.equal(first.state,'captured');assert.equal(first.reason,'generation_bound');assert.equal(first.improvement,'pending');assert.equal(first.usage.generations,2);assert.deepEqual(counts,{gemini:1,openai:1,read:1});
+  const first=await run();assert.equal(first.state,'captured');assert.equal(first.reason,undefined);assert.equal(first.improvement,'not_requested');assert.equal(first.usage.generations,2);assert.deepEqual(counts,{gemini:1,openai:1,read:1});
   const saved=(await raw.query('select * from scout.records')).rows[0];assert.equal(saved.details.start.utc,'2026-10-15T13:00:00.000Z');assert.ok(!JSON.stringify(saved).includes('PRIVATE SOURCE'));
   assert.deepEqual((await raw.query('select provider from scout.quota_reservations order by reserved_at')).rows.map(r=>r.provider),['gemini','openai']);
   await raw.exec("update scout.source_state set state='complete',due_at=now()-interval '1 second'");assert.equal((await run('tracker_id='+tracker.id+'&source_url='+encodeURIComponent(url))).state,'complete');
