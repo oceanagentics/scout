@@ -3,8 +3,17 @@ import {sourceURL} from './octo-documents.js';
 
 export const INTAKE_INSTRUCTION=`Read this page: **[URL]**
 
+Current date (UTC): [TODAY].
+
 Identify the distinct developments described on the page: events,
 announcements, and official treaty developments.
+
+Use event for upcoming or ongoing gatherings. Use announcement for past
+events, including recaps, recordings and reports of completed sessions,
+even when their exact event date is unknown. Judge this from the source's
+meaning and supported scheduling, not its publication date alone.
+A gathering that has started but is still in progress remains an event.
+Missing or unclear dates must not prevent returning a useful development.
 
 For each development, provide:
 
