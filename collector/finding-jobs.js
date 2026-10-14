@@ -7,7 +7,7 @@ const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex
 const normalize=value=>value.normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').trim().toLowerCase();
 const fail=reason=>Object.assign(new Error(reason),{reason});
 const REVISION='url-intake-only-v1';
-const SCHEDULE_QUESTION='When is this event scheduled? Check the event’s registration or programme page and identify the source supporting the date. Follow links or search the internet if necessary to find the scheduling.';
+const SCHEDULE_QUESTION='When is this event scheduled? Find its missing date, time or timezone. Check the event’s registration or programme page and identify the source supporting the scheduling. Follow links or search the internet if necessary.';
 
 export async function claimSource(db,source){
   return (await db.query(`insert into scout.source_state(tracker_id,identity,url,state,attempts,lease_id,lease_until,native_id,native_ref)
@@ -139,7 +139,7 @@ export async function processDocument(db,{source,model,deadline=Date.now()+10000
     const saved=await saveFindings(db,leased,findings,[source.url]);
     counts.created+=saved.created;counts.changed+=saved.changed;counts.captured=saved.saved;counts.ambiguous+=saved.ambiguous;
     captured=saved.saved>0;
-    const undated=saved.newRecords.filter(r=>r.kind==='event'&&!r.details.start);
+    const undated=saved.newRecords.filter(r=>r.kind==='event'&&(!r.details.start?.value||!r.details.start.time||!r.details.start.zone));
     const scheduleSchema={...RESPONSE_SCHEMA,properties:{...RESPONSE_SCHEMA.properties,records:{type:'array',items:{...RESPONSE_SCHEMA.properties.records.items,
       properties:{...RESPONSE_SCHEMA.properties.records.items.properties,record_id:{type:'string'},date_source_url:{type:['string','null']}},
       required:[...RESPONSE_SCHEMA.properties.records.items.required,'record_id']}}}};

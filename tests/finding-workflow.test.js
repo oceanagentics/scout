@@ -98,16 +98,26 @@ test('manual URL intake maps a flat record and preserves the existing source wit
  }finally{await raw.close();}
 });
 
-test('dated events and announcements save without research and completed input makes no model call',async()=>{
- for(const record of [event,{...event,type:'announcement',date:null}]){
+test('any missing date, time or timezone triggers one follow-up; complete events and announcements do not',async()=>{
+ for(const missing of ['date','time','timezone',null,'announcement']){
   const db=await setup();try{
-   const source=sourceFor(await tracker(db));let calls=0;
-   const model=async()=>{calls++;return answer([record]);};
+   const source=sourceFor(await tracker(db)),complete={...event,date:'2026-10-22',time:'13:30',timezone:'UTC'};
+   const record=missing==='announcement'?{...event,type:'announcement',date:null}:missing?{...complete,[missing]:null}:complete;
+   const needsResearch=missing!==null&&missing!=='announcement';let calls=0,savedId;
+   const model=async(prompt,input)=>{
+    if(++calls===1)return answer([record]);
+    savedId=(await db.query('select id from scout.records')).rows[0].id;
+    assert.match(prompt,/missing date, time or timezone/);assert.equal(input.records[0].record_id,savedId);
+    return {...answer([{...complete,record_id:savedId,date_source_url:source.url}]),
+     _retrieval:[{url:source.url,status:'URL_RETRIEVAL_STATUS_SUCCESS'}]};
+   };
    const result=await processDocument(db,{source,model});
-   assert.equal(result.state,'captured');assert.equal(result.created,1);assert.equal(result.improvement,'not_requested');
+   assert.equal(result.state,'captured');assert.equal(result.created,1);assert.equal(result.improvement,needsResearch?'improved':'not_requested');
+   const saved=(await db.query('select * from scout.records')).rows[0];
+   if(needsResearch){assert.equal(saved.id,savedId);assert.equal(saved.details.start.utc,'2026-10-22T13:30:00.000Z');}
    const before=(await db.query('select id,version from scout.records')).rows;
    await due(db);assert.deepEqual(await processDocument(db,{source,model}),{state:'complete',created:0,changed:0});
-   assert.equal(calls,1);assert.deepEqual((await db.query('select id,version from scout.records')).rows,before);
+   assert.equal(calls,needsResearch?2:1);assert.deepEqual((await db.query('select id,version from scout.records')).rows,before);
   }finally{await db.close();}
  }
 });
