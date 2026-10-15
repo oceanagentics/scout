@@ -9,6 +9,7 @@ import {trackerModel} from '../collector/models/gateway.js';
 import {database as boundary} from '../collector/database.js';
 import {hostedHSA} from '../collector/hosted.js';
 import {correctFinding} from '../collector/corrections.js';
+import {eventLabel} from '../website/records.js';
 
 async function setup(){
  const db=new PGlite();
@@ -101,6 +102,35 @@ test('manual URL intake maps a flat record and preserves the existing source wit
   const state=(await raw.query("select * from scout.source_state where tracker_id=$1 and identity='tracker'",[tr.id])).rows[0];
   assert.equal(state.processed_hash,null);assert.equal(state.observed_hash,null);assert.deepEqual(state.research.supports,[]);
  }finally{await raw.close();}
+});
+
+test('non-event dates survive intake, database filtering and display without extra model calls',async()=>{
+ const db=await setup();try{
+  const source=sourceFor(await tracker(db));let calls=0;
+  const records=[
+   {...event,type:'announcement',description:'Published BBNJ briefing',date:'2026-02-26',starttime:'12:00',timezone:'-05:00'},
+   {...event,type:'treaty_status',description:'Official treaty action',date:'2026-02-26',starttime:'17:00',timezone:'UTC'},
+   {...event,type:'announcement',description:'Monthly bulletin',date:'2026-03'},
+   {...event,type:'treaty_status',description:'Treaty update with an invalid date',date:'2026-02-30'}
+  ];
+  const result=await processDocument(db,{source,model:async()=>{calls++;return answer(records);}});
+  assert.equal(result.created,4);assert.equal(calls,1);
+  const rows=(await db.query('select * from scout.records')).rows;
+  for(const [kind,field] of [['announcement','published'],['treaty_status','action_date']]){
+   const saved=rows.find(r=>r.kind===kind&&r.details[field]?.time);
+   assert.equal(saved.details[field].utc,'2026-02-26T17:00:00.000Z');
+   assert.deepEqual(findingInterval(saved),['2026-02-26','2026-02-26']);
+   assert.ok(eventLabel(saved).includes('2026-02-26'));
+   assert.equal(saved.date_span,'[2026-02-26,2026-02-27)');
+  }
+  const partial=rows.find(r=>r.title==='Monthly bulletin');
+  assert.deepEqual(partial.details.published,{value:'2026-03',precision:'month'});
+  const invalid=rows.find(r=>r.title==='Treaty update with an invalid date');
+  assert.equal(invalid.details.action_date,undefined);
+  assert.equal(invalid.completeness.unknowns['details.action_date'].reason,'invalid_date');
+  await db.exec('set role service_role');
+  assert.equal((await db.query("select id from scout.findings(p_from=>'2026-02-26',p_to=>'2026-02-26')")).rows.length,2);
+ }finally{await db.close();}
 });
 
 test('any missing date, time or timezone triggers one follow-up; complete events and announcements do not',async()=>{
