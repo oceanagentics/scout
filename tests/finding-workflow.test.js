@@ -83,6 +83,8 @@ test('manual URL intake maps a flat record and preserves the existing source wit
     calls++;const body=JSON.parse(request.body);assert.deepEqual(body.tools,[{urlContext:{}}]);
     assert.ok(body.contents[0].parts[0].text.includes(tr.url));assert.equal(body.contents[0].parts.length,1);
     assert.ok(body.contents[0].parts[0].text.includes('Current date (UTC): '+new Date().toISOString().slice(0,10)+'.'));
+    assert.match(body.contents[0].parts[0].text,/Inspect every image on the page/);
+    assert.match(body.contents[0].parts[0].text,/description \(alt text\), and caption/);
     return Response.json({usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:1000,candidatesTokenCount:300,totalTokenCount:1700},
      candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:tr.url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
       content:{parts:[{text:JSON.stringify([{...event,organizations:['Institute A'],date:'2026-10-29',starttime:'13:30',timezone:'UTC'}])}]}}]});
