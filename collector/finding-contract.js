@@ -32,6 +32,13 @@ For each development, provide:
 - timezone: (events only) The timezone the event takes place in.
 - deadline: The date submissions are required by.
 
+For calls for expressions of interest, applications, proposals or comments,
+actively look for the submission deadline, including on announcements.
+Check relevant linked briefs, PDFs and submission forms when accessible.
+Use the deadline for responding to that call, not the page’s publication
+date or a related event date. If no deadline is supported, use null and
+still return the development.
+
 For events, look carefully for the scheduled date, time, and timezone.
 Use the schedule for that specific event, not its parent conference.
 Do not substitute the page’s publication date for an event date.
