@@ -1,42 +1,33 @@
 import {Buffer} from 'node:buffer';
-import {randomUUID} from 'node:crypto';
 import {isAccounted} from './model-gateway.js';
 
 export const MODEL='gemini-3.5-flash-lite';
-export const MODEL_LIMITS={input:60000,output:8192};
 
-export function requestBody(instruction,input,schema){
+export function requestBody(instruction,input,schema,limits){
   const body={contents:[{role:'user',parts:[{text:instruction},...(Array.isArray(input)&&!input.length?[]:[{text:JSON.stringify(input)}])]}],
     tools:[{urlContext:{}}],store:false,
-    generationConfig:{maxOutputTokens:MODEL_LIMITS.output,thinkingConfig:{thinkingLevel:'minimal'},responseMimeType:'application/json',responseJsonSchema:schema}};
-  if(Buffer.byteLength(JSON.stringify(body))>24000)throw new Error('input_bound');
+    generationConfig:{maxOutputTokens:limits.outputTokens,thinkingConfig:{thinkingLevel:'minimal'},responseMimeType:'application/json',responseJsonSchema:schema}};
+  if(Buffer.byteLength(JSON.stringify(body))>limits.inputBytes)throw new Error('input_bound');
   return JSON.stringify(body);
 }
 
 // All request/response material is invocation-local. No automatic provider retries.
-export function gemini({apiKey,tavilyApiKey,ledger,invocation=randomUUID(),maxCalls=2,fetch:send=fetch,deadline=Date.now()+100000}){
-  if(!Number.isInteger(maxCalls)||maxCalls<1||maxCalls>2)throw new Error('invocation_bound');
+export function gemini({apiKey,tavilyApiKey,ledger,fetch:send=fetch}){
   return async(instruction,input,schema,limits)=>{
-    const owned=!isAccounted(limits),end=Math.min(deadline,limits?.deadline??deadline);
-    if(!apiKey||owned&&!ledger)throw Object.assign(new Error('configuration'),{reason:'configuration',dispatched:false});
-    if(Date.now()+5000>=end)throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound',dispatched:false});
-    let body,searches=0;try{body=requestBody(instruction,input,schema);}catch(error){throw Object.assign(error,{dispatched:false});}
-    const id=randomUUID(),endpoint=`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}`;
-    const reserve=async(tokens)=>{
-      const result=(await ledger.query('select * from scout.reserve_model($1,$2,$3,$4)',[invocation,id,tokens,maxCalls])).rows[0];
-      if(!result?.allowed)throw Object.assign(new Error('quota'),{reason:'quota',deferred:{reason:'quota',retry_at:result?.retry_at}});
-    };
-    if(owned)await reserve(MODEL_LIMITS.input); // Gateway owns the one reservation when supplied.
-    let tokens=MODEL_LIMITS.input,output=0,state='unknown',reason=null,dispatched=false,retryAt;
+    if(!isAccounted(limits))throw Object.assign(new Error('accounting'),{reason:'accounting',dispatched:false});
+    if(!apiKey)throw Object.assign(new Error('configuration'),{reason:'configuration',dispatched:false});
+    let body,searches=0;try{body=requestBody(instruction,input,schema,limits);}catch(error){throw Object.assign(error,{dispatched:false});}
+    const endpoint=`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}`;
+    let tokens=limits.inputTokens,output=0,state='unknown',reason=null,dispatched=false,retryAt;
     const diagnostics={};
     const request=async(suffix,payload)=>{
       let response;
       try{response=await send(endpoint+suffix,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},body:payload,
-        signal:AbortSignal.timeout(Math.max(1,end-Date.now()-3000))});}
+        signal:limits.signal});}
       catch{throw Object.assign(new Error('provider_unknown'),{reason:'provider_unknown'});}
       diagnostics.http_status=response.status;
       const reader=response.body?.getReader(),decoder=new TextDecoder();let raw='',bytes=0;
-      try{for(;;){const part=await reader?.read();if(!part||part.done)break;bytes+=part.value.byteLength;if(bytes>131072)throw new Error('output_bound');raw+=decoder.decode(part.value,{stream:true});}raw+=decoder.decode();}
+      try{for(;;){const part=await reader?.read();if(!part||part.done)break;bytes+=part.value.byteLength;if(bytes>limits.outputBytes)throw new Error('output_bound');raw+=decoder.decode(part.value,{stream:true});}raw+=decoder.decode();}
       finally{await reader?.cancel();}
       if(!response.ok){
         if(response.status===429||response.status>=500){
@@ -50,14 +41,12 @@ export function gemini({apiKey,tavilyApiKey,ledger,invocation=randomUUID(),maxCa
       try{return JSON.parse(raw);}catch{throw new Error('invalid_output');}
     };
     try{
-      if(Date.now()+5000>=end)throw new Error('runtime_bound');
       if(input?.research==='event_schedule'){
         if(!tavilyApiKey)throw new Error('search_configuration');
         const search=async(path,payload)=>{
-          if(Date.now()+5000>=end)throw new Error('runtime_bound');
           const response=await send('https://api.tavily.com/'+path,{method:payload?'POST':'GET',
             headers:{Authorization:'Bearer '+tavilyApiKey,'Content-Type':'application/json'},...(payload?{body:JSON.stringify(payload)}:{}),
-            signal:AbortSignal.timeout(Math.min(10000,end-Date.now()-3000))});
+            signal:limits.signal});
           if(!response.ok)throw new Error('search_unavailable');
           return response.json();
         };
@@ -75,7 +64,7 @@ export function gemini({apiKey,tavilyApiKey,ledger,invocation=randomUUID(),maxCa
         }
         input={...input,search_results};
       }
-      if(searches)body=requestBody(instruction,input,schema);
+      if(searches)body=requestBody(instruction,input,schema,limits);
       dispatched=true;
       const result=await request(':generateContent',body);
       const usage=result.usageMetadata;
@@ -92,7 +81,6 @@ export function gemini({apiKey,tavilyApiKey,ledger,invocation=randomUUID(),maxCa
         tokens=usage.promptTokenCount+(usage.toolUsePromptTokenCount??0);
         output=(usage.candidatesTokenCount??0)+(usage.thoughtsTokenCount??0);state='settled';
       }
-      if(tokens>MODEL_LIMITS.input){reason='token_reservation_overrun';retryAt=new Date(Date.now()+120000).toISOString();}
       if(result.promptFeedback?.blockReason)throw new Error('provider_safety');
       if(!choice?.finishReason||choice.finishReason==='FINISH_REASON_UNSPECIFIED')throw new Error('invalid_output');
       if(choice.finishReason!=='STOP')throw new Error(choice.finishReason==='MAX_TOKENS'?'output_truncated':
@@ -110,16 +98,11 @@ export function gemini({apiKey,tavilyApiKey,ledger,invocation=randomUUID(),maxCa
       if(!retrieval.length)throw new Error('retrieval_metadata_missing');
       if(!retrieval.some(r=>r.urlRetrievalStatus==='URL_RETRIEVAL_STATUS_SUCCESS'))throw new Error('url_retrieval_failed');
       return {...answer,_retrieval:diagnostics.retrieval,_diagnostics:diagnostics,
-        _usage:{input_tokens:tokens,output_tokens:output,uncertain:state==='unknown',overrun:tokens>MODEL_LIMITS.input}};
+        _usage:{input_tokens:tokens,output_tokens:output,uncertain:state==='unknown'}};
     }catch(error){
       reason=['input_bound','output_bound','runtime_bound','invalid_json','invalid_output','output_truncated','provider_safety','provider_finish','provider_auth','provider_rate_limit','provider_rejected','retrieval_metadata_missing','url_retrieval_failed','provider_unavailable','provider_unknown','quota','search_configuration','search_quota','search_unavailable','database_operation','sql_bound'].includes(error.message)?error.message:'provider_unknown';
       if(!dispatched){tokens=output=0;state='settled';}
       throw Object.assign(new Error(reason),{reason,dispatched,diagnostics,usage:{input_tokens:tokens,output_tokens:output,uncertain:state==='unknown'},...(retryAt||error.deferred?{deferred:{reason,retry_at:retryAt??error.deferred.retry_at}}:{})});
-    }finally{
-      if(owned){
-        await ledger.query('update scout.quota_reservations set input_tokens=$2,output_tokens=$3,state=$4,reason=$5 where id=$1 returning id',[id,tokens,output,state,reason]);
-        if(retryAt)await ledger.query('update scout.quota_policy set cooldown_until=greatest(cooldown_until,$1::timestamptz) where id returning id',[retryAt]);
-      }
     }
   };
 }

@@ -108,7 +108,7 @@ async function saveFindings(db,source,findings,urls){
 
 // The model reads URLs. Completed/parked work requires an explicit state reset;
 // local fetching, preparation and content-change detection are disabled.
-export async function processDocument(db,{source,model,deadline=Date.now()+100000}){
+export async function processDocument(db,{source,model}){
   const leased=await claimSource(db,source);
   if(!leased)return {state:'idle',created:0,changed:0};
   const counts={created:0,changed:0,captured:0,ambiguous:0},usage={generations:0,input_tokens:0,output_tokens:0},diagnostics=[];
@@ -123,8 +123,6 @@ export async function processDocument(db,{source,model,deadline=Date.now()+10000
     }
     research={revision:REVISION,supports:[]};
     const call=async(prompt,input=[],schema=RESPONSE_SCHEMA)=>{
-      if(usage.generations>=2)throw fail('generation_bound');
-      if(Date.now()+10000>=deadline)throw fail('runtime_bound');
       let answer;
       try{answer=await model(prompt,input,schema);usage.generations+=answer._usage?.generations??1;}
       catch(error){if(error.diagnostics)diagnostics.push(error.diagnostics);if(error.dispatched){usage.generations+=error.usage?.generations??1;usage.input_tokens+=error.usage?.input_tokens??0;usage.output_tokens+=error.usage?.output_tokens??0;}throw error;}
@@ -149,7 +147,6 @@ export async function processDocument(db,{source,model,deadline=Date.now()+10000
     improvement=research.decision?'pending':'not_requested';
     if(research.decision){
       improvement='pending';
-      if(answer._usage?.overrun)throw fail('token_reservation_overrun');
       if(db.metrics?.statements>40)throw fail('sql_bound');
       improvementStart=usage.generations;
       const improved=await call(SCHEDULE_QUESTION+'\nResearch each supplied event. Return a JSON array of objects containing its record_id and the development fields: description, type, priority, organizations, date, starttime, timezone and deadline. Include only source-supported scheduling for that exact event. Use YYYY-MM-DD (or YYYY-MM or YYYY for partial dates), HH:MM and an explicit UTC, numeric offset or IANA timezone. A session or town hall must not inherit its parent conference dates. A publication date does not establish the event date or year. Set date_source_url to the retrieved page establishing the schedule. Use null for unresolved dates, times and timezones. Do not add other events.',

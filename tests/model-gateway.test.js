@@ -1,9 +1,14 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {strictSchema,openai,modelGateway,trackerModel,OPENAI_MODEL,OPENAI_LIMITS,OPENAI_WEB_CALLS} from '../collector/model-gateway.js';
+import {strictSchema,openai,modelGateway,trackerModel,OPENAI_MODEL} from '../collector/model-gateway.js';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../collector/finding-contract.js';
-import {MODEL} from '../collector/model.js';
+import {MODEL,gemini} from '../collector/model.js';
 
+// Stub the authoritative SQL reply; real policy/concurrency is covered in assessment.test.js.
+const OPENAI_LIMITS={inputTokens:1050000,outputTokens:128000};
+const admitted=(provider,remaining=1)=>({allowed:true,remaining_attempts:remaining,cost_usd:provider==='openai'?0.3885:0,
+  settings:{model:provider==='openai'?OPENAI_MODEL:MODEL,...provider==='openai'?{...OPENAI_LIMITS,maxToolCalls:3,maxUrls:4,maxFollowups:3}:
+    {inputTokens:60000,outputTokens:8192,inputBytes:24000,outputBytes:131072,maxToolCalls:0},deadline:new Date(Date.now()+100000).toISOString()}});
 const url='https://example.org/source?query=%7B%22sideEvent.id%22%3A6915%7D';
 const schema={type:'object',properties:{status:{type:'string'},records:{type:'array',items:{type:'object'}}},required:['status','records']};
 const answer=()=>({status:'none',records:[],_usage:{input_tokens:100,output_tokens:10}});
@@ -14,7 +19,7 @@ const webResult=(text='{"status":"none","records":[]}',web=[{type:'web_search_ca
 function setup({task='url_intake',provider='openai',generate=async()=>answer(),routes,providers,accounting,now=Date.now,deadline}={}){
   const time=now(),logs={reserved:[],settled:[]};
   const config={task,routes:routes??{[task]:{provider}},providers:providers??{[provider]:{model:provider==='openai'?OPENAI_MODEL:'gemini-3.5-flash-lite',generate}},
-    accounting:accounting??{reserve:async value=>{logs.reserved.push(value);return {allowed:true};},settle:async value=>{logs.settled.push(value);}},now,deadline:deadline??time+100000};
+    accounting:accounting??{reserve:async value=>{logs.reserved.push(value);return admitted(value.provider,2-logs.reserved.length);},settle:async value=>{logs.settled.push(value);}},now,deadline:deadline??time+100000};
   return {config,logs,model:modelGateway(config)};
 }
 const retrievalFailure=(extra={})=>Object.assign(new Error('url_retrieval_failed'),{reason:'url_retrieval_failed',dispatched:true,
@@ -37,18 +42,21 @@ test('strict schema keeps common schema untouched and closes nested nullable opt
 
 test('OpenAI sends shared instructions, schema and URLs to provider web access without preparing source text',async()=>{
   const requests=[],partial={records:[{description:'Existing title'}],requested_links:[{url:'https://example.org/support?raw=%2B',question:'Which date?'}]};
-  const {model,logs}=setup({generate:openai({apiKey:'test-key',urls:[url],read:()=>assert.fail('No local source reads'),
+  const {model,logs,config}=setup({generate:openai({apiKey:'test-key',urls:[url],read:()=>assert.fail('No local source reads'),
     fetch:async(target,options)=>{requests.push({target,options});return webResult('{"records":[]}');}})});
+  const reserve=config.accounting.reserve;
+  config.accounting.reserve=async value=>{const reply=await reserve(value);return {...reply,settings:{...reply.settings,outputTokens:512,maxToolCalls:1}};};
   const output=await model(INTAKE_INSTRUCTION,partial,RESPONSE_SCHEMA),request=JSON.parse(requests[0].options.body),input=JSON.parse(request.input);
   assert.equal(request.instructions,INTAKE_INSTRUCTION+'\nFor this API, return the array inside an object with the single key records.');
   assert.deepEqual(input,{input:partial,urls:[url,partial.requested_links[0].url]});
-  assert.deepEqual(request.tools,[{type:'web_search',search_content_types:['text','image']}]);assert.equal(request.tool_choice,'required');assert.equal(request.max_tool_calls,OPENAI_WEB_CALLS);
+  assert.deepEqual(request.tools,[{type:'web_search',search_content_types:['text','image']}]);assert.equal(request.tool_choice,'required');assert.equal(request.max_tool_calls,1);
   assert.deepEqual(request.include,['web_search_call.action.sources']);assert.equal(request.store,false);assert.equal(request.reasoning.effort,'low');
   assert.deepEqual(request.text.format.schema.properties.records,strictSchema({type:'object',properties:{records:RESPONSE_SCHEMA},required:['records']}).properties.records);
   assert.equal(output.status,'none');assert.deepEqual(output.records,[]);assert.equal(output._retrieval[0].url,url);
   assert.equal(output._retrieval[0].method,'provider_web');assert.equal(output._diagnostics.attempts[0].diagnostics.tool_calls,1);
-  assert.equal(request.max_output_tokens,OPENAI_LIMITS.outputTokens);
-  assert.equal(logs.reserved[0].cost_usd,0.3885);
+  assert.equal(request.max_output_tokens,512);assert.ok(requests[0].options.signal instanceof AbortSignal);
+  assert.equal(logs.settled[0].cost_usd,0.0000175);
+  assert.equal(logs.reserved[0].input_tokens,undefined); // The client does not set admission limits.
   assert.ok(!JSON.stringify(logs).includes('Which date?'));assert.ok(!JSON.stringify(logs).includes('test-key'));
 });
 
@@ -80,17 +88,20 @@ test('URL intake requires an explicit main source before dispatch; record answer
   assert.equal(calls,1);assert.equal(answer._usage.generations,1);assert.equal(answer._diagnostics.attempts[0].diagnostics.retrieval.length,0);
 });
 
-test('calling the OpenAI adapter directly cannot bypass gateway reservation with numeric limits',async()=>{
+test('neither provider adapter can bypass gateway reservation with numeric limits',async()=>{
   let calls=0,reads=0;
   const generate=openai({apiKey:'test',urls:[url],read:async()=>{reads++;assert.fail('No local reader');},fetch:async()=>{calls++;return result();}});
   await assert.rejects(generate('Read',[],schema,{inputTokens:60000,outputTokens:1500,deadline:Date.now()+100000,task:'url_intake'}),
     {reason:'accounting',dispatched:false});
+  await assert.rejects(gemini({apiKey:'test',ledger:{query:()=>assert.fail('No standalone reservation')},fetch:()=>{calls++;}})
+    ('Read',[],schema,{inputTokens:60000,outputTokens:8192}),{reason:'accounting',dispatched:false});
   assert.equal(calls,0);assert.equal(reads,0);
 });
 
-test('source URL bounds remain enforced before provider dispatch',()=>{
+test('source URL bounds remain enforced before provider dispatch',async()=>{
   assert.throws(()=>openai({apiKey:'test',urls:['https://127.0.0.1/']}));
-  assert.throws(()=>openai({apiKey:'test',urls:Array.from({length:5},(_,i)=>`https://example.org/${i}`)}),{reason:'source_bound'});
+  const {model}=setup({generate:openai({apiKey:'test',urls:Array.from({length:5},(_,i)=>`https://example.org/${i}`),fetch:()=>assert.fail('No dispatch')})});
+  await assert.rejects(model('Read',[],schema),{reason:'source_bound',dispatched:false});
 });
 
 test('explicit Gemini retrieval gap falls back once and returns both usage and original diagnostics',async()=>{
@@ -118,9 +129,8 @@ test('default routes and noneligible failures never fall back',async context=>{
   });
 });
 
-test('accounting, exact model configuration and the invocation deadline remain required',async()=>{
-  for(const change of [c=>delete c.accounting.reserve,c=>delete c.accounting.settle,c=>c.providers.openai.model='other',
-    c=>c.deadline=Date.now()+1000,c=>c.deadline=Date.now()+200000]){
+test('accounting and exact model configuration remain required',async()=>{
+  for(const change of [c=>delete c.accounting.reserve,c=>delete c.accounting.settle,c=>c.providers.openai.model='other']){
     let calls=0;const {config,logs}=setup({generate:async()=>{calls++;return answer();}});change(config);
     await assert.rejects(modelGateway(config)('Read',[],schema));assert.equal(calls,0);assert.equal(logs.reserved.length,0);
   }
@@ -157,7 +167,7 @@ test('OpenAI HTTP errors reach the caller with bounded redacted details, never t
         http_status:status,request_id:'req_auth_check',...details});
       assert.ok(!/test-private-key|sk-proj-|RAW_RESPONSE_BODY/.test(JSON.stringify(error)));return true;
     });
-    assert.equal(logs.settled[0].state,'unknown');assert.equal(logs.settled[0].cost_usd,logs.reserved[0].cost_usd);
+    assert.equal(logs.settled[0].state,'unknown');assert.equal(logs.settled[0].cost_usd,0.3885);
     assert.ok(!/req_auth_check|error_message|test-private-key|RAW_RESPONSE_BODY/.test(JSON.stringify(logs)));
   });
 });
@@ -177,7 +187,6 @@ test('provider errors/failed outputs settle known usage or retain uncertain rese
     const {model,logs}=setup({task:'answer_records',generate:openai({apiKey:'test',fetch:async()=>response()})});
     await assert.rejects(model('Read',[],schema),error=>{assert.equal(error.reason,reason);assert.equal(error.dispatched,true);return true;});
     assert.equal(logs.settled[0].state,unknown?'unknown':'settled');assert.ok(!JSON.stringify(logs).includes('hidden private text'));
-    if(reason==='provider_rate_limit')await assert.rejects(model('Retry',[],schema),{reason:'provider_cooldown'});
   });
 });
 
@@ -202,25 +211,16 @@ test('OpenAI limit categories distinguish temporary rates from spending and mode
 test('OpenAI accepts responses beyond the old Scout token and byte caps without blocking improvement',async()=>{
   const partial={status:'found',records:[{title:'Useful partial',description:'x'.repeat(132000)}]};
   const {model,logs}=setup({task:'answer_records',generate:openai({apiKey:'test',fetch:async()=>result(JSON.stringify(partial),{usage:{input_tokens:60001,output_tokens:40000}})})});
-  const output=await model('x'.repeat(60001),[],schema);assert.deepEqual(output.records,partial.records);assert.equal(output._usage.overrun,false);
+  const output=await model('x'.repeat(60001),[],schema);assert.deepEqual(output.records,partial.records);
   assert.equal(logs.settled[0].input_tokens,60001);assert.equal(logs.settled[0].output_tokens,40000);
   await model('Improve',[],schema);assert.equal(logs.settled.length,2);
-});
-
-test('failed overrun preserves original retrieval failure and cannot trigger fallback or another generation',async()=>{
-  let fallback=0;const error=retrievalFailure();error.usage={input_tokens:60001,output_tokens:41};
-  const {model,logs}=setup({routes:{url_intake:{provider:'gemini',fallback:'openai',fallbackReasons:["url_retrieval_failed"]}},providers:{
-    gemini:{model:MODEL,generate:async()=>{throw error;}},openai:{model:OPENAI_MODEL,generate:async()=>{fallback++;return answer();}}}});
-  await assert.rejects(model('Read',[],schema),error=>{assert.equal(error.reason,'url_retrieval_failed');assert.equal(error.usage.overrun,true);return true;});
-  assert.equal(fallback,0);assert.equal(logs.settled[0].reason,'url_retrieval_failed');assert.equal(logs.settled[0].input_tokens,60001);
-  await assert.rejects(model('Improve',[],schema),{reason:'attempt_bound'});
 });
 
 test('invalid schema and a deadline expired by reservation create no generation',async()=>{
   let calls=0;const {model}=setup({task:'answer_records',generate:openai({apiKey:'test',fetch:async()=>{calls++;return result();}})});
   await assert.rejects(model('Read',[],{type:'array'}),{reason:'invalid_schema',dispatched:false});assert.equal(calls,0);
   let time=Date.now();const {config,logs:after}=setup({now:()=>time,generate:async()=>{calls++;return answer();}});
-  config.accounting.reserve=async()=>{time+=99000;return {allowed:true};};
+  config.accounting.reserve=async()=>{const reply=admitted('openai');time=Date.parse(reply.settings.deadline)+1;return reply;};
   await assert.rejects(modelGateway(config)('Read',[],schema),{reason:'runtime_bound',dispatched:false});assert.equal(calls,0);assert.equal(after.settled[0].cost_usd,0);
 });
 
@@ -228,7 +228,7 @@ test('settlement failure halts the invocation and never refunds an uncertain cha
   let calls=0;const {config,logs}=setup({generate:async()=>{calls++;throw new Error('provider_unknown');}});
   config.accounting.settle=async value=>{logs.settled.push(value);throw new Error('Database secret');};const model=modelGateway(config);
   await assert.rejects(model('Read',[],schema),{reason:'accounting'});await assert.rejects(model('Retry',[],schema),{reason:'attempt_bound'});
-  assert.equal(calls,1);assert.equal(logs.settled[0].state,'unknown');assert.equal(logs.settled[0].cost_usd,logs.reserved[0].cost_usd);
+  assert.equal(calls,1);assert.equal(logs.settled[0].state,'unknown');assert.equal(logs.settled[0].cost_usd,0.3885);
 });
 
 test('second configured task uses the same dispatcher and cannot overlap invocation calls',async()=>{
@@ -256,7 +256,7 @@ test('tracker route falls back only for approved unusable Gemini results, accoun
     ['other terminal finish',()=>envelope(undefined,{candidates:[{finishReason:'OTHER'}]}),false]];
   for(const [name,response,recover] of cases)await context.test(name,async()=>{
     const sql=[],calls={gemini:0,openai:0};let reads=0;
-    const ledger={query:async(q,p)=>{sql.push({q,p});return {rows:[q.includes('reserve_provider')?{allowed:true}:{settled:true}]};}};
+    const ledger={query:async(q,p)=>{sql.push({q,p});return {rows:[q.includes('reserve_provider')?admitted(p[2],2-sql.filter(v=>v.q.includes('reserve_provider')).length):{settled:true}]};}};
     const model=trackerModel({apiKey:'test',openaiApiKey:'test',ledger,source:{url,identity:'native:6915'},read:async()=>{reads++;assert.fail('No local reader');},fetch:async(target,options)=>{
       if(target.includes('googleapis')){calls.gemini++;return response();}calls.openai++;
       assert.equal(JSON.parse(options.body).max_output_tokens,OPENAI_LIMITS.outputTokens);return webResult('{"records":[]}');
@@ -273,13 +273,13 @@ test('tracker route falls back only for approved unusable Gemini results, accoun
 });
 
 test('tracker second generation has no fallback; missing usage remains uncertain and disabled backup stops before OpenAI',async()=>{
-  const sql=[],ledger={query:async(q,p)=>{sql.push({q,p});return {rows:[q.includes('reserve_provider')?{allowed:true}:{settled:true}]};}};
+  const sql=[],ledger={query:async(q,p)=>{sql.push({q,p});return {rows:[q.includes('reserve_provider')?admitted(p[2],2-sql.filter(v=>v.q.includes('reserve_provider')).length):{settled:true}]};}};
   let calls=0;const model=trackerModel({apiKey:'test',openaiApiKey:'test',ledger,source:{url},read:async()=>assert.fail('No fallback'),fetch:async()=>{
     calls++;return Response.json({candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
       content:{parts:[{text:calls===1?'[]':'{'}]}}]});}});
   assert.equal((await model('Read',[],RESPONSE_SCHEMA))._usage.uncertain,true);
   await assert.rejects(model('Improve',[],RESPONSE_SCHEMA),{reason:'invalid_json'});assert.equal(calls,2);assert.equal(sql.length,4);
   let dispatched=0;const guarded=trackerModel({apiKey:'test',openaiApiKey:'test',source:{url},ledger:{query:async(q,p)=>({rows:[q.includes('reserve_provider')?
-    {allowed:p[2]==='gemini',reason:'quota'}:{settled:true}]})},fetch:async()=>{dispatched++;throw Error('Network');}});
+    p[2]==='gemini'?admitted('gemini'):{allowed:false,reason:'quota'}:{settled:true}]})},fetch:async()=>{dispatched++;throw Error('Network');}});
   await assert.rejects(guarded('Read',[],RESPONSE_SCHEMA),{reason:'quota'});assert.equal(dispatched,1);
 });

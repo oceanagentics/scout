@@ -4,7 +4,7 @@ import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {processDocument} from '../collector/finding-jobs.js';
 import {dateInterval,normalizeDate,findingInterval,dateLabel} from '../src/finding.js';
-import {gemini} from '../collector/model.js';
+import {trackerModel} from '../collector/model-gateway.js';
 import {database as boundary,hostedHSA} from '../collector/hosted-hsa.js';
 import {correctFinding} from '../collector/corrections.js';
 
@@ -37,7 +37,7 @@ test('new events without starts trigger one search, enrich saved IDs, and preser
  const raw=await setup();try{
   const tr=await tracker(raw);await enable(raw);const source=sourceFor(tr),support='https://example.org/programme';let http=0,searches=0,ids;
   const db=boundary(driver(raw,(_q,p)=>assert.ok(!JSON.stringify(p).includes('PRIVATE_SOURCE_BODY'))));
-  const model=gemini({apiKey:'test',tavilyApiKey:'test',ledger:db,fetch:async(url,options)=>{
+  const model=trackerModel({apiKey:'test',tavilyApiKey:'test',ledger:db,source,fetch:async(url,options)=>{
    if(url==='https://api.tavily.com/usage')return Response.json({account:{plan_limit:1000,plan_usage:10},key:{limit:null}});
    if(url==='https://api.tavily.com/search'){searches++;assert.equal(JSON.parse(options.body).search_depth,'basic');return Response.json({results:[{url:support,content:'PRIVATE_SEARCH_BODY'}]});}
    http++;assert.ok(url.endsWith(':generateContent'));
@@ -60,7 +60,7 @@ test('new events without starts trigger one search, enrich saved IDs, and preser
   assert.deepEqual(records.map(r=>r.id),ids);assert.deepEqual(records.map(r=>r.details.start.value),['2026-10-23','2026-10-22']);
   assert.ok(records.every(r=>r.details.response_due.value==='2026-10-01'));
   assert.ok(records.every(r=>r.sources.some(s=>s.url===support)));assert.equal(records[0].title,'First workshop');
-  assert.equal(first.diagnostics[1].search_queries,2);assert.equal(searches,2);
+  assert.equal(first.diagnostics[1].attempts[0].diagnostics.search_queries,2);assert.equal(searches,2);
   const initial={...db.metrics};await due(raw);
   assert.deepEqual(await processDocument(db,options),{state:'complete',created:0,changed:0});
   assert.equal(http,2);assert.equal(db.metrics.mutations-initial.mutations,2);

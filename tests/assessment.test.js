@@ -3,10 +3,13 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {randomUUID} from 'node:crypto';
-import {gemini} from '../collector/model.js';
+import {MODEL,gemini} from '../collector/model.js';
 import {database,hostedHSA} from '../collector/hosted-hsa.js';
-import {OPENAI_MODEL,OPENAI_LIMITS,trackerModel} from '../collector/model-gateway.js';
+import {OPENAI_MODEL,trackerModel,modelGateway,modelAccounting} from '../collector/model-gateway.js';
 
+const OPENAI_LIMITS={inputTokens:1050000,outputTokens:128000};
+const geminiModel=options=>modelGateway({task:'diagnostic',routes:{diagnostic:{provider:'gemini'}},
+ providers:{gemini:{model:MODEL,generate:gemini(options)}},accounting:modelAccounting(options.ledger)});
 async function setup(cutover=true){
  const raw=new PGlite();
  await raw.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;
@@ -18,19 +21,19 @@ async function setup(cutover=true){
 }
 const enable=db=>db.exec("update scout.quota_policy set enabled=true,verified_until=now()+interval '1 hour',verified_rpm=15,verified_rpd=500,verified_tpm=250000,database_bytes=10000000,database_verified_until=now()+interval '1 hour'");
 const boundary=raw=>database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
-const reserve=(db,invocation=randomUUID(),id=randomUUID(),tokens=null)=>db.query('select * from scout.reserve_model($1,$2,$3,2)',[invocation,id,tokens]);
+const reserve=(db,invocation=randomUUID(),id=randomUUID())=>db.query("select * from scout.reserve_provider($1,$2,'gemini',null::timestamptz)",[invocation,id]);
 const manual=()=>({enabled:true});
-const provider=(db,kind,invocation=randomUUID(),id=randomUUID(),max=2)=>db.query('select * from scout.reserve_provider($1,$2,$3,$4)',[invocation,id,kind,max]);
+const provider=(db,kind,invocation=randomUUID(),id=randomUUID(),deadline=null)=>db.query('select * from scout.reserve_provider($1,$2,$3,$4::timestamptz)',[invocation,id,kind,deadline]);
 
 test('URL diagnostics distinguish absent metadata, provider failure and a model unreadable answer without persisting traffic',async()=>{
  for(const retrieval of [undefined,[],[{retrievedUrl:'https://example.org',urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}],
   [{retrievedUrl:'https://example.org',urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]]){
-  const writes=[],ledger={query:async(q,p)=>{writes.push([q,p]);return {rows:[{allowed:true}]};}};
-  const model=gemini({apiKey:'test',ledger,fetch:async()=>Response.json({responseId:'test-response',modelVersion:'test-version',
+  const writes=[],ledger={query:async(q,p)=>{writes.push([q,p]);return {rows:[q.includes('reserve_provider')?{allowed:true,remaining_attempts:1,cost_usd:0,settings:{model:MODEL,inputTokens:60000,outputTokens:8192,inputBytes:24000,outputBytes:131072,maxToolCalls:0,deadline:new Date(Date.now()+40000).toISOString()}}:{settled:true}]};}};
+  const model=geminiModel({apiKey:'test',ledger,fetch:async()=>Response.json({responseId:'test-response',modelVersion:'test-version',
    usageMetadata:{promptTokenCount:10,toolUsePromptTokenCount:20,candidatesTokenCount:5,totalTokenCount:35},
    candidates:[{finishReason:'STOP',...retrieval===undefined?{}:{urlContextMetadata:{urlMetadata:retrieval}},
     content:{parts:[{text:JSON.stringify({status:'unreadable',records:[],note:'PRIVATE_MODEL_ANSWER'})}]}}]})});
-  const result=await model('PRIVATE_PROMPT',[]).catch(e=>e),d=result._diagnostics??result.diagnostics;
+  const result=await model('PRIVATE_PROMPT',[]).catch(e=>e),d=(result._diagnostics??result.diagnostics).attempts[0].diagnostics;
   assert.equal(d.retrieval_metadata_present,retrieval!==undefined);assert.equal(d.model_status,'unreadable');
   assert.deepEqual(d.tokens,{prompt:10,tool:20,output:5,thinking:null,total:35});
   if(!retrieval?.length)assert.equal(result.reason,'retrieval_metadata_missing');
@@ -43,7 +46,7 @@ test('URL diagnostics distinguish absent metadata, provider failure and a model 
 test('fresh finite shared headroom and database size are required before any model HTTP',async()=>{
  const raw=await setup();try{
   let http=0;
-  const db=boundary(raw),model=gemini({apiKey:'test',ledger:db,fetch:()=>{http++;throw new Error('must not dispatch');}});
+  const db=boundary(raw),model=geminiModel({apiKey:'test',ledger:db,fetch:()=>{http++;throw new Error('must not dispatch');}});
   await assert.rejects(model('Test',{}),/quota/);assert.equal(http,0);
   for(const update of ["verified_until=now()-interval '1 second'","verified_rpd=null","verified_tpm=0","database_bytes=400000000","database_verified_until=null"]){
    await enable(raw);await raw.exec('update scout.quota_policy set '+update);
@@ -54,7 +57,7 @@ test('fresh finite shared headroom and database size are required before any mod
 });
 test('scheduling search requires verified included credits before search or generation',async()=>{
  for(const account of [{},{plan_limit:1000,plan_usage:1000}]){
-  const urls=[],writes=[],model=gemini({apiKey:'test',tavilyApiKey:'test',ledger:{query:async(q,p)=>{writes.push([q,p]);return {rows:[{allowed:true}]};}},fetch:async url=>{urls.push(url);return Response.json({account});}});
+  const urls=[],writes=[],model=geminiModel({apiKey:'test',tavilyApiKey:'test',ledger:{query:async(q,p)=>{writes.push([q,p]);return {rows:[q.includes('reserve_provider')?{allowed:true,remaining_attempts:1,cost_usd:0,settings:{model:MODEL,inputTokens:60000,outputTokens:8192,inputBytes:24000,outputBytes:131072,maxToolCalls:0,deadline:new Date(Date.now()+40000).toISOString()}}:{settled:true}]};}},fetch:async url=>{urls.push(url);return Response.json({account});}});
   await assert.rejects(model('Find the schedule',{research:'event_schedule',records:[{title:'Workshop'}]}),{message:'search_quota',dispatched:false});
   assert.deepEqual(urls,['https://api.tavily.com/usage']);
   assert.deepEqual(writes.at(-1)[1].slice(1,4),[0,0,'settled']);
@@ -70,11 +73,11 @@ test('two durable quota mutations, URL retrieval accounting, streaming Unicode a
    const bytes=new TextEncoder().encode(body);
    return new Response(new ReadableStream({start(controller){for(const b of bytes)controller.enqueue(new Uint8Array([b]));controller.close();}}));
   };
-  const model=gemini({apiKey:'test',ledger:db,fetch:send});
+  const model=geminiModel({apiKey:'test',ledger:db,fetch:send});
   assert.equal((await model('Test',{})).organization,'Océan 海洋');assert.equal(db.metrics.mutations,2);
   await model('Test',{});assert.equal(db.metrics.mutations,4);
   await raw.exec("update scout.quota_reservations set reserved_at=now()-interval '61 seconds'");
-  await assert.rejects(model('Test',{}),/quota/);assert.deepEqual(http,{count:0,generation:2});
+  await assert.rejects(model('Test',{}),/attempt_bound/);assert.deepEqual(http,{count:0,generation:2});
   const rows=(await raw.query('select * from scout.quota_reservations')).rows;assert.equal(rows.length,2);
   assert.ok(rows.every(r=>r.state==='settled'&&r.input_tokens===1234));
  }finally{await raw.close();}
@@ -83,7 +86,7 @@ test('two uncertain requests remain charged until their windows expire; expiry c
  const raw=await setup();try{
   await enable(raw);await raw.exec('update scout.quota_policy set verified_tpm=120000');
   const db=boundary(raw),send=async url=>{if(url.endsWith(':countTokens'))return Response.json({totalTokens:50});throw new Error('PRIVATE TRANSPORT PAYLOAD');};
-  for(let i=0;i<2;i++)await assert.rejects(gemini({apiKey:'test',ledger:db,fetch:send})('Test',{}),/provider_unknown/);
+  for(let i=0;i<2;i++)await assert.rejects(geminiModel({apiKey:'test',ledger:db,fetch:send})('Test',{}),/provider_unknown/);
   assert.equal((await raw.query("select count(*)::int n from scout.quota_reservations where state='unknown'")).rows[0].n,2);
   assert.equal((await reserve(raw)).rows[0].allowed,false);
   await raw.exec("update scout.quota_reservations set reserved_at=now()-interval '121 seconds'");
@@ -102,9 +105,9 @@ test('daily denial returns Pacific reset, token oversize never generates and pro
   assert.deepEqual(denied.retry_at,reset);
   await raw.exec("update scout.quota_reservations set reserved_at=now()-interval '2 days';update scout.quota_policy set verified_rpd=500");
   let generated=0;
-  await assert.rejects(gemini({apiKey:'test',ledger:boundary(raw),fetch:async()=>{generated++;}})('Test',{oversize:'x'.repeat(24001)}),/input_bound/);
+  await assert.rejects(geminiModel({apiKey:'test',ledger:boundary(raw),fetch:async()=>{generated++;}})('Test',{oversize:'x'.repeat(24001)}),/input_bound/);
   assert.equal(generated,0);
-  await assert.rejects(gemini({apiKey:'test',ledger:boundary(raw),fetch:async()=>new Response('{}',{status:429,headers:{'retry-after':'3600'}})})('Test',{}),/provider_rate_limit/);
+  await assert.rejects(geminiModel({apiKey:'test',ledger:boundary(raw),fetch:async()=>new Response('{}',{status:429,headers:{'retry-after':'3600'}})})('Test',{}),/provider_rate_limit/);
   const cooldown=(await raw.query('select cooldown_until from scout.quota_policy')).rows[0].cooldown_until;
   assert.ok(Date.parse(cooldown)>Date.now()+3500000);assert.deepEqual((await reserve(raw)).rows[0].retry_at,cooldown);
  }finally{await raw.close();}
@@ -117,7 +120,7 @@ test('legacy active charges and future provider retry migrate without carrying e
   await raw.exec(await readFile(new URL('../supabase/migrations/20261009190000_scout_findings.sql',import.meta.url),'utf8'));
   assert.equal((await raw.query("select to_regclass('scout.collection_runs') name")).rows[0].name,null);
   assert.equal((await raw.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,2);
-  await enable(raw);assert.equal((await reserve(raw)).rows[0].allowed,false);
+  await enable(raw);assert.equal((await raw.query('select * from scout.reserve_model(gen_random_uuid(),gen_random_uuid(),null,2)')).rows[0].allowed,false);
   assert.equal(new Date((await raw.query('select cooldown_until from scout.quota_policy')).rows[0].cooldown_until).getTime(),Date.parse(stats.model_retry_at));
  }finally{await raw.close();}
 });
@@ -126,8 +129,18 @@ test('provider reservations serialize shared attempts, keep independent cooldown
  const raw=await setup();try{
   await enable(raw);await raw.query('update scout.quota_policy set openai=$1',[manual()]);
   const invocation=randomUUID(),first=randomUUID(),second=randomUUID();
-  const concurrent=await Promise.all([provider(raw,'gemini',invocation,first,1),provider(raw,'openai',invocation,second,1)]);
-  assert.equal(concurrent.filter(r=>r.rows[0].allowed).length,1);assert.equal((await raw.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,1);
+  const concurrent=await Promise.all([provider(raw,'gemini',invocation,first),provider(raw,'openai',invocation,second),provider(raw,'gemini',invocation)]);
+  assert.equal(concurrent.filter(r=>r.rows[0].allowed).length,2);assert.equal((await raw.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,2);
+  const admitted=concurrent.map(r=>r.rows[0]).filter(r=>r.allowed);
+  assert.deepEqual(admitted.map(r=>r.remaining_attempts),[1,0]);
+  assert.equal(admitted[0].settings.outputTokens,8192);assert.equal(admitted[1].settings.maxToolCalls,3);
+  assert.ok(Date.parse(admitted[0].settings.deadline)<=Date.now()+45000);
+  for(const row of (await raw.query('select id from scout.quota_reservations')).rows)
+    await raw.query("select * from scout.settle_provider($1,0,0,'settled',null,null,0)",[row.id]);
+  assert.equal((await provider(raw,'gemini',randomUUID(),randomUUID(),new Date(Date.now()+1000).toISOString())).rows[0].reason,'runtime_bound');
+  const expired=randomUUID();await provider(raw,'gemini',expired);
+  await raw.query("update scout.quota_reservations set reserved_at=now()-interval '101 seconds' where invocation=$1",[expired]);
+  assert.equal((await provider(raw,'openai',expired)).rows[0].reason,'runtime_bound');
   const oa=randomUUID();assert.equal((await provider(raw,'openai',randomUUID(),oa)).rows[0].allowed,true);
   const settle=(state,input=OPENAI_LIMITS.inputTokens,output=OPENAI_LIMITS.outputTokens)=>raw.query('select * from scout.settle_provider($1,$2,$3,$4,$5,$6,$7)',[oa,input,output,state,'provider_unknown',new Date(Date.now()+60000).toISOString(),0.00825]);
   assert.equal((await settle('unknown')).rows[0].settled,true);assert.equal((await settle('unknown')).rows[0].mutations,0);
@@ -142,7 +155,7 @@ test('provider reservations serialize shared attempts, keep independent cooldown
    await raw.exec('set role '+role);await assert.rejects(provider(raw,'openai'),{code:'42501'});
    await assert.rejects(raw.query('select * from scout.settle_provider($1,1,1,$2,null,null,0)',[oa,'settled']),{code:'42501'});await raw.exec('reset role');
   }
-  await assert.rejects(provider(raw,'gemini',randomUUID(),randomUUID(),null));
+  await assert.rejects(provider(raw,'unknown'));
   await assert.rejects(raw.query('select * from scout.settle_provider($1,null,1,$2,null,null,0)',[oa,'settled']));
   await raw.query('update scout.quota_policy set openai=$1',[manual()]);
   let calls=0;const noKey=trackerModel({apiKey:'test',ledger:boundary(raw),source:{url:'https://example.org/a'},fetch:async()=>{calls++;throw Error('Network');}});
@@ -153,32 +166,25 @@ test('provider reservations serialize shared attempts, keep independent cooldown
  }finally{await raw.close();}
 });
 
-test('both Luna callers ignore retired Scout caps and Gemini evidence while preserving pause and cooldown',async()=>{
+test('admission ignores retired Scout caps and Gemini evidence for Luna while preserving pause and cooldown',async()=>{
  const raw=await setup();try{
   await enable(raw);
   await raw.query('update scout.quota_policy set verified_until=null,verified_rpm=null,openai_spent_usd=100,openai=$1',[
     {...manual(),expires_at:'2000-01-01',access_until:'2000-01-01',quota_until:'2000-01-01',rpm:1,tpm:1,allocation_usd:0.001,invocation_usd:0.001,daily_usd:0.001}]);
-  await raw.exec(await readFile(new URL('../supabase/migrations/20261015180000_scout_provider_limits.sql',import.meta.url),'utf8'));
-  const policy=(await raw.query('select openai,openai_spent_usd from scout.quota_policy')).rows[0];
-  assert.deepEqual(policy.openai,{enabled:true});assert.equal(Number(policy.openai_spent_usd),100);
-  const reserveWeb=()=>raw.query('select * from scout.reserve_provider($1,$2,$3,1,3)',[randomUUID(),randomUUID(),'openai']);
-  for(let i=0;i<3;i++){
-   assert.equal((await provider(raw,'openai')).rows[0].allowed,true);
-   assert.equal((await reserveWeb()).rows[0].allowed,true);
-  }
+  for(let i=0;i<3;i++)assert.equal((await provider(raw,'openai')).rows[0].allowed,true);
   assert.equal((await provider(raw,'gemini')).rows[0].allowed,false);
   await enable(raw);
   for(let i=0;i<4;i++)assert.equal((await provider(raw,'gemini')).rows[0].allowed,true);
   assert.equal((await provider(raw,'gemini')).rows[0].allowed,false); // 5 x 60k exceeds the verified 250k TPM.
   await raw.exec('update scout.quota_policy set enabled=false');
-  assert.equal((await reserveWeb()).rows[0].allowed,false);
+  assert.equal((await provider(raw,'openai')).rows[0].allowed,false);
  }finally{await raw.close();}
 });
 
 test('web reservations settle actual tool costs or retain model-capacity estimates when uncertain',async()=>{
  const raw=await setup();try{
   await enable(raw);await raw.query('update scout.quota_policy set openai=$1',[manual()]);
-  const reserveWeb=id=>raw.query('select * from scout.reserve_provider($1,$2,$3,1,3)',[randomUUID(),id,'openai']);
+  const reserveWeb=id=>provider(raw,'openai',randomUUID(),id);
   const first=randomUUID();assert.equal((await reserveWeb(first)).rows[0].allowed,true);
   assert.equal(Number((await raw.query('select cost_usd from scout.quota_reservations where id=$1',[first])).rows[0].cost_usd),0.3885);
   const paid=0.0100175;

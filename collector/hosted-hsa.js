@@ -49,7 +49,7 @@ export async function hostedHSA(request,{databaseURL,apiKey,tavilyApiKey,openaiA
       types:{json:{to:114,from:[114,3802],parse:JSON.parse,serialize:value=>typeof value==='string'?value:JSON.stringify(value)}},
       connection:{application_name:'scout-collect-hsa',statement_timeout:5000}});
     session=await sql.reserve();
-    const db=database(session),deadline=Date.now()+100000;
+    const db=database(session);
     if(correct){
       const body=await request.text();
       if(Buffer.byteLength(body)>4096)return Response.json({error:'Correction too large'},{status:400});
@@ -67,9 +67,9 @@ export async function hostedHSA(request,{databaseURL,apiKey,tavilyApiKey,openaiA
       from scout.trackers t left join lateral (select identity,native_id,native_ref from scout.source_state where tracker_id=t.id and url=$2
       order by native_id is not null desc,id limit 1) s on true where t.id=$1`,[trackerId,url])).rows[0];
     if(!notify&&!selected)return Response.json({error:'Existing tracker required'},{status:400});
-    const policy=(await db.query('select enabled and database_verified_until>clock_timestamp() and database_bytes between 0 and 399999999 as allowed from scout.quota_policy where id')).rows[0];
-    if(!policy?.allowed)return Response.json({outcome:'deferred',reason:'unverified_budget',cost:db.metrics});
     if(notify){
+      const policy=(await db.query('select enabled and database_verified_until>clock_timestamp() and database_bytes between 0 and 399999999 as allowed from scout.quota_policy where id')).rows[0];
+      if(!policy?.allowed)return Response.json({outcome:'deferred',reason:'unverified_budget',cost:db.metrics});
       const preview=await prepareMessage(db),result=await sendMessage(db,preview,post??webhookTransport(webhook));
       return Response.json({...result,cost:db.metrics});
     }
@@ -77,8 +77,8 @@ export async function hostedHSA(request,{databaseURL,apiKey,tavilyApiKey,openaiA
     await db.query('select * from scout.expire_quota()');
     const invocation=randomUUID(),source={tracker_id:selected.id,identity:selected.source_identity??url,url:rotation?selected.source_url:url,
       native_id:selected.source_native_id,native_ref:selected.source_ref};
-    const model=trackerModel({apiKey,tavilyApiKey,openaiApiKey,ledger:db,source,invocation,deadline,fetch:modelFetch});
-    const result=await processDocument(db,{source,model,deadline});
+    const model=trackerModel({apiKey,tavilyApiKey,openaiApiKey,ledger:db,source,invocation,fetch:modelFetch});
+    const result=await processDocument(db,{source,model});
     return Response.json({...result,cost:db.metrics});
   }catch(error){
     return Response.json({error:[400,409].includes(error.status)?error.message:'Collection interrupted; compact state retains the retry and quota charge.'},{status:error.status??500});

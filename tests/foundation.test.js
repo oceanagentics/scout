@@ -94,7 +94,7 @@ test('final schema protects findings, operational state and tracker management i
         await assert.rejects(db.query('delete from scout.' + table), { code: '42501' });
       }
       await assert.rejects(db.query('select * from scout.expire_quota()'), { code: '42501' });
-      await assert.rejects(db.query('select * from scout.reserve_model(gen_random_uuid(),gen_random_uuid(),null,2)'), { code: '42501' });
+      await assert.rejects(db.query("select * from scout.reserve_provider(gen_random_uuid(),gen_random_uuid(),'gemini',null::timestamptz)"), { code: '42501' });
       await assert.rejects(db.query("insert into scout.records(kind,title) values('announcement','Forged')"), { code: '42501' });
       await assert.rejects(db.query("update scout.records set title='Forged'"), { code: '42501' });
       await assert.rejects(db.query('delete from scout.records'), { code: '42501' });
@@ -123,7 +123,7 @@ test('final schema protects findings, operational state and tracker management i
       await db.query('select * from scout.' + table);
       for (const privilege of ['INSERT','UPDATE','DELETE']) assert.equal((await db.query("select has_table_privilege('service_role',$1,$2) allowed", ['scout.' + table,privilege])).rows[0].allowed, true);
     }
-    assert.equal((await db.query('select * from scout.reserve_model(gen_random_uuid(),gen_random_uuid(),null,2)')).rows[0].allowed, false);
+    assert.equal((await db.query("select * from scout.reserve_provider(gen_random_uuid(),gen_random_uuid(),'gemini',null::timestamptz)")).rows[0].allowed, false);
     await db.query('select * from scout.expire_quota()');
     await db.exec('reset role');
     assert.equal((await db.query("select bool_and(c.relrowsecurity) protected from pg_class c where c.relnamespace='scout'::regnamespace and c.relkind='r'")).rows[0].protected, true);

@@ -47,9 +47,8 @@ test('local source diagnostic captures intake, search and follow-up with only qu
   let generations=0,searches=0,savedId;const sql=[];
   const ledger={query:async(q,p)=>{
     sql.push(q);
-    if(q.startsWith('select enabled'))return {rows:[{allowed:true}]};
     if(q.startsWith('select id,name'))return {rows:[{id:tracker,name:'Diagnostic tracker',url:source,collector:'web',cadence:'6 hours'}]};
-    if(q.includes('reserve_provider'))return {rows:[{allowed:true}]};
+    if(q.includes('reserve_provider'))return {rows:[{allowed:true,remaining_attempts:2-sql.filter(v=>v.includes('reserve_provider')).length,cost_usd:0,settings:{model:'gemini-3.5-flash-lite',inputTokens:60000,outputTokens:8192,inputBytes:24000,outputBytes:131072,maxToolCalls:0,deadline:new Date(Date.now()+40000).toISOString()}}]};
     if(q.includes('settle_provider'))return {rows:[{settled:true}]};
     assert.fail('Unexpected shared SQL: '+q);
   }};
@@ -76,10 +75,13 @@ test('local source diagnostic captures intake, search and follow-up with only qu
   assert.equal(sql.filter(q=>q.includes('reserve_provider')).length,2);assert.equal(sql.filter(q=>q.includes('settle_provider')).length,2);
 });
 
-test('diagnostic refuses an unverified model window without creating a capture or making HTTP calls',async t=>{
-  const path=await output(t),result=await diagnoseSource({tracker:'unused',source:'https://example.org',env:{},output:path,
-    ledger:{query:async()=>({rows:[{allowed:false}]})},fetch:()=>assert.fail('No HTTP')});
-  assert.deepEqual(result,{state:'deferred',reason:'unverified_budget',traffic_file:null});await assert.rejects(stat(path),{code:'ENOENT'});
+test('diagnostic delegates denial to shared admission before any provider HTTP',async t=>{
+  const path=await output(t),sql=[];
+  const result=await diagnoseSource({tracker:'11111111-1111-4111-8111-111111111111',source:'https://example.org',env:{},output:path,
+    ledger:{query:async(q)=>{sql.push(q);return {rows:[q.includes('reserve_provider')?{allowed:false,reason:'quota'}:
+      {id:'11111111-1111-4111-8111-111111111111',name:'Diagnostic',url:'https://example.org',collector:'web',cadence:'6 hours'}]};}},fetch:()=>assert.fail('No HTTP')});
+  assert.equal(result.result.reason,'quota');assert.equal(result.result.usage.generations,0);
+  assert.equal(sql.filter(q=>q.includes('reserve_provider')).length,1);assert.ok(!sql.some(q=>q.includes('verified_until')));
 });
 
 test('production function and frontend import graphs exclude the local diagnostic',async()=>{

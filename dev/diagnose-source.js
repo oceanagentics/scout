@@ -43,9 +43,6 @@ export function captureTraffic(path,{fetch:send=fetch,secrets=[]}={}){
 
 export async function diagnoseSource({tracker,source,env,ledger=managementDatabase(env.SUPABASE_ACCESS_TOKEN),fetch:send=fetch,
   output=fileURLToPath(new URL('../.cache/model-traffic/latest.jsonl',import.meta.url))}){
-  // Reuse the verified shared allowance. Diagnostics never enable or extend it.
-  const policy=(await ledger.query('select enabled and verified_until>clock_timestamp() and database_verified_until>clock_timestamp() as allowed from scout.quota_policy where id')).rows[0];
-  if(!policy?.allowed)return {state:'deferred',reason:'unverified_budget',traffic_file:null};
   const selected=(await ledger.query('select id,name,url,collector,cadence from scout.trackers where id=$1',[tracker])).rows[0];
   if(!selected)throw new Error('Existing tracker required');
   const raw=new PGlite();let traffic;
@@ -60,10 +57,10 @@ export async function diagnoseSource({tracker,source,env,ledger=managementDataba
       [selected.id,selected.name,selected.url,selected.collector,selected.cadence]);
     traffic=captureTraffic(output,{fetch:send,secrets:[env.GEMINI_API_KEY,env.SCOUT_OPENAI_API_KEY,env.TAVILY_API_KEY,env.SUPABASE_ACCESS_TOKEN]});
     const db=database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
-    const input={tracker_id:tracker,identity:source,url:source},deadline=Date.now()+100000;
-    const model=trackerModel({source:input,ledger,deadline,apiKey:env.GEMINI_API_KEY,openaiApiKey:env.SCOUT_OPENAI_API_KEY,
+    const input={tracker_id:tracker,identity:source,url:source};
+    const model=trackerModel({source:input,ledger,apiKey:env.GEMINI_API_KEY,openaiApiKey:env.SCOUT_OPENAI_API_KEY,
       tavilyApiKey:env.TAVILY_API_KEY,fetch:traffic.fetch});
-    const result=await processDocument(db,{source:input,model,deadline});
+    const result=await processDocument(db,{source:input,model});
     const records=(await raw.query('select id,version,title,details,sources from scout.records order by id')).rows;
     return {traffic_file:output,result,records,cost:db.metrics};
   }finally{traffic?.close();await raw.close();}
