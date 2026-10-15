@@ -3,6 +3,14 @@ import {sourceURL} from './octo-documents.js';
 
 export const INTAKE_INSTRUCTION=`Read this page: **[URL]**
 
+Inspect every image on the page and read its visible text, original image
+description (alt text), and caption when available. Use your browsing tools
+to open images or retrieve their descriptions when the initial page view
+does not expose them. Keep each image and description associated with its
+surrounding content and the development it describes. Look for scheduling
+details in these sources as well as the page text. Do not treat an image or
+description you could not access as absent.
+
 Current date (UTC): [TODAY].
 
 Identify the distinct developments described on the page: events,
