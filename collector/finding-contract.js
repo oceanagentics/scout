@@ -1,5 +1,4 @@
-import {normalizeDate} from '../src/finding.js';
-import {sourceURL} from './source-url.js';
+import {normalizeDate} from '../shared/finding-dates.js';
 
 export const INTAKE_INSTRUCTION=`Open the source URL supplied in the input first.
 
@@ -84,10 +83,15 @@ export const RESPONSE_SCHEMA={
     additionalProperties:false
   }
 };
+export const SCHEDULE_QUESTION='When is this event scheduled? Find its missing date, time or timezone. Check the event’s registration or programme page and identify the source supporting the scheduling. Follow links or search the internet if necessary.';
+export const SCHEDULE_INSTRUCTION=SCHEDULE_QUESTION+'\nResearch each supplied event. Return a JSON array of objects containing its record_id and the development fields: description, type, priority, organizations, date, starttime, timezone and deadline. Include only source-supported scheduling for that exact event. Use YYYY-MM-DD (or YYYY-MM or YYYY for partial dates), HH:MM and an explicit UTC, numeric offset or IANA timezone. A session or town hall must not inherit its parent conference dates. A publication date does not establish the event date or year. Set date_source_url to the retrieved page establishing the schedule. Use null for unresolved dates, times and timezones. Do not add other events.';
+export const SCHEDULE_SCHEMA={...RESPONSE_SCHEMA,items:{...RESPONSE_SCHEMA.items,
+  properties:{...RESPONSE_SCHEMA.items.properties,record_id:{type:'string'},date_source_url:{type:['string','null']}},
+  required:[...RESPONSE_SCHEMA.items.required,'record_id','date_source_url']}};
+
 export const sameClaim=(a,b)=>JSON.stringify(a,sort)===JSON.stringify(b,sort);
 function sort(_k,v){return v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v;}
 export const text=(v,n)=>typeof v==='string'?v.toWellFormed().replace(/\s+/g,' ').trim().slice(0,n).toWellFormed():null;
-export function publicURL(v){try{return typeof v==='string'&&v.length<=2048?sourceURL(v):null;}catch{return null;}}
 
 // Keep the model's flat response separate from Scout's stored record shape.
 export function normalizeFinding(raw,url){

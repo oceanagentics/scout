@@ -2,7 +2,7 @@ import {test,mock} from 'node:test';
 import dns from 'node:dns';
 import {syncBuiltinESMExports} from 'node:module';
 import assert from 'node:assert/strict';
-import {sourceURL,readPublic} from '../collector/hsa.js';
+import {sourceURL,readPublic} from '../collector/discovery/hsa.js';
 
 test('HTTP transport rejects private and mixed DNS answers before opening a source socket', async () => {
   for (const addresses of [[{ address: '127.0.0.1', family: 4 }], [{ address: 'fd00::1', family: 6 }],

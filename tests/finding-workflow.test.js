@@ -2,11 +2,12 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
-import {processDocument} from '../collector/finding-jobs.js';
+import {processDocument} from '../collector/intake.js';
 import {INTAKE_INSTRUCTION} from '../collector/finding-contract.js';
-import {dateInterval,normalizeDate,findingInterval,dateLabel} from '../src/finding.js';
-import {trackerModel} from '../collector/model-gateway.js';
-import {database as boundary,hostedHSA} from '../collector/hosted-hsa.js';
+import {dateInterval,normalizeDate,findingInterval,dateLabel} from '../shared/finding-dates.js';
+import {trackerModel} from '../collector/models/gateway.js';
+import {database as boundary} from '../collector/database.js';
+import {hostedHSA} from '../collector/hosted.js';
 import {correctFinding} from '../collector/corrections.js';
 
 async function setup(){

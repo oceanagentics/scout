@@ -2,8 +2,8 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
-import {prepareDocument,collectDocuments} from '../collector/octo-documents.js';
-import {sourceURL} from '../collector/hsa.js';
+import {prepareDocument,collectDocuments} from '../collector/discovery/octo-documents.js';
+import {sourceURL} from '../collector/discovery/hsa.js';
 
 async function setup(){
  const db=new PGlite();await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;

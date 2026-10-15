@@ -1,5 +1,5 @@
 import {Buffer} from 'node:buffer';
-import {isAccounted} from './model-gateway.js';
+import {isAccounted} from './contract.js';
 
 export const MODEL='gemini-3.5-flash-lite';
 

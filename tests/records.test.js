@@ -1,8 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {eventLabel,eventTiming,recordDates,sourceLink,trackerState,fieldLabel,orderRecords} from '../src/records.js';
-import {loadScout} from '../src/dashboard.js';
-import {normalizeDate} from '../src/finding.js';
+import {eventLabel,trackerState,fieldLabel} from '../website/records.js';
+import {eventTiming,recordDates,sourceLink,orderRecords} from '../shared/records.js';
+import {loadScout} from '../website/dashboard.js';
+import {normalizeDate} from '../shared/finding-dates.js';
 
 test('typed reader displays local dates, ranked organization names and independent date meanings',()=>{
   const event={id:'event',kind:'event',organizations:[{name:'Ocean Institute',role:'partner'},{name:'Second Institute'}],details:{start:normalizeDate({value:'2026-10-15',precision:'day',time:'00:30',zone:'+08:00'})}};

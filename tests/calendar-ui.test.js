@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mountCalendar} from '../src/calendar.js';
+import {mountCalendar} from '../website/calendar.js';
 
 test('calendar consent uses existing Google sign-in; callback connects once and one click syncs all',async()=>{
   const previous=globalThis.window,storage=new Map(),calls=[];let oauth,apiDisabled=false;

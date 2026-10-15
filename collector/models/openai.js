@@ -1,5 +1,5 @@
-import {sourceURL} from './source-url.js';
-import {isAccounted,modelErrorReason} from './model-gateway.js';
+import {sourceURL} from '../source-url.js';
+import {isAccounted,modelErrorReason} from './contract.js';
 
 export const OPENAI_MODEL='gpt-6-luna';
 const fail=(reason,details={})=>Object.assign(new Error(reason),{reason,...details});

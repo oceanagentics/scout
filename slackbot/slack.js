@@ -1,5 +1,5 @@
 import { request } from 'node:https';
-import { eventTiming,recordDates,sourceLink,orderRecords } from '../src/records.js';
+import { eventTiming,recordDates,sourceLink,orderRecords } from '../shared/records.js';
 
 export const CHANNEL='C0C5PE21KN1';
 const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('|','%7C');

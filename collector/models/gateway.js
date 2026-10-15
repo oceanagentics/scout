@@ -1,16 +1,12 @@
 import {randomUUID} from 'node:crypto';
-import {MODEL,gemini} from './model-gemini.js';
-import {OPENAI_MODEL,openai} from './model-openai.js';
-import {normalizeFinding} from './finding-contract.js';
+import {MODEL,gemini} from './gemini.js';
+import {OPENAI_MODEL,openai} from './openai.js';
+import {normalizeFinding} from '../finding-contract.js';
+import {dispatchPermit,reasons,modelErrorReason} from './contract.js';
 
 const OPENAI_WEB_CALL_USD=0.01;
-const dispatchPermit=Symbol('accounted_dispatch');
-export function isAccounted(limits){return limits?.[dispatchPermit]===true;}
 const fail=(reason,details={})=>Object.assign(new Error(reason),{reason,...details});
 const label=v=>typeof v==='string'&&/^[a-z0-9_.-]{1,80}$/i.test(v);
-const reasons=new Set('configuration model_configuration invalid_schema accounting database_operation sql_bound attempt_bound provider_cooldown runtime_bound quota provider_spend_limit provider_context_limit source_required source_read_failed source_bound source_json_invalid source_type_unsupported source_preparation_failed input_bound output_bound provider_unknown provider_auth provider_rate_limit provider_unavailable provider_rejected provider_safety invalid_output model_unreadable empty_findings output_incomplete provider_finish provider_refused unexpected_tool invalid_json output_truncated retrieval_metadata_missing url_retrieval_failed invocation_busy'.split(' '));
-export const modelErrorReason=error=>reasons.has(error?.reason??error?.message)?error.reason??error.message:'provider_unknown';
-
 // Invocation-local dispatch; reserve/settle must enforce shared current-account
 // usage atomically. They receive only numbers and short labels, never traffic.
 export function modelGateway({task,routes,providers,accounting,invocation=randomUUID(),deadline,now=Date.now}){

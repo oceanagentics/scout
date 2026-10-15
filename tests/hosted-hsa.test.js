@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import { verifyAuth } from '@supabase/server/core';
-import { hostedHSA } from '../collector/hosted-hsa.js';
+import { hostedHSA } from '../collector/hosted.js';
 import { readFile } from 'node:fs/promises';
 
 const secret = 'sb_secret_scout_test_only';
@@ -45,7 +45,7 @@ test('invalid authenticated requests do no database work', async () => {
 
 
 test('database failure rolls back and does not disclose connection or source details',async()=>{
- const {database}=await import('../collector/hosted-hsa.js'),queries=[];
+ const {database}=await import('../collector/database.js'),queries=[];
  const db=database({unsafe:async q=>{queries.push(q);if(q==='broken')throw Object.assign(new Error('secret credential source text'),{code:'23505'});return[];}});
  await assert.rejects(db.transaction(tx=>tx.query('broken')),e=>e.message==='database_operation'&&!e.message.includes('secret'));
  assert.deepEqual(queries,['begin','broken','rollback']);

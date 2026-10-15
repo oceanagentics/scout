@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
-import {hostedHSA} from '../collector/hosted-hsa.js';
+import {hostedHSA} from '../collector/hosted.js';
 
 const cleanup=await readFile(new URL('../supabase/scout-retire-operations.sql',import.meta.url),'utf8');
 const cutover=await readFile(new URL('../supabase/migrations/20261009190000_scout_findings.sql',import.meta.url),'utf8');

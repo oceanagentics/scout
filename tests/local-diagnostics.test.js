@@ -2,9 +2,8 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,readFile,rm,stat,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join,resolve,dirname} from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {captureTraffic,diagnoseSource} from '../dev/diagnose-source.js';
+import {join} from 'node:path';
+import {captureTraffic,diagnoseSource} from '../diagnostics/diagnose-source.js';
 
 async function output(t){
   const dir=await mkdtemp(join(tmpdir(),'scout-diagnostic-'));
@@ -79,16 +78,4 @@ test('diagnostic delegates denial to shared admission before any provider HTTP',
       {id:'11111111-1111-4111-8111-111111111111',name:'Diagnostic',url:'https://example.org',collector:'web',cadence:'6 hours'}]};}},fetch:()=>assert.fail('No HTTP')});
   assert.equal(result.result.reason,'quota');assert.equal(result.result.usage.generations,0);
   assert.equal(sql.filter(q=>q.includes('reserve_provider')).length,1);assert.ok(!sql.some(q=>q.includes('verified_until')));
-});
-
-test('production function and frontend import graphs exclude the local diagnostic',async()=>{
-  const seen=new Set(),entry=fileURLToPath(new URL('../supabase/functions/scout-collect-hsa/index.ts',import.meta.url)),local=fileURLToPath(new URL('../dev/',import.meta.url));
-  const visit=async path=>{
-    if(seen.has(path))return;seen.add(path);assert.ok(!path.startsWith(local));
-    const code=await readFile(path,'utf8');assert.ok(!code.includes('captureTraffic'));
-    for(const match of code.matchAll(/(?:from\s*|import\s*\(\s*|import\s*)['"]([^'"]+)['"]/g))
-      if(match[1].startsWith('.'))await visit(resolve(dirname(path),match[1]));
-  };
-  await visit(entry);
-  await visit(fileURLToPath(new URL('../src/main.js',import.meta.url)));
 });

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {prepareDocument,CHUNK_BYTES} from '../collector/octo-documents.js';
+import {prepareDocument,CHUNK_BYTES} from '../collector/discovery/octo-documents.js';
 
 test('rotating protected-contact tokens do not reset supporting source text, while ordinary links remain literal',()=>{
   const url='https://example.org/event',html=token=>'<p>The conference is on June 16-18.</p><p>Contact <a href="/cdn-cgi/l/email-protection#'+token+'"><span class="__cf_email__" data-cfemail="'+token+'">[email protected]</span></a></p><p><a href="/registration">Register</a></p><a href="/cdn-cgi/l/email-protection#aabb">Ordinary link</a>';

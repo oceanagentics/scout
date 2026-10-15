@@ -1,5 +1,26 @@
 # BBNJ Scout
 
+## Current local code map — 15 October 2026
+
+The active workflow passes a source URL to the accounted model, normalizes and saves findings, performs the existing bounded scheduling follow-up when needed, and completes or defers the source. Completed/parked sources retain their current explicit-reset behavior. Collection and Slack delivery are separate requests. Recurring collection and notifications remain paused.
+
+| Location | Responsibility |
+| --- | --- |
+| `website/` | Browser access, records, filters, trackers and calendar controls. |
+| `slackbot/` | Finding selection, message preparation, delivery and delivery accounting. |
+| `calendar/` | Calendar feeds and Google Calendar synchronization. |
+| `collector/hosted.js`, `collector/run.js` | HTTP dependency setup and command-line launcher; the deployed endpoint remains `scout-collect-hsa`. |
+| `collector/intake.js`, `source-state.js`, `finding-store.js` | Intake coordination, source claims/completion, and transactional matching/merging/writes. |
+| `collector/finding-contract.js`, `corrections.js` | Intake/scheduling instructions, schemas, normalization and human corrections. |
+| `collector/database.js`, `source-url.js` | Bounded queries/transactions and Node source URL validation. |
+| `collector/models/` | Gateway accounting/fallback, provider adapters and their common dispatch/error contract. |
+| `collector/discovery/` | Existing publisher discovery/preparation, outside active hosted intake. |
+| `shared/finding-dates.js`, `shared/records.js` | Pure date, ordering, timing and source-link rules used across features. |
+| `diagnostics/` | Explicit local diagnostics, outside hosted/browser imports. |
+| `supabase/`, `tests/` | Database/deployment definitions and automated verification. |
+
+Entrypoints assemble dependencies; workflows use the existing database, model and transport functions. Shared rules do not import feature modules, and providers do not import the gateway. See [the organization plan](code-organization-plan.md) for verification and [the consumption plan](refactor-consumption.md) for operating constraints. The older checkpoints below describe historical implementations.
+
 **Background collection loop — 2026-10-08:** collection wakes every 30 seconds, fetches the oldest due enabled supported tracker first (35-second slice), then uses remaining time for the oldest eligible initial-review capture across trackers. Quota/configuration cooldowns affect review only. The collection worker never waits for quota while holding its lock. Pending notifications briefly take review priority under their separate bounded lock; fetching continues, and expired notification claims cannot stall reviews. Initial review retains valid High/Normal/Low findings and parks rejected ranges/findings, uncertainty and exhausted work for a future repair loop. Three durable network failures park an unchanged initial-review source; quota deferrals do not consume that bound. Unchanged completed/parked inputs reuse their checkpoints, including equivalent raw HTML churn. Historical quota-only interruptions remain eligible without resetting rejected work or processing versions.
 
 Author feeds always check the newest page and continue a saved historical cursor. Discovery alternates fresh checks and frozen-window history. Trackers display fetch success separately from processing, initial-review backlog/age, parked sources and explicit unsupported coverage. UN Treaty Collection currently has no compatible document-review route and is reported as unsupported; existing disabled trackers, including OCTO, stay disabled. The lost webinar's retained evidence remains parked for the future repair loop; this release does not claim to recover it.

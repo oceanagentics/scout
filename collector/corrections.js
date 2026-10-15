@@ -1,4 +1,4 @@
-import {DATE_FIELDS,normalizeDate,dateInterval} from '../src/finding.js';
+import {DATE_FIELDS,normalizeDate,dateInterval} from '../shared/finding-dates.js';
 import {sameClaim} from './finding-contract.js';
 import {sourceURL} from './source-url.js';
 

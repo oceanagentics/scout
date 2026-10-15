@@ -1,5 +1,6 @@
-import { KINDS, sourceLink, stamp, eventLabel, eventTiming, trackerState,fieldLabel,orderRecords } from './records.js';
-import {findingInterval,dateLabel} from './finding.js';
+import { KINDS, stamp, eventLabel, trackerState,fieldLabel } from './records.js';
+import { sourceLink,eventTiming,orderRecords } from '../shared/records.js';
+import {findingInterval,dateLabel} from '../shared/finding-dates.js';
 
 const RECORD_FIELDS = [
   ['event_url', 'Source page'], ['registration_url', 'Registration URL'],

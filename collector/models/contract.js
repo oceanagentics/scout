@@ -1,0 +1,4 @@
+export const dispatchPermit=Symbol('accounted_dispatch');
+export function isAccounted(limits){return limits?.[dispatchPermit]===true;}
+export const reasons=new Set('configuration model_configuration invalid_schema accounting database_operation sql_bound attempt_bound provider_cooldown runtime_bound quota provider_spend_limit provider_context_limit source_required source_read_failed source_bound source_json_invalid source_type_unsupported source_preparation_failed input_bound output_bound provider_unknown provider_auth provider_rate_limit provider_unavailable provider_rejected provider_safety invalid_output model_unreadable empty_findings output_incomplete provider_finish provider_refused unexpected_tool invalid_json output_truncated retrieval_metadata_missing url_retrieval_failed invocation_busy'.split(' '));
+export const modelErrorReason=error=>reasons.has(error?.reason??error?.message)?error.reason??error.message:'provider_unknown';

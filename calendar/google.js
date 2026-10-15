@@ -1,5 +1,5 @@
-import {normalizeDate,dateInterval,dateLabel} from '../src/finding.js';
-import {sourceLink} from '../src/records.js';
+import {normalizeDate,dateInterval,dateLabel} from '../shared/finding-dates.js';
+import {sourceLink} from '../shared/records.js';
 
 const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const recordLink=id=>'https://bbnj-scout.web.app/?record='+id;

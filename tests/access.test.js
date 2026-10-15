@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mountAccess } from '../src/access.js';
+import { mountAccess } from '../website/access.js';
 
 test('Workspace UI trusts the server role, handles auth races and clears data before sign-out completes', async () => {
   const nodes = Object.fromEntries(['status', 'sign-in', 'sign-out', 'workspace', 'button'].map(id => [id, {

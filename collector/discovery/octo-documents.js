@@ -1,8 +1,30 @@
 import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { parseDocument, DomUtils } from 'htmlparser2';
-import {processDocument,claimSource,finishSource} from './finding-jobs.js';
-import {readCalendar} from '../src/finding.js';
+import {processDocument} from '../intake.js';
+import {claimSource,finishSource} from '../source-state.js';
+import {normalizeDate} from '../../shared/finding-dates.js';
+
+// Shared by standalone calendars and calendar components embedded in documents.
+function readCalendar(text){
+  return [...text.matchAll(/BEGIN:VEVENT\r?\n([\s\S]*?)\r?\nEND:VEVENT/g)].map(event=>{
+    const fields=event[1].replace(/\r?\n[ \t]/g,'').split(/\r?\n/).map(line=>line.match(/^([A-Z-]+)((?:;[^:]*)?):(.*)$/)).filter(Boolean);
+    const one=name=>{const matches=fields.filter(f=>f[1]===name);if(matches.length>1)throw new Error('Ambiguous calendar '+name);return matches[0];};
+    const dates={},properties={};
+    for(const [field,name]of [['start','DTSTART'],['end','DTEND']]){
+      const entry=one(name);if(!entry)continue;
+      const [, ,params,value]=entry,match=value.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/);
+      if(!match)throw new Error('Unsupported calendar date value');
+      const allDay=!match[4];if(/;VALUE=DATE(?:;|$)/.test(params)!==allDay)throw new Error('Calendar VALUE/date shape conflict');
+      const date={value:match.slice(1,4).join('-'),precision:'day'};
+      if(!allDay){date.time=match.slice(4,7).join(':');const zone=match[7]?'UTC':params.match(/;TZID="?([^";]+)"?/)?.[1];if(zone)date.zone=zone;}
+      normalizeDate(date);
+      if(field==='end'&&allDay)date.value=new Date(Date.parse(date.value+'T00:00:00Z')-86400000).toISOString().slice(0,10);
+      dates[field]=date;properties[field]=entry[0];
+    }
+    return {uid:one('UID')?.[3],recurrence:one('RECURRENCE-ID')?.[3]??one('RRULE')?.[3]??one('RDATE')?.[3],summary:one('SUMMARY')?.[3],dates,properties};
+  });
+}
 
 const digest = text => createHash('sha256').update(text).digest('hex');
 const FEED = 'https://octogroup.org/feed/';

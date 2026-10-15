@@ -5,9 +5,9 @@ import {dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {PGlite} from '@electric-sql/pglite';
 import {managementDatabase} from '../collector/remote.js';
-import {database} from '../collector/hosted-hsa.js';
-import {processDocument} from '../collector/finding-jobs.js';
-import {trackerModel} from '../collector/model-gateway.js';
+import {database} from '../collector/database.js';
+import {processDocument} from '../collector/intake.js';
+import {trackerModel} from '../collector/models/gateway.js';
 
 export function captureTraffic(path,{fetch:send=fetch,secrets=[]}={}){
   mkdirSync(dirname(path),{recursive:true});

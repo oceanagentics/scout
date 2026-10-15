@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
-import {readRecords,eligibleRecords,prepareMessage,sendMessage,webhookTransport} from '../notifications/slack.js';
+import {readRecords,eligibleRecords,prepareMessage,sendMessage,webhookTransport} from '../slackbot/slack.js';
 
 async function database(){
  const db=new PGlite();
