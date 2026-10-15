@@ -3,7 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {isAccounted} from './model-gateway.js';
 
 export const MODEL='gemini-3.5-flash-lite';
-export const MODEL_LIMITS={minute:2,run:2,tokens:125000,day:250,input:60000,output:8192};
+export const MODEL_LIMITS={input:60000,output:8192};
 
 export function requestBody(instruction,input,schema){
   const body={contents:[{role:'user',parts:[{text:instruction},...(Array.isArray(input)&&!input.length?[]:[{text:JSON.stringify(input)}])]}],

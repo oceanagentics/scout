@@ -5,7 +5,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {randomUUID} from 'node:crypto';
 import {gemini} from '../collector/model.js';
 import {database,hostedHSA} from '../collector/hosted-hsa.js';
-import {OPENAI_MODEL,trackerModel} from '../collector/model-gateway.js';
+import {OPENAI_MODEL,OPENAI_LIMITS,trackerModel} from '../collector/model-gateway.js';
 
 async function setup(cutover=true){
  const raw=new PGlite();
@@ -19,8 +19,7 @@ async function setup(cutover=true){
 const enable=db=>db.exec("update scout.quota_policy set enabled=true,verified_until=now()+interval '1 hour',verified_rpm=15,verified_rpd=500,verified_tpm=250000,database_bytes=10000000,database_verified_until=now()+interval '1 hour'");
 const boundary=raw=>database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
 const reserve=(db,invocation=randomUUID(),id=randomUUID(),tokens=null)=>db.query('select * from scout.reserve_model($1,$2,$3,2)',[invocation,id,tokens]);
-const manual=()=>{const until=new Date(Date.now()+1800000).toISOString();return {enabled:true,mode:'manual',model:OPENAI_MODEL,expires_at:until,access_until:until,quota_until:until,
- verified_rpm:100,verified_tpm:250000,rpm:2,tpm:125000,allocation_usd:0.10,invocation_usd:0.01,daily_usd:0.05};};
+const manual=()=>({enabled:true});
 const provider=(db,kind,invocation=randomUUID(),id=randomUUID(),max=2)=>db.query('select * from scout.reserve_provider($1,$2,$3,$4)',[invocation,id,kind,max]);
 
 test('URL diagnostics distinguish absent metadata, provider failure and a model unreadable answer without persisting traffic',async()=>{
@@ -82,7 +81,8 @@ test('two durable quota mutations, URL retrieval accounting, streaming Unicode a
 });
 test('two uncertain requests remain charged until their windows expire; expiry carries numeric uncertainty',async()=>{
  const raw=await setup();try{
-  await enable(raw);const db=boundary(raw),send=async url=>{if(url.endsWith(':countTokens'))return Response.json({totalTokens:50});throw new Error('PRIVATE TRANSPORT PAYLOAD');};
+  await enable(raw);await raw.exec('update scout.quota_policy set verified_tpm=120000');
+  const db=boundary(raw),send=async url=>{if(url.endsWith(':countTokens'))return Response.json({totalTokens:50});throw new Error('PRIVATE TRANSPORT PAYLOAD');};
   for(let i=0;i<2;i++)await assert.rejects(gemini({apiKey:'test',ledger:db,fetch:send})('Test',{}),/provider_unknown/);
   assert.equal((await raw.query("select count(*)::int n from scout.quota_reservations where state='unknown'")).rows[0].n,2);
   assert.equal((await reserve(raw)).rows[0].allowed,false);
@@ -97,10 +97,10 @@ test('two uncertain requests remain charged until their windows expire; expiry c
 });
 test('daily denial returns Pacific reset, token oversize never generates and provider cooldown survives',async()=>{
  const raw=await setup();try{
-  await enable(raw);await raw.exec('update scout.quota_policy set rpd=1');
+  await enable(raw);await raw.exec('update scout.quota_policy set verified_rpd=1');
   await reserve(raw);const denied=(await reserve(raw)).rows[0],reset=(await raw.query("select ((date_trunc('day',clock_timestamp() at time zone 'America/Los_Angeles')+interval '1 day') at time zone 'America/Los_Angeles') at")).rows[0].at;
   assert.deepEqual(denied.retry_at,reset);
-  await raw.exec("update scout.quota_reservations set reserved_at=now()-interval '2 days';update scout.quota_policy set rpd=250");
+  await raw.exec("update scout.quota_reservations set reserved_at=now()-interval '2 days';update scout.quota_policy set verified_rpd=500");
   let generated=0;
   await assert.rejects(gemini({apiKey:'test',ledger:boundary(raw),fetch:async()=>{generated++;}})('Test',{oversize:'x'.repeat(24001)}),/input_bound/);
   assert.equal(generated,0);
@@ -129,7 +129,7 @@ test('provider reservations serialize shared attempts, keep independent cooldown
   const concurrent=await Promise.all([provider(raw,'gemini',invocation,first,1),provider(raw,'openai',invocation,second,1)]);
   assert.equal(concurrent.filter(r=>r.rows[0].allowed).length,1);assert.equal((await raw.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,1);
   const oa=randomUUID();assert.equal((await provider(raw,'openai',randomUUID(),oa)).rows[0].allowed,true);
-  const settle=(state,input=60000,output=1500)=>raw.query('select * from scout.settle_provider($1,$2,$3,$4,$5,$6,$7)',[oa,input,output,state,'provider_unknown',new Date(Date.now()+60000).toISOString(),0.00825]);
+  const settle=(state,input=OPENAI_LIMITS.inputTokens,output=OPENAI_LIMITS.outputTokens)=>raw.query('select * from scout.settle_provider($1,$2,$3,$4,$5,$6,$7)',[oa,input,output,state,'provider_unknown',new Date(Date.now()+60000).toISOString(),0.00825]);
   assert.equal((await settle('unknown')).rows[0].settled,true);assert.equal((await settle('unknown')).rows[0].mutations,0);
   assert.equal((await settle('settled',10,5)).rows[0].settled,false);
   assert.equal((await provider(raw,'openai')).rows[0].reason,'provider_cooldown');
@@ -137,16 +137,14 @@ test('provider reservations serialize shared attempts, keep independent cooldown
   const spent=(await raw.query('select openai_spent_usd from scout.quota_policy')).rows[0].openai_spent_usd;
   await raw.exec("update scout.quota_reservations set reserved_at=now()-interval '2 days'");await raw.query('select * from scout.expire_quota()');
   await raw.query('update scout.quota_policy set openai=$1',[manual()]);
-  const policy=(await raw.query('select * from scout.quota_policy')).rows[0];assert.equal(policy.openai_spent_usd,spent);assert.equal(policy.openai_uncertain_calls,1);assert.equal(policy.openai_uncertain_tokens,60000);
-  const cap={...manual(),allocation_usd:Number(spent)};await raw.query('update scout.quota_policy set openai=$1',[cap]);assert.equal((await provider(raw,'openai')).rows[0].reason,'spending_bound');
-  await raw.query('update scout.quota_policy set openai=$1',[{...manual(),mode:'credit'}]);assert.equal((await provider(raw,'openai')).rows[0].reason,'provider_budget');
+  const policy=(await raw.query('select * from scout.quota_policy')).rows[0];assert.equal(policy.openai_spent_usd,spent);assert.equal(policy.openai_uncertain_calls,1);assert.equal(policy.openai_uncertain_tokens,OPENAI_LIMITS.inputTokens);
   for(const role of ['anon','authenticated']){
    await raw.exec('set role '+role);await assert.rejects(provider(raw,'openai'),{code:'42501'});
    await assert.rejects(raw.query('select * from scout.settle_provider($1,1,1,$2,null,null,0)',[oa,'settled']),{code:'42501'});await raw.exec('reset role');
   }
   await assert.rejects(provider(raw,'gemini',randomUUID(),randomUUID(),null));
   await assert.rejects(raw.query('select * from scout.settle_provider($1,null,1,$2,null,null,0)',[oa,'settled']));
-  await raw.query('update scout.quota_policy set openai=$1',[{...manual(),invocation_usd:0.08,daily_usd:0.10}]);
+  await raw.query('update scout.quota_policy set openai=$1',[manual()]);
   let calls=0;const noKey=trackerModel({apiKey:'test',ledger:boundary(raw),source:{url:'https://example.org/a'},fetch:async()=>{calls++;throw Error('Network');}});
   await assert.rejects(noKey('Read',[],{type:'object',properties:{}}),error=>error.reason==='configuration'&&error.usage.generations===1);
   assert.equal(calls,1);assert.equal(Number((await raw.query('select openai_spent_usd from scout.quota_policy')).rows[0].openai_spent_usd),Number(spent));
@@ -155,41 +153,47 @@ test('provider reservations serialize shared attempts, keep independent cooldown
  }finally{await raw.close();}
 });
 
-test('Luna can exceed ten daily calls while rate and spending limits still apply to both callers',async()=>{
+test('both Luna callers ignore retired Scout caps and Gemini evidence while preserving pause and cooldown',async()=>{
  const raw=await setup();try{
-  await enable(raw);await raw.query('update scout.quota_policy set openai=$1,openai_spent_usd=0.001',[{...manual(),invocation_usd:0.08,daily_usd:0.10}]);
-  await raw.exec("insert into scout.quota_reservations(id,invocation,reserved_at,input_tokens,output_tokens,state,provider,model,cost_usd) select gen_random_uuid(),gen_random_uuid(),now()-interval '2 minutes',100,10,'settled','openai','gpt-6-luna',0.0001 from generate_series(1,10)");
-  assert.equal((await provider(raw,'openai')).rows[0].allowed,true);
+  await enable(raw);
+  await raw.query('update scout.quota_policy set verified_until=null,verified_rpm=null,openai_spent_usd=100,openai=$1',[
+    {...manual(),expires_at:'2000-01-01',access_until:'2000-01-01',quota_until:'2000-01-01',rpm:1,tpm:1,allocation_usd:0.001,invocation_usd:0.001,daily_usd:0.001}]);
+  await raw.exec(await readFile(new URL('../supabase/migrations/20261015180000_scout_provider_limits.sql',import.meta.url),'utf8'));
+  const policy=(await raw.query('select openai,openai_spent_usd from scout.quota_policy')).rows[0];
+  assert.deepEqual(policy.openai,{enabled:true});assert.equal(Number(policy.openai_spent_usd),100);
   const reserveWeb=()=>raw.query('select * from scout.reserve_provider($1,$2,$3,1,3)',[randomUUID(),randomUUID(),'openai']);
-  assert.equal((await reserveWeb()).rows[0].allowed,true);
-  assert.equal((await reserveWeb()).rows[0].reason,'quota');
-  await raw.exec("update scout.quota_reservations set reserved_at=now()-interval '2 minutes';update scout.quota_policy set openai=jsonb_set(openai,'{allocation_usd}',to_jsonb(openai_spent_usd))");
-  assert.equal((await provider(raw,'openai')).rows[0].reason,'spending_bound');
-  assert.equal((await reserveWeb()).rows[0].reason,'spending_bound');
+  for(let i=0;i<3;i++){
+   assert.equal((await provider(raw,'openai')).rows[0].allowed,true);
+   assert.equal((await reserveWeb()).rows[0].allowed,true);
+  }
+  assert.equal((await provider(raw,'gemini')).rows[0].allowed,false);
+  await enable(raw);
+  for(let i=0;i<4;i++)assert.equal((await provider(raw,'gemini')).rows[0].allowed,true);
+  assert.equal((await provider(raw,'gemini')).rows[0].allowed,false); // 5 x 60k exceeds the verified 250k TPM.
+  await raw.exec('update scout.quota_policy set enabled=false');
+  assert.equal((await reserveWeb()).rows[0].allowed,false);
  }finally{await raw.close();}
 });
 
-test('web reservations include tool fees, reject old token-only allowances and settle actual or uncertain costs',async()=>{
+test('web reservations settle actual tool costs or retain model-capacity estimates when uncertain',async()=>{
  const raw=await setup();try{
   await enable(raw);await raw.query('update scout.quota_policy set openai=$1',[manual()]);
   const reserveWeb=id=>raw.query('select * from scout.reserve_provider($1,$2,$3,1,3)',[randomUUID(),id,'openai']);
-  assert.equal((await reserveWeb(randomUUID())).rows[0].reason,'provider_budget');
-  await raw.query('update scout.quota_policy set openai=$1',[{...manual(),invocation_usd:0.08,daily_usd:0.10}]);
   const first=randomUUID();assert.equal((await reserveWeb(first)).rows[0].allowed,true);
-  assert.equal(Number((await raw.query('select cost_usd from scout.quota_reservations where id=$1',[first])).rows[0].cost_usd),0.03825);
+  assert.equal(Number((await raw.query('select cost_usd from scout.quota_reservations where id=$1',[first])).rows[0].cost_usd),0.3885);
   const paid=0.0100175;
   await raw.query("select * from scout.settle_provider($1,100,10,'settled',null,null,$2)",[first,paid]);
   assert.equal(Number((await raw.query('select openai_spent_usd from scout.quota_policy')).rows[0].openai_spent_usd),paid);
   const second=randomUUID();assert.equal((await reserveWeb(second)).rows[0].allowed,true);
   await raw.query("select * from scout.settle_provider($1,0,0,'unknown','provider_unknown',null,0)",[second]);
-  assert.equal(Number((await raw.query('select cost_usd from scout.quota_reservations where id=$1',[second])).rows[0].cost_usd),0.03825);
+  assert.equal(Number((await raw.query('select cost_usd from scout.quota_reservations where id=$1',[second])).rows[0].cost_usd),0.3885);
   await raw.exec('set role authenticated');await assert.rejects(reserveWeb(randomUUID()),{code:'42501'});await raw.exec('reset role');
  }finally{await raw.close();}
 });
 
 test('hosted selected/direct sources save a bounded fallback once, preserve native identity and skip complete/parked work (mock providers/PGlite)',async t=>{
  const raw=await setup();try{
-  await enable(raw);await raw.query('update scout.quota_policy set openai=$1',[{...manual(),invocation_usd:0.08,daily_usd:0.10}]);
+  await enable(raw);await raw.query('update scout.quota_policy set openai=$1',[manual()]);
   const tracker=(await raw.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Gateway','https://example.org/list','web','6 hours',true) returning *")).rows[0];
   const url='https://example.org/6915';await raw.query("insert into scout.source_state(tracker_id,identity,url,native_id,native_ref,due_at) values($1,'cbd:side-event:6915',$2,'6915',$3,now()-interval '1 second')",[tracker.id,url,{api_url:url}]);
   const counts={gemini:0,openai:0,read:0},secret='sb_secret_scout_test_only',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
@@ -198,7 +202,7 @@ test('hosted selected/direct sources save a bounded fallback once, preserve nati
   const options={databaseURL:'mock',env,connect,apiKey:'test',openaiApiKey:'test',read:async()=>{counts.read++;return {url,status:200,headers:{'content-type':'text/html'},body:'<p>PRIVATE SOURCE BODY</p>'};},modelFetch:async(target,options)=>{
    if(target.includes('googleapis')){counts.gemini++;return Response.json({usageMetadata:{promptTokenCount:100,candidatesTokenCount:10,totalTokenCount:110},
     candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}]},content:{parts:[{text:'[]'}]}}]});}
-   counts.openai++;const body=JSON.parse(options.body);assert.equal(body.max_output_tokens,1500);assert.equal(JSON.parse(body.input).source.identity,'cbd:side-event:6915');
+   counts.openai++;const body=JSON.parse(options.body);assert.equal(body.max_output_tokens,OPENAI_LIMITS.outputTokens);assert.equal(JSON.parse(body.input).source.identity,'cbd:side-event:6915');
    return Response.json({status:'completed',model:OPENAI_MODEL,usage:{input_tokens:100,output_tokens:10},output:[{type:'web_search_call',status:'completed',action:{type:'open_page',url}},{type:'message',content:[{type:'output_text',text:JSON.stringify({records:[record]})}]}]});
   }};
   const run=async(query='next=true')=>(await hostedHSA(new Request('https://example.test/collect?'+query,{method:'POST',headers:{apikey:secret}}),options)).json();

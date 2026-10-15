@@ -1,18 +1,18 @@
-import {Buffer} from 'node:buffer';
 import {randomUUID} from 'node:crypto';
 import {sourceURL} from './octo-documents.js';
 import {MODEL,MODEL_LIMITS,gemini} from './model.js';
 import {normalizeFinding} from './finding-contract.js';
 
 export const OPENAI_MODEL='gpt-6-luna';
+// Published model capacity, not a Scout quota. OpenAI enforces account rates/spend.
+export const OPENAI_LIMITS={inputTokens:1050000,outputTokens:128000};
 export const OPENAI_WEB_CALLS=3,OPENAI_WEB_CALL_USD=0.01;
 const dispatchPermit=Symbol('accounted_dispatch');
-const databasePermit=Symbol('durable_accounting');
 export function isAccounted(limits){return limits?.[dispatchPermit]===true;}
 const fail=(reason,details={})=>Object.assign(new Error(reason),{reason,...details});
 const finite=n=>Number.isFinite(n)&&n>=0;
 const label=v=>typeof v==='string'&&/^[a-z0-9_.-]{1,80}$/i.test(v);
-const reasons=new Set('configuration model_configuration invalid_schema accounting database_operation sql_bound budget provider_budget attempt_bound provider_cooldown runtime_bound spending_bound quota search_configuration search_quota search_unavailable source_required source_read_failed source_bound source_json_invalid source_type_unsupported source_preparation_failed input_bound output_bound provider_unknown provider_auth provider_rate_limit provider_unavailable provider_rejected provider_safety invalid_output model_unreadable empty_findings output_incomplete provider_finish provider_refused unexpected_tool token_reservation_overrun invalid_json output_truncated retrieval_metadata_missing url_retrieval_failed invocation_busy'.split(' '));
+const reasons=new Set('configuration model_configuration invalid_schema accounting database_operation sql_bound attempt_bound provider_cooldown runtime_bound quota provider_spend_limit provider_context_limit search_configuration search_quota search_unavailable source_required source_read_failed source_bound source_json_invalid source_type_unsupported source_preparation_failed input_bound output_bound provider_unknown provider_auth provider_rate_limit provider_unavailable provider_rejected provider_safety invalid_output model_unreadable empty_findings output_incomplete provider_finish provider_refused unexpected_tool token_reservation_overrun invalid_json output_truncated retrieval_metadata_missing url_retrieval_failed invocation_busy'.split(' '));
 const reason=error=>reasons.has(error?.reason??error?.message)?error.reason??error.message:'provider_unknown';
 
 // Strict transport schema only; the shared finding schema remains unchanged.
@@ -54,24 +54,19 @@ export function openai({apiKey,urls=[],source,model=OPENAI_MODEL,fetch:send=fetc
       if(requested.length>4)throw fail('source_bound');
       if(limits?.task==='url_intake'&&!initial.length)throw fail('source_required');
       if(!apiKey)throw fail('configuration');
-      if(!limits||!Number.isInteger(limits.inputTokens)||!Number.isInteger(limits.outputTokens))throw fail('budget');
       const end=Math.min(deadline,limits.deadline??deadline);
       const body=JSON.stringify({model,store:false,service_tier:'default',reasoning:{effort:'low'},max_output_tokens:limits.outputTokens,
         instructions:instruction+(schema?.type==='array'?'\nFor this API, return the array inside an object with the single key records.':''),
         input:JSON.stringify({input,urls:requested,source}),
         ...(requested.length?{tools:[{type:'web_search',search_content_types:['text','image']}],tool_choice:'required',max_tool_calls:OPENAI_WEB_CALLS,include:['web_search_call.action.sources']}:{}),
         text:{format:{type:'json_schema',name:'scout_result',schema:strictSchema(transportSchema),strict:true}}});
-      // UTF-8 bytes plus framing are a conservative token bound, not a tokenizer estimate.
-      if(Buffer.byteLength(body)+256>limits.inputTokens)throw fail('input_bound');
       if(now()+5000>=end)throw fail('runtime_bound');
       dispatched=true;
       let response;
       try{response=await send('https://api.openai.com/v1/responses',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+apiKey},body,
         signal:AbortSignal.timeout(Math.max(1,end-now()-3000))});}catch{throw fail('provider_unknown');}
       diagnostics.http_status=response.status;
-      const reader=response.body?.getReader(),decoder=new TextDecoder();let raw='',bytes=0;
-      try{for(;;){const part=await reader?.read();if(!part||part.done)break;bytes+=part.value.byteLength;if(bytes>131072)throw fail('output_bound');raw+=decoder.decode(part.value,{stream:true});}raw+=decoder.decode();}
-      finally{await reader?.cancel();}
+      const raw=await response.text();
       if(!response.ok){
         let error;try{error=JSON.parse(raw)?.error;}catch{}
         // Return bounded diagnostics only; OpenAI messages can echo full or masked keys.
@@ -80,9 +75,14 @@ export function openai({apiKey,urls=[],source,model=OPENAI_MODEL,fetch:send=fetc
           if(typeof value==='string')diagnostics[name]=value.replaceAll(apiKey,'[REDACTED]')
             .replace(/\bsk-[a-z0-9_.*-]+/gi,'[REDACTED]').replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,name==='error_message'?512:128);
         }
+        const spending=['organization_spend_limit_exceeded','project_spend_limit_exceeded','organization_usage_limit_exceeded','credit_balance_exhausted','insufficient_quota'].includes(error?.code);
+        const context=error?.code==='context_length_exceeded';
+        if(spending)diagnostics.limit_category='spending';
+        else if(context)diagnostics.limit_category='context';
+        else if(response.status===429)diagnostics.limit_category=/token/i.test(error?.message??'')?'tokens':/request/i.test(error?.message??'')?'requests':'rate';
         const retry=response.headers.get('retry-after'),retryAt=Number(retry)>0?now()+Number(retry)*1000:Date.parse(retry);
-        throw fail(response.status===401||response.status===403?'provider_auth':response.status===429?'provider_rate_limit':'provider_unavailable',
-          response.status===429||response.status>=500?{deferred:{retry_at:new Date(Math.max(retryAt||0,now()+60000)).toISOString()}}:{});
+        throw fail(spending?'provider_spend_limit':context?'provider_context_limit':response.status===401||response.status===403?'provider_auth':response.status===429?'provider_rate_limit':response.status>=500?'provider_unavailable':'provider_rejected',
+          !spending&&(response.status===429||response.status>=500)?{deferred:{retry_at:new Date(retryAt>now()?retryAt:now()+60000).toISOString()}}:{});
       }
       let result;try{result=JSON.parse(raw);}catch{throw fail('invalid_output');}
       if(!result||typeof result!=='object'||Array.isArray(result))throw fail('invalid_output');
@@ -90,7 +90,10 @@ export function openai({apiKey,urls=[],source,model=OPENAI_MODEL,fetch:send=fetc
         usage={input_tokens:result.usage.input_tokens,output_tokens:result.usage.output_tokens,web_search_calls:OPENAI_WEB_CALLS};
       diagnostics.response_status=result.status??null;
       diagnostics.model_version=typeof result.model==='string'?result.model.slice(0,80):null;
-      if(result.status!=='completed')throw fail(result.status==='incomplete'?'output_incomplete':'provider_finish');
+      if(result.status!=='completed'){
+        if(result.incomplete_details?.reason==='max_output_tokens')diagnostics.limit_category='output';
+        throw fail(result.status==='incomplete'?'output_incomplete':'provider_finish');
+      }
       if(!Array.isArray(result.output)||result.output.some(item=>!item||typeof item!=='object'||item.type==='message'&&
         (!Array.isArray(item.content)||item.content.some(part=>!part||typeof part!=='object'||part.type==='output_text'&&typeof part.text!=='string'))))throw fail('invalid_output');
       const web=result.output.filter(item=>item.type==='web_search_call');
@@ -114,7 +117,6 @@ export function openai({apiKey,urls=[],source,model=OPENAI_MODEL,fetch:send=fetc
         if(!Array.isArray(answer.records))throw fail('invalid_output');
         answer={status:answer.records.length?'found':'none',records:answer.records};
       }
-      if(usage)usage.overrun=usage.input_tokens>limits.inputTokens||usage.output_tokens>limits.outputTokens;
       return {...answer,_diagnostics:diagnostics,_retrieval:diagnostics.retrieval,
         _usage:usage??{input_tokens:limits.inputTokens,output_tokens:limits.outputTokens,uncertain:true}};
     }catch(error){
@@ -126,37 +128,28 @@ export function openai({apiKey,urls=[],source,model=OPENAI_MODEL,fetch:send=fetc
 
 // Invocation-local dispatch; reserve/settle must enforce shared current-account
 // usage atomically. They receive only numbers and short labels, never traffic.
-export function modelGateway({task,routes,providers,budget,accounting,invocation=randomUUID(),deadline=Date.now()+100000,now=Date.now}){
-  const attempts=[],counts={};let charged=0,busy=false,halted=false;
+export function modelGateway({task,routes,providers,accounting,invocation=randomUUID(),deadline=Date.now()+100000,now=Date.now}){
+  const attempts=[],counts={};let busy=false,halted=false;
   const usage=rows=>({generations:rows.filter(a=>a.dispatched).length,input_tokens:rows.reduce((n,a)=>n+a.input_tokens,0),output_tokens:rows.reduce((n,a)=>n+a.output_tokens,0),
     estimated_cost_usd:rows.reduce((n,a)=>n+a.cost_usd,0),uncertain:rows.some(a=>a.state==='unknown'),overrun:rows.some(a=>a.overrun)});
   const call=async(provider,instruction,input,schema)=>{
-    const config=providers?.[provider],durable=accounting?.[databasePermit]===true;
-    const limit=durable?{inputTokens:60000,outputTokens:provider==='gemini'?MODEL_LIMITS.output:1500,inputUSDPerMillion:provider==='gemini'?0:0.125,outputUSDPerMillion:provider==='gemini'?0:0.5,remainingAttempts:2,remainingInputTokens:120000,cooldownUntil:0}:budget?.providers?.[provider];
-    const fresh=v=>finite(v?.verifiedAt)&&v.verifiedAt<=now()&&now()-v.verifiedAt<=900000&&finite(v.expiresAt)&&v.expiresAt>now();
+    const config=providers?.[provider];
+    const limit=provider==='gemini'?{inputTokens:MODEL_LIMITS.input,outputTokens:MODEL_LIMITS.output}:OPENAI_LIMITS;
     if(!label(task)||!label(provider)||!label(config?.model)||typeof config?.generate!=='function'||
       provider==='openai'&&config.model!==OPENAI_MODEL||provider==='gemini'&&config.model!==MODEL)throw fail('configuration');
     if(typeof accounting?.reserve!=='function'||typeof accounting?.settle!=='function')throw fail('accounting');
-    if(!durable&&(!fresh(budget)||!fresh(limit)||limit.accessVerified!==true||limit.model!==config.model||
-      !finite(budget.maxCostUSD)||!finite(budget.creditRemainingUSD)||budget.maxCostUSD>budget.creditRemainingUSD||
-      !Number.isInteger(limit.remainingAttempts)||limit.remainingAttempts<1||!Number.isInteger(limit.inputTokens)||limit.inputTokens<1||limit.inputTokens>60000||
-      !Number.isInteger(limit.outputTokens)||limit.outputTokens<1||limit.outputTokens>(provider==='gemini'?MODEL_LIMITS.output:1500)||!finite(limit.remainingInputTokens)||limit.remainingInputTokens<limit.inputTokens||
-      !finite(limit.inputUSDPerMillion)||!finite(limit.outputUSDPerMillion)||!finite(limit.cooldownUntil)||
-      provider==='openai'&&(limit.inputUSDPerMillion<0.125||limit.outputUSDPerMillion<0.50)||
-      provider==='gemini'&&(limit.inputTokens!==MODEL_LIMITS.input||limit.outputTokens!==MODEL_LIMITS.output)))throw fail('budget');
-    if(halted||attempts.length>=2||(counts[provider]??0)>=limit.remainingAttempts)throw fail('attempt_bound');
-    const cooldown=Math.max(limit.cooldownUntil,...attempts.filter(a=>a.provider===provider).map(a=>Date.parse(a.deferred?.retry_at)||0));
+    if(halted||attempts.length>=2)throw fail('attempt_bound');
+    const cooldown=Math.max(0,...attempts.filter(a=>a.provider===provider).map(a=>Date.parse(a.deferred?.retry_at)||0));
     if(cooldown>now())throw fail('provider_cooldown',{deferred:{retry_at:new Date(cooldown).toISOString()}});
-    if(attempts.filter(a=>a.provider===provider).reduce((n,a)=>n+a.input_tokens,0)+limit.inputTokens>limit.remainingInputTokens)throw fail('quota');
     if(!finite(deadline)||deadline-now()>100000||now()+5000>=deadline)throw fail('runtime_bound');
     const webCost=provider==='openai'?OPENAI_WEB_CALLS*OPENAI_WEB_CALL_USD:0;
-    const cost=(limit.inputTokens*limit.inputUSDPerMillion+limit.outputTokens*limit.outputUSDPerMillion)/1e6+webCost;
-    if(!durable&&(charged+cost>budget.maxCostUSD||charged+cost>budget.creditRemainingUSD))throw fail('spending_bound');
+    // Unknown calls retain a conservative maximum estimate; this does not gate work.
+    const cost=provider==='openai'?(limit.inputTokens*0.25+limit.outputTokens*0.75+OPENAI_WEB_CALLS*OPENAI_WEB_CALL_USD*1e6)/1e6:0;
     const receipt={invocation,id:randomUUID(),task,provider,model:config.model,input_tokens:limit.inputTokens,output_tokens:limit.outputTokens,cost_usd:cost};
     let reserved;try{reserved=await accounting.reserve({...receipt,max_attempts:2,deadline});}catch{halted=true;throw fail('accounting');}
     if(reserved?.allowed!==true)throw fail(reasons.has(reserved?.reason)?reserved.reason:'quota',reserved?.retry_at?{deferred:{retry_at:reserved.retry_at}}:{});
     const attempt={provider,model:config.model,dispatched:false,state:'unknown',reason:null,input_tokens:limit.inputTokens,output_tokens:limit.outputTokens,cost_usd:cost};
-    attempts.push(attempt);counts[provider]=(counts[provider]??0)+1;charged+=cost;
+    attempts.push(attempt);counts[provider]=(counts[provider]??0)+1;
     let answer,error;
     try{
       if(now()+5000>=deadline)throw fail('runtime_bound',{dispatched:false});
@@ -172,12 +165,13 @@ export function modelGateway({task,routes,providers,budget,accounting,invocation
       attempt.input_tokens=reported.uncertain?Math.max(limit.inputTokens,reported.input_tokens):reported.input_tokens;
       attempt.output_tokens=reported.uncertain?Math.max(limit.outputTokens,reported.output_tokens):reported.output_tokens;
       attempt.state=reported.uncertain?'unknown':'settled';
-      attempt.cost_usd=(attempt.input_tokens*limit.inputUSDPerMillion+attempt.output_tokens*limit.outputUSDPerMillion)/1e6+
-        (provider==='openai'?(reported.uncertain?webCost:Number.isInteger(reported.web_search_calls)&&reported.web_search_calls>=0?reported.web_search_calls*OPENAI_WEB_CALL_USD:webCost):0);
-      attempt.overrun=!!reported.overrun||reported.input_tokens>limit.inputTokens||reported.output_tokens>limit.outputTokens;
+      const long=attempt.input_tokens>272000;
+      attempt.cost_usd=provider==='openai'?reported.uncertain?cost:
+        (attempt.input_tokens*(long?0.25:0.125)+attempt.output_tokens*(long?0.75:0.5))/1e6+
+        (Number.isInteger(reported.web_search_calls)&&reported.web_search_calls>=0?reported.web_search_calls*OPENAI_WEB_CALL_USD:webCost):0;
+      attempt.overrun=provider==='gemini'&&(!!reported.overrun||reported.input_tokens>limit.inputTokens||reported.output_tokens>limit.outputTokens);
       if(attempt.overrun){halted=true;if(!error)attempt.reason='token_reservation_overrun';}
     }
-    charged+=attempt.cost_usd-cost;
     if(error?.deferred)attempt.deferred=error.deferred;
     try{await accounting.settle({...receipt,input_tokens:attempt.input_tokens,output_tokens:attempt.output_tokens,cost_usd:attempt.cost_usd,state:attempt.state,reason:attempt.reason,
       cooldown_until:error?.deferred?.retry_at??null});}catch{halted=true;throw fail('accounting',{dispatched:attempt.dispatched});}
@@ -203,7 +197,7 @@ export function modelGateway({task,routes,providers,budget,accounting,invocation
 }
 
 export function modelAccounting(ledger){
-  return {[databasePermit]:true,
+  return {
     reserve:async r=>(await ledger.query('select * from scout.reserve_provider($1,$2,$3,$4,$5)',[r.invocation,r.id,r.provider,r.max_attempts,r.provider==='openai'?OPENAI_WEB_CALLS:0])).rows[0],
     settle:async r=>{const result=(await ledger.query('select * from scout.settle_provider($1,$2,$3,$4,$5,$6,$7)',
       [r.id,r.input_tokens,r.output_tokens,r.state,r.reason,r.cooldown_until,r.cost_usd])).rows[0];if(!result?.settled)throw fail('accounting');}};
