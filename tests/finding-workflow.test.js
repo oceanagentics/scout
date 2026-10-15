@@ -39,7 +39,7 @@ test('new events without starts prompt the model directly, enrich saved IDs, and
   const db=boundary(driver(raw,(_q,p)=>assert.ok(!JSON.stringify(p).includes('PRIVATE_SOURCE_BODY'))));
   const model=trackerModel({apiKey:'test',ledger:db,source,fetch:async(url,options)=>{
    http++;assert.ok(url.endsWith(':generateContent'));
-   const body=JSON.parse(options.body);assert.deepEqual(body.tools,[{urlContext:{}}]);assert.equal(body.store,false);
+   const body=JSON.parse(options.body);assert.deepEqual(body.tools,[{urlContext:{}},{googleSearch:{}}]);assert.equal(body.store,false);
    let output=answer(['First workshop','Second workshop'].map(description=>({...event,description,date:null,deadline:'2026-10-01'})));
    if(http===2){
     const saved=(await raw.query('select * from scout.records order by title')).rows;ids=saved.map(r=>r.id);
@@ -77,7 +77,7 @@ test('manual URL intake maps a flat record and preserves the existing source wit
    env:{url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{default:'sb_publishable_test'},jwks:null},
    connect:()=>({reserve:async()=>session,end:async()=>{}}),read:async()=>{reads++;return read();},
    modelFetch:async(_url,request)=>{
-    calls++;const body=JSON.parse(request.body);assert.deepEqual(body.tools,[{urlContext:{}}]);
+    calls++;const body=JSON.parse(request.body);assert.deepEqual(body.tools,[{urlContext:{}},{googleSearch:{}}]);
     assert.ok(body.contents[0].parts[0].text.includes(tr.url));assert.equal(body.contents[0].parts.length,1);
     assert.ok(body.contents[0].parts[0].text.includes('Current date (UTC): '+new Date().toISOString().slice(0,10)+'.'));
     assert.match(body.contents[0].parts[0].text,/Inspect every image on the page/);

@@ -54,7 +54,7 @@ export function openai({apiKey,urls=[],source,model=OPENAI_MODEL,fetch:send=fetc
       const body=JSON.stringify({model,store:false,service_tier:'default',reasoning:{effort:'low'},max_output_tokens:limits.outputTokens,
         instructions:instruction+(schema?.type==='array'?'\nFor this API, return the array inside an object with the single key records.':''),
         input:JSON.stringify({input,urls:requested,source}),
-        ...(requested.length?{tools:[{type:'web_search',search_content_types:['text','image']}],tool_choice:'required',max_tool_calls:limits.maxToolCalls,include:['web_search_call.action.sources']}:{}),
+        ...(requested.length?{tools:[{type:'web_search',search_content_types:['text','image'],image_settings:{caption:true}}],tool_choice:'required',max_tool_calls:limits.maxToolCalls,include:['web_search_call.action.sources']}:{}),
         text:{format:{type:'json_schema',name:'scout_result',schema:strictSchema(transportSchema),strict:true}}});
       dispatched=true;
       let response;
