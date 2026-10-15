@@ -1,4 +1,5 @@
-import { collectDocuments, sourceURL } from './octo-documents.js';
+import { collectDocuments } from './octo-documents.js';
+import {sourceURL} from './source-url.js';
 import { retrieveAuthorDocuments } from './bluesky-documents.js';
 import { retrieveDiscoveryDocuments } from './bluesky-discovery-documents.js';
 import { retrieveGFWDocuments, retrievePublisherDocuments, PUBLISHER_SOURCES } from './publisher-documents.js';

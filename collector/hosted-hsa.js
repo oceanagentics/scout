@@ -2,7 +2,7 @@ import {verifyAuth} from '@supabase/server/core';
 import postgres from 'postgres';
 import {Buffer} from 'node:buffer';
 import {randomUUID} from 'node:crypto';
-import {sourceURL} from './octo-documents.js';
+import {sourceURL} from './source-url.js';
 import {trackerModel} from './model-gateway.js';
 import {processDocument} from './finding-jobs.js';
 import {correctFinding} from './corrections.js';

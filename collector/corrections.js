@@ -1,6 +1,6 @@
 import {DATE_FIELDS,normalizeDate,dateInterval} from '../src/finding.js';
 import {sameClaim} from './finding-contract.js';
-import {sourceURL} from './hsa.js';
+import {sourceURL} from './source-url.js';
 
 export async function correctFinding(db,{record_id,version,field,value,url}){
   const invalid=()=>Object.assign(new Error('Current record version, supported value and public source URL required'),{status:400});

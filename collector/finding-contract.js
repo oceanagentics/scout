@@ -1,5 +1,5 @@
 import {normalizeDate} from '../src/finding.js';
-import {sourceURL} from './octo-documents.js';
+import {sourceURL} from './source-url.js';
 
 export const INTAKE_INSTRUCTION=`Open the source URL supplied in the input first.
 

@@ -1,5 +1,5 @@
 // Explicit production pilot or local diagnostic; neither starts recurring work.
-import {sourceURL} from './hsa.js';
+import {sourceURL} from './source-url.js';
 const args=process.argv.slice(2),tracker=args.find(v=>v.startsWith('--tracker='))?.slice(10),source=args.find(v=>v.startsWith('--source='))?.slice(9);
 if(args.length!==3||!args.some(v=>v==='--pilot'||v==='--diagnostic')||!/^[a-f0-9-]{36}$/i.test(tracker??'')||!source)
   throw new Error('Usage: npm run collect:hsa -- --pilot|--diagnostic --tracker=UUID --source=https://...');
