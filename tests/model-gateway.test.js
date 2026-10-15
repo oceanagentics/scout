@@ -1,8 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {strictSchema,openai,modelGateway,trackerModel,OPENAI_MODEL} from '../collector/model-gateway.js';
+import {modelGateway,trackerModel} from '../collector/model-gateway.js';
+import {strictSchema,openai,OPENAI_MODEL} from '../collector/model-openai.js';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../collector/finding-contract.js';
-import {MODEL,gemini} from '../collector/model.js';
+import {MODEL,gemini} from '../collector/model-gemini.js';
 
 // Stub the authoritative SQL reply; real policy/concurrency is covered in assessment.test.js.
 const OPENAI_LIMITS={inputTokens:1050000,outputTokens:128000};

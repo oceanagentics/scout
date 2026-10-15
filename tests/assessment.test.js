@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {randomUUID} from 'node:crypto';
-import {MODEL,gemini} from '../collector/model.js';
+import {OPENAI_MODEL} from '../collector/model-openai.js';
+import {MODEL,gemini} from '../collector/model-gemini.js';
 import {database,hostedHSA} from '../collector/hosted-hsa.js';
-import {OPENAI_MODEL,trackerModel,modelGateway,modelAccounting} from '../collector/model-gateway.js';
+import {trackerModel,modelGateway,modelAccounting} from '../collector/model-gateway.js';
 
 const OPENAI_LIMITS={inputTokens:1050000,outputTokens:128000};
 const geminiModel=options=>modelGateway({task:'diagnostic',routes:{diagnostic:{provider:'gemini'}},
