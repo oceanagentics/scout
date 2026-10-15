@@ -10,7 +10,7 @@ npm run collect:hsa -- --diagnostic --tracker=UUID --source=https://example.org/
 ```
 
 This runs the current checkout's workflow, not the deployed function. It saves
-request and response bodies (including errors and Tavily search results) in
+request and response bodies (including errors) in
 `.cache/model-traffic/latest.jsonl`. Each request/response pair shares an `id`.
 The file is overwritten each run, ignored by Git and readable only by its owner.
 Headers and endpoint query parameters are excluded; configured API credentials

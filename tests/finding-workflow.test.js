@@ -33,21 +33,19 @@ const answer=(records=[event])=>({status:'found',records});
 const due=db=>db.exec("update scout.source_state set due_at=clock_timestamp()-interval '1 second'");
 const read=async()=>({status:200,body:'PRIVATE_SOURCE_BODY'});
 
-test('new events without starts trigger one search, enrich saved IDs, and preserve corrections',async t=>{
+test('new events without starts prompt the model directly, enrich saved IDs, and preserve corrections',async t=>{
  const raw=await setup();try{
-  const tr=await tracker(raw);await enable(raw);const source=sourceFor(tr),support='https://example.org/programme';let http=0,searches=0,ids;
+  const tr=await tracker(raw);await enable(raw);const source=sourceFor(tr),support='https://example.org/programme';let http=0,ids;
   const db=boundary(driver(raw,(_q,p)=>assert.ok(!JSON.stringify(p).includes('PRIVATE_SOURCE_BODY'))));
-  const model=trackerModel({apiKey:'test',tavilyApiKey:'test',ledger:db,source,fetch:async(url,options)=>{
-   if(url==='https://api.tavily.com/usage')return Response.json({account:{plan_limit:1000,plan_usage:10},key:{limit:null}});
-   if(url==='https://api.tavily.com/search'){searches++;assert.equal(JSON.parse(options.body).search_depth,'basic');return Response.json({results:[{url:support,content:'PRIVATE_SEARCH_BODY'}]});}
+  const model=trackerModel({apiKey:'test',ledger:db,source,fetch:async(url,options)=>{
    http++;assert.ok(url.endsWith(':generateContent'));
-   const body=JSON.parse(options.body);assert.deepEqual(body.tools,[{urlContext:{}}]);assert.equal(body.store,false);assert.ok(!options.body.includes('PRIVATE_SEARCH_BODY'));
+   const body=JSON.parse(options.body);assert.deepEqual(body.tools,[{urlContext:{}}]);assert.equal(body.store,false);
    let output=answer(['First workshop','Second workshop'].map(description=>({...event,description,date:null,deadline:'2026-10-01'})));
    if(http===2){
     const saved=(await raw.query('select * from scout.records order by title')).rows;ids=saved.map(r=>r.id);
     assert.ok(saved.every(r=>!r.details.start));assert.match(body.contents[0].parts[0].text,/When is this event scheduled\?/);
     await correctFinding(raw,{record_id:ids[0],version:saved[0].version,field:'details.start',value:{value:'2026-10-23',precision:'day'},url:source.url});
-    const input=JSON.parse(body.contents[0].parts[1].text);assert.equal(input.records.length,2);assert.deepEqual(input.search_results.map(r=>r.urls),[[support],[support]]);
+    const input=JSON.parse(body.contents[0].parts[1].text);assert.equal(input.records.length,2);assert.equal(input.search_results,undefined);assert.equal(input.requested_links[0].url,source.url);
     output=answer(input.records.map(r=>({...event,description:'Unwanted description change',record_id:r.record_id,date_source_url:support,date:'2026-10-22'})));
    }
    return Response.json({usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:3500,candidatesTokenCount:500,totalTokenCount:4400},
@@ -60,7 +58,6 @@ test('new events without starts trigger one search, enrich saved IDs, and preser
   assert.deepEqual(records.map(r=>r.id),ids);assert.deepEqual(records.map(r=>r.details.start.value),['2026-10-23','2026-10-22']);
   assert.ok(records.every(r=>r.details.response_due.value==='2026-10-01'));
   assert.ok(records.every(r=>r.sources.some(s=>s.url===support)));assert.equal(records[0].title,'First workshop');
-  assert.equal(first.diagnostics[1].attempts[0].diagnostics.search_queries,2);assert.equal(searches,2);
   const initial={...db.metrics};await due(raw);
   assert.deepEqual(await processDocument(db,options),{state:'complete',created:0,changed:0});
   assert.equal(http,2);assert.equal(db.metrics.mutations-initial.mutations,2);

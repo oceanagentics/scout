@@ -55,14 +55,6 @@ test('fresh finite shared headroom and database size are required before any mod
   assert.equal(http,0);assert.equal((await raw.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,0);
  }finally{await raw.close();}
 });
-test('scheduling search requires verified included credits before search or generation',async()=>{
- for(const account of [{},{plan_limit:1000,plan_usage:1000}]){
-  const urls=[],writes=[],model=geminiModel({apiKey:'test',tavilyApiKey:'test',ledger:{query:async(q,p)=>{writes.push([q,p]);return {rows:[q.includes('reserve_provider')?{allowed:true,remaining_attempts:1,cost_usd:0,settings:{model:MODEL,inputTokens:60000,outputTokens:8192,inputBytes:24000,outputBytes:131072,maxToolCalls:0,deadline:new Date(Date.now()+40000).toISOString()}}:{settled:true}]};}},fetch:async url=>{urls.push(url);return Response.json({account});}});
-  await assert.rejects(model('Find the schedule',{research:'event_schedule',records:[{title:'Workshop'}]}),{message:'search_quota',dispatched:false});
-  assert.deepEqual(urls,['https://api.tavily.com/usage']);
-  assert.deepEqual(writes.at(-1)[1].slice(1,4),[0,0,'settled']);
- }
-});
 test('two durable quota mutations, URL retrieval accounting, streaming Unicode and max two generations',async()=>{
  const raw=await setup();try{
   await enable(raw);const db=boundary(raw),http={count:0,generation:0};

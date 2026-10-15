@@ -19,7 +19,7 @@ export function captureTraffic(path,{fetch:send=fetch,secrets=[]}={}){
   const limit=131072;
   return {close:()=>closeSync(file),fetch:async(url,options={})=>{
     const target=new URL(url),service=target.hostname;
-    if(!['generativelanguage.googleapis.com','api.openai.com','api.tavily.com'].includes(service))return send(url,options);
+    if(!['generativelanguage.googleapis.com','api.openai.com'].includes(service))return send(url,options);
     const id=++sequence,body=redact(String(options.body??'')),bytes=Buffer.from(body);
     write({id,direction:'request',at:new Date().toISOString(),url:target.origin+target.pathname,method:options.method??'GET',
       body:bytes.subarray(0,limit).toString('utf8'),truncated:bytes.length>limit});
@@ -55,11 +55,11 @@ export async function diagnoseSource({tracker,source,env,ledger=managementDataba
       await raw.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
     await raw.query('insert into scout.trackers(id,name,url,collector,cadence) values($1,$2,$3,$4,$5)',
       [selected.id,selected.name,selected.url,selected.collector,selected.cadence]);
-    traffic=captureTraffic(output,{fetch:send,secrets:[env.GEMINI_API_KEY,env.SCOUT_OPENAI_API_KEY,env.TAVILY_API_KEY,env.SUPABASE_ACCESS_TOKEN]});
+    traffic=captureTraffic(output,{fetch:send,secrets:[env.GEMINI_API_KEY,env.SCOUT_OPENAI_API_KEY,env.SUPABASE_ACCESS_TOKEN]});
     const db=database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
     const input={tracker_id:tracker,identity:source,url:source};
     const model=trackerModel({source:input,ledger,apiKey:env.GEMINI_API_KEY,openaiApiKey:env.SCOUT_OPENAI_API_KEY,
-      tavilyApiKey:env.TAVILY_API_KEY,fetch:traffic.fetch});
+      fetch:traffic.fetch});
     const result=await processDocument(db,{source:input,model});
     const records=(await raw.query('select id,version,title,details,sources from scout.records order by id')).rows;
     return {traffic_file:output,result,records,cost:db.metrics};

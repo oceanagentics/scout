@@ -9,7 +9,7 @@ const dispatchPermit=Symbol('accounted_dispatch');
 export function isAccounted(limits){return limits?.[dispatchPermit]===true;}
 const fail=(reason,details={})=>Object.assign(new Error(reason),{reason,...details});
 const label=v=>typeof v==='string'&&/^[a-z0-9_.-]{1,80}$/i.test(v);
-const reasons=new Set('configuration model_configuration invalid_schema accounting database_operation sql_bound attempt_bound provider_cooldown runtime_bound quota provider_spend_limit provider_context_limit search_configuration search_quota search_unavailable source_required source_read_failed source_bound source_json_invalid source_type_unsupported source_preparation_failed input_bound output_bound provider_unknown provider_auth provider_rate_limit provider_unavailable provider_rejected provider_safety invalid_output model_unreadable empty_findings output_incomplete provider_finish provider_refused unexpected_tool invalid_json output_truncated retrieval_metadata_missing url_retrieval_failed invocation_busy'.split(' '));
+const reasons=new Set('configuration model_configuration invalid_schema accounting database_operation sql_bound attempt_bound provider_cooldown runtime_bound quota provider_spend_limit provider_context_limit source_required source_read_failed source_bound source_json_invalid source_type_unsupported source_preparation_failed input_bound output_bound provider_unknown provider_auth provider_rate_limit provider_unavailable provider_rejected provider_safety invalid_output model_unreadable empty_findings output_incomplete provider_finish provider_refused unexpected_tool invalid_json output_truncated retrieval_metadata_missing url_retrieval_failed invocation_busy'.split(' '));
 const reason=error=>reasons.has(error?.reason??error?.message)?error.reason??error.message:'provider_unknown';
 
 // Strict transport schema only; the shared finding schema remains unchanged.
@@ -199,7 +199,7 @@ export function modelAccounting(ledger){
       [r.id,r.input_tokens,r.output_tokens,r.state,r.reason,r.cooldown_until,r.cost_usd])).rows[0];if(!result?.settled)throw fail('accounting');}};
 }
 
-export function trackerModel({apiKey,tavilyApiKey,openaiApiKey,ledger,source,invocation=randomUUID(),deadline,fetch:send=fetch}){
+export function trackerModel({apiKey,openaiApiKey,ledger,source,invocation=randomUUID(),deadline,fetch:send=fetch}){
   return modelGateway({task:'url_intake',accounting:modelAccounting(ledger),invocation,deadline,
     routes:{url_intake:{provider:'gemini',fallback:'openai',fallbackReasons:['url_retrieval_failed','retrieval_metadata_missing','model_unreadable','invalid_json','invalid_output','output_truncated','output_bound','empty_findings','provider_rate_limit','provider_unavailable','provider_unknown'],
       validate:answer=>{
@@ -207,6 +207,6 @@ export function trackerModel({apiKey,tavilyApiKey,openaiApiKey,ledger,source,inv
         if(answer.status==='unreadable')throw fail('model_unreadable');
         if(answer.status==='found'&&!answer.records.slice(0,8).some(r=>normalizeFinding(r,source.url)))throw fail('empty_findings');
       }}},
-    providers:{gemini:{model:MODEL,generate:gemini({apiKey,tavilyApiKey,ledger,fetch:send})},
+    providers:{gemini:{model:MODEL,generate:gemini({apiKey,ledger,fetch:send})},
       openai:{model:OPENAI_MODEL,generate:openai({apiKey:openaiApiKey,urls:[source.url],source:{identity:source.identity,native_id:source.native_id,native_ref:source.native_ref},fetch:send})}}});
 }

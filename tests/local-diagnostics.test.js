@@ -25,7 +25,7 @@ test('local capture preserves raw errors/content and readable responses while ex
       {method:'POST',headers:{'x-goog-api-key':key},body:JSON.stringify({prompt:'Exact prompt',schema:{type:'array'},secret:key})});
     assert.equal(await response.text(),body);
     assert.equal((await traffic.fetch('https://api.openai.com/v1/responses',{headers:{Authorization:'Bearer '+key}})).status,401);
-    await assert.rejects(traffic.fetch('https://api.tavily.com/network-error'),/Connection failed/);
+    await assert.rejects(traffic.fetch('https://api.openai.com/network-error'),/Connection failed/);
     await traffic.fetch('https://example.supabase.co/database/query',{body:'PRIVATE DATABASE PAYLOAD'});
   }finally{traffic.close();}
   const saved=await readFile(path,'utf8'),entries=await lines(path);
@@ -38,13 +38,13 @@ test('local capture preserves raw errors/content and readable responses while ex
 
 test('local response capture is bounded without truncating the response consumed by the model adapter',async t=>{
   const path=await output(t),body='x'.repeat(140000),traffic=captureTraffic(path,{fetch:async()=>new Response(body)});
-  try{assert.equal(await (await traffic.fetch('https://api.tavily.com/search')).text(),body);}finally{traffic.close();}
+  try{assert.equal(await (await traffic.fetch('https://api.openai.com/v1/responses')).text(),body);}finally{traffic.close();}
   const response=(await lines(path))[1];assert.equal(response.truncated,true);assert.equal(Buffer.byteLength(response.body),131072);
 });
 
-test('local source diagnostic captures intake, search and follow-up with only quota writes shared remotely',async t=>{
+test('local source diagnostic captures direct model intake and follow-up with only quota writes shared remotely',async t=>{
   const path=await output(t),tracker='11111111-1111-4111-8111-111111111111',source='https://example.org/event',support='https://example.org/programme';
-  let generations=0,searches=0,savedId;const sql=[];
+  let generations=0,savedId;const sql=[];
   const ledger={query:async(q,p)=>{
     sql.push(q);
     if(q.startsWith('select id,name'))return {rows:[{id:tracker,name:'Diagnostic tracker',url:source,collector:'web',cadence:'6 hours'}]};
@@ -52,26 +52,23 @@ test('local source diagnostic captures intake, search and follow-up with only qu
     if(q.includes('settle_provider'))return {rows:[{settled:true}]};
     assert.fail('Unexpected shared SQL: '+q);
   }};
-  const result=await diagnoseSource({tracker,source,output:path,env:{GEMINI_API_KEY:'gemini-key',TAVILY_API_KEY:'tavily-key'},ledger,fetch:async(url,request)=>{
-    if(url.endsWith('/usage'))return Response.json({account:{plan_limit:1000,plan_usage:0},key:{limit:null}});
-    if(url.endsWith('/search')){searches++;return Response.json({results:[{url:support,content:'Time in search body: 13:30 UTC'}]});}
-    generations++;const body=JSON.parse(request.body),event={description:'BBNJ data workshop',type:'event',priority:'high',organizations:['Organizer'],date:'2026-10-22',starttime:null,timezone:null};
+  const result=await diagnoseSource({tracker,source,output:path,env:{GEMINI_API_KEY:'gemini-key'},ledger,fetch:async(url,request)=>{
+    assert.ok(url.endsWith(':generateContent'));generations++;const body=JSON.parse(request.body),event={description:'BBNJ data workshop',type:'event',priority:'high',organizations:['Organizer'],date:'2026-10-22',starttime:null,timezone:null};
     if(generations===2){
       const input=JSON.parse(body.contents[0].parts[1].text);savedId=input.records[0].record_id;
-      assert.equal(input.research,'event_schedule');assert.deepEqual(input.search_results[0].urls,[support]);
+      assert.equal(input.research,'event_schedule');assert.equal(input.search_results,undefined);assert.equal(input.requested_links[0].url,source);
       Object.assign(event,{record_id:savedId,date_source_url:support,starttime:'13:30',timezone:'UTC'});
     }
     return Response.json({responseId:'response-'+generations,usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:100,candidatesTokenCount:200,totalTokenCount:700},
       candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:generations===1?source:support,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
         content:{parts:[{text:JSON.stringify([event])}]}}]});
   }});
-  assert.equal(generations,2);assert.equal(searches,1);assert.equal(result.result.improvement,'improved');
+  assert.equal(generations,2);assert.equal(result.result.improvement,'improved');
   assert.equal(result.records.length,1);assert.equal(result.records[0].id,savedId);assert.equal(result.records[0].details.start.utc,'2026-10-22T13:30:00.000Z');
   const entries=await lines(path),requests=entries.filter(e=>e.direction==='request'),responses=entries.filter(e=>e.direction==='response');
-  assert.equal(requests.length,4);assert.equal(responses.length,4);
-  assert.match(requests[3].body,/When is this event scheduled/);assert.match(requests[3].body,/responseJsonSchema/);
-  assert.ok(!requests[3].body.includes('Time in search body'));assert.match(responses[2].body,/Time in search body/);
-  assert.match(responses[3].body,/date_source_url/);assert.match(responses[3].body,/urlContextMetadata/);
+  assert.equal(requests.length,2);assert.equal(responses.length,2);
+  assert.match(requests[1].body,/When is this event scheduled/);assert.match(requests[1].body,/responseJsonSchema/);
+  assert.match(responses[1].body,/date_source_url/);assert.match(responses[1].body,/urlContextMetadata/);
   assert.equal(sql.filter(q=>q.includes('reserve_provider')).length,2);assert.equal(sql.filter(q=>q.includes('settle_provider')).length,2);
 });
 
