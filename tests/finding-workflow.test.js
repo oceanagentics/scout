@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {processDocument} from '../collector/finding-jobs.js';
+import {INTAKE_INSTRUCTION} from '../collector/finding-contract.js';
 import {dateInterval,normalizeDate,findingInterval,dateLabel} from '../src/finding.js';
 import {trackerModel} from '../collector/model-gateway.js';
 import {database as boundary,hostedHSA} from '../collector/hosted-hsa.js';
@@ -43,9 +44,9 @@ test('new events without starts prompt the model directly, enrich saved IDs, and
    let output=answer(['First workshop','Second workshop'].map(description=>({...event,description,date:null,deadline:'2026-10-01'})));
    if(http===2){
     const saved=(await raw.query('select * from scout.records order by title')).rows;ids=saved.map(r=>r.id);
-    assert.ok(saved.every(r=>!r.details.start));assert.match(body.contents[0].parts[0].text,/When is this event scheduled\?/);
+    assert.ok(saved.every(r=>!r.details.start));assert.match(body.systemInstruction.parts[0].text,/When is this event scheduled\?/);
     await correctFinding(raw,{record_id:ids[0],version:saved[0].version,field:'details.start',value:{value:'2026-10-23',precision:'day'},url:source.url});
-    const input=JSON.parse(body.contents[0].parts[1].text);assert.equal(input.records.length,2);assert.equal(input.search_results,undefined);assert.equal(input.requested_links[0].url,source.url);
+    const input=JSON.parse(body.contents[0].parts[0].text);assert.equal(input.records.length,2);assert.equal(input.search_results,undefined);assert.equal(input.requested_links[0].url,source.url);
     output=answer(input.records.map(r=>({...event,description:'Unwanted description change',record_id:r.record_id,date_source_url:support,date:'2026-10-22'})));
    }
    return Response.json({usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:3500,candidatesTokenCount:500,totalTokenCount:4400},
@@ -78,10 +79,12 @@ test('manual URL intake maps a flat record and preserves the existing source wit
    connect:()=>({reserve:async()=>session,end:async()=>{}}),read:async()=>{reads++;return read();},
    modelFetch:async(_url,request)=>{
     calls++;const body=JSON.parse(request.body);assert.deepEqual(body.tools,[{urlContext:{}},{googleSearch:{}}]);
-    assert.ok(body.contents[0].parts[0].text.includes(tr.url));assert.equal(body.contents[0].parts.length,1);
-    assert.ok(body.contents[0].parts[0].text.includes('Current date (UTC): '+new Date().toISOString().slice(0,10)+'.'));
-    assert.match(body.contents[0].parts[0].text,/Inspect every image on the page/);
-    assert.match(body.contents[0].parts[0].text,/description \(alt text\), and caption/);
+    assert.deepEqual(JSON.parse(body.contents[0].parts[0].text),{url:tr.url,current_date:new Date().toISOString().slice(0,10)});
+    assert.equal(body.contents[0].parts.length,1);
+    assert.equal(body.systemInstruction.parts[0].text,INTAKE_INSTRUCTION);
+    assert.ok(!body.systemInstruction.parts[0].text.includes(tr.url));
+    assert.match(body.systemInstruction.parts[0].text,/Inspect every image on the page/);
+    assert.match(body.systemInstruction.parts[0].text,/description \(alt text\), and caption/);
     return Response.json({usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:1000,candidatesTokenCount:300,totalTokenCount:1700},
      candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:tr.url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
       content:{parts:[{text:JSON.stringify([{...event,organizations:['Institute A'],date:'2026-10-29',starttime:'13:30',timezone:'UTC'}])}]}}]});

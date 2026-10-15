@@ -55,7 +55,7 @@ test('local source diagnostic captures direct model intake and follow-up with on
   const result=await diagnoseSource({tracker,source,output:path,env:{GEMINI_API_KEY:'gemini-key'},ledger,fetch:async(url,request)=>{
     assert.ok(url.endsWith(':generateContent'));generations++;const body=JSON.parse(request.body),event={description:'BBNJ data workshop',type:'event',priority:'high',organizations:['Organizer'],date:'2026-10-22',starttime:null,timezone:null};
     if(generations===2){
-      const input=JSON.parse(body.contents[0].parts[1].text);savedId=input.records[0].record_id;
+      const input=JSON.parse(body.contents[0].parts[0].text);savedId=input.records[0].record_id;
       assert.equal(input.research,'event_schedule');assert.equal(input.search_results,undefined);assert.equal(input.requested_links[0].url,source);
       Object.assign(event,{record_id:savedId,date_source_url:support,starttime:'13:30',timezone:'UTC'});
     }

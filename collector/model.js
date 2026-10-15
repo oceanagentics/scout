@@ -4,7 +4,8 @@ import {isAccounted} from './model-gateway.js';
 export const MODEL='gemini-3.5-flash-lite';
 
 export function requestBody(instruction,input,schema,limits){
-  const body={contents:[{role:'user',parts:[{text:instruction},...(Array.isArray(input)&&!input.length?[]:[{text:JSON.stringify(input)}])]}],
+  const body={systemInstruction:{parts:[{text:instruction}]},
+    contents:[{role:'user',parts:[{text:JSON.stringify(input)}]}],
     tools:[{urlContext:{}},{googleSearch:{}}],store:false,
     generationConfig:{maxOutputTokens:limits.outputTokens,thinkingConfig:{thinkingLevel:'minimal'},responseMimeType:'application/json',responseJsonSchema:schema}};
   if(Buffer.byteLength(JSON.stringify(body))>limits.inputBytes)throw new Error('input_bound');

@@ -132,7 +132,7 @@ export async function processDocument(db,{source,model}){
       if(answer.status==='unreadable')throw fail('model_unreadable');
       return answer;
     };
-    const prompt=INTAKE_INSTRUCTION.replace('[TODAY]',new Date().toISOString().slice(0,10)).replace('[URL]',source.url),answer=await call(prompt);
+    const answer=await call(INTAKE_INSTRUCTION,{url:source.url,current_date:new Date().toISOString().slice(0,10)});
     const findings=answer.records.slice(0,8).map(r=>normalizeFinding(r,source.url)).filter(Boolean);
     const saved=await saveFindings(db,leased,findings,[source.url]);
     counts.created+=saved.created;counts.changed+=saved.changed;counts.captured=saved.saved;counts.ambiguous+=saved.ambiguous;
