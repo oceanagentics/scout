@@ -37,7 +37,7 @@ export async function prepareMessage(db,{model,kind='findings',from,through,now=
   for (const r of records) {
     const url=(r.sources??[]).map(s=>sourceLink(s.url)).find(Boolean);
     if (!url) throw new Error('Notification requires a supporting source link');
-    lines.push(`${escape(r.title)} <${escape(url)}|Read more>`);
+    lines.push(`${escape(r.description)} <${escape(url)}|Read more>`);
   }
   return {records,payload:{text:lines.join('\n'),parse:'none',unfurl_links:false,unfurl_media:false},prepared_at:now.toISOString()};
 }

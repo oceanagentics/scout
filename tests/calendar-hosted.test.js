@@ -8,7 +8,7 @@ const user='11111111-1111-4111-8111-111111111111',token='a'.repeat(64);
 const profile={sub:'google-owner',email:'danny@oceanagentics.com',email_verified:true};
 const identity={...profile,iss:'https://accounts.google.com',custom_claims:{hd:'oceanagentics.com'}};
 const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',version:1,updated_at:'2026-10-12T10:00:00Z',kind:'event',
-  title:'Calendar test',description:'Test fixture',organizations:[],canonical_url:'https://example.org/event',
+  description:'Test fixture',organizations:[],canonical_url:'https://example.org/event',
   details:{start:{value:'2001-10-22',precision:'day'}}};
 
 test('hosted calendar with real SQL: access boundaries, expired trial does not block feed or sync',async()=>{
@@ -16,14 +16,14 @@ test('hosted calendar with real SQL: access boundaries, expired trial does not b
   // Vault here is a test double for SQL contracts, not a test of production encryption.
   await db.exec(`create role anon;create role authenticated;create role service_role;create schema scout;create schema auth;create schema vault;
     create table auth.identities(user_id uuid,provider text,provider_id text,identity_data jsonb);
-    create table scout.records(id uuid,version int,updated_at timestamptz,kind text,title text,description text,organizations jsonb,details jsonb,canonical_url text);
+    create table scout.records(id uuid,version int,updated_at timestamptz,kind text,description text,organizations jsonb,details jsonb,canonical_url text);
     create table vault.secrets(id uuid default gen_random_uuid(),name text unique,secret text);
     create view vault.decrypted_secrets as select name,secret as decrypted_secret from vault.secrets;
     create function vault.create_secret(value text,label text) returns uuid language sql as $$ insert into vault.secrets(name,secret) values(label,value) returning id $$;
     create function vault.update_secret(key uuid,value text) returns void language sql as $$ update vault.secrets set secret=value where id=key $$;`);
   await db.exec(await readFile(new URL('../supabase/migrations/20261012220000_scout_calendar.sql',import.meta.url),'utf8'));
   await db.query('insert into auth.identities values($1,$2,$3,$4)',[user,'google',profile.sub,identity]);
-  await db.query('insert into scout.records(id,version,updated_at,kind,title,description,organizations,canonical_url,details) values($1,$2,$3,$4,$5,$6,$7,$8,$9)',Object.values(record));
+  await db.query('insert into scout.records(id,version,updated_at,kind,description,organizations,canonical_url,details) values($1,$2,$3,$4,$5,$6,$7,$8)',Object.values(record));
   const config={databaseURL:'test',authenticate:async()=>signedIn?{data:{userClaims:{id:user}}}:{error:new Error('Invalid JWT')},
     connect:()=>({reserve:async()=>({unsafe:async(sql,params)=>{
       queries.push(sql);const result=await db.query(sql,params);return Object.assign(result.rows,{count:result.affectedRows});
@@ -52,7 +52,7 @@ test('hosted calendar with real SQL: access boundaries, expired trial does not b
     queries.length=0;
     assert.equal((await run('feed.ics?token='+'b'.repeat(64))).status,404);assert.equal(queries.length,1);
     queries.length=0;
-    const feed=await run('feed.ics?token='+token);assert.equal(feed.status,200);assert.match(await feed.text(),/SUMMARY:\[Scout\] Calendar test/);
+    const feed=await run('feed.ics?token='+token);assert.equal(feed.status,200);assert.match(await feed.text(),/SUMMARY:\[Scout\] Test fixture/);
     assert.equal(queries.length,2);assert.equal(queries.filter(sql=>sql.startsWith('update')).length,0);
     assert.equal((await run('feed.ics?token='+token,null,{'if-none-match':feed.headers.get('etag')})).status,304);
     const subscription=await (await run('feed-link')).json();assert.ok(subscription.url.endsWith('?token='+token));

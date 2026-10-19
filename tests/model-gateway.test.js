@@ -85,7 +85,7 @@ test('URL intake requires an explicit main source before dispatch; record answer
     await assert.rejects(intake.model('Read source',input,schema),{reason:'source_required',dispatched:false});
   assert.equal(calls,0);assert.ok(intake.logs.settled.every(value=>value.cost_usd===0));
   const records=setup({task:'answer_records',generate});
-  const answer=await records.model('Answer using these authorized records',{records:[{title:'Authorized snapshot'}]},schema);
+  const answer=await records.model('Answer using these authorized records',{records:[{description:'Authorized snapshot'}]},schema);
   assert.equal(calls,1);assert.equal(answer._usage.generations,1);assert.equal(answer._diagnostics.attempts[0].diagnostics.retrieval.length,0);
 });
 
@@ -109,7 +109,7 @@ test('explicit Gemini retrieval gap falls back once and returns both usage and o
   const received=[],providers={gemini:{model:'gemini-3.5-flash-lite',generate:async(...args)=>{received.push(args);throw retrievalFailure();}},
     openai:{model:OPENAI_MODEL,generate:async(...args)=>{received.push(args);return answer();}}};
   const {model,logs}=setup({providers,routes:{url_intake:{provider:'gemini',fallback:'openai',fallbackReasons:["url_retrieval_failed"]}}});
-  const input={records:[{title:'Partial'}]},output=await model(INTAKE_INSTRUCTION,input,RESPONSE_SCHEMA);
+  const input={records:[{description:'Partial'}]},output=await model(INTAKE_INSTRUCTION,input,RESPONSE_SCHEMA);
   assert.equal(output._usage.generations,2);assert.equal(output._usage.input_tokens,801);assert.equal(output._usage.output_tokens,51);
   assert.deepEqual(output._diagnostics.attempts.map(a=>a.provider),['gemini','openai']);
   assert.equal(output._diagnostics.attempts[0].diagnostics.retrieval[0].status,'URL_RETRIEVAL_STATUS_ERROR');
@@ -210,7 +210,7 @@ test('OpenAI limit categories distinguish temporary rates from spending and mode
 });
 
 test('OpenAI accepts responses beyond the old Scout token and byte caps without blocking improvement',async()=>{
-  const partial={status:'found',records:[{title:'Useful partial',description:'x'.repeat(132000)}]};
+  const partial={status:'found',records:[{description:'x'.repeat(132000)}]};
   const {model,logs}=setup({task:'answer_records',generate:openai({apiKey:'test',fetch:async()=>result(JSON.stringify(partial),{usage:{input_tokens:60001,output_tokens:40000}})})});
   const output=await model('x'.repeat(60001),[],schema);assert.deepEqual(output.records,partial.records);
   assert.equal(logs.settled[0].input_tokens,60001);assert.equal(logs.settled[0].output_tokens,40000);
@@ -234,8 +234,8 @@ test('settlement failure halts the invocation and never refunds an uncertain cha
 
 test('second configured task uses the same dispatcher and cannot overlap invocation calls',async()=>{
   let finish,calls=0;const {config}=setup({routes:{url_intake:{provider:'openai'},answer_records:{provider:'openai'}},
-    generate:async(instruction,input)=>{calls++;assert.equal(instruction,'Record instruction');assert.deepEqual(input,{records:[{title:'Authorized snapshot'}]});await new Promise(resolve=>{finish=resolve;});return answer();}});
-  const model=modelGateway({...config,task:'answer_records'}),pending=model('Record instruction',{records:[{title:'Authorized snapshot'}]},schema);
+    generate:async(instruction,input)=>{calls++;assert.equal(instruction,'Record instruction');assert.deepEqual(input,{records:[{description:'Authorized snapshot'}]});await new Promise(resolve=>{finish=resolve;});return answer();}});
+  const model=modelGateway({...config,task:'answer_records'}),pending=model('Record instruction',{records:[{description:'Authorized snapshot'}]},schema);
   await new Promise(resolve=>setImmediate(resolve));await assert.rejects(model('Overlap',[],schema),{reason:'invocation_busy'});
   finish();const output=await pending;assert.equal(calls,1);assert.equal(output._diagnostics.model,OPENAI_MODEL);
 });

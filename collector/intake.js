@@ -48,14 +48,14 @@ export async function processDocument(db,{source,model}){
       if(db.metrics?.statements>40)throw fail('sql_bound');
       improvementStart=usage.generations;
       const improved=await call(SCHEDULE_INSTRUCTION,
-        {research:'event_schedule',records:undated.map(r=>({record_id:r.id,title:r.title,source_url:source.url,details:r.details})),requested_links:research.supports},SCHEDULE_SCHEMA);
+        {research:'event_schedule',records:undated.map(r=>({record_id:r.id,description:r.description,source_url:source.url,details:r.details})),requested_links:research.supports},SCHEDULE_SCHEMA);
       const retrieved=(improved._retrieval??[]).filter(r=>r.status==='URL_RETRIEVAL_STATUS_SUCCESS').map(r=>publicURL(r.url)).filter(Boolean);
       const matched=improved.records.slice(0,8).flatMap(r=>{
         const old=undated.find(f=>f.id===r?.record_id),url=publicURL(r?.date_source_url);
         if(!old||!url||!retrieved.includes(url))return [];
         const f=normalizeFinding({...r,type:'event',description:old.description},source.url);
         if(!f?.details.start)return [];
-        return [{id:old.id,kind:old.kind,title:old.title,details:{start:f.details.start},urls:[url]}];
+        return [{id:old.id,kind:old.kind,description:old.description,details:{start:f.details.start},urls:[url]}];
       });
       if(!matched.length)throw fail('research_exhausted');
       const enriched=await saveFindings(db,leased,matched,[]);

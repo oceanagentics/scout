@@ -24,7 +24,7 @@ Useful findings are saved before scheduling follow-up. Newly created events miss
 
 [collector/source-state.js](../collector/source-state.js) owns leases, attempt counts and complete/deferred/parked state. Source retries are finite. [collector/finding-contract.js](../collector/finding-contract.js) owns the shared instructions, schemas and normalization; [collector/corrections.js](../collector/corrections.js) handles human corrections.
 
-The intake schema and normalization currently cap a response at eight findings. Same-source identity also depends on normalized title and kind. These are known limitations for long programmes and repeated occurrences, tracked in [source completeness](tasks.md#source-completeness).
+The intake schema and normalization currently cap a response at eight findings. Same-source identity also depends on normalized description and kind. These are known limitations for long programmes and repeated occurrences, tracked in [source completeness](tasks.md#source-completeness).
 
 ## Models and accounting
 
@@ -38,6 +38,8 @@ The [Gemini](../collector/models/gemini.js) adapter uses URL Context; the [OpenA
 
 ## Findings and storage
 
+Findings use description as their single text field; normalization does not duplicate it into a title. The forward migration and matching consumers use description, including exact text and word-overlap heuristics; identity matching remains an acceptance gap.
+
 The active storage responsibilities are:
 
 | Relation | Responsibility |
@@ -50,7 +52,7 @@ The active storage responsibilities are:
 
 [The compact-record migration](../supabase/migrations/20261012180805_scout_compact_records.sql) stores facts, source associations and aliases in one finding row. [finding-store.js](../collector/finding-store.js) checks the source lease and serializes matching/writes with a transaction advisory lock. Inline aliases are not globally unique by themselves; writers must preserve this transaction boundary.
 
-Stable identities and existing source/title candidates guide matching. Ambiguous matches can be withheld. A semantic change advances the record version; adding only a source or alias preserves that version. Identical saves make no finding mutation. Missing optional fields do not erase established facts, and protected human corrections survive model updates.
+Stable identities and existing source/description candidates guide matching. Ambiguous matches can be withheld. A semantic change advances the record version; adding only a source or alias preserves that version. Identical saves make no finding mutation. Missing optional fields do not erase established facts, and protected human corrections survive model updates.
 
 Events, announcements and treaty changes share the same record structure. Dates preserve their meaning and available precision; unknown clocks/zones stay unknown. Useful Low findings remain available for human review. Their inclusion does not change Slack eligibility.
 

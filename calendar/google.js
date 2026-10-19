@@ -22,7 +22,7 @@ export function calendarEvent(record){
   const links=[['Source',record.canonical_url],['Registration',record.details?.registration_url]]
     .filter(([,url])=>sourceLink(url)).map(([label,url])=>label+': '+sourceLink(url));
   return {
-    summary:'[Scout] '+record.title,
+    summary:'[Scout] '+record.description,
     description:[record.description,(record.organizations??[]).map(o=>o.name).join('; '),...timing,...links,
       'Informational event from Scout; registration may be required.',marker(record.id)].filter(Boolean).map(escape).join('\n\n'),
     location:record.details?.location??'',

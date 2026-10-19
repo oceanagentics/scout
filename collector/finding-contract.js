@@ -120,7 +120,7 @@ export function normalizeFinding(raw,url){
   if(!organizations.length)unknowns.organizations={reason:'not_established'};
   if(kind==='event'&&!details.start&&!unknowns['details.start'])unknowns['details.start']={reason:'not_established'};
   const priority=['high','normal','low'].includes(raw.priority)?raw.priority:null;
-  return {kind,title:description,description,canonical_url:url,organizations,details,
+  return {kind,description,canonical_url:url,organizations,details,
     completeness:{state:Object.keys(unknowns).length?'provisional':'complete',unknowns},
     priority,relevance:{state:priority?'assessed':'uncertain',reason:null,fields:[]}};
 }

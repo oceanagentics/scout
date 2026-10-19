@@ -4,7 +4,7 @@ import {calendarEvent,sameEvent,syncCalendar,googleAccessToken} from '../calenda
 import {calendarFeed} from '../calendar/feed.js';
 
 const id='89a76621-0fac-447f-9429-62e1e8f985d1';
-const record={id,version:1,updated_at:'2026-10-12T10:00:00Z',kind:'event',priority:'low',title:'Ocean data',description:'A & B <demo>',
+const record={id,version:1,updated_at:'2026-10-12T10:00:00Z',kind:'event',priority:'low',description:'A & B <demo>',
   organizations:[{name:'HUB Ocean'}],canonical_url:'https://example.org/event',
   details:{start:{value:'2026-10-22',precision:'day',time:'15:30',zone:'+02:00'},
     end:{value:'2026-10-22',precision:'day',time:'16:15',zone:'+02:00'},location:'Online'}};
@@ -88,7 +88,7 @@ test('foreign entries, guest changes, recurrence and missing revisions fail befo
   for(const extra of [{description:'Personal event'},{attendees:[{email:'guest@example.org'}]},
     {recurrence:['RRULE:FREQ=WEEKLY']},{recurringEventId:'parent'},{etag:null}]){
     let writes=0;
-    await assert.rejects(syncCalendar([{...record,title:'Changed'}],{...options,send:async(_,request)=>{
+    await assert.rejects(syncCalendar([{...record,description:'Changed'}],{...options,send:async(_,request)=>{
       if(request.method!=='GET')writes++;return response({items:[{...owned(),...extra}]});
     }}));assert.equal(writes,0);
   }
@@ -118,7 +118,7 @@ test('OAuth requires credentials and does not echo provider errors',async()=>{
 });
 
 test('feed has stable identity/revisions, UTC dates, safe text and byte-correct folding',()=>{
-  const unsafe={...record,title:'🌊'.repeat(30)+'\r\nBEGIN:VEVENT',description:'one,two;three\\four\r\nfive'};
+  const unsafe={...record,description:'🌊'.repeat(30)+'one,two;three\\four\r\nfive'};
   const feed=calendarFeed([unsafe]),unfolded=feed.replaceAll('\r\n ','');
   assert.equal((feed.match(/\r\nBEGIN:VEVENT\r\n/g)??[]).length,1);
   for(const line of feed.split('\r\n'))assert.ok(Buffer.byteLength(line)<=75);

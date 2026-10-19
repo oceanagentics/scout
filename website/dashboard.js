@@ -5,7 +5,7 @@ import {findingInterval,dateLabel} from '../shared/finding-dates.js';
 const RECORD_FIELDS = [
   ['event_url', 'Source page'], ['registration_url', 'Registration URL'],
   ['organization', 'Organization'], ['description', 'Description'], ['kind', 'Type'], ['priority','Priority'],
-  ['title', 'Title'], ['priority_reason','Priority reason'], ['location', 'Location'], ['status', 'Status'],
+  ['priority_reason','Priority reason'], ['location', 'Location'], ['status', 'Status'],
   ['starts_at', 'Start / publication / action date'], ['ends_at', 'End / effective date'],
   ['completeness','Completeness'], ['version','Record version'], ['accepted_version','Accepted version'], ['checked_at','Checked at'],
   ['updated_at', 'Updated at (UTC)'], ['id', 'ID'],
@@ -128,7 +128,7 @@ export function mountDashboard(root, load) {
           article.append(cell);
         }
       } else {
-        article.append(node('p', KINDS[record.kind] || record.kind, 'eyebrow'), node('h3', record.title), node('p', fieldLabel(record,'organization'), 'organization'));
+        article.append(node('p', KINDS[record.kind] || record.kind, 'eyebrow'), node('h3', record.description), node('p', fieldLabel(record,'organization'), 'organization'));
         article.append(node('p',record.completeness.state),node('p',eventLabel(record),'event-date'));
         for(const [field,label]of [['effective','Effective'],['response_due','Response due']])if(record.details[field])article.append(node('p',`${label} · ${dateLabel(record.details[field])}`,'event-date'));
         if (record.kind === 'event') {
@@ -138,12 +138,11 @@ export function mountDashboard(root, load) {
           article.append(badges);
         }
         article.append(node('p',`${fieldLabel(record,'priority')} · ${fieldLabel(record,'priority_reason')}`));
-        article.append(node('p',fieldLabel(record,'description'),'description'));
         if(record.kind==='event')article.append(node('p',`Location · ${fieldLabel(record,'location')}`));
       }
       const sourcesButton = node('button', tableView ? 'View sources' : 'Sources & record details', 'secondary'); sourcesButton.type = 'button';
       sourcesButton.addEventListener('click', () => {
-        sourceContent.replaceChildren(node('h3', record.title), node('p', `Record updated · ${stamp(record.updated_at)}`, 'meta'));
+        sourceContent.replaceChildren(node('h3', record.description), node('p', `Record updated · ${stamp(record.updated_at)}`, 'meta'));
         if (!(record.sources ?? []).length) sourceContent.append(node('p', 'No supporting source links available.', 'hint'));
         for (const [index, source] of (record.sources ?? []).entries()) {
           const section = node('section', null, 'source-entry'), fields = node('dl');

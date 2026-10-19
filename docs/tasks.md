@@ -7,7 +7,7 @@ Current acceptance remains a correct saved record through the simplified pipelin
 ## Source completeness
 
 - [ ] Capture all distinct events and announcements on the sources below, including later programme sections, dynamic content and repeated scheduled occurrences. Compare independently identified developments with actual saved Scout records; HTTP success, valid JSON and the model's completeness claim are insufficient.
-- [ ] Review the current eight-finding response cap and source/title identity against this requirement. Choose the smallest shared correction; tracker-specific prompts and a new extraction framework are not prescribed.
+- [ ] Review the current eight-finding response cap and source/description identity against this requirement. Choose the smallest shared correction; tracker-specific prompts and a new extraction framework are not prescribed.
 - [ ] Apply the existing shared High/Normal/Low rubric to each development. Low relevance must not silently suppress capture; missing dates/organizations must not lower priority. Keep uncertain facts and ratings unresolved.
 - [ ] Prove one correct saved record first, then the small Pavilion programme, then GEO and ICRI. Include announcements, later entries, all four dated Daily Ocean Huddle occurrences, duplicate prevention and source-supported dates, organizations and URLs. Account for every omission or incorrect rating before declaring completion.
 
@@ -59,6 +59,8 @@ Other older review cases remain candidates, not verified current defects: the Pr
 - [ ] Resolve the unspecified conference tracker by obtaining its intended conference and official programme URL; do not guess. Newsletters, individual-person sources and dedicated funding collection remain future work.
 
 ## Product and release acceptance
+
+- [ ] Apply the description-only migration and deploy its collector, calendar and website consumers together after verifying current shared account capacity. Local removal of finding titles does not establish the live database or deployment state.
 
 - [ ] Verify the signed-in website against the reviewed hosted schema: records and trackers, source links, Low findings, UTC/date-only/unknown display, calendar controls and sign-out. The earlier browser review was left to the user; this cleanup does not claim it passed.
 - [ ] Reconcile local changes with deployed frontend/backend versions before the next release. Deploy only the approved Scout target/function graph, preserve other shared-project services and verify actual assets, access boundaries and migrations.

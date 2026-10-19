@@ -14,7 +14,7 @@ async function database(){
 }
 async function seed(db,kind='announcement',details={}){
  const tracker=(await db.query('select id from scout.trackers limit 1')).rows[0].id;
- const record=(await db.query("insert into scout.records(kind,title,priority,details,accepted_version,relevance) values($1,'Technical BBNJ ChM standards','high',$2,1,$3) returning id",[kind,details,{state:'assessed',reason:'Technical implementation.'}])).rows[0].id;
+ const record=(await db.query("insert into scout.records(kind,description,priority,details,accepted_version,relevance) values($1,'Technical BBNJ ChM standards','high',$2,1,$3) returning id",[kind,details,{state:'assessed',reason:'Technical implementation.'}])).rows[0].id;
  await db.query("update scout.records set sources=$2 where id=$1",[record,[{url:'https://example.org/standards',tracker_id:tracker,relationship:'source'}]]);
  return record;
 }

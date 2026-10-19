@@ -75,7 +75,7 @@ test('final schema protects findings, operational state and tracker management i
     assert.deepEqual((await db.query('select raw_app_meta_data from auth.users where id=$1', [admin])).rows[0].raw_app_meta_data,
       { other: 'keep', scout: { preference: 'keep', admin: true } });
     const tracker = (await db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Source','https://example.org','web','1 day',true) returning id")).rows[0].id;
-    const record = (await db.query("insert into scout.records(kind,title) values('announcement','Private finding') returning id")).rows[0].id;
+    const record = (await db.query("insert into scout.records(kind,description) values('announcement','Private finding') returning id")).rows[0].id;
     await db.query("update scout.records set sources=$2 where id=$1", [record,[{url:'https://example.org/source',tracker_id:tracker,relationship:'source'}]]);
     await db.query("insert into scout.source_state(tracker_id,identity,url,state,reason) values($1,'item','https://example.org/source','parked','attempt_bound')", [tracker]);
     const publicReads = ['scout.records','scout.finding_reader','scout.findings()','scout.finding_jobs()','scout.tracker_status'];
@@ -95,8 +95,8 @@ test('final schema protects findings, operational state and tracker management i
       }
       await assert.rejects(db.query('select * from scout.expire_quota()'), { code: '42501' });
       await assert.rejects(db.query("select * from scout.reserve_provider(gen_random_uuid(),gen_random_uuid(),'gemini',null::timestamptz)"), { code: '42501' });
-      await assert.rejects(db.query("insert into scout.records(kind,title) values('announcement','Forged')"), { code: '42501' });
-      await assert.rejects(db.query("update scout.records set title='Forged'"), { code: '42501' });
+      await assert.rejects(db.query("insert into scout.records(kind,description) values('announcement','Forged')"), { code: '42501' });
+      await assert.rejects(db.query("update scout.records set description='Forged'"), { code: '42501' });
       await assert.rejects(db.query('delete from scout.records'), { code: '42501' });
       await assert.rejects(db.query("update auth.users set raw_app_meta_data='{}'"), { code: '42501' });
       for (const enabled of [true,false]) {
@@ -138,7 +138,7 @@ test('final Workspace access requires verified provider proof, never editable me
   try {
     await db.exec(auth);
     for (const [, sql] of migrations) await db.exec(sql);
-    await db.exec("insert into scout.records(kind,title) values('announcement','Private finding')");
+    await db.exec("insert into scout.records(kind,description) values('announcement','Private finding')");
     await db.query('update auth.users set raw_user_meta_data=$1,raw_app_meta_data=$2 where id=$3', [proof, {scout:{admin:true}}, outsider]);
     for (const identity of [null,['email',proof],['other',proof],['google',{...proof,iss:'https://attacker.example'}],
       ['google',{...proof,custom_claims:{hd:'other.example'}}],['google',{...proof,email_verified:false}],
@@ -182,4 +182,39 @@ test('tracker seeds preserve app edits and remain idempotent on the final schema
     await db.exec(trackerSeed);await db.exec(trackerSeed);
     assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows, edited);
   } finally { await db.close(); }
+});
+
+test('description migration preserves findings, corrections, sources and accounting without a title column', async () => {
+  const db=new PGlite();
+  try {
+    await db.exec(auth);
+    for(const [name,sql] of migrations) {
+      if(name==='20261019190000_scout_description_only.sql')break;
+      await db.exec(sql);
+    }
+    await db.exec(`insert into scout.records(kind,title,description,sources,overrides,provenance) values
+      ('announcement','Different title','Preserved description','[{"url":"https://example.org/a"}]','{"description":{"url":"https://example.org/a"}}','{"description":["https://example.org/a"]}'),
+      ('event',repeat('Legacy text ',30),null,'[{"url":"https://example.org/b"}]','{}','{"title":["https://example.org/b"]}'),
+      ('event','Empty fallback','  ','[]','{}','{}');
+      insert into scout.delivery_state(record_id,version,status) select id,version,'sent' from scout.records;`);
+    const before=(await db.query('select * from scout.records order by id')).rows;
+    const accounting=(await db.query('select * from scout.quota_policy')).rows;
+    const deliveries=(await db.query('select * from scout.delivery_state order by record_id')).rows;
+    await db.exec(migrations.at(-1)[1]);
+    const after=(await db.query('select * from scout.records order by id')).rows;
+    for(let i=0;i<before.length;i++){
+      const {title,...expected}=before[i];
+      if(!expected.description?.trim())expected.description=title;
+      delete expected.provenance.title;
+      assert.deepEqual(after[i],expected);
+    }
+    assert.deepEqual((await db.query('select * from scout.quota_policy')).rows,accounting);
+    assert.deepEqual((await db.query('select * from scout.delivery_state order by record_id')).rows,deliveries);
+    await db.exec('set role service_role');
+    const found=(await db.query("select * from scout.findings(p_search=>'Preserved')")).rows;
+    assert.equal(found.length,1);assert.equal(Object.hasOwn(found[0],'title'),false);
+    await db.query("update scout.records set description='Updated description' where id=$1",[found[0].id]);
+    assert.equal((await db.query("select * from scout.findings(p_search=>'Updated')")).rows.length,1);
+    await db.exec("insert into scout.records(kind,description) values('announcement','New finding')");
+  }finally{await db.close();}
 });

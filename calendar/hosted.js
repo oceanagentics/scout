@@ -6,7 +6,7 @@ import {calendarFeed} from './feed.js';
 import {googleAccessToken,syncCalendar} from './google.js';
 
 const owner='danny@oceanagentics.com',project='https://vhlfumeyhkeospnemukq.supabase.co';
-const columns='id,version,updated_at,kind,title,description,organizations,details,canonical_url';
+const columns='id,version,updated_at,kind,description,organizations,details,canonical_url';
 const fail=(message,status=400,code)=>Object.assign(new Error(message),{status,code});
 
 export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,env,connect=postgres,authenticate=verifyAuth,send=fetch}={}){

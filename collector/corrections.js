@@ -9,8 +9,8 @@ export async function correctFinding(db,{record_id,version,field,value,url}){
   return db.transaction(async tx=>{
     const record=(await tx.query('select * from scout.records where id=$1 and version=$2 for update',[record_id,version])).rows[0];
     if(!record)throw Object.assign(new Error('Record changed; refresh before correction'),{status:409});
-    const details={...record.details},values={title:record.title,description:record.description,organizations:record.organizations};
-    if(['title','description'].includes(field)){
+    const details={...record.details},values={description:record.description,organizations:record.organizations};
+    if(field==='description'){
       if(typeof value!=='string'||!value.trim()||value.length>280)throw invalid();
       values[field]=value;
     }else if(field==='organizations'){
@@ -25,9 +25,9 @@ export async function correctFinding(db,{record_id,version,field,value,url}){
     const overrides={...record.overrides,[field]:{url}},provenance={...record.provenance,[field]:[url]},unknowns={...record.completeness.unknowns};
     delete unknowns[field];
     const sources=record.sources.some(s=>s.url===url)?record.sources:[...record.sources,{url,tracker_id:null,relationship:'human_review'}];
-    const saved=(await tx.query(`update scout.records set title=$3,description=$4,organizations=$5,details=$6,overrides=$7,provenance=$8,
-      completeness=$9,sources=$10,version=version+1,accepted_version=null,relevance='{"state":"pending"}',updated_at=clock_timestamp()
-      where id=$1 and version=$2 returning id,version`,[record.id,version,values.title,values.description,values.organizations,details,overrides,provenance,
+    const saved=(await tx.query(`update scout.records set description=$3,organizations=$4,details=$5,overrides=$6,provenance=$7,
+      completeness=$8,sources=$9,version=version+1,accepted_version=null,relevance='{"state":"pending"}',updated_at=clock_timestamp()
+      where id=$1 and version=$2 returning id,version`,[record.id,version,values.description,values.organizations,details,overrides,provenance,
       {state:Object.keys(unknowns).length?'provisional':'complete',unknowns},sources])).rows[0];
     await tx.query("update scout.source_state set processed_hash=null,due_at=clock_timestamp(),attempts=0,state='due' where url in (select value->>'url' from jsonb_array_elements($1::jsonb)) and state<>'running' returning id",[sources]);
     return saved;

@@ -45,7 +45,7 @@ test('new events without starts prompt the model directly, enrich saved IDs, and
    const body=JSON.parse(options.body);assert.deepEqual(body.tools,[{urlContext:{}}]);assert.equal(body.store,false);
    let output=answer(['First workshop','Second workshop'].map(description=>({...event,description,date:null,deadline:'2026-10-01'})));
    if(http===2){
-    const saved=(await raw.query('select * from scout.records order by title')).rows;ids=saved.map(r=>r.id);
+    const saved=(await raw.query('select * from scout.records order by description')).rows;ids=saved.map(r=>r.id);
     assert.ok(saved.every(r=>!r.details.start));assert.match(body.systemInstruction.parts[0].text,/When is this event scheduled\?/);
     await correctFinding(raw,{record_id:ids[0],version:saved[0].version,field:'details.start',value:{value:'2026-10-23',precision:'day'},url:source.url});
     const input=JSON.parse(body.contents[0].parts[0].text);assert.equal(input.records.length,2);assert.equal(input.search_results,undefined);assert.equal(input.requested_links[0].url,source.url);
@@ -57,14 +57,14 @@ test('new events without starts prompt the model directly, enrich saved IDs, and
   let reads=0;
   const options={source,read:async()=>{reads++;return read();},model};
   const first=await processDocument(db,options);assert.equal(first.created,2);assert.equal(first.changed,1);assert.equal(first.improvement,'improved');assert.equal(http,2);assert.equal(reads,0);
-  const records=(await raw.query('select * from scout.records order by title')).rows;
+  const records=(await raw.query('select * from scout.records order by description')).rows;
   assert.deepEqual(records.map(r=>r.id),ids);assert.deepEqual(records.map(r=>r.details.start.value),['2026-10-23','2026-10-22']);
   assert.ok(records.every(r=>r.details.response_due.value==='2026-10-01'));
-  assert.ok(records.every(r=>r.sources.some(s=>s.url===support)));assert.equal(records[0].title,'First workshop');
+  assert.ok(records.every(r=>r.sources.some(s=>s.url===support)));assert.equal(records[0].description,'First workshop');
   const initial={...db.metrics};await due(raw);
   assert.deepEqual(await processDocument(db,options),{state:'complete',created:0,changed:0});
   assert.equal(http,2);assert.equal(db.metrics.mutations-initial.mutations,2);
-  assert.deepEqual((await raw.query('select id,version from scout.records order by title')).rows,records.map(({id,version})=>({id,version})));
+  assert.deepEqual((await raw.query('select id,version from scout.records order by description')).rows,records.map(({id,version})=>({id,version})));
   const retained=(await raw.query('select octet_length(research::text) research_bytes from scout.source_state')).rows[0];
   t.diagnostic(JSON.stringify({mocked:true,first:initial,repeat_mutations:2,...retained}));
  }finally{await raw.close();}
@@ -96,7 +96,7 @@ test('manual URL intake maps a flat record and preserves the existing source wit
   assert.equal(response.status,200);const output=await response.json();assert.equal(output.state,'captured');assert.equal(output.created,1);
   assert.equal(calls,1);assert.equal(reads,0);
   const records=(await raw.query('select * from scout.records')).rows;assert.equal(records.length,1);
-  assert.equal(records[0].title,event.description);assert.equal(records[0].description,event.description);
+  assert.equal(Object.hasOwn(records[0],'title'),false);assert.equal(records[0].description,event.description);
   assert.equal(records[0].priority,'high');assert.deepEqual(records[0].organizations,[{name:'Institute A'}]);
   assert.equal(records[0].details.start.utc,'2026-10-29T13:30:00.000Z');assert.ok(records[0].sources.some(s=>s.url===tr.url));
   const state=(await raw.query("select * from scout.source_state where tracker_id=$1 and identity='tracker'",[tr.id])).rows[0];
@@ -123,9 +123,9 @@ test('non-event dates survive intake, database filtering and display without ext
    assert.ok(eventLabel(saved).includes('2026-02-26'));
    assert.equal(saved.date_span,'[2026-02-26,2026-02-27)');
   }
-  const partial=rows.find(r=>r.title==='Monthly bulletin');
+  const partial=rows.find(r=>r.description==='Monthly bulletin');
   assert.deepEqual(partial.details.published,{value:'2026-03',precision:'month'});
-  const invalid=rows.find(r=>r.title==='Treaty update with an invalid date');
+  const invalid=rows.find(r=>r.description==='Treaty update with an invalid date');
   assert.equal(invalid.details.action_date,undefined);
   assert.equal(invalid.completeness.unknowns['details.action_date'].reason,'invalid_date');
   await db.exec('set role service_role');
@@ -186,7 +186,7 @@ test('malformed siblings and optional fields do not discard useful URL findings'
    {...event,type:'announcement',description:'Publication',organizations:[null,'Institute A']}])});
   assert.equal(result.captured,2);
   const rows=(await db.query('select * from scout.records')).rows;assert.equal(rows.length,2);
-  assert.ok(rows.every(r=>r.title.length<=300&&r.description.length<=280));
+  assert.ok(rows.every(r=>r.description.length<=280));
   assert.equal(rows.find(r=>r.kind==='event').details.start,undefined);
  }finally{await db.close();}
 });
@@ -197,10 +197,13 @@ test('refresh repairs model fields, preserves human corrections, and does not du
   await processDocument(db,{source,read,model:async()=>answer()});
   let record=(await db.query('select * from scout.records')).rows[0];
   await correctFinding(db,{record_id:record.id,version:record.version,field:'organizations',value:[{name:'Human institute'},{name:'Second institute'}],url:source.url});
+  record=(await db.query('select * from scout.records')).rows[0];
+  await assert.rejects(correctFinding(db,{record_id:record.id,version:record.version,field:'title',value:'Old field',url:source.url}),{status:400});
+  await correctFinding(db,{record_id:record.id,version:record.version,field:'description',value:'Human-reviewed workshop',url:source.url});
   await due(db);
   const result=await processDocument(db,{source,model:async()=>answer([{...event,description:'Rephrased BBNJ workshop',organizations:['Wrong override'],date:'2026-10-22'}])});
   assert.equal(result.changed,1);assert.equal(result.created,0);
-  record=(await db.query('select * from scout.records')).rows[0];assert.deepEqual(record.organizations,[{name:'Human institute'},{name:'Second institute'}]);assert.equal(record.details.start.value,'2026-10-22');
+  record=(await db.query('select * from scout.records')).rows[0];assert.equal(record.description,'Human-reviewed workshop');assert.deepEqual(record.organizations,[{name:'Human institute'},{name:'Second institute'}]);assert.equal(record.details.start.value,'2026-10-22');
  }finally{await db.close();}
 });
 

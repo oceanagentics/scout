@@ -7,7 +7,7 @@ test('flat dates apply only to events and preserve supported precision',()=>{
  const event=normalizeFinding({type:'event',description:'Meeting',priority:'normal',organizations:['Ocean Institute','Ocean Institute','Partner'],date:'2026-04-02'},'https://example.org/a');
  assert.deepEqual(event.details.start,{value:'2026-04-02',precision:'day'});
  assert.deepEqual(event.organizations,[{name:'Ocean Institute'},{name:'Partner'}]);
- assert.equal(event.priority,'normal');assert.equal(event.title,event.description);
+ assert.equal(event.priority,'normal');assert.equal(Object.hasOwn(event,'title'),false);
  assert.deepEqual(event.completeness,{state:'complete',unknowns:{}});
  const treaty=normalizeFinding({type:'treaty_status',description:'Ratification',date:'2026-04-02'},'https://example.org/a');
  assert.deepEqual(treaty.details,{});assert.equal(treaty.completeness.unknowns['details.action_date'],undefined);
@@ -32,4 +32,9 @@ test('submission deadlines remain separate from event starts and never block use
    assert.equal(partial.details.start?.value,f.details.start?.value);
   }
  }
+});
+
+test('normalization emits one finding description and ignores a supplied title',()=>{
+ const finding=normalizeFinding({type:'announcement',description:'Useful description',title:'Duplicate label'},'https://example.org/a');
+ assert.equal(finding.description,'Useful description');assert.equal(Object.hasOwn(finding,'title'),false);
 });

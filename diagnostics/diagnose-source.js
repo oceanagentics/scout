@@ -61,7 +61,7 @@ export async function diagnoseSource({tracker,source,env,ledger=managementDataba
     const model=trackerModel({source:input,ledger,apiKey:env.GEMINI_API_KEY,openaiApiKey:env.SCOUT_OPENAI_API_KEY,
       fetch:traffic.fetch});
     const result=await processDocument(db,{source:input,model});
-    const records=(await raw.query('select id,version,title,details,sources from scout.records order by id')).rows;
+    const records=(await raw.query('select id,version,description,details,sources from scout.records order by id')).rows;
     return {traffic_file:output,result,records,cost:db.metrics};
   }finally{traffic?.close();await raw.close();}
 }
