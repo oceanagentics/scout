@@ -85,9 +85,10 @@ export function modelAccounting(ledger){
       [r.id,r.input_tokens,r.output_tokens,r.state,r.reason,r.cooldown_until,r.cost_usd])).rows[0];if(!result?.settled)throw fail('accounting');}};
 }
 
-export function trackerModel({apiKey,openaiApiKey,ledger,source,invocation=randomUUID(),deadline,fetch:send=fetch}){
+export function trackerModel({apiKey,openaiApiKey,ledger,source,provider,invocation=randomUUID(),deadline,fetch:send=fetch}){
+  if(provider!==undefined&&!['gemini','openai'].includes(provider))throw fail('configuration');
   return modelGateway({task:'url_intake',accounting:modelAccounting(ledger),invocation,deadline,
-    routes:{url_intake:{provider:'gemini',fallback:'openai',fallbackReasons:['url_retrieval_failed','retrieval_metadata_missing','model_unreadable','invalid_json','invalid_output','output_truncated','output_bound','empty_findings','provider_rate_limit','provider_unavailable','provider_unknown'],
+    routes:{url_intake:{provider:provider??'gemini',fallback:provider?undefined:'openai',fallbackReasons:['url_retrieval_failed','retrieval_metadata_missing','model_unreadable','invalid_json','invalid_output','output_truncated','output_bound','empty_findings','provider_rate_limit','provider_unavailable','provider_unknown'],
       validate:answer=>{
         if(!['found','none','unreadable'].includes(answer.status)||!Array.isArray(answer.records))throw fail('invalid_output');
         if(answer.status==='unreadable')throw fail('model_unreadable');

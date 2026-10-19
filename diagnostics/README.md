@@ -9,6 +9,11 @@ To inspect one tracker investigation locally:
 npm run reader -- --diagnostic --tracker=UUID
 ```
 
+Add `--provider=gemini` or `--provider=openai` to test one model without fallback.
+Omit it to use the normal Gemini-to-OpenAI route. To retain separate captures when
+comparing runs, call `diagnoseTracker({tracker, env, provider, output})` with a
+different local output path for each run.
+
 This runs the current checkout's workflow, not the deployed function. It saves
 request and response bodies (including errors) in
 `.cache/model-traffic/latest.jsonl`. Each request/response pair shares an `id`.

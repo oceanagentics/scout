@@ -41,7 +41,7 @@ export function captureTraffic(path,{fetch:send=fetch,secrets=[]}={}){
   }};
 }
 
-export async function diagnoseTracker({tracker,env,ledger=managementDatabase(env.SUPABASE_ACCESS_TOKEN),fetch:send=fetch,
+export async function diagnoseTracker({tracker,env,provider,ledger=managementDatabase(env.SUPABASE_ACCESS_TOKEN),fetch:send=fetch,
   output=fileURLToPath(new URL('../.cache/model-traffic/latest.jsonl',import.meta.url))}){
   const selected=(await ledger.query('select id,name,url,collector,cadence from scout.trackers where id=$1',[tracker])).rows[0];
   if(!selected)throw new Error('Existing tracker required');
@@ -57,7 +57,7 @@ export async function diagnoseTracker({tracker,env,ledger=managementDatabase(env
       [selected.id,selected.name,selected.url,selected.collector,selected.cadence]);
     traffic=captureTraffic(output,{fetch:send,secrets:[env.GEMINI_API_KEY,env.SCOUT_OPENAI_API_KEY,env.SUPABASE_ACCESS_TOKEN]});
     const db=database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
-    const result=await intake(db,{trackerId:tracker,modelFor:source=>trackerModel({source,ledger,
+    const result=await intake(db,{trackerId:tracker,modelFor:source=>trackerModel({source,ledger,provider,
       apiKey:env.GEMINI_API_KEY,openaiApiKey:env.SCOUT_OPENAI_API_KEY,fetch:traffic.fetch})});
     const records=(await raw.query('select id,version,description,details,sources from scout.records order by id')).rows;
     return {traffic_file:output,result,records,cost:db.metrics};

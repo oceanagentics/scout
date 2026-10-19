@@ -27,6 +27,23 @@ const retrievalFailure=(extra={})=>Object.assign(new Error('url_retrieval_failed
   usage:{input_tokens:701,output_tokens:41},diagnostics:{http_status:200,retrieval_metadata_present:true,
     retrieval:[{url,status:'URL_RETRIEVAL_STATUS_ERROR'}],model_status:'unreadable',...extra}});
 
+test('explicit diagnostic provider reserves only that provider and never falls back after failure',async()=>{
+  for(const provider of ['gemini','openai']){
+    const reserved=[],requests=[],settled=[];
+    const ledger={query:async(q,p)=>{
+      if(q.includes('reserve_provider')){reserved.push(p[2]);return {rows:[admitted(p[2])]};}
+      if(q.includes('settle_provider')){settled.push(p);return {rows:[{settled:true}]};}
+      assert.fail('Unexpected SQL: '+q);
+    }};
+    const model=trackerModel({provider,source:{url},ledger,apiKey:'test',openaiApiKey:'test',fetch:async target=>{
+      requests.push(target);return Response.json({error:{message:'Rate limited'}},{status:429});
+    }});
+    await assert.rejects(model(INTAKE_INSTRUCTION,{url},RESPONSE_SCHEMA),{reason:'provider_rate_limit'});
+    assert.deepEqual(reserved,[provider]);assert.equal(requests.length,1);assert.equal(settled.length,1);
+    assert.equal(new URL(requests[0]).hostname,provider==='gemini'?'generativelanguage.googleapis.com':'api.openai.com');
+  }
+});
+
 test('strict schema keeps common schema untouched and closes nested nullable optional shapes',()=>{
   const original={type:'object',properties:{required:{type:'string'},optional:{type:'string',enum:['one']},
     nested:{type:'array',items:{type:'object',properties:{id:{type:'integer'},extra:{$ref:'#/$defs/text'}},required:['id']}},
