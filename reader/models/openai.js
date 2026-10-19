@@ -23,7 +23,7 @@ export function strictSchema(schema){
   return visit(schema);
 }
 
-// The provider investigates URLs; Scout does not fetch or prepare their bodies.
+// URL investigations require retrieval; supplied posts can use browsing as needed.
 export function openai({apiKey,urls=[],model=OPENAI_MODEL,fetch:send=fetch,now=Date.now}){
   if(model!==OPENAI_MODEL)throw fail('model_configuration');
   const initial=urls;
@@ -36,14 +36,14 @@ export function openai({apiKey,urls=[],model=OPENAI_MODEL,fetch:send=fetch,now=D
       // OpenAI requires an object at the root; keep the list wrapper in this adapter.
       if(schema?.type==='array'&&schema.items?.type!=='object')throw fail('invalid_schema');
       const transportSchema=schema?.type==='array'?{type:'object',properties:{records:schema},required:['records'],additionalProperties:false}:schema;
-      const requested=initial;
+      const requested=input.post?[]:initial;
       if(requested.length>limits.maxUrls)throw fail('source_bound');
       if(limits?.task==='url_intake'&&!initial.length)throw fail('source_required');
       if(!apiKey)throw fail('configuration');
       const body=JSON.stringify({model,store:false,service_tier:'default',reasoning:{effort:'low'},max_output_tokens:limits.outputTokens,
         instructions:instruction+(schema?.type==='array'?'\nFor this API, return the array inside an object with the single key records.':''),
         input:JSON.stringify({input,urls:requested}),
-        ...(requested.length?{tools:[{type:'web_search',search_content_types:['text','image'],image_settings:{caption:true}}],tool_choice:'required',max_tool_calls:limits.maxToolCalls,include:['web_search_call.action.sources']}:{}),
+        ...((requested.length||input.post)?{tools:[{type:'web_search',search_content_types:['text','image'],image_settings:{caption:true}}],tool_choice:input.post?'auto':'required',max_tool_calls:limits.maxToolCalls,include:['web_search_call.action.sources']}:{}),
         text:{format:{type:'json_schema',name:'scout_result',schema:strictSchema(transportSchema),strict:true}}});
       dispatched=true;
       let response;

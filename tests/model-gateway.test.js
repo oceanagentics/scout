@@ -44,6 +44,30 @@ test('explicit diagnostic provider reserves only that provider and never falls b
   }
 });
 
+test('supplied Bluesky posts reach both models without requiring a feed retrieval',async()=>{
+  const feed='https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=example.org&limit=20';
+  const post={uri:'at://did:plc:author/app.bsky.feed.post/one',record:{text:'A BBNJ development'},
+    embed:{images:[{alt:'One',fullsize:'https://example.org/one'},{alt:'Two',fullsize:'https://example.org/two'}]}};
+  for(const provider of ['gemini','openai']){
+    let calls=0;
+    const ledger={query:async(q,p)=>({rows:[q.includes('reserve_provider')?admitted(p[2]):{settled:true}]})};
+    const model=trackerModel({provider,source:{url:feed},ledger,apiKey:'test',openaiApiKey:'test',fetch:async(target,init)=>{
+      if(String(target)===feed)return Response.json({feed:[{post}]});
+      calls++;const body=JSON.parse(init.body);
+      const input=provider==='gemini'?JSON.parse(body.contents[0].parts[0].text):JSON.parse(body.input).input;
+      assert.deepEqual(input.post.embed,post.embed);
+      if(provider==='openai'){
+        assert.deepEqual(JSON.parse(body.input).urls,[]);assert.equal(body.tool_choice,'auto');
+        return result('{"records":[]}');
+      }
+      return Response.json({usageMetadata:{promptTokenCount:100,candidatesTokenCount:10,totalTokenCount:110},
+        candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});
+    }});
+    const output=await model(INTAKE_INSTRUCTION,{url:feed,current_date:'2026-10-19'},RESPONSE_SCHEMA);
+    assert.equal(output.status,'none');assert.equal(output._progress,post.uri);assert.equal(calls,1);
+  }
+});
+
 test('strict schema keeps common schema untouched and closes nested nullable optional shapes',()=>{
   const original={type:'object',properties:{required:{type:'string'},optional:{type:'string',enum:['one']},
     nested:{type:'array',items:{type:'object',properties:{id:{type:'integer'},extra:{$ref:'#/$defs/text'}},required:['id']}},

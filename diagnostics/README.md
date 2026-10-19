@@ -40,3 +40,12 @@ The CLI prints normalized records and workflow diagnostics separately from the
 raw traffic. There is no separate scheduling follow-up. Provider retrieval metadata
 may omit the page body and image alt text. Successful retrieval alone does not
 prove which content the model saw, even with the full provider reply captured.
+
+Bluesky author-feed checks now supply one post directly to the model. A diagnostic
+starts at the oldest post in the configured initial window; its in-memory progress
+is discarded with the diagnostic database. Use a specific API cursor/window when
+comparing a particular post, verifying the returned post URI before calling models.
+Production checks retain only their last processed feed-entry URI and save it with
+findings. An unchanged production feed makes no model call. Local workflow tests
+exercise pagination, unchanged checks, new arrivals, retries and atomic progress;
+mocked transport tests do not establish live extraction accuracy.

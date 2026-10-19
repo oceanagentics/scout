@@ -1,4 +1,5 @@
 import {randomUUID} from 'node:crypto';
+import {authorFeed,nextBlueskyPost,BLUESKY_INSTRUCTION} from '../bluesky.js';
 import {MODEL,gemini} from './gemini.js';
 import {OPENAI_MODEL,openai} from './openai.js';
 import {normalizeFinding} from '../findings.js';
@@ -87,7 +88,7 @@ export function modelAccounting(ledger){
 
 export function trackerModel({apiKey,openaiApiKey,ledger,source,provider,invocation=randomUUID(),deadline,fetch:send=fetch}){
   if(provider!==undefined&&!['gemini','openai'].includes(provider))throw fail('configuration');
-  return modelGateway({task:'url_intake',accounting:modelAccounting(ledger),invocation,deadline,
+  const model=modelGateway({task:'url_intake',accounting:modelAccounting(ledger),invocation,deadline,
     routes:{url_intake:{provider:provider??'gemini',fallback:provider?undefined:'openai',fallbackReasons:['url_retrieval_failed','retrieval_metadata_missing','model_unreadable','invalid_json','invalid_output','output_truncated','output_bound','empty_findings','provider_rate_limit','provider_unavailable','provider_unknown'],
       validate:answer=>{
         if(!['found','none','unreadable'].includes(answer.status)||!Array.isArray(answer.records))throw fail('invalid_output');
@@ -96,4 +97,12 @@ export function trackerModel({apiKey,openaiApiKey,ledger,source,provider,invocat
       }}},
     providers:{gemini:{model:MODEL,generate:gemini({apiKey,ledger,fetch:send})},
       openai:{model:OPENAI_MODEL,generate:openai({apiKey:openaiApiKey,urls:[source.url],fetch:send})}}});
+  if(!authorFeed(source.url))return model;
+  return async(instruction,input,schema)=>{
+    const next=await nextBlueskyPost(source,{fetch:send});
+    if(!next)return {status:'none',records:[],_usage:{generations:0,input_tokens:0,output_tokens:0}};
+    const answer=await model(BLUESKY_INSTRUCTION+instruction.replace('Open the source URL supplied in the input first.',''),
+      {current_date:input.current_date,post:next.post},schema);
+    return {...answer,_source_url:next.url,_progress:next.progress};
+  };
 }
