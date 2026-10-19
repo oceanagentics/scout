@@ -8,7 +8,7 @@ test('local modules stay acyclic and respect shared, hosted and website boundari
   const root=fileURLToPath(new URL('../',import.meta.url)),graph=new Map();
   for(const folder of ['collector','calendar','slackbot','website','shared','diagnostics','supabase/functions']){
     for(const name of await readdir(resolve(root,folder),{recursive:true})){
-      if(!/\.(?:js|ts)$/.test(name))continue;
+      if(!/\.(?:js|ts)$/.test(name)||folder==='website'&&name.startsWith('dist/'))continue;
       const path=resolve(root,folder,name),code=await readFile(path,'utf8');
       const imports=[...code.matchAll(/(?:from\s*|import\s*\(\s*|import\s*)['"]([^'"]+)['"]/g)]
         .map(match=>match[1]).filter(spec=>spec.startsWith('.')&&/\.(?:js|ts)$/.test(spec))

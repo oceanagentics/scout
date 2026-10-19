@@ -1,12 +1,12 @@
 # BBNJ Scout
 
-## Current local code map — 15 October 2026
+## Current local code map — 19 October 2026
 
 The active workflow passes a source URL to the accounted model, normalizes and saves findings, performs the existing bounded scheduling follow-up when needed, and completes or defers the source. Completed/parked sources retain their current explicit-reset behavior. Collection and Slack delivery are separate requests. Recurring collection and notifications remain paused.
 
 | Location | Responsibility |
 | --- | --- |
-| `website/` | Browser access, records, filters, trackers and calendar controls. |
+| `website/` | HTML entrypoint, browser access, records, filters, trackers, calendar controls and generated `website/dist/` build. |
 | `slackbot/` | Finding selection, message preparation, delivery and delivery accounting. |
 | `calendar/` | Calendar feeds and Google Calendar synchronization. |
 | `collector/hosted.js`, `collector/run.js` | HTTP dependency setup and command-line launcher; the deployed endpoint remains `scout-collect-hsa`. |
@@ -168,9 +168,11 @@ npm run build
 npm run preview
 ```
 
-`npm run dev` serves the app at `http://127.0.0.1:5173`. The two public settings in `.env.example` configure the browser. Use only a Supabase `sb_publishable_…` key; secret/service-role keys never belong in a `VITE_` variable. Without those settings, the app displays its setup state and makes no database requests.
+Run these commands from the repository root. Vite uses `website/index.html` as its entrypoint and generates the ignored `website/dist/` directory. `npm run preview` serves that build.
 
-For local Google sign-in, set both browser settings in the ignored `.env.local` file and add exactly `http://127.0.0.1:5173/` to the existing project's Supabase Auth Redirect URLs. Keep the shared Site URL and existing production redirects. The dev server requires port 5173 and stops if it is occupied, so it cannot silently move to a port that login does not allow. Use the printed `127.0.0.1` address consistently; `localhost` is a different login origin. The local frontend uses the hosted database and the same Workspace access checks as production.
+`npm run dev` serves the app at `http://127.0.0.1:5173`. The two public settings in `website/.env.example` configure the browser. Use only a Supabase `sb_publishable_…` key; secret/service-role keys never belong in a `VITE_` variable. Without those settings, the app displays its setup state and makes no database requests.
+
+For local Google sign-in, set both browser settings in the ignored `website/.env.local` file and add exactly `http://127.0.0.1:5173/` to the existing project's Supabase Auth Redirect URLs. Keep backend settings in the root `.env.local`, which the collector and Slack commands read. The website also reads mode-specific environment files from `website/`. Keep the shared Site URL and existing production redirects. The dev server requires port 5173 and stops if it is occupied, so it cannot silently move to a port that login does not allow. Use the printed `127.0.0.1` address consistently; `localhost` is a different login origin. The local frontend uses the hosted database and the same Workspace access checks as production.
 
 The accepted access plan (2026-10-01) keeps Firebase Hosting Spark: the login shell/assets are public; Scout data/actions are private. Every Google-verified `oceanagentics.com` Workspace user receives reader access on first sign-in, without individual invitations, passwords or manual membership setup. This supersedes the earlier whole-frontend gateway hold. Supabase Auth remains the single authentication system; no Cloudflare, IAP, Cloud Run, hosting migration or billing upgrade is needed. Google sign-in and hosted reader access are now verified on the deployed site.
 
@@ -531,7 +533,7 @@ After the Workspace access check, the app loads every page of records and tracke
 
 Every tracker remains visible, including unconfigured and unproven collectors. The tracker table shows eight configuration fields plus four status fields derived from runs, using sticky headers and a pinned first column. Timestamps display in UTC, Enabled displays Yes only for a proven collector, and empty values display “—”. Partial/failure outcomes do not replace the last successful collection or automatically revoke proof. A demonstrated collector break requires review and disabling until revalidated. Event timing updates from the browser clock every 30 seconds and on visibility changes; this does not run or schedule collection. The **17 reviewed Yes trackers are manual-only; eight remain No** as audited in tasks.md. The authoritative database flags are deployed; the revised Enabled/status wording and sortable headers still await the scoped Firebase deployment.
 
-For local browser review, run `npm run dev` and open `/` on its printed localhost URL. Workspace sign-in requires the browser settings from `.env.example` and an allowed local OAuth redirect.
+For local browser review, run `npm run dev` and open `/` on its printed localhost URL. Workspace sign-in requires the browser settings from `website/.env.example` and an allowed local OAuth redirect.
 
 ## Manual Slack delivery
 
@@ -560,7 +562,7 @@ Scout uses Firebase Spark project `ryustatic`, site `bbnj-scout`, deployment tar
 firebase deploy --project ryustatic --only hosting:scout
 ```
 
-The predeploy step builds `dist`. Deployment uses the documented [Hosting REST API](https://firebase.google.com/docs/hosting/api-deploy) and the saved Firebase login, refreshed in memory. The last successful release is `sites/bbnj-scout/releases/1790892171758000`, version `9ddf94ac63279126`. Its three live assets still match that prior build and retain the configured security headers (rechecked 2026-10-02). The 2026-10-01 deployment verified shared capacity, disabled billing and unchanged Ryu release `sites/ryustatic/releases/1790266049490000`.
+The predeploy step builds `website/dist`. Deployment uses the documented [Hosting REST API](https://firebase.google.com/docs/hosting/api-deploy) and the saved Firebase login, refreshed in memory. The last successful release is `sites/bbnj-scout/releases/1790892171758000`, version `9ddf94ac63279126`. Its three live assets still match that prior build and retain the configured security headers (rechecked 2026-10-02). The 2026-10-01 deployment verified shared capacity, disabled billing and unchanged Ryu release `sites/ryustatic/releases/1790266049490000`.
 
 SCOUT-16.01 frontend deployment remains pending, but its previous `invalid_grant` / `invalid_rapt` login blocker is **cleared**. On **2026-10-04 at 23:45 AST**, renewed Firebase credentials passed project/sites/releases reads and all six requested IAM permissions, including `firebasehosting.sites.update`. Target: `hosting:scout` → `bbnj-scout` in `ryustatic`; billing remains disabled. Scout version `9ddf94ac63279126` and Ryu version `a7e6cf0972867626` are unchanged. No Hosting mutation occurred. Recheck shared capacity when deploying and verify exact assets/security headers.
 
