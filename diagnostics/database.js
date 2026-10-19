@@ -1,7 +1,7 @@
 // Backend/local tooling only. Never imported by the browser bundle.
 export function managementDatabase(token, send = fetch) {
   return { async query(query, params = []) {
-    if (!token) throw new Error('Shared Supabase budget access is required');
+    if (!token) throw new Error('Supabase management access is required');
     const sql=query.replace(/\$(\d+)\b/g,(_,index)=>{
       const value=params[Number(index)-1];
       if (value===null) return 'null';

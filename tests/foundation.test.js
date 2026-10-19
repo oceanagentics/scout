@@ -78,7 +78,7 @@ test('final schema protects findings, operational state and tracker management i
     const record = (await db.query("insert into scout.records(kind,description) values('announcement','Private finding') returning id")).rows[0].id;
     await db.query("update scout.records set sources=$2 where id=$1", [record,[{url:'https://example.org/source',tracker_id:tracker,relationship:'source'}]]);
     const publicReads = ['scout.records','scout.finding_reader','scout.findings()'];
-    const privateTables = ['quota_policy','quota_reservations','delivery_state'];
+    const privateTables = ['quota_reservations','delivery_state'];
     await db.exec('set role anon');
     for (const view of publicReads) await assert.rejects(db.query('select * from ' + view), { code: '42501' });
     await assert.rejects(db.query('select scout.access_role()'), { code: '42501' });
@@ -122,7 +122,7 @@ test('final schema protects findings, operational state and tracker management i
       await db.query('select * from scout.' + table);
       for (const privilege of ['INSERT','UPDATE','DELETE']) assert.equal((await db.query("select has_table_privilege('service_role',$1,$2) allowed", ['scout.' + table,privilege])).rows[0].allowed, true);
     }
-    assert.equal((await db.query("select * from scout.reserve_provider(gen_random_uuid(),gen_random_uuid(),'gemini',null::timestamptz)")).rows[0].allowed, false);
+    assert.equal((await db.query("select * from scout.reserve_provider(gen_random_uuid(),gen_random_uuid(),'gemini',null::timestamptz)")).rows[0].allowed, true);
     await db.query('select * from scout.expire_quota()');
     await db.exec('reset role');
     assert.equal((await db.query("select bool_and(c.relrowsecurity) protected from pg_class c where c.relnamespace='scout'::regnamespace and c.relkind='r'")).rows[0].protected, true);

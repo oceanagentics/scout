@@ -52,7 +52,7 @@ test('tracker URL -> one model investigation -> finding and tracker state; due r
   t.diagnostic(JSON.stringify({mocked:true,first_and_idle:firstCost,repeat_mutations:2,tracker_row_bytes:storage.bytes}));
 });
 
-test('failed and crashed attempts stop at three, budget denials defer without spending an attempt, explicit retry works',async t=>{
+test('failed and crashed attempts stop at three, explicit retry works',async t=>{
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let calls=0;
   const failure=()=>async()=>{calls++;throw Object.assign(new Error('provider_unknown'),{dispatched:true});};
   for(let n=1;n<=3;n++){
@@ -60,9 +60,6 @@ test('failed and crashed attempts stop at three, budget denials defer without sp
   }
   await due(raw);assert.equal((await intake(db,{modelFor:failure})).state,'idle');assert.equal(calls,3);
   assert.equal((await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([])})).state,'no_findings');
-  await due(raw);
-  const denial=await intake(db,{modelFor:()=>async()=>{throw Object.assign(new Error('quota'),{dispatched:false});}});
-  assert.equal(denial.state,'deferred');assert.equal((await raw.query('select failure_count from scout.trackers')).rows[0].failure_count,0);
   // A terminated worker still consumes its attempt, including the third one.
   await raw.exec("update scout.trackers set failure_count=3,lease_id=gen_random_uuid(),lease_until=now()-interval '1 second',next_check_at=now()-interval '1 second'");
   assert.equal((await intake(db,{modelFor:failure})).state,'idle');assert.equal(calls,3);
@@ -107,7 +104,7 @@ test('finding failure rolls back the finding and successful tracker completion t
   const state=(await raw.query('select * from scout.trackers')).rows[0];assert.equal(state.failure_count,1);assert.equal(state.last_error,'database_operation');
 });
 
-test('hosted reader uses real quota SQL and bounded fallback; paused budgets block HTTP and notifications',async t=>{
+test('hosted reader works without quota policy and retains bounded fallback and per-call accounting',async t=>{
   const raw=await setup(t),tr=await tracker(raw);let gemini=0,openai=0;
   const config={...options(raw),openaiApiKey:'test',modelFetch:async(url,init)=>{
     const body=JSON.parse(init.body);
@@ -117,10 +114,9 @@ test('hosted reader uses real quota SQL and bounded fallback; paused budgets blo
       {type:'web_search_call',status:'completed',action:{type:'open_page',url:tr.url}},
       {type:'message',content:[{type:'output_text',text:JSON.stringify({records:[event]})}]}]});
   }};
-  const paused=await (await hostedReader(request(),config)).json();assert.equal(paused.reason,'quota');assert.equal(gemini+openai,0);
-  const notification=await (await hostedNotify(request(),{...options(raw),post:()=>assert.fail('Paused notification')})).json();assert.equal(notification.reason,'unverified_budget');
-  await raw.exec("update scout.quota_policy set enabled=true,verified_until=now()+interval '1 hour',verified_rpm=15,verified_rpd=500,verified_tpm=250000,database_bytes=10000000,database_verified_until=now()+interval '1 hour'");
-  await raw.exec(`update scout.quota_policy set openai='{"enabled":true}'`);
+  assert.equal((await raw.query("select to_regclass('scout.quota_policy') name")).rows[0].name,null);
+  const notification=await (await hostedNotify(request(),{...options(raw),post:()=>assert.fail('No findings to notify')})).json();
+  assert.equal(notification.status,'no_change');
   await due(raw);const response=await hostedReader(request(),config);assert.equal(response.status,200);
   const saved=await response.json();assert.equal(saved.created,1);assert.equal(gemini,1);assert.equal(openai,1);
   assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,1);

@@ -37,8 +37,6 @@ export async function hostedHSA(request,{databaseURL,apiKey,openaiApiKey,webhook
       order by native_id is not null desc,id limit 1) s on true where t.id=$1`,[trackerId,url])).rows[0];
     if(!notify&&!selected)return Response.json({error:'Existing tracker required'},{status:400});
     if(notify){
-      const policy=(await db.query('select enabled and database_verified_until>clock_timestamp() and database_bytes between 0 and 399999999 as allowed from scout.quota_policy where id')).rows[0];
-      if(!policy?.allowed)return Response.json({outcome:'deferred',reason:'unverified_budget',cost:db.metrics});
       const preview=await prepareMessage(db),result=await sendMessage(db,preview,post??webhookTransport(webhook));
       return Response.json({...result,cost:db.metrics});
     }

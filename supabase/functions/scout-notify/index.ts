@@ -15,8 +15,6 @@ export async function hostedNotify(request,{databaseURL,webhook,env,connect=post
       types:{json:{to:114,from:[114,3802],parse:JSON.parse,serialize:value=>typeof value==='string'?value:JSON.stringify(value)}},
       connection:{application_name:'scout-notify',statement_timeout:5000}});
     session=await sql.reserve();const db=database(session);
-    const policy=(await db.query('select enabled and database_verified_until>clock_timestamp() and database_bytes between 0 and 399999999 as allowed from scout.quota_policy where id')).rows[0];
-    if(!policy?.allowed)return Response.json({outcome:'deferred',reason:'unverified_budget',cost:db.metrics});
     const preview=await prepareMessage(db),result=await sendMessage(db,preview,post??webhookTransport(webhook));
     return Response.json({...result,cost:db.metrics});
   }catch{return Response.json({error:'Notification interrupted'},{status:500});}

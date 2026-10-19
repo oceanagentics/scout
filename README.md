@@ -49,7 +49,7 @@ The build writes ignored `website/dist/`; preview serves that output. Database t
 
 Backend settings stay in the ignored root `.env.local`; [the example](.env.example) documents the OpenAI and Calendar secret names. Hosted entrypoints read their own Edge Function secrets.
 
-The following commands contact production and require an explicitly scoped run with verified allowances. They do not start recurring work:
+The following commands contact production and require an explicitly scoped run within provider allowances. They do not start recurring work:
 
 ```sh
 npm run reader -- --tracker=UUID

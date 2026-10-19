@@ -78,9 +78,11 @@ test('a failure after TRUNCATE rolls back all deletions and constraints',async()
  }finally{await db.close();}
 });
 
-test('replacement scheduler bounds its own history even while budgets block collection',async()=>{
+test('replacement scheduler bounds its own history without a policy table',async()=>{
  const {db}=await fixture();try{
   await db.exec(cleanup);await db.exec(cutover);
+  for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort().filter(n=>n>'20261009190000_scout_findings.sql'))
+    await db.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
   const scheduler=await readFile(new URL('../supabase/scout-loop.sql',import.meta.url),'utf8');
   await db.exec(scheduler.match(/create or replace function scout\.loop_tick[\s\S]+?end \$\$;/)[0]);
   await db.exec(`insert into cron.job_run_details select 1,n,now()-interval '2 days' from generate_series(3,102) n;

@@ -35,8 +35,7 @@ export async function intake(db,{trackerId=null,modelFor}){
   }catch(error){
     const reason=/^[a-z_]{1,48}$/.test(error.reason??error.message??'')?error.reason??error.message:'reader_failed';
     usage=error.usage??usage;diagnostics=error.diagnostics??diagnostics;
-    const budget=['quota','provider_cooldown'].includes(reason)&&!usage.generations&&!error.dispatched;
-    const failures=tracker.failure_count-Number(budget);
+    const failures=tracker.failure_count;
     const retryAt=failures>=3?null:new Date(Math.max(Date.parse(error.deferred?.retry_at)||0,Date.now()+3600000)).toISOString();
     const updated=await db.query(`update scout.trackers set last_checked_at=clock_timestamp(),last_error=$4,failure_count=$5,
       next_check_at=$6,lease_id=null,lease_until=null where id=$1 and lease_id=$2 and url=$3 and lease_until>clock_timestamp() returning id`,

@@ -22,8 +22,8 @@ jq 'select(.direction == "response") | {id, status, body: (.body | fromjson? // 
 
 The URL comes from the tracker row. Findings and tracker checking state exist only in an in-memory database and are discarded
 after the result is printed. Shared production quota reservations/settlements
-still account for actual calls. Existing verified allowances must already be
-open; this command never enables them or starts scheduled collection/notifications.
+still account for actual calls. Provider account limits apply; this command
+never starts scheduled collection or notifications.
 It retains the existing two-generation limit and provider tool limits.
 Capture adds no model calls or SQL writes. Only the local traffic file persists.
 

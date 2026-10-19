@@ -16,9 +16,6 @@ begin
   select d.runid from cron.job_run_details d join cron.job j using(jobid)
   where j.jobname='scout-collection' and d.end_time<clock_timestamp()-interval '1 day'
   order by d.end_time limit 48);
- if not exists(select 1 from scout.quota_policy where id and enabled and verified_until>clock_timestamp()
-  and verified_rpm>0 and verified_rpd>0 and verified_tpm>0
-  and database_verified_until>clock_timestamp() and database_bytes between 0 and 399999999) then return;end if;
  if not exists(select 1 from scout.trackers t
   where t.enabled and t.failure_count<3 and t.next_check_at<=clock_timestamp() and (t.lease_until is null or t.lease_until<=clock_timestamp())) then return;end if;
  select decrypted_secret into key from vault.decrypted_secrets where name='scout_loop_backend_key';
