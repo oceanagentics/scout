@@ -4,7 +4,6 @@ import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {database} from '../reader/database.js';
 import {intake} from '../reader/intake.js';
-import {trackerModel} from '../reader/models/gateway.js';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../reader/instructions.js';
 import {hostedReader} from '../supabase/functions/scout-reader/index.ts';
 import {hostedNotify} from '../supabase/functions/scout-notify/index.ts';
@@ -127,44 +126,6 @@ test('hosted reader works without quota policy and retains bounded fallback and 
       content:{parts:[{text:JSON.stringify([event])}]}}]})})).json();
   assert.equal(repeat.usage.generations,1);assert.equal(repeat.created,0);assert.equal(repeat.changed,0);
   t.diagnostic(JSON.stringify({mocked_providers:true,real_local_sql:true,fallback:saved.cost,primary_repeat:repeat.cost,usage:saved.usage}));
-});
-
-test('Bluesky processes new posts in order, skips unchanged feeds, and commits progress with findings',async t=>{
-  const raw=await setup(t),tr=await tracker(raw);let db;
-  await raw.query('update scout.trackers set url=$2 where id=$1',[tr.id,
-    'https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=example.org&limit=2']);
-  let newest=2,calls=0,broken=false;const processed=[];
-  const entry=n=>({post:{uri:`at://did:plc:author/app.bsky.feed.post/${n}`,record:{text:'Post '+n}}});
-  const send=async(target,init)=>{
-    if(String(target).includes('public.api.bsky.app')){
-      const from=Number(new URL(target).searchParams.get('cursor')??newest);
-      return Response.json({feed:[entry(from),...(from>1?[entry(from-1)]:[])],...(from>2?{cursor:String(from-2)}:{})});
-    }
-    calls++;const body=JSON.parse(init.body),input=JSON.parse(body.contents[0].parts[0].text);
-    processed.push(input.post.record.text);
-    if(broken)return Response.json({error:'unavailable'},{status:503});
-    return Response.json({usageMetadata:{promptTokenCount:100,candidatesTokenCount:100,totalTokenCount:200},
-      candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify([{...event,description:'Development '+input.post.record.text}])}]}}]});
-  };
-  const run=()=>{db=database(driver(raw));return intake(db,{trackerId:tr.id,modelFor:source=>trackerModel({source,ledger:db,provider:'gemini',apiKey:'test',fetch:send})});};
-  assert.equal((await run()).created,1);assert.equal((await run()).created,1);
-  const unchanged=await run();
-  assert.equal(unchanged.usage.generations,0);assert.equal(calls,2);
-  const repeat={...db.metrics};
-  newest=4;broken=true;assert.equal((await run()).reason,'provider_unavailable');
-  assert.equal((await raw.query('select reader_progress from scout.trackers')).rows[0].reader_progress,entry(2).post.uri);
-  broken=false;assert.equal((await run()).created,1);assert.equal((await run()).created,1);
-  assert.deepEqual(processed,['Post 1','Post 2','Post 3','Post 3','Post 4']);
-  const records=(await raw.query('select canonical_url from scout.records')).rows;
-  assert.equal(new Set(records.map(r=>r.canonical_url)).size,4);
-  assert.equal((await run()).usage.generations,0);
-  await raw.exec("alter table scout.records add constraint fail_feed_fixture check(description<>'Development Post 5')");
-  newest=5;assert.equal((await run()).reason,'database_operation');
-  assert.equal((await raw.query('select reader_progress from scout.trackers')).rows[0].reader_progress,entry(4).post.uri);
-  const bytes=(await raw.query('select octet_length(reader_progress) bytes from scout.trackers')).rows[0].bytes;
-  t.diagnostic(JSON.stringify({mocked_provider:true,real_local_sql:true,unchanged_check:repeat,progress_bytes:bytes}));
-  await raw.query('update scout.trackers set url=$2 where id=$1',[tr.id,'https://example.org/new']);
-  assert.equal((await raw.query('select reader_progress from scout.trackers')).rows[0].reader_progress,null);
 });
 
 test('reader migration removes source state and correction metadata, preserves findings/accounting, and restricts state writes',async t=>{

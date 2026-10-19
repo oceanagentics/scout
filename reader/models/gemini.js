@@ -71,8 +71,8 @@ export function gemini({apiKey,ledger,fetch:send=fetch}){
       if(!answer||typeof answer!=='object'||Array.isArray(answer))throw new Error('invalid_output');
       diagnostics.model_status=['found','none','unreadable'].includes(answer.status)?answer.status:null;
       diagnostics.record_count=Array.isArray(answer.records)?answer.records.length:null;
-      if(!input.post&&!retrieval.length)throw new Error('retrieval_metadata_missing');
-      if(!input.post&&!retrieval.some(r=>r.urlRetrievalStatus==='URL_RETRIEVAL_STATUS_SUCCESS'))throw new Error('url_retrieval_failed');
+      if(!retrieval.length)throw new Error('retrieval_metadata_missing');
+      if(!retrieval.some(r=>r.urlRetrievalStatus==='URL_RETRIEVAL_STATUS_SUCCESS'))throw new Error('url_retrieval_failed');
       return {...answer,_retrieval:diagnostics.retrieval,_diagnostics:diagnostics,
         _usage:{input_tokens:tokens,output_tokens:output,uncertain:state==='unknown'}};
     }catch(error){

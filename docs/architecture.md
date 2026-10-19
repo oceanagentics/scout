@@ -18,11 +18,7 @@ flowchart TD
 
 [The Supabase function](../supabase/functions/scout-reader/index.ts) authenticates a backend secret, opens one database connection and calls [intake.js](../reader/intake.js). It accepts a POST without parameters for the next due tracker, or `tracker_id` for an explicit check/retry. The URL is read from that tracker, unchanged. `reader/` runs inside this function; it is not a separate hosted service.
 
-Intake selects and claims a tracker atomically before model HTTP. A 120-second lease excludes overlapping checks. It supplies the URL, current date and [instructions/schema](../reader/instructions.js) to the model. The model can follow relevant links during its investigation. Missing dates do not prevent saving useful findings.
-
-For public Bluesky `getAuthorFeed` tracker URLs, [bluesky.js](../reader/bluesky.js) fetches the JSON directly. Each check supplies one complete post, including its record, links and every attached image description/URL, to the model. The first check starts with the oldest entry in the URL's configured initial window. Later checks page from the same tracker URL back to the last processed feed entry and process the oldest new entry. Reposts use their feed identity; pinned entries are excluded. Unchanged feeds make no model or accounting calls. Search endpoints retain ordinary URL investigation behavior.
-
-One check processes at most one post, so an initial 20-post window needs 20 successful checks. HTTP work is bounded to ten pages, one MiB per page and 15 seconds overall. If the saved entry is deleted or the page bound prevents reaching it, the check fails without advancing progress; it does not silently skip a gap. This requires review rather than automatically discarding the boundary. Source bodies remain in memory. Browsing remains available for relevant links and images, but model retrieval of the whole feed is unnecessary. There is no second source list or stored post inventory.
+Intake selects and claims a tracker atomically before model HTTP. A 120-second lease excludes overlapping checks. It supplies the URL, current date and [instructions/schema](../reader/instructions.js) to the model. There is no publisher dispatch, page preparation, article inventory, fingerprint check or separate scheduling-research pass. The model can follow relevant links during its investigation. Missing dates do not prevent saving useful findings.
 
 The response is normalized and saved in a transaction that also finishes the tracker check. The lease and unchanged tracker URL are checked before saving. A changed URL resets its state and disables automatic checks until backend enablement. Failed saves roll back the finding and successful completion together.
 
@@ -37,7 +33,6 @@ Source configuration and current progress live together in `scout.trackers`:
 | `last_error` | Short reason for the latest unsuccessful attempt; cleared on success. |
 | `failure_count` | Attempts since success, including the current claimed attempt. Three stop automatic retries. |
 | `lease_id`, `lease_until` | Temporary ownership of an in-flight check; cleared when finished. |
-| `reader_progress` | Last successfully processed feed-entry URI for incremental Bluesky reading; saved in the findings transaction and reset when the URL changes. Backend-only, at most 1,024 bytes. |
 
 A terminated worker's attempt remains counted. An explicit tracker-ID request starts another bounded cycle after three failures, without stealing a live lease. `last_checked_at` does not imply successful retrieval; inspect `last_error` too.
 
@@ -73,7 +68,7 @@ The description-only, reader and quota-policy removal migrations are applied in 
 
 Migration verification confirmed that all 108 existing findings and 101 per-call usage rows retained their facts and values. The removed tables and columns are absent, and no remaining Scout database function references the quota-policy table.
 
-The reader migration drops source-state rows, the backlog function/view, correction columns and the HTTPS-format constraint. It does not convert article URLs into trackers or reconstruct old operational history. It leaves delivery accounting unchanged. The following removal migration drops the quota-policy table; current per-call charges remain in the existing reservation table. Migration guards require paused work, no active source claims or sends, and at most 1,000 records/500 trackers. The later reader-progress migration adds one compact boundary to existing trackers; it does not enable them. This Bluesky change requires that migration and reader deployment before production use.
+The reader migration drops source-state rows, the backlog function/view, correction columns and the HTTPS-format constraint. It does not convert article URLs into trackers or reconstruct old operational history. It leaves delivery accounting unchanged. The following removal migration drops the quota-policy table; current per-call charges remain in the existing reservation table. Migration guards require paused work, no active source claims or sends, and at most 1,000 records/500 trackers.
 
 Estimated normal activity is one generation, two tracker-row mutations and only changed/new finding writes, plus existing quota accounting. Six fixed state columns replace up to 201 source-state rows per tracker. The current scheduler serves at most one tracker per hourly wake: at most 24 checks/48 generations per day if explicitly enabled. A faster cadence may therefore wait longer when many trackers are due. Manual requests also consume provider allowances.
 

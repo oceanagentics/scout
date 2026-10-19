@@ -21,15 +21,14 @@ export async function intake(db,{trackerId=null,modelFor}){
     usage=answer._usage??{...usage,generations:1};diagnostics=answer._diagnostics;
     if(!['found','none','unreadable'].includes(answer.status)||!Array.isArray(answer.records))throw fail('invalid_output');
     if(answer.status==='unreadable')throw fail('model_unreadable');
-    const findings=answer.records.slice(0,8).map(r=>normalizeFinding(r,answer._source_url??tracker.url)).filter(Boolean);
+    const findings=answer.records.slice(0,8).map(r=>normalizeFinding(r,tracker.url)).filter(Boolean);
     if(answer.status==='found'&&!findings.length)throw fail('empty_findings');
     const counts=await db.transaction(async tx=>{
       if(!(await tx.query(`select id from scout.trackers where id=$1 and lease_id=$2 and url=$3
         and lease_until>clock_timestamp() for update`,[tracker.id,tracker.lease_id,tracker.url])).rows.length)throw fail('stale_lease');
-      const saved=await saveFindings(tx,{...tracker,url:answer._source_url??tracker.url},findings);
-      if(answer._progress&&saved.ambiguous)throw fail('ambiguous_findings');
+      const saved=await saveFindings(tx,tracker,findings);
       await tx.query(`update scout.trackers set last_checked_at=clock_timestamp(),next_check_at=clock_timestamp()+cadence,
-        last_error=null,failure_count=0,lease_id=null,lease_until=null,reader_progress=coalesce($2,reader_progress) where id=$1`,[tracker.id,answer._progress??null]);
+        last_error=null,failure_count=0,lease_id=null,lease_until=null where id=$1`,[tracker.id]);
       return saved;
     });
     return {state:counts.saved?'saved':counts.ambiguous?'ambiguous':'no_findings',tracker_id:tracker.id,...counts,usage,diagnostics};
