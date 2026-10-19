@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 
 test('local modules stay acyclic and respect shared, hosted and website boundaries',async()=>{
   const root=fileURLToPath(new URL('../',import.meta.url)),graph=new Map();
-  for(const folder of ['collector','calendar','slackbot','website','shared','diagnostics','supabase/functions']){
+  for(const folder of ['reader','collector','calendar','slackbot','website','shared','diagnostics','supabase/functions']){
     for(const name of await readdir(resolve(root,folder),{recursive:true})){
       if(!/\.(?:js|ts)$/.test(name)||folder==='website'&&name.startsWith('dist/'))continue;
       const path=resolve(root,folder,name),code=await readFile(path,'utf8');
@@ -34,11 +34,11 @@ test('local modules stay acyclic and respect shared, hosted and website boundari
     for(const dependency of graph.get(path))reachable(dependency,seen);
     return seen;
   };
-  for(const entry of ['supabase/functions/scout-collect-hsa/index.ts','website/main.js']){
+  for(const entry of ['supabase/functions/scout-reader/index.ts','supabase/functions/scout-notify/index.ts','website/main.js']){
     for(const path of reachable(entry)){
       assert.ok(!(await readFile(resolve(root,path),'utf8')).includes('captureTraffic'),entry+' includes traffic capture: '+path);
       assert.ok(!path.startsWith('diagnostics/'),entry+' imports local diagnostics: '+path);
-      assert.ok(!path.startsWith('collector/discovery/'),entry+' imports publisher discovery: '+path);
+      assert.ok(!path.startsWith('collector/'),entry+' imports publisher discovery: '+path);
     }
   }
 });

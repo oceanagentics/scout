@@ -4,10 +4,10 @@ import {readFile,readdir} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {PGlite} from '@electric-sql/pglite';
-import {managementDatabase} from '../collector/remote.js';
-import {database} from '../collector/database.js';
-import {processDocument} from '../collector/intake.js';
-import {trackerModel} from '../collector/models/gateway.js';
+import {managementDatabase} from './database.js';
+import {database} from '../reader/database.js';
+import {intake} from '../reader/intake.js';
+import {trackerModel} from '../reader/models/gateway.js';
 
 export function captureTraffic(path,{fetch:send=fetch,secrets=[]}={}){
   mkdirSync(dirname(path),{recursive:true});
@@ -41,7 +41,7 @@ export function captureTraffic(path,{fetch:send=fetch,secrets=[]}={}){
   }};
 }
 
-export async function diagnoseSource({tracker,source,env,ledger=managementDatabase(env.SUPABASE_ACCESS_TOKEN),fetch:send=fetch,
+export async function diagnoseTracker({tracker,env,ledger=managementDatabase(env.SUPABASE_ACCESS_TOKEN),fetch:send=fetch,
   output=fileURLToPath(new URL('../.cache/model-traffic/latest.jsonl',import.meta.url))}){
   const selected=(await ledger.query('select id,name,url,collector,cadence from scout.trackers where id=$1',[tracker])).rows[0];
   if(!selected)throw new Error('Existing tracker required');
@@ -57,10 +57,8 @@ export async function diagnoseSource({tracker,source,env,ledger=managementDataba
       [selected.id,selected.name,selected.url,selected.collector,selected.cadence]);
     traffic=captureTraffic(output,{fetch:send,secrets:[env.GEMINI_API_KEY,env.SCOUT_OPENAI_API_KEY,env.SUPABASE_ACCESS_TOKEN]});
     const db=database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
-    const input={tracker_id:tracker,identity:source,url:source};
-    const model=trackerModel({source:input,ledger,apiKey:env.GEMINI_API_KEY,openaiApiKey:env.SCOUT_OPENAI_API_KEY,
-      fetch:traffic.fetch});
-    const result=await processDocument(db,{source:input,model});
+    const result=await intake(db,{trackerId:tracker,modelFor:source=>trackerModel({source,ledger,
+      apiKey:env.GEMINI_API_KEY,openaiApiKey:env.SCOUT_OPENAI_API_KEY,fetch:traffic.fetch})});
     const records=(await raw.query('select id,version,description,details,sources from scout.records order by id')).rows;
     return {traffic_file:output,result,records,cost:db.metrics};
   }finally{traffic?.close();await raw.close();}

@@ -1,22 +1,20 @@
 import {verifyAuth} from '@supabase/server/core';
 import postgres from 'postgres';
-import {Buffer} from 'node:buffer';
 import {randomUUID} from 'node:crypto';
 import {sourceURL} from './source-url.js';
 import {database} from './database.js';
 import {trackerModel} from './models/gateway.js';
 import {processDocument} from './intake.js';
-import {correctFinding} from './corrections.js';
 import {prepareMessage,sendMessage,webhookTransport} from '../slackbot/slack.js';
 
 export async function hostedHSA(request,{databaseURL,apiKey,openaiApiKey,webhook,env,connect=postgres,modelFetch=fetch,post}={}){
   const {error}=await verifyAuth(request,{auth:'secret:default',env});
   if(error)return Response.json({error:'Backend secret required'},{status:401});
   if(request.method!=='POST')return Response.json({error:'POST required'},{status:405});
-  const params=new URL(request.url).searchParams,rotation=params.get('next')==='true',notify=params.get('notify')==='true',correct=params.get('correct')==='true';
+  const params=new URL(request.url).searchParams,rotation=params.get('next')==='true',notify=params.get('notify')==='true';
   const trackerId=params.get('tracker_id'),url=params.get('source_url'),uuid=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
-  if(rotation||notify||correct?params.size!==1:params.size!==2||!uuid.test(trackerId??'')||!url)
-    return Response.json({error:'Use next=true, notify=true, correct=true, or tracker_id and source_url.'},{status:400});
+  if(rotation||notify?params.size!==1:params.size!==2||!uuid.test(trackerId??'')||!url)
+    return Response.json({error:'Use next=true, notify=true, or tracker_id and source_url.'},{status:400});
   if(!databaseURL)return Response.json({error:'Database unavailable'},{status:503});
   let sql,session;
   try{
@@ -26,11 +24,6 @@ export async function hostedHSA(request,{databaseURL,apiKey,openaiApiKey,webhook
       connection:{application_name:'scout-collect-hsa',statement_timeout:5000}});
     session=await sql.reserve();
     const db=database(session);
-    if(correct){
-      const body=await request.text();
-      if(Buffer.byteLength(body)>4096)return Response.json({error:'Correction too large'},{status:400});
-      return Response.json(await correctFinding(db,JSON.parse(body)));
-    }
     if(request.body&&await request.text())return Response.json({error:'Empty body required'},{status:400});
     // Due selection precedes HTTP, maintenance, reservations and source writes.
     let selected;

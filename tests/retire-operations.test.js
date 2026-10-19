@@ -2,7 +2,6 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
-import {hostedHSA} from '../collector/hosted.js';
 
 const cleanup=await readFile(new URL('../supabase/scout-retire-operations.sql',import.meta.url),'utf8');
 const cutover=await readFile(new URL('../supabase/migrations/20261009190000_scout_findings.sql',import.meta.url),'utf8');
@@ -89,24 +88,5 @@ test('replacement scheduler bounds its own history even while budgets block coll
   assert.equal((await db.query('select count(*)::int n from cron.job_run_details where jobid=1')).rows[0].n,53);
   assert.deepEqual((await db.query('select runid from cron.job_run_details where jobid=2')).rows,[{runid:2}]);
   assert.equal((await db.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,0);
- }finally{await db.close();}
-});
-
-test('manual pilots expire old quota rows while preserving numeric uncertain charges',async()=>{
- const {db,tr}=await fixture();try{
-  await db.exec(cleanup);await db.exec(cutover);
-  await db.exec(`update scout.quota_policy set enabled=true,verified_until=now()+interval '1 hour',
-   verified_rpm=15,verified_rpd=500,verified_tpm=250000,database_bytes=10000000,database_verified_until=now()+interval '1 hour';
-   insert into scout.quota_reservations(id,invocation,reserved_at,input_tokens,state)
-   select gen_random_uuid(),gen_random_uuid(),now()-interval '2 days',100,s from unnest(array['settled','unknown']) s;`);
-  const session={release(){},async unsafe(q,p=[]){const r=await db.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}};
-  const response=await hostedHSA(new Request('https://example.org?'+new URLSearchParams({tracker_id:tr,source_url:'https://example.org/pilot'}),
-   {method:'POST',headers:{apikey:'sb_secret_test'}}),{
-   env:{url:'https://example.supabase.co',secretKeys:{default:'sb_secret_test'},publishableKeys:{},jwks:null},databaseURL:'unused',
-   connect:()=>({reserve:async()=>session,end:async()=>{}}),read:async()=>{throw Error('Fixture fetch failure');},modelFetch:()=>assert.fail('No model')});
-  assert.equal(response.status,200);
-  assert.equal((await db.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,0);
-  assert.deepEqual((await db.query('select uncertain_calls,uncertain_tokens from scout.quota_policy')).rows[0],{uncertain_calls:1,uncertain_tokens:100});
-  assert.equal((await response.json()).cost.mutations,5);
  }finally{await db.close();}
 });

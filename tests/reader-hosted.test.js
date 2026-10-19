@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import { verifyAuth } from '@supabase/server/core';
-import { hostedHSA } from '../collector/hosted.js';
+import { hostedReader } from '../supabase/functions/scout-reader/index.ts';
 import { readFile } from 'node:fs/promises';
 
 const secret = 'sb_secret_scout_test_only';
@@ -20,7 +20,7 @@ test('missing, invalid, publishable, other secret and valid user JWT never open 
   let connects = 0;
   for (const headers of [{}, { apikey: 'invalid' }, { apikey: env.publishableKeys.default }, { apikey: env.secretKeys.other },
     { Authorization: `Bearer ${jwt}` }, { Authorization: `Bearer ${jwt}`, apikey: env.publishableKeys.default }]) {
-    const response = await hostedHSA(request(headers, '?next=true'), { env: testEnv, databaseURL: 'unused',
+    const response = await hostedReader(request(headers, '?next=true'), { env: testEnv, databaseURL: 'unused',
       connect: () => { connects++; }, read: () => assert.fail('No source HTTP'), modelFetch: () => assert.fail('No model HTTP') });
     assert.equal(response.status, 401);
   }
@@ -30,14 +30,14 @@ test('missing, invalid, publishable, other secret and valid user JWT never open 
 test('invalid authenticated requests do no database work', async () => {
   let connects = 0;
   const tracker='00000000-0000-0000-0000-000000000001',source='https://example.org/event';
-  const invalid=['','tracker_id='+tracker,'source_url='+source,'tracker_id=invalid&source_url='+source,
+  const invalid=['tracker_id=invalid','source_url='+source,'tracker_id=invalid&source_url='+source,
     'tracker_id='+tracker+'&source_url=','tracker_id='+tracker+'&source_url='+source+'&extra=true',
     'tracker_id='+tracker+'&tracker_id='+tracker+'&source_url='+source,
     'tracker_id='+tracker+'&source_url='+source+'&source_url='+source,
     'documents=process&validate=true&tracker_id='+tracker];
   for(const route of ['next','notify','correct'])invalid.push(route+'=false',route+'=true&'+route+'=true',route+'=true&extra=true');
   for (const req of [...invalid.map(query=>request(undefined,'?'+query)),request(undefined,'?next=true','GET')]) {
-    const response = await hostedHSA(req, { env, databaseURL: 'unused', connect: () => { connects++; } });
+    const response = await hostedReader(req, { env, databaseURL: 'unused', connect: () => { connects++; } });
     assert.equal(response.status,req.method==='GET'?405:400);
   }
   assert.equal(connects, 0);
@@ -45,7 +45,7 @@ test('invalid authenticated requests do no database work', async () => {
 
 
 test('database failure rolls back and does not disclose connection or source details',async()=>{
- const {database}=await import('../collector/database.js'),queries=[];
+ const {database}=await import('../reader/database.js'),queries=[];
  const db=database({unsafe:async q=>{queries.push(q);if(q==='broken')throw Object.assign(new Error('secret credential source text'),{code:'23505'});return[];}});
  await assert.rejects(db.transaction(tx=>tx.query('broken')),e=>e.message==='database_operation'&&!e.message.includes('secret'));
  assert.deepEqual(queries,['begin','broken','rollback']);

@@ -6,8 +6,7 @@ if(args.length!==3||!args.some(v=>v==='--pilot'||v==='--diagnostic')||!/^[a-f0-9
 if(sourceURL(source)!==source)throw new Error('Public canonical source URL required');
 process.loadEnvFile('.env.local');
 if(args.includes('--diagnostic')){
-  const {diagnoseSource}=await import('../diagnostics/diagnose-source.js');
-  console.log(JSON.stringify(await diagnoseSource({tracker,source,env:process.env}),null,2));
+  throw new Error('Use npm run reader -- --diagnostic --tracker=UUID; the URL comes from the tracker.');
 }else{
   if(!process.env.SCOUT_BACKEND_KEY)throw new Error('SCOUT_BACKEND_KEY required');
   const url='https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-collect-hsa?'+new URLSearchParams({tracker_id:tracker,source_url:source});

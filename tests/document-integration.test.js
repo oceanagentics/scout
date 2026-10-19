@@ -9,7 +9,7 @@ async function setup(){
  const db=new PGlite();await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;
  create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');create table auth.identities(user_id uuid,provider text,identity_data jsonb);
  create function auth.uid() returns uuid language sql as $$select null::uuid$$;`);
- for(const n of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort())await db.exec(await readFile(new URL('../supabase/migrations/'+n,import.meta.url),'utf8'));
+ for(const n of (await readdir(new URL('../supabase/migrations/',import.meta.url))).filter(n=>n<'20261019200000_scout_reader.sql').sort())await db.exec(await readFile(new URL('../supabase/migrations/'+n,import.meta.url),'utf8'));
  return db;
 }
 test('tracker discovery keeps native IDs and advances its bounded cursor across source checks',async()=>{

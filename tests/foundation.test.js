@@ -77,9 +77,8 @@ test('final schema protects findings, operational state and tracker management i
     const tracker = (await db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Source','https://example.org','web','1 day',true) returning id")).rows[0].id;
     const record = (await db.query("insert into scout.records(kind,description) values('announcement','Private finding') returning id")).rows[0].id;
     await db.query("update scout.records set sources=$2 where id=$1", [record,[{url:'https://example.org/source',tracker_id:tracker,relationship:'source'}]]);
-    await db.query("insert into scout.source_state(tracker_id,identity,url,state,reason) values($1,'item','https://example.org/source','parked','attempt_bound')", [tracker]);
-    const publicReads = ['scout.records','scout.finding_reader','scout.findings()','scout.finding_jobs()','scout.tracker_status'];
-    const privateTables = ['source_state','quota_policy','quota_reservations','delivery_state'];
+    const publicReads = ['scout.records','scout.finding_reader','scout.findings()'];
+    const privateTables = ['quota_policy','quota_reservations','delivery_state'];
     await db.exec('set role anon');
     for (const view of publicReads) await assert.rejects(db.query('select * from ' + view), { code: '42501' });
     await assert.rejects(db.query('select scout.access_role()'), { code: '42501' });
@@ -115,7 +114,7 @@ test('final schema protects findings, operational state and tracker management i
     await db.exec('reset role; set role service_role');
     await db.query('update scout.trackers set enabled=true where id=$1', [tracker]);
     assert.equal((await db.query('select enabled from scout.trackers where id=$1', [tracker])).rows[0].enabled, true);
-    for (const edit of ["collector='bluesky_feed'","url=null"]) {
+    for (const edit of ["url=null"]) {
       await db.query('update scout.trackers set ' + edit + ',enabled=true where id=$1', [tracker]);
       assert.equal((await db.query('select enabled from scout.trackers where id=$1', [tracker])).rows[0].enabled, false);
     }
@@ -170,7 +169,7 @@ test('tracker seeds preserve app edits and remain idempotent on the final schema
     assert.equal(initial.length, 41);
     assert.deepEqual(initial.filter(r=>r.enabled).map(r=>r.seed_key), [17,18,19,20].map(n=>'bbnj-trackers-2026-10-01:'+n));
     assert.ok(initial.filter(r=>!r.url).every(r=>!r.enabled));
-    assert.ok((await db.query('select * from scout.tracker_status')).rows.every(r=>r.last_attempt_at===null&&r.last_success_at===null));
+    assert.ok((await db.query('select last_checked_at from scout.trackers')).rows.every(r=>r.last_checked_at===null));
     await db.query("update auth.users set raw_app_meta_data='{\"scout\":{\"admin\":true}}' where id=$1", [admin]);
     await db.exec('set role authenticated');
     await db.query("select set_config('request.jwt.claim.sub',$1,false)", [admin]);
@@ -200,7 +199,7 @@ test('description migration preserves findings, corrections, sources and account
     const before=(await db.query('select * from scout.records order by id')).rows;
     const accounting=(await db.query('select * from scout.quota_policy')).rows;
     const deliveries=(await db.query('select * from scout.delivery_state order by record_id')).rows;
-    await db.exec(migrations.at(-1)[1]);
+    await db.exec(migrations.find(([name])=>name==='20261019190000_scout_description_only.sql')[1]);
     const after=(await db.query('select * from scout.records order by id')).rows;
     for(let i=0;i<before.length;i++){
       const {title,...expected}=before[i];

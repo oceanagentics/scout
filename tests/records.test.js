@@ -23,18 +23,18 @@ test('typed reader displays local dates, ranked organization names and independe
 test('source links reject unsafe URLs and tracker freshness uses persisted run status',()=>{
   for(const url of ['javascript:alert(1)','https://user:secret@example.org'])assert.equal(sourceLink(url),null);
   assert.equal(trackerState({enabled:false,url:null}).availability,'Unconfigured');
-  assert.equal(trackerState({enabled:false,url:'https://example.org'}).availability,'Collector not yet proven');
-  assert.equal(trackerState({enabled:true,url:'https://example.org'}).success,'Never');
-  const tracker={url:'https://example.org',last_success_at:'2026-10-01T11:00:00Z'};
-  for(const outcome of ['partial','failed','quota'])assert.equal(trackerState({...tracker,last_outcome:outcome}).success,'2026-10-01 11:00 UTC');
+  assert.equal(trackerState({enabled:false,url:'https://example.org'}).availability,'Disabled');
+  assert.equal(trackerState({enabled:true,url:'https://example.org'}).availability,'Not checked');
+  assert.equal(trackerState({enabled:true,url:'https://example.org',failure_count:3}).availability,'Needs attention');
+  assert.equal(trackerState({enabled:true,url:'https://example.org',last_error:'quota'}).availability,'Retry scheduled');
 });
 test('reader sends filters and stable cursor to bounded server queries and surfaces errors',async()=>{
   const rows=Array.from({length:50},(_,i)=>({id:String(i),priority:'low',kind:'announcement',organizations:[],details:{published:{value:'2026-03',precision:'month'}}})),calls=[];let fail=false;
   const client={rpc:async(name,args)=>{calls.push({name,args});return fail?{error:new Error('Unavailable')}:{data:name==='findings'?rows:[]};},
-    from:table=>{assert.equal(table,'tracker_status');return{select(){return this;},order(){return this;},limit(n){assert.equal(n,500);return{data:[]};}};}};
+    from:table=>{assert.equal(table,'trackers');return{select(){return this;},order(){return this;},limit(n){assert.equal(n,500);return{data:[]};}};}};
   const result=await loadScout(client,{filters:{kind:'announcement',organization:'Ocean Institute',meaning:'effective',from:'2027-01-01'}});
   assert.equal(result.records.length,50);assert.deepEqual(result.next,{rank:2,day:'2026-03-01',id:'49'});
   assert.equal(calls[0].args.p_limit,50);assert.equal(calls[0].args.p_organization,'Ocean Institute');assert.equal(calls[0].args.p_meaning,'effective');
-  await loadScout(client,{after:result.next});assert.deepEqual(calls[2].args.p_after,result.next);
-  assert.ok(calls.every(c=>['findings','finding_jobs'].includes(c.name)));fail=true;await assert.rejects(loadScout(client),/Unavailable/);
+  await loadScout(client,{after:result.next});assert.deepEqual(calls[1].args.p_after,result.next);
+  assert.ok(calls.every(c=>c.name==='findings'));fail=true;await assert.rejects(loadScout(client),/Unavailable/);
 });

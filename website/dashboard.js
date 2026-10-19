@@ -11,26 +11,22 @@ const RECORD_FIELDS = [
   ['updated_at', 'Updated at (UTC)'], ['id', 'ID'],
 ];
 const TRACKER_FIELDS = [
-  ['name', 'Name'], ['url', 'URL'], ['coverage', 'Coverage'], ['collector', 'Collector'],
-  ['cadence', 'Cadence'], ['enabled', 'Enabled'],
-  ['loop_state', 'Background loop'], ['awaiting_initial', 'Awaiting first review'], ['oldest_awaiting_at', 'Oldest awaiting review (UTC)'],
-  ['parked', 'Parked for review/repair'], ['source_problems', 'Source problems'], ['processing_problems', 'Processing problems'],
-  ['last_attempt_at', 'Last attempt (UTC)'], ['last_success_at', 'Last success (UTC)'], ['last_outcome', 'Last outcome'],
-  ['last_error', 'Last error'], ['seed_key', 'Seed key'], ['id', 'ID'],
+  ['name','Name'], ['url','URL'], ['coverage','Coverage'], ['cadence','Cadence'], ['enabled','Enabled'],
+  ['last_checked_at','Last checked (UTC)'], ['next_check_at','Next check (UTC)'],
+  ['failure_count','Consecutive attempts without success'], ['last_error','Last error'], ['id','ID'],
 ];
 
-export async function loadScout(client,{filters={},after=null,jobsAfter=null}={}) {
+export async function loadScout(client,{filters={},after=null}={}) {
   const params=Object.fromEntries(['kind','priority','from','to','organization','search','meaning','order'].map(key=>['p_'+key,filters[key]||null]));
-  const [page,inventory,backlog]=await Promise.all([
+  const [page,inventory]=await Promise.all([
     client.rpc('findings',{...params,p_after:after,p_limit:50,p_id:filters.record||null}),
-    client.from('tracker_status').select(TRACKER_FIELDS.map(([field])=>field).join(',')).order('name').limit(500),
-    client.rpc('finding_jobs',{p_after:jobsAfter})
+    client.from('trackers').select(TRACKER_FIELDS.map(([field])=>field).join(',')).order('name').limit(500)
   ]);
-  if(page.error||inventory.error||backlog.error)throw page.error??inventory.error??backlog.error;
+  if(page.error||inventory.error)throw page.error??inventory.error;
   const records=page.data.map(r=>({...r,organization:r.organizations.map(o=>o.name).join(' / '),
     event_url:r.canonical_url,registration_url:r.details.registration_url,location:r.details.location,status:r.details.status}));
   const last=records.at(-1);
-  return {records,trackers:inventory.data,jobs:backlog.data,jobsNext:backlog.data.length===50?backlog.data.at(-1).id:null,next:records.length===50?{rank:filters.order==='date'?0:({high:0,normal:1,low:2}[last.priority]??3),day:findingInterval(last)[0],id:last.id}:null};
+  return {records,trackers:inventory.data,next:records.length===50?{rank:filters.order==='date'?0:({high:0,normal:1,low:2}[last.priority]??3),day:findingInterval(last)[0],id:last.id}:null};
 }
 
 const node = (tag, text, className) => {
@@ -49,10 +45,10 @@ function link(text, url) {
 
 export function mountDashboard(root, load) {
   // Static markup only; every source-supplied value is rendered with textContent.
-  root.innerHTML = `<div class="workspace-heading"><nav aria-label="Scout views"><button type="button" data-view="findings" aria-pressed="true">Records</button><button type="button" data-view="discoveries" aria-pressed="false">Awaiting review</button><button type="button" data-view="trackers" aria-pressed="false">Trackers</button></nav><button type="button" id="refresh" class="secondary">Refresh data</button></div>
+  root.innerHTML = `<div class="workspace-heading"><nav aria-label="Scout views"><button type="button" data-view="findings" aria-pressed="true">Records</button><button type="button" data-view="trackers" aria-pressed="false">Trackers</button></nav><button type="button" id="refresh" class="secondary">Refresh data</button></div>
     <p id="load-status" role="status"></p>
     <section id="findings" aria-label="Records"><div class="findings-toolbar"><form id="filters" class="filters">
-      <label class="search">Search records<input name="search" type="search" placeholder="Title, organization, topic…"></label>
+      <label class="search">Search records<input name="search" type="search" placeholder="Description, organization, topic…"></label>
       <div class="kind-filters" role="group" aria-label="Record type">
         <label><input class="visually-hidden" type="radio" name="kind" value="" checked><span>All</span></label>
         <label><input class="visually-hidden" type="radio" name="kind" value="announcement"><span>Announcements</span></label>
@@ -68,12 +64,11 @@ export function mountDashboard(root, load) {
         <button type="button" data-layout="table" aria-label="Table view" title="Table view" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M10 9v11"/></svg></button>
         <button type="button" data-layout="cards" aria-label="Card view" title="Card view" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
       </div></div><p id="record-count" role="status"></p><div id="record-list" tabindex="0" role="region" aria-label="Records results"></div><button type="button" id="first-page" class="secondary">First page</button><button type="button" id="next-page" class="secondary">Next page</button></section>
-    <section id="discoveries" aria-label="Awaiting review" hidden></section>
     <section id="trackers" aria-label="Trackers" hidden>
       <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>`;
   const status = root.querySelector('#load-status'), refresh = root.querySelector('#refresh');
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
-  let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table', after=null,jobsAfter=null,request=0,filterTimer;
+  let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table', after=null,request=0,filterTimer;
   const sourceDialog = node('dialog', null, 'source-dialog'), sourceContent = node('div');
   sourceDialog.setAttribute('aria-labelledby', 'source-heading');
   const sourceHeading = node('h2', 'Sources'); sourceHeading.id = 'source-heading';
@@ -153,7 +148,7 @@ export function mountDashboard(root, load) {
             ['Tracker', tracker?.name || 'Unknown'], ['Relationship', source.relationship || 'Unknown'],
             ['Published', source.published_at ? stamp(source.published_at) : source.published_on || 'Unknown'],
             ['Record priority reason', record.relevance?.reason || 'Unknown'], ['Record priority assessed', stamp(record.relevance?.assessed_at)],
-            ['Last successful collection', state?.success || 'Unknown'], ['Last collection outcome', state?.outcome || 'Unknown'],
+            ['Last checked', stamp(tracker?.last_checked_at)], ['Tracker state', state?.availability || 'Unknown'],
             ['Collection error', tracker ? tracker.last_error || 'None recorded' : 'Unknown'],
           ]) {
             const detail = node('dd'); detail.append(value); fields.append(node('dt', label), detail);
@@ -208,16 +203,11 @@ export function mountDashboard(root, load) {
     status.textContent = data ? 'Refreshing data…' : 'Loading records and trackers…';
     root.setAttribute('aria-busy', 'true');
     try {
-      const next = await load({filters:{...Object.fromEntries(new FormData(filters)),record:new URLSearchParams(location.search).get('record')},after,jobsAfter});
+      const next = await load({filters:{...Object.fromEntries(new FormData(filters)),record:new URLSearchParams(location.search).get('record')},after});
       if (!active||sequence!==request) return;
       data = next; loadedAt = new Date().toISOString();
       renderRecords(); renderTrackers();
-      const discoveries=root.querySelector('#discoveries');discoveries.replaceChildren(node('p',`${data.jobs.length} pending items on this page.`));
-      for(const job of data.jobs){const item=node('article',null,'record');item.append(link(job.title,job.url),node('p',job.explanation??job.state),node('p',job.state==='parked'?'Reconsider explicitly.':'Retry after due time.'));discoveries.append(item);}
-      for(const [label,cursor,disabled]of [['First page',null,!jobsAfter],['Next page',data.jobsNext,!data.jobsNext]]){
-        const button=node('button',label,'secondary');button.type='button';button.disabled=disabled;button.addEventListener('click',()=>{jobsAfter=cursor;void reload();});discoveries.append(button);
-      }
-      status.textContent = `Data loaded · ${stamp(loadedAt)}. Collection freshness is shown for each source.`;
+      status.textContent = `Data loaded · ${stamp(loadedAt)}. Tracker checking times are shown for each source.`;
       status.classList.add('loaded');
     } catch {
       if (active&&sequence===request) status.textContent = `Could not load Scout data. ${data ? `Showing data loaded ${stamp(loadedAt)}. ` : ''}Use “Refresh data” to try again.`;

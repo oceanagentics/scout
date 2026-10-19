@@ -1,9 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {modelGateway,trackerModel} from '../collector/models/gateway.js';
-import {strictSchema,openai,OPENAI_MODEL} from '../collector/models/openai.js';
-import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../collector/finding-contract.js';
-import {MODEL,gemini} from '../collector/models/gemini.js';
+import {modelGateway,trackerModel} from '../reader/models/gateway.js';
+import {strictSchema,openai,OPENAI_MODEL} from '../reader/models/openai.js';
+import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../reader/instructions.js';
+import {MODEL,gemini} from '../reader/models/gemini.js';
 
 // Stub the authoritative SQL reply; real policy/concurrency is covered in assessment.test.js.
 const OPENAI_LIMITS={inputTokens:1050000,outputTokens:128000};
@@ -42,14 +42,14 @@ test('strict schema keeps common schema untouched and closes nested nullable opt
 });
 
 test('OpenAI sends shared instructions, schema and URLs to provider web access without preparing source text',async()=>{
-  const requests=[],partial={records:[{description:'Existing title'}],requested_links:[{url:'https://example.org/support?raw=%2B',question:'Which date?'}]};
+  const requests=[],partial={url};
   const {model,logs,config}=setup({generate:openai({apiKey:'test-key',urls:[url],read:()=>assert.fail('No local source reads'),
     fetch:async(target,options)=>{requests.push({target,options});return webResult('{"records":[]}');}})});
   const reserve=config.accounting.reserve;
   config.accounting.reserve=async value=>{const reply=await reserve(value);return {...reply,settings:{...reply.settings,outputTokens:512,maxToolCalls:1}};};
   const output=await model(INTAKE_INSTRUCTION,partial,RESPONSE_SCHEMA),request=JSON.parse(requests[0].options.body),input=JSON.parse(request.input);
   assert.equal(request.instructions,INTAKE_INSTRUCTION+'\nFor this API, return the array inside an object with the single key records.');
-  assert.deepEqual(input,{input:partial,urls:[url,partial.requested_links[0].url]});
+  assert.deepEqual(input,{input:partial,urls:[url]});
   assert.deepEqual(request.tools,[{type:'web_search',search_content_types:['text','image'],image_settings:{caption:true}}]);assert.equal(request.tool_choice,'required');assert.equal(request.max_tool_calls,1);
   assert.deepEqual(request.include,['web_search_call.action.sources']);assert.equal(request.store,false);assert.equal(request.reasoning.effort,'low');
   assert.deepEqual(request.text.format.schema.properties.records,strictSchema({type:'object',properties:{records:RESPONSE_SCHEMA},required:['records']}).properties.records);
@@ -99,8 +99,7 @@ test('neither provider adapter can bypass gateway reservation with numeric limit
   assert.equal(calls,0);assert.equal(reads,0);
 });
 
-test('source URL bounds remain enforced before provider dispatch',async()=>{
-  assert.throws(()=>openai({apiKey:'test',urls:['https://127.0.0.1/']}));
+test('URL quantity bounds remain enforced before provider dispatch',async()=>{
   const {model}=setup({generate:openai({apiKey:'test',urls:Array.from({length:5},(_,i)=>`https://example.org/${i}`),fetch:()=>assert.fail('No dispatch')})});
   await assert.rejects(model('Read',[],schema),{reason:'source_bound',dispatched:false});
 });

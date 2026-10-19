@@ -1,10 +1,20 @@
 [functions.scout-collect-hsa]
 verify_jwt = false
 entrypoint = "./functions/scout-collect-hsa/index.ts"
-import_map = "./functions/scout-collect-hsa/deno.json"
+import_map = "./functions/scout-reader/deno.json"
 
 # Feed requests authenticate with a secret URL; all management actions verify user JWTs.
 [functions.scout-calendar]
 verify_jwt = false
 entrypoint = "./functions/scout-calendar/index.ts"
-import_map = "./functions/scout-collect-hsa/deno.json"
+import_map = "./functions/scout-reader/deno.json"
+
+[functions.scout-reader]
+verify_jwt = false
+entrypoint = "./functions/scout-reader/index.ts"
+import_map = "./functions/scout-reader/deno.json"
+
+[functions.scout-notify]
+verify_jwt = false
+entrypoint = "./functions/scout-notify/index.ts"
+import_map = "./functions/scout-reader/deno.json"

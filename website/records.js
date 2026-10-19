@@ -22,9 +22,8 @@ export function eventLabel(record) {
 }
 
 export function trackerState(tracker) {
-  const availability = !tracker.url ? 'Unconfigured' : tracker.loop_state ?? (tracker.enabled ? 'Manual collection only' : 'Collector not yet proven');
-  const outcomes = { success: 'Success', no_change: 'No change', partial: 'Partial', failed: 'Failed', quota: 'Quota reached', unsupported: 'Unsupported' };
-  return { availability, outcome: outcomes[tracker.last_outcome] ?? (tracker.last_attempt_at ? 'No completed result' : 'Never collected'),
-    success: tracker.last_success_at ? stamp(tracker.last_success_at) : 'Never' };
+  const availability = !tracker.url?'Unconfigured':!tracker.enabled?'Disabled':tracker.failure_count>=3?'Needs attention':
+    tracker.last_error?'Retry scheduled':tracker.last_checked_at?'Scheduled':'Not checked';
+  return {availability};
 }
 import {DATE_FIELDS,dateLabel} from '../shared/finding-dates.js';

@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@supabase/server/core": "npm:@supabase/server@1.9.0/core",
+    "postgres": "npm:postgres@3.4.9"
+  }
+}

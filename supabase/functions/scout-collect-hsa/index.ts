@@ -1,4 +1,2 @@
-import {hostedHSA} from '../../../collector/hosted.js';
-Deno.serve(request=>hostedHSA(request,{databaseURL:Deno.env.get('SUPABASE_DB_URL'),apiKey:Deno.env.get('SCOUT_GEMINI_API_KEY'),
-  openaiApiKey:Deno.env.get('SCOUT_OPENAI_API_KEY'),
-  webhook:Deno.env.get('SCOUT_SLACK_WEBHOOK_URL')}));
+// Retired when the reader migration is deployed. No legacy read or correction route.
+Deno.serve(()=>Response.json({error:'This endpoint is retired. Use scout-reader.'},{status:410}));

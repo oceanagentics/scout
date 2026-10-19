@@ -8,11 +8,11 @@
     "build": "vite build website",
     "preview": "vite preview website --host 127.0.0.1",
     "test": "node --test",
-    "collect:hsa": "node collector/run.js",
-    "notify": "node slackbot/run.js"
+    "notify": "node slackbot/run.js",
+    "reader": "node diagnostics/run-reader.js"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.18.0"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.117.2",

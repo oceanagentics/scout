@@ -3,11 +3,10 @@ import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {randomUUID} from 'node:crypto';
-import {OPENAI_MODEL} from '../collector/models/openai.js';
-import {MODEL,gemini} from '../collector/models/gemini.js';
-import {database} from '../collector/database.js';
-import {hostedHSA} from '../collector/hosted.js';
-import {trackerModel,modelGateway,modelAccounting} from '../collector/models/gateway.js';
+import {OPENAI_MODEL} from '../reader/models/openai.js';
+import {MODEL,gemini} from '../reader/models/gemini.js';
+import {database} from '../reader/database.js';
+import {trackerModel,modelGateway,modelAccounting} from '../reader/models/gateway.js';
 
 const OPENAI_LIMITS={inputTokens:1050000,outputTokens:128000};
 const geminiModel=options=>modelGateway({task:'diagnostic',routes:{diagnostic:{provider:'gemini'}},
@@ -188,30 +187,5 @@ test('web reservations settle actual tool costs or retain model-capacity estimat
   await raw.query("select * from scout.settle_provider($1,0,0,'unknown','provider_unknown',null,0)",[second]);
   assert.equal(Number((await raw.query('select cost_usd from scout.quota_reservations where id=$1',[second])).rows[0].cost_usd),0.3885);
   await raw.exec('set role authenticated');await assert.rejects(reserveWeb(randomUUID()),{code:'42501'});await raw.exec('reset role');
- }finally{await raw.close();}
-});
-
-test('hosted selected/direct sources save a bounded fallback once, preserve native identity and skip complete/parked work (mock providers/PGlite)',async t=>{
- const raw=await setup();try{
-  await enable(raw);await raw.query('update scout.quota_policy set openai=$1',[manual()]);
-  const tracker=(await raw.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Gateway','https://example.org/list','web','6 hours',true) returning *")).rows[0];
-  const url='https://example.org/6915';await raw.query("insert into scout.source_state(tracker_id,identity,url,native_id,native_ref,due_at) values($1,'cbd:side-event:6915',$2,'6915',$3,now()-interval '1 second')",[tracker.id,url,{api_url:url}]);
-  const counts={gemini:0,openai:0,read:0},secret='sb_secret_scout_test_only',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
-  const connect=()=>({reserve:async()=>({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;},release(){}}),end:async()=>{}});
-  const record={description:'BBNJ Clearing-House workshop: technical design discussion.',type:'event',priority:'high',organizations:[],date:'2026-10-15',starttime:'15:00',timezone:'+02:00'};
-  const options={databaseURL:'mock',env,connect,apiKey:'test',openaiApiKey:'test',read:async()=>{counts.read++;return {url,status:200,headers:{'content-type':'text/html'},body:'<p>PRIVATE SOURCE BODY</p>'};},modelFetch:async(target,options)=>{
-   if(target.includes('googleapis')){counts.gemini++;return Response.json({usageMetadata:{promptTokenCount:100,candidatesTokenCount:10,totalTokenCount:110},
-    candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_ERROR'}]},content:{parts:[{text:'[]'}]}}]});}
-   counts.openai++;const body=JSON.parse(options.body);assert.equal(body.max_output_tokens,OPENAI_LIMITS.outputTokens);assert.equal(JSON.parse(body.input).source.identity,'cbd:side-event:6915');
-   return Response.json({status:'completed',model:OPENAI_MODEL,usage:{input_tokens:100,output_tokens:10},output:[{type:'web_search_call',status:'completed',action:{type:'open_page',url}},{type:'message',content:[{type:'output_text',text:JSON.stringify({records:[record]})}]}]});
-  }};
-  const run=async(query='next=true')=>(await hostedHSA(new Request('https://example.test/collect?'+query,{method:'POST',headers:{apikey:secret}}),options)).json();
-  const first=await run();assert.equal(first.state,'captured');assert.equal(first.reason,undefined);assert.equal(first.improvement,'not_requested');assert.equal(first.usage.generations,2);assert.deepEqual(counts,{gemini:1,openai:1,read:0});
-  const saved=(await raw.query('select * from scout.records')).rows[0];assert.equal(saved.details.start.utc,'2026-10-15T13:00:00.000Z');assert.ok(!JSON.stringify(saved).includes('PRIVATE SOURCE'));
-  assert.deepEqual((await raw.query('select provider from scout.quota_reservations order by reserved_at')).rows.map(r=>r.provider),['gemini','openai']);
-  await raw.exec("update scout.source_state set state='complete',due_at=now()-interval '1 second'");assert.equal((await run('tracker_id='+tracker.id+'&source_url='+encodeURIComponent(url))).state,'complete');
-  await raw.exec("update scout.source_state set state='parked',reason='research_exhausted',due_at=now()-interval '1 second'");assert.equal((await run()).state,'parked');
-  assert.deepEqual(counts,{gemini:1,openai:1,read:0});assert.equal((await raw.query('select count(*)::int n from scout.source_state')).rows[0].n,1);assert.equal((await raw.query('select version from scout.records')).rows[0].version,saved.version);
-  t.diagnostic(JSON.stringify({mocked:true,calls:counts,cost:first.cost,estimated_spent_usd:(await raw.query('select openai_spent_usd from scout.quota_policy')).rows[0].openai_spent_usd}));
  }finally{await raw.close();}
 });

@@ -9,9 +9,9 @@ Recurring collection and notifications remain paused pending review. This guide 
 | Location | Purpose |
 | --- | --- |
 | [website/](website/) | Browser interface, sign-in, records, trackers and calendar controls. Includes the HTML entrypoint, public environment settings, Firebase configuration and generated `dist/`. |
-| [collector/](collector/) | Process source URLs, call models, save findings and manage source state. |
-| [collector/models/](collector/models/) | Model gateway, provider adapters and accounted dispatch. |
-| [collector/discovery/](collector/discovery/) | Publisher listing/feed adapters. Kept outside the active hosted URL-intake workflow. |
+| [reader/](reader/) | Check tracker URLs, call models, save findings and update tracker state. |
+| [reader/models/](reader/models/) | Model gateway, provider adapters and accounted dispatch. |
+| [collector/](collector/), including [discovery/](collector/discovery/) | Retained legacy code. Excluded from the reader. |
 | [slackbot/](slackbot/) | Select saved findings, compose messages and track webhook delivery. No conversational Slack listener yet. |
 | [calendar/](calendar/) | Calendar subscription feed and explicit Google Calendar synchronization. |
 | [shared/](shared/) | Pure date and record rules used by multiple features. |
@@ -24,7 +24,7 @@ Read [architecture](docs/architecture.md) for the workflows and storage design, 
 
 ## Local development
 
-Use Node.js 22.12+ and npm. Run from the repository root:
+Use Node.js 22.18+ and npm. Tests import the Supabase TypeScript entrypoint directly. Run from the repository root:
 
 ```sh
 npm ci
@@ -52,11 +52,11 @@ Backend settings stay in the ignored root `.env.local`; [the example](.env.examp
 The following commands contact production and require an explicitly scoped run with verified allowances. They do not start recurring work:
 
 ```sh
-npm run collect:hsa -- --pilot --tracker=UUID --source=https://example.org/event
+npm run reader -- --tracker=UUID
 npm run notify -- --send
 ```
 
-Both require `SCOUT_BACKEND_KEY`. Local model diagnostics also make real, accounted calls; use [diagnostics/README.md](diagnostics/README.md) for their separate behavior and capture exception.
+Omit `--tracker` to check the next due enabled tracker. An explicit tracker ID also retries a tracker that stopped after three unsuccessful attempts. URLs come from the tracker row. Both commands require `SCOUT_BACKEND_KEY`. Local model diagnostics also make real, accounted calls; use [diagnostics/README.md](diagnostics/README.md) for their separate behavior and capture exception.
 
 ## Website deployment
 
@@ -70,4 +70,4 @@ With the Firebase CLI installed and authenticated, run an approved deployment fr
 
 The predeploy hook runs the root npm build and deploys `website/dist/`. It uses Firebase's documented [`PROJECT_DIR` hook variable](https://firebase.google.com/docs/cli#environment_variables). Keep the Scout target, security headers, shared-project capacity and disabled billing intact; verify the released assets after deployment.
 
-Backend releases are separate. [supabase/config.toml](supabase/config.toml) defines the `scout-collect-hsa` and `scout-calendar` entrypoints. Review the affected function graph and versioned migrations before a backend release; a website deployment does not deploy them.
+Backend releases are separate. [supabase/config.toml](supabase/config.toml) defines `scout-reader`, `scout-notify`, `scout-calendar`, and a retirement response for `scout-collect-hsa`. The [architecture](docs/architecture.md) describes the coordinated migration and deployment. A website deployment does not deploy backend functions or SQL.

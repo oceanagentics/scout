@@ -8,7 +8,7 @@ const normalize=value=>value.normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').t
 const fail=reason=>Object.assign(new Error(reason),{reason});
 
 function merge(f,target){
-  const values=structuredClone(f),provenance={...target?.provenance};
+  const values=structuredClone(f);
   for(const key of ['description','canonical_url','organizations',...Object.keys({...target?.details,...f.details}).map(k=>'details.'+k)]){
     const detail=key.startsWith('details.'),name=detail?key.slice(8):key,old=detail?target?.details[name]:target?.[name];
     let value=detail?values.details[name]:values[name];
@@ -16,19 +16,18 @@ function merge(f,target){
       const {utc,...date}={...old,...value};
       try{value=normalizeDate(date);}catch{}
     }
-    if(target?.overrides?.[key]||value==null||Array.isArray(value)&&!value.length)value=old??value;
+    if(value==null||Array.isArray(value)&&!value.length)value=old??value;
     if(detail){if(value!=null)values.details[name]=value;}else values[name]=value;
     if(value!=null&&(!Array.isArray(value)||value.length))delete values.completeness.unknowns[key];
   }
   if(values.details.start&&values.details.end&&dateInterval(values.details.end)[1]<dateInterval(values.details.start)[0]){
-    if(target?.overrides?.['details.end'])values.details.start=target.details.start;
-    else delete values.details.end;
+    delete values.details.end;
     values.completeness.unknowns['details.end']={reason:'conflicting_dates'};
   }
-  // Missing optional fields never erase established facts; protected human fields never change.
+  // Missing optional fields do not erase established facts.
   values.completeness.state=Object.keys(values.completeness.unknowns).length?'provisional':'complete';
   if(!values.priority&&target){values.priority=target.priority;values.relevance=target.relevance;}
-  return {...values,provenance};
+  return values;
 }
 export async function saveFindings(db,source,findings,urls){
   return db.transaction(async tx=>{
@@ -55,23 +54,23 @@ export async function saveFindings(db,source,findings,urls){
       const target=f.id?candidates[0]:candidates.find(r=>r.identities.includes(identity))??(exact.length?exact[0]:similar.length===1?similar[0]:sole&&candidates.length===1?candidates[0]:null);
       if(f.id&&!target)continue; // Scheduling research can only update its saved record.
       if(!target&&candidates.length&&sole){counts.ambiguous++;continue;}
-      const values=merge(f.id?{...target,details:{...target.details,...f.details},completeness:structuredClone(target.completeness)}:f,target),keys=['kind','description','canonical_url','organizations','details','provenance','completeness','priority','relevance'];
+      const values=merge(f.id?{...target,details:{...target.details,...f.details},completeness:structuredClone(target.completeness)}:f,target),keys=['kind','description','canonical_url','organizations','details','completeness','priority','relevance'];
       const sources=new Map((target?.sources??[]).map(s=>[s.url,s]));
       for(const url of f.id?f.urls:urls)if(!sources.has(url))sources.set(url,{url,tracker_id:source.tracker_id,relationship:url===source.url?'primary':'support'});
       values.sources=[...sources.values()];
       values.identities=[...new Set([...(target?.identities??[]),identity])];
-      const changed=!target||keys.filter(k=>k!=='provenance').some(k=>!sameClaim(target[k],values[k]));
+      const changed=!target||keys.some(k=>!sameClaim(target[k],values[k]));
       keys.push('sources','identities');
       let record=target;
       if(changed||!sameClaim(target.sources,values.sources)||!sameClaim(target.identities,values.identities)){
         const params=keys.map(k=>values[k]);
         if(Buffer.byteLength(JSON.stringify(params))>12288){counts.ambiguous++;continue;}
-        record=target?(await tx.query(`update scout.records set kind=$3,description=$4,canonical_url=$5,organizations=$6,details=$7,provenance=$8,
-          completeness=$9,priority=$10,relevance=$11,sources=$12,identities=array(select jsonb_array_elements_text($13::jsonb)),
-          version=version+$14,accepted_version=case when $14=0 then accepted_version when $10::text is null then null else version+1 end,
-          updated_at=case when $14=0 then updated_at else clock_timestamp() end where id=$1 and version=$2 returning *`,[target.id,target.version,...params,Number(changed)])).rows[0]
+        record=target?(await tx.query(`update scout.records set kind=$3,description=$4,canonical_url=$5,organizations=$6,details=$7,
+          completeness=$8,priority=$9,relevance=$10,sources=$11,identities=array(select jsonb_array_elements_text($12::jsonb)),
+          version=version+$13,accepted_version=case when $13=0 then accepted_version when $9::text is null then null else version+1 end,
+          updated_at=case when $13=0 then updated_at else clock_timestamp() end where id=$1 and version=$2 returning *`,[target.id,target.version,...params,Number(changed)])).rows[0]
           :(await tx.query(`insert into scout.records(${keys.join(',')},accepted_version)
-            values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,array(select jsonb_array_elements_text($11::jsonb)),case when $8::text is null then null else 1 end) returning *`,params)).rows[0];
+            values($1,$2,$3,$4,$5,$6,$7,$8,$9,array(select jsonb_array_elements_text($10::jsonb)),case when $7::text is null then null else 1 end) returning *`,params)).rows[0];
         if(!record)throw fail('stale_record');
         if(changed)counts[target?'changed':'created']++;
       }
