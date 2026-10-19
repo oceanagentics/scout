@@ -1,6 +1,6 @@
 # Scout architecture
 
-This describes the local reader implementation. The hosted functions are deployed; the production schema and website cutover await Firebase reauthentication. Recurring collection and notifications remain paused.
+The reader, production schema and website were deployed on 19 October 2026. Recurring collection and notifications remain paused.
 
 ## Tracker investigation
 
@@ -29,7 +29,7 @@ Source configuration and current progress live together in `scout.trackers`:
 | Field | Meaning |
 | --- | --- |
 | `next_check_at` | When an enabled tracker becomes eligible again. Success schedules from its cadence. |
-| `last_checked_at` | When the last attempt finished, including failure or budget deferral. |
+| `last_checked_at` | When the last attempt finished, including failure. |
 | `last_error` | Short reason for the latest unsuccessful attempt; cleared on success. |
 | `failure_count` | Attempts since success, including the current claimed attempt. Three stop automatic retries. |
 | `lease_id`, `lease_until` | Temporary ownership of an in-flight check; cleared when finished. |
@@ -42,7 +42,7 @@ There is no stored status enum, permanent completion flag or separate source-sta
 
 [findings.js](../reader/findings.js) converts the model response into records and saves them under a transaction advisory lock. Records have one `description`, no title, overrides or per-field provenance. Correction endpoints and protected-field merging are removed, without replacing their metadata elsewhere. Existing ordinary finding values and source URLs remain; correction-specific source labels are removed.
 
-The existing description/source matching heuristics remain temporarily: identity aliases, exact descriptions, word overlap and a sole same-kind source candidate. They can misidentify developments; model-directed lookup is separate work. No record catalog is added to the prompt. Responses are currently limited to eight findings. These limitations are not resolved by this refactor.
+The existing description/source matching heuristics remain temporarily: identity aliases, exact descriptions, word overlap and a sole same-kind source candidate. A live check confirmed that different wording and an index-page URL can duplicate an existing event; the duplicate created by verification was removed. Model-directed lookup is separate work. No record catalog is added to the prompt. Responses are currently limited to eight findings. These limitations are not resolved by this refactor.
 
 Identical findings make no record writes. A substantive change increments the version; adding only source URLs or aliases preserves it. Missing optional fields do not erase existing facts. Dates retain their meaning and precision; missing clocks and timezones remain unknown.
 
@@ -58,16 +58,20 @@ There is no quota-policy table, budget-verification expiry or global policy enab
 - [scout-notify](../supabase/functions/scout-notify/index.ts) calls the existing [Slack workflow](../slackbot/slack.js) for explicitly requested sends. Delivery accounting and uncertain-send protection remain. No notifications are sent during reader checks.
 - [scout-calendar](../supabase/functions/scout-calendar/index.ts) retains the existing private subscription feed and explicit Google Calendar synchronization. It reads saved findings.
 - [diagnostics/run-reader.js](../diagnostics/run-reader.js) launches a hosted check. Its explicit diagnostic mode runs the local reader with in-memory findings and shared model accounting; see [diagnostics instructions](../diagnostics/README.md).
-- [collector/](../collector/), including `discovery/`, is retained for later review/removal. Nothing in the new hosted reader imports it. Legacy database integration tests use the pre-reader schema. The old deployed endpoint becomes HTTP 410 at cutover.
+- [collector/](../collector/), including `discovery/`, is retained for later review/removal. Nothing in the new hosted reader imports it. Legacy database integration tests use the pre-reader schema. The old deployed endpoint returns HTTP 410.
 
 Production stores findings, source URLs and compact current state. Source bodies, prompts, responses and proof trails are not production records. The requested local traffic capture remains confined to diagnostics.
 
 ## Cutover and operating cost
 
-Keep all recurring jobs paused. Apply the description-only migration before `20261019200000_scout_reader.sql`, retire the old function, deploy reader/notification functions and the updated website as a coordinated release. Reinstall [scout-loop.sql](../supabase/scout-loop.sql) afterward; it creates the hourly schedule disabled. Do not run the legacy collector against the new schema.
+The description-only, reader and quota-policy removal migrations are applied in production. The reader, notification and calendar functions and website are deployed. The replacement [scout-loop.sql](../supabase/scout-loop.sql) is installed with its hourly schedule disabled. All four Scout cron jobs remain paused. Do not run the legacy collector against the new schema.
+
+Migration verification confirmed that all 108 existing findings and 101 per-call usage rows retained their facts and values. The removed tables and columns are absent, and no remaining Scout database function references the quota-policy table.
 
 The reader migration drops source-state rows, the backlog function/view, correction columns and the HTTPS-format constraint. It does not convert article URLs into trackers or reconstruct old operational history. It leaves delivery accounting unchanged. The following removal migration drops the quota-policy table; current per-call charges remain in the existing reservation table. Migration guards require paused work, no active source claims or sends, and at most 1,000 records/500 trackers.
 
 Estimated normal activity is one generation, two tracker-row mutations and only changed/new finding writes, plus existing quota accounting. Six fixed state columns replace up to 201 source-state rows per tracker. The current scheduler serves at most one tracker per hourly wake: at most 24 checks/48 generations per day if explicitly enabled. A faster cadence may therefore wait longer when many trackers are due. Manual requests also consume provider allowances.
 
 Local PGlite tests with mocked providers measured 26 counted SQL statements and seven row mutations for a fallback check saving one finding. A one-generation repeat measured 17 statements and four mutations (two tracker and two accounting writes), with no finding write. These tests do not prove live extraction accuracy or current account capacity. Measure one real tracker check before enabling unattended work.
+
+Production verification used two Gemini generations with 23,303 input tokens and 474 output tokens, with no fallback. The first tracker returned no findings; the HUB Ocean tracker saved four, including the duplicate noted above. Three new findings remain, with descriptions, dates and local times checked against the publisher's calendar. The two checks counted 40 SQL statements and 12 row mutations, plus 64 expired accounting-row deletions. Both tracker leases cleared and all recurring jobs stayed disabled. This verifies the live pipeline, not complete retrieval or reliable matching; recurring operation still needs review.
