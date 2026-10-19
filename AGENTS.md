@@ -1,5 +1,19 @@
 # Scout engineering constraints
 
+## Design for the system we need now
+
+- This system is under construction. Existing code, records, interfaces, and matching behavior are not automatically compatibility requirements. Preserve them only when explicitly required.
+- Do not invent requirements such as extensibility, migration support, fallback behavior, or compatibility. Identify the concrete user requirement before designing around one.
+- Consider solutions in this order: remove unnecessary behavior, change configuration, use an existing capability, modify existing code, add a new component.
+- Fix responsibilities at their owner. If one field serves incompatible purposes, reconsider that design before adding translation layers to accommodate it.
+- Do not generalize from one exceptional source into a framework. Prove the smallest solution on the actual case first.
+- Replace obsolete behavior rather than maintaining parallel paths unless both are explicitly needed.
+- Before proposing additional machinery, explain what simpler approach was considered, what observed limitation prevents it from working, and what maintenance the proposal introduces.
+
+**Existing behavior is evidence about the implementation, not evidence of a requirement.**
+
+## Operational constraints
+
 - Do not add trial expirations or lifetime-use allowances to working features unless the user explicitly requests them.
 - Scout saves useful findings, source URLs and minimal operational state. Read source bodies and model traffic in memory, then discard them. Do not persist captures, prepared documents, prompts, responses, quoted proof trails or operation reports.
 - Work within the existing $0/month stack and shared project allowances. Before changing persistence or recurring work, estimate model calls, SQL statements/row mutations, retained bytes and daily activity; measure them before unattended operation. Actual account quotas and usage take precedence over public plan ceilings.
