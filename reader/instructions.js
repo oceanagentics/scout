@@ -62,7 +62,6 @@ description, type, priority, organizations, date, starttime, timezone and deadli
 Return [] when the page contains no developments.`;
 export const RESPONSE_SCHEMA={
   type:'array',
-  maxItems:8,
   items:{
     type:'object',
     properties:{

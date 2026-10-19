@@ -65,6 +65,23 @@ test('failed and crashed attempts stop at three, explicit retry works',async t=>
   assert.equal((await intake(db,{modelFor:failure})).state,'idle');assert.equal(calls,3);
 });
 
+test('all returned findings and their text/organizations survive without content or SQL caps',async t=>{
+  const raw=await setup(t),tr=await tracker(raw);
+  const records=Array.from({length:12},(_,i)=>({...event,description:'Development '+String.fromCharCode(65+i)}));
+  records[0].description='A complete description '+ 'details '.repeat(50).trim();
+  records[0].organizations=Array.from({length:15},(_,i)=>'Organization '+i);
+  const db=database(driver(raw));
+  // Earlier SQL work in the same invocation must not prevent a complete save.
+  await db.query('select $1::text payload',['x'.repeat(270000)]);
+  for(let i=0;i<97;i++)await db.query('select 1');
+  const saved=await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer(records)});
+  assert.equal(saved.created,12);
+  const stored=(await raw.query('select description,organizations from scout.records')).rows;
+  assert.equal(stored.length,12);
+  const full=stored.find(r=>r.description===records[0].description);
+  assert.equal(full.organizations.length,15);
+});
+
 test('multiple developments retain IDs, revised facts update once, and missing dates do not start another model pass',async t=>{
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let calls=0;
   const records=[event,{...event,description:'Treaty ratification',type:'treaty_status',date:'2026-09-01'},{...event,description:'Implementation report',type:'announcement',date:null}];
@@ -104,7 +121,7 @@ test('finding failure rolls back the finding and successful tracker completion t
   const state=(await raw.query('select * from scout.trackers')).rows[0];assert.equal(state.failure_count,1);assert.equal(state.last_error,'database_operation');
 });
 
-test('hosted reader works without quota policy and retains bounded fallback and per-call accounting',async t=>{
+test('hosted reader works without quota policy and retains finite fallback without model accounting',async t=>{
   const raw=await setup(t),tr=await tracker(raw);let gemini=0,openai=0;
   const config={...options(raw),openaiApiKey:'test',modelFetch:async(url,init)=>{
     const body=JSON.parse(init.body);
@@ -124,8 +141,8 @@ test('hosted reader works without quota policy and retains bounded fallback and 
     usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:1000,candidatesTokenCount:300,totalTokenCount:1700},
     candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:tr.url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
       content:{parts:[{text:JSON.stringify([event])}]}}]})})).json();
-  assert.equal(repeat.usage.generations,1);assert.equal(repeat.created,0);assert.equal(repeat.changed,0);
-  t.diagnostic(JSON.stringify({mocked_providers:true,real_local_sql:true,fallback:saved.cost,primary_repeat:repeat.cost,usage:saved.usage}));
+  assert.equal(repeat.diagnostics.attempts.length,1);assert.equal(repeat.created,0);assert.equal(repeat.changed,0);
+  t.diagnostic(JSON.stringify({mocked_providers:true,real_local_sql:true,fallback:saved.cost,primary_repeat:repeat.cost,attempts:saved.diagnostics.attempts.length}));
 });
 
 test('reader migration removes source state and correction metadata, preserves findings/accounting, and restricts state writes',async t=>{

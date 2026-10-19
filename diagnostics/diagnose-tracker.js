@@ -57,7 +57,7 @@ export async function diagnoseTracker({tracker,env,provider,ledger=managementDat
       [selected.id,selected.name,selected.url,selected.collector,selected.cadence]);
     traffic=captureTraffic(output,{fetch:send,secrets:[env.GEMINI_API_KEY,env.SCOUT_OPENAI_API_KEY,env.SUPABASE_ACCESS_TOKEN]});
     const db=database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
-    const result=await intake(db,{trackerId:tracker,modelFor:source=>trackerModel({source,ledger,provider,
+    const result=await intake(db,{trackerId:tracker,modelFor:source=>trackerModel({source,provider,
       apiKey:env.GEMINI_API_KEY,openaiApiKey:env.SCOUT_OPENAI_API_KEY,fetch:traffic.fetch})});
     const records=(await raw.query('select id,version,description,details,sources from scout.records order by id')).rows;
     return {traffic_file:output,result,records,cost:db.metrics};

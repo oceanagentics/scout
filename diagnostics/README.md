@@ -1,7 +1,7 @@
 # Local model diagnostics
 
-Scout's normal diagnostics return provider/HTTP status, sanitized errors, token
-counts, retrieval URLs and search counts. They do not retain raw model replies.
+Scout's normal diagnostics return provider/HTTP status, sanitized errors,
+retrieval URLs and search counts. They do not retain raw model replies.
 
 To inspect one tracker investigation locally:
 
@@ -26,11 +26,10 @@ jq 'select(.direction == "response") | {id, status, body: (.body | fromjson? // 
 ```
 
 The URL comes from the tracker row. Findings and tracker checking state exist only in an in-memory database and are discarded
-after the result is printed. Shared production quota reservations/settlements
-still account for actual calls. Provider account limits apply; this command
-never starts scheduled collection or notifications.
-It retains the existing two-generation limit and provider tool limits.
-Capture adds no model calls or SQL writes. Only the local traffic file persists.
+after the result is printed. The shared database receives only the tracker read; model calls make no SQL writes.
+Actual provider limits, request timeouts and one optional fallback apply. This
+command never starts scheduled collection or notifications. Only the local
+traffic file persists.
 
 The capture exception was explicitly requested for local diagnosis. Keep this
 module outside hosted/browser import graphs; do not add a production capture flag

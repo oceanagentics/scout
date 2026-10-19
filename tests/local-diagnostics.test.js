@@ -41,14 +41,12 @@ test('local response capture is bounded without truncating the response consumed
   const response=(await lines(path))[1];assert.equal(response.truncated,true);assert.equal(Buffer.byteLength(response.body),131072);
 });
 
-test('local tracker diagnostic captures one model investigation with only quota writes shared remotely',async t=>{
+test('local tracker diagnostic captures one model investigation with only a tracker read shared remotely',async t=>{
   const path=await output(t),tracker='11111111-1111-4111-8111-111111111111',source='https://example.org/event';
   let generations=0;const sql=[];
   const ledger={query:async(q,p)=>{
     sql.push(q);
     if(q.startsWith('select id,name'))return {rows:[{id:tracker,name:'Diagnostic tracker',url:source,collector:'web',cadence:'6 hours'}]};
-    if(q.includes('reserve_provider'))return {rows:[{allowed:true,remaining_attempts:2-sql.filter(v=>v.includes('reserve_provider')).length,cost_usd:0,settings:{model:'gemini-3.5-flash-lite',inputTokens:60000,outputTokens:8192,inputBytes:24000,outputBytes:131072,maxToolCalls:0,deadline:new Date(Date.now()+40000).toISOString()}}]};
-    if(q.includes('settle_provider'))return {rows:[{settled:true}]};
     assert.fail('Unexpected shared SQL: '+q);
   }};
   const result=await diagnoseTracker({tracker,output:path,env:{GEMINI_API_KEY:'gemini-key'},ledger,fetch:async(url,request)=>{
@@ -63,14 +61,5 @@ test('local tracker diagnostic captures one model investigation with only quota 
   assert.equal(requests.length,1);assert.equal(responses.length,1);
   assert.match(requests[0].body,/responseJsonSchema/);
   assert.match(responses[0].body,/urlContextMetadata/);
-  assert.equal(sql.filter(q=>q.includes('reserve_provider')).length,1);assert.equal(sql.filter(q=>q.includes('settle_provider')).length,1);
-});
-
-test('diagnostic delegates denial to shared admission before any provider HTTP',async t=>{
-  const path=await output(t),sql=[];
-  const result=await diagnoseTracker({tracker:'11111111-1111-4111-8111-111111111111',env:{},output:path,
-    ledger:{query:async(q)=>{sql.push(q);return {rows:[q.includes('reserve_provider')?{allowed:false,reason:'quota'}:
-      {id:'11111111-1111-4111-8111-111111111111',name:'Diagnostic',url:'https://example.org',collector:'web',cadence:'6 hours'}]};}},fetch:()=>assert.fail('No HTTP')});
-  assert.equal(result.result.reason,'quota');assert.equal(result.result.usage.generations,0);
-  assert.equal(sql.filter(q=>q.includes('reserve_provider')).length,1);assert.ok(!sql.some(q=>q.includes('verified_until')));
+  assert.equal(sql.length,1);assert.ok(sql[0].startsWith('select id,name'));
 });

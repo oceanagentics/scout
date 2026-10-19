@@ -1,12 +1,11 @@
 import {Buffer} from 'node:buffer';
 
-// Numeric counters only, bounded per invocation. No parameters or results are retained.
+// Numeric counters only. No parameters or results are retained.
 export function database(sql,inTransaction=false,metrics={statements:0,mutations:0,submitted_bytes:0,result_bytes:0}){
   const db={
     metrics,
     async query(query,params=[]){
       const bytes=Buffer.byteLength(query)+Buffer.byteLength(JSON.stringify(params));
-      if(query.trim().toLowerCase()!=='rollback'&&(metrics.statements>=96||metrics.submitted_bytes+bytes>262144))throw new Error('sql_bound');
       metrics.statements++;metrics.submitted_bytes+=bytes;
       try{
         const rows=await sql.unsafe(query,params);

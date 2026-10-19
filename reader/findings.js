@@ -1,14 +1,13 @@
 import {createHash} from 'node:crypto';
-import {Buffer} from 'node:buffer';
 import {DATE_FIELDS,normalizeDate,dateInterval} from '../shared/finding-dates.js';
 
 const sameClaim=(a,b)=>JSON.stringify(a,sort)===JSON.stringify(b,sort);
 function sort(_k,v){return v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v;}
-const text=(v,n)=>typeof v==='string'?v.toWellFormed().replace(/\s+/g,' ').trim().slice(0,n).toWellFormed():null;
+const text=v=>typeof v==='string'?v.toWellFormed().replace(/\s+/g,' ').trim():null;
 
 // Keep the model's flat response separate from Scout's stored record shape.
 export function normalizeFinding(raw,url){
-  const description=text(raw?.description,280);
+  const description=text(raw?.description);
   if(!description)return null;
   const kind=['event','announcement','treaty_status'].includes(raw?.type)?raw.type:'announcement';
   const unknowns={},details={};
@@ -29,8 +28,8 @@ export function normalizeFinding(raw,url){
     try{details.response_due=normalizeDate({value:raw.deadline,precision});}
     catch{unknowns['details.response_due']={reason:'invalid_date'};}
   }
-  const organizations=[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).slice(0,12).flatMap(o=>{
-    const name=text(o,200);return name?[[name.toLowerCase(),{name}]]:[];
+  const organizations=[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).flatMap(o=>{
+    const name=text(o);return name?[[name.toLowerCase(),{name}]]:[];
   })).values()];
   if(!organizations.length)unknowns.organizations={reason:'not_established'};
   if(kind==='event'&&!details.start&&!unknowns['details.start'])unknowns['details.start']={reason:'not_established'};
@@ -99,7 +98,6 @@ export async function saveFindings(tx,tracker,findings){
     let record=target;
     if(changed||!sameClaim(target.sources,values.sources)||!sameClaim(target.identities,values.identities)){
       const params=keys.map(k=>values[k]);
-      if(Buffer.byteLength(JSON.stringify(params))>12288){counts.ambiguous++;continue;}
       record=target?(await tx.query(`update scout.records set kind=$3,description=$4,canonical_url=$5,organizations=$6,details=$7,
         completeness=$8,priority=$9,relevance=$10,sources=$11,identities=array(select jsonb_array_elements_text($12::jsonb)),
         version=version+$13,accepted_version=case when $13=0 then accepted_version when $9::text is null then null else version+1 end,

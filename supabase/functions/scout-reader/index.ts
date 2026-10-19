@@ -19,11 +19,10 @@ export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,env,
       types:{json:{to:114,from:[114,3802],parse:JSON.parse,serialize:value=>typeof value==='string'?value:JSON.stringify(value)}},
       connection:{application_name:'scout-reader',statement_timeout:5000}});
     session=await sql.reserve();const db=database(session);
-    await db.query('select * from scout.expire_quota()');
-    const result=await intake(db,{trackerId,modelFor:tracker=>trackerModel({source:tracker,ledger:db,apiKey,openaiApiKey,fetch:modelFetch})});
+    const result=await intake(db,{trackerId,modelFor:tracker=>trackerModel({source:tracker,apiKey,openaiApiKey,fetch:modelFetch})});
     return Response.json({...result,cost:db.metrics});
   }catch{
-    return Response.json({error:'Reader interrupted; the tracker lease expires and uncertain quota charges remain accounted.'},{status:500});
+    return Response.json({error:'Reader interrupted; the tracker lease expires before another check can run.'},{status:500});
   }finally{session?.release();await sql?.end({timeout:1}).catch(()=>{});}
 }
 

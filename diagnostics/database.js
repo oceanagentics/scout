@@ -11,8 +11,7 @@ export function managementDatabase(token, send = fetch) {
     const response=await send('https://api.supabase.com/v1/projects/vhlfumeyhkeospnemukq/database/query',{
       method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({query:sql}),signal:AbortSignal.timeout(15000)});
     if (!response.ok) {
-      const text=await response.text();
-      throw new Error(text.includes('Model quota reached')?'Model quota reached':`Shared Scout database returned HTTP ${response.status}`);
+      throw new Error(`Shared Scout database returned HTTP ${response.status}`);
     }
     return {rows:await response.json()};
   }};

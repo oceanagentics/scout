@@ -89,6 +89,6 @@ test('replacement scheduler bounds its own history without a policy table',async
    insert into cron.job_run_details values(1,103,now());select scout.loop_tick('next');`);
   assert.equal((await db.query('select count(*)::int n from cron.job_run_details where jobid=1')).rows[0].n,53);
   assert.deepEqual((await db.query('select runid from cron.job_run_details where jobid=2')).rows,[{runid:2}]);
-  assert.equal((await db.query('select count(*)::int n from scout.quota_reservations')).rows[0].n,0);
+  assert.equal((await db.query("select to_regclass('scout.quota_reservations') name")).rows[0].name,null);
  }finally{await db.close();}
 });
