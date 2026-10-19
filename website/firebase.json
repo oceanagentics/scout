@@ -1,9 +1,9 @@
 {
   "hosting": {
     "target": "scout",
-    "public": "website/dist",
+    "public": "dist",
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
-    "predeploy": ["npm run build"],
+    "predeploy": ["npm --prefix \"$PROJECT_DIR/..\" run build"],
     "headers": [{
       "source": "**",
       "headers": [

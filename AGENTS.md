@@ -7,7 +7,7 @@
 - Store compact current state. Do not reconstruct routine scheduling or health from growing histories, or add a replacement tracing/replay system.
 - Prove the requested user-visible result with a small end-to-end test before expanding scope. Distinguish mocked mechanics, real model correctness and measured database cost. Never label missing live validation a success.
 - Keep changes minimal and remove obsolete paths. New tables, processing stages, jobs and abstractions need a concrete requirement. Preserve existing useful records, human corrections, access controls and unrelated work.
-- Historical README/task notes describe previous implementations; they do not require preserving old architecture. Latest user direction and the current section of refactor-consumption.md control.
+- Latest user direction controls scope. docs/architecture.md describes the current implementation; docs/tasks.md tracks remaining acceptance work. Historical plans and run notes in Git do not require preserving old architecture.
 - Report scope, findings and remaining uncertainty before substantial changes and at meaningful milestones. Stop workers/automations when told to stop; resume only on user direction.
 - Use the existing checkout and one authorized implementation writer. No clones/worktrees. Verify explicitly requested implementation and create one focused commit after review, excluding unrelated dirty work.
 
