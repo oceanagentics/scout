@@ -20,7 +20,7 @@ Recurring collection and notifications remain paused pending review. This guide 
 | [tests/](tests/) | Automated checks and fixtures. |
 | [package.json](package.json), [package-lock.json](package-lock.json) | Commands and pinned dependencies for the whole project. |
 
-Read [architecture](docs/architecture.md) for the workflows and storage design, [tasks](docs/tasks.md) for outstanding work, and [AGENTS.md](AGENTS.md) for engineering constraints. Completed plans and run diaries are available in Git history.
+Read [architecture](docs/architecture.md) for the workflows and storage design, and [AGENTS.md](AGENTS.md) for engineering constraints. Completed plans and run diaries are available in Git history.
 
 ## Local development
 

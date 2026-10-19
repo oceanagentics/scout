@@ -1,6 +1,6 @@
 # Scout architecture
 
-This describes the local implementation as of 19 October 2026. Outstanding acceptance work is in [tasks.md](tasks.md); engineering constraints are in [AGENTS.md](../AGENTS.md). Historical deployment versions and account-usage snapshots are not current operating authority.
+This describes the local implementation as of 19 October 2026. Engineering constraints are in [AGENTS.md](../AGENTS.md). Historical deployment versions and account-usage snapshots are not current operating authority.
 
 ## Source intake
 
@@ -24,7 +24,7 @@ Useful findings are saved before scheduling follow-up. Newly created events miss
 
 [collector/source-state.js](../collector/source-state.js) owns leases, attempt counts and complete/deferred/parked state. Source retries are finite. [collector/finding-contract.js](../collector/finding-contract.js) owns the shared instructions, schemas and normalization; [collector/corrections.js](../collector/corrections.js) handles human corrections.
 
-The intake schema and normalization currently cap a response at eight findings. Same-source identity also depends on normalized description and kind. These are known limitations for long programmes and repeated occurrences, tracked in [source completeness](tasks.md#source-completeness).
+The intake schema and normalization currently cap a response at eight findings. Same-source identity also depends on normalized description and kind. These are known limitations for long programmes and repeated occurrences.
 
 ## Models and accounting
 
