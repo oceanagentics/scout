@@ -69,11 +69,13 @@ td a { font-weight: 600; }
 .data-table th[aria-sort="descending"] button::after { content: ' ↓'; }
 .data-table th button:hover { text-decoration: underline; }
 .data-table :is(.field-name, .field-description, .field-coverage, .field-last_error) { min-width: 320px; white-space: pre-line; }
+.data-table :is(.field-organizations, .field-details, .field-completeness, .field-relevance, .field-sources, .field-identities) { min-width: 320px; }
 .data-table th:first-child, .data-table td:first-child { position: sticky; left: 0; background: #fff; box-shadow: 5px 0 8px -5px #18383933; }
 .data-table td:first-child { z-index: 1; }
 .data-table th:first-child { z-index: 3; background: #e8eee8; }
 .data-table .field-name { font-weight: 600; }
 .data-table .field-value { max-height: 10rem; overflow: auto; white-space: pre-wrap; }
+.data-table pre.field-value { margin: 0; }
 .data-table .actions { margin: 0; flex-direction: column; align-items: flex-start; gap: 8px; }
 .data-table details { margin: 0; padding: 0; border: 0; }
 .source-dialog { width: min(760px, calc(100% - 32px)); max-height: calc(100dvh - 32px); padding: 24px; border: 1px solid #b4c7be; border-radius: 12px; color: inherit; background: #fff; overflow: auto; }

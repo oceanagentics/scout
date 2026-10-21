@@ -3,12 +3,9 @@ import { sourceLink,eventTiming,orderRecords } from '../shared/records.js';
 import {findingInterval,dateLabel} from '../shared/finding-dates.js';
 
 const RECORD_FIELDS = [
-  ['event_url', 'Source page'], ['registration_url', 'Registration URL'],
-  ['organization', 'Organization'], ['description', 'Description'], ['kind', 'Type'], ['priority','Priority'],
-  ['priority_reason','Priority reason'], ['location', 'Location'], ['status', 'Status'],
-  ['starts_at', 'Start / publication / action date'], ['ends_at', 'End / effective date'],
-  ['completeness','Completeness'], ['version','Record version'], ['accepted_version','Accepted version'], ['checked_at','Checked at'],
-  ['updated_at', 'Updated at (UTC)'], ['id', 'ID'],
+  'id', 'version', 'accepted_version', 'discovered_at', 'updated_at', 'last_communicated_at',
+  'kind', 'priority', 'description', 'canonical_url', 'organizations', 'details',
+  'completeness', 'relevance', 'date_span', 'sources', 'identities',
 ];
 const TRACKER_FIELDS = [
   ['name','Name'], ['url','URL'], ['coverage','Coverage'], ['cadence','Cadence'], ['enabled','Enabled'],
@@ -99,12 +96,12 @@ export function mountDashboard(root, load) {
       const table = node('table', null, 'data-table');
       table.append(node('caption', 'Record fields and sources', 'visually-hidden'));
       const head = node('thead'), row = node('tr');
-      const sort = sorts.records??{ field: values.order==='date'?'starts_at':'priority', direction: 'ascending' };
-      for (const [field, label] of [...RECORD_FIELDS, ['sources', 'Sources']]) {
+      const sort = sorts.records??{ field: values.order==='date'?'date_span':'priority', direction: 'ascending' };
+      for (const field of RECORD_FIELDS) {
         const heading = node('th'); heading.scope = 'col'; row.append(heading);
-        const button = node('button', label); button.type = 'button'; button.dataset.sort = field; heading.append(button);
+        const button = node('button', field); button.type = 'button'; button.dataset.sort = field; heading.append(button);
         if (sort.field===field) heading.setAttribute('aria-sort',sort.direction);
-        button.title = 'Sort this page by '+label.toLowerCase();
+        button.title = 'Sort this page by '+field;
       }
       head.append(row); table.append(head);
       body = node('tbody'); table.append(body); recordList.append(table);
@@ -113,10 +110,13 @@ export function mountDashboard(root, load) {
     for (const record of records) {
       const article = node(tableView ? 'tr' : 'article', null, 'record');
       if (tableView) {
-        for (const [field] of RECORD_FIELDS) {
+        for (const field of RECORD_FIELDS) {
           const value = record[field], cell = node('td', null, `field-${field}`);
           if (field.endsWith('_url') && value) cell.append(link(value, value));
-          else cell.textContent = fieldLabel(record,field);
+          else if (value !== null && typeof value === 'object') {
+            const text = node('pre', JSON.stringify(value, null, 2), 'field-value'); text.tabIndex = 0; cell.append(text);
+          }
+          else cell.textContent = String(value);
           if (cell.textContent.length > 240 && field === 'description') {
             const text = node('div', cell.textContent, 'field-value'); text.tabIndex = 0; cell.replaceChildren(text);
           }
@@ -162,7 +162,7 @@ export function mountDashboard(root, load) {
       if (!tableView && sourceLink(record.registration_url)) actions.append(link(record.status === 'cancelled' ? 'Original registration' : 'Registration', record.registration_url));
       if (!tableView && sourceLink(record.event_url) && record.event_url !== record.registration_url) actions.append(link('Source page', record.event_url));
       if (tableView) {
-        const sources = node('td'); sources.append(sourcesButton); article.append(sources);
+        article.querySelector('.field-sources').append(sourcesButton);
       } else article.append(actions, sourcesButton);
       body.append(article);
     }
@@ -226,7 +226,7 @@ export function mountDashboard(root, load) {
       const button = event.target.closest('button[data-sort]');
       if (!button) return;
       const field = button.dataset.sort;
-      const previous = sorts[group]??{ field: filters.elements.order.value==='date'?'starts_at':'priority', direction: 'ascending' };
+      const previous = sorts[group]??{ field: filters.elements.order.value==='date'?'date_span':'priority', direction: 'ascending' };
       sorts[group] = { field, direction: previous.field===field&&previous.direction==='ascending'?'descending':'ascending' };
       if (group==='records') {
         const option = filters.querySelector('[value="column"]'); option.hidden = false;
