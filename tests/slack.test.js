@@ -12,23 +12,19 @@ async function database(){
  for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort())await db.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
  await db.exec(await readFile(new URL('../supabase/seeds/trackers.sql',import.meta.url),'utf8'));return db;
 }
-async function seed(db,kind='announcement',details={}){
- const tracker=(await db.query('select id from scout.trackers limit 1')).rows[0].id;
- const record=(await db.query("insert into scout.records(kind,description,priority,details,accepted_version,relevance) values($1,'Technical BBNJ ChM standards','high',$2,1,$3) returning id",[kind,details,{state:'assessed',reason:'Technical implementation.'}])).rows[0].id;
- await db.query("update scout.records set sources=$2 where id=$1",[record,[{url:'https://example.org/standards',tracker_id:tracker,relationship:'source'}]]);
- return record;
+async function seed(db){
+ return (await db.query("insert into scout.records(type,description,priority,sources) values('announcement','Technical BBNJ ChM standards','high',array['https://example.org/standards']) returning id")).rows[0].id;
 }
 const now=new Date('2026-10-01T12:00:00Z');
-const select=async(_question,input)=>input.candidates.slice(0,input.kind==='digest'?5:1).map(r=>({id:r.id,summary:'New BBNJ ChM data standards are available.'}));
 
-test('eligibility requires accepted current facts, freshness and applicable upcoming dates',()=>{
- const base={id:'event',kind:'event',priority:'high',version:1,accepted_version:1,relevance:{state:'assessed'},details:{start:{value:'2026-10-03',precision:'day'}},discovered_at:'2026-10-01T00:00:00Z'};
+test('eligibility uses priority, creation time and upcoming dates',()=>{
+ const base={id:'event',type:'event',priority:'high',date:'2026-10-03',modified:['2026-10-01T00:00:00Z']};
  assert.equal(eligibleRecords([base],{now}).length,1);assert.equal(eligibleRecords([base],{kind:'digest',from:'2026-10-01',through:'2026-10-08',now}).length,1);
- for(const change of [{version:2},{accepted_version:null},{relevance:{state:'pending'}},{priority:'low'},{last_communicated_at:'2026-09-01'},{discovered_at:'2026-09-29'},{discovered_at:'2026-10-02'},{details:{...base.details,status:'cancelled'}},{details:{start:{value:'2026-09-30',precision:'day'}}}])
+ for(const change of [{priority:'low'},{priority:null},{modified:['2026-09-29']},{modified:['2026-10-02']},{date:'2026-09-30'}])
    assert.equal(eligibleRecords([{...base,...change}],{now}).length,0);
- for(const details of [{},{start:{value:'2026-09-30',precision:'day'},end:{value:'2026-10-03',precision:'day'}},{start:{value:'2026-11-01',precision:'day'}}])
-   assert.equal(eligibleRecords([{...base,details}],{kind:'digest',from:'2026-10-01',through:'2026-10-08',now}).length,0);
- assert.equal(eligibleRecords([{...base,details:{}}],{now}).length,1,'Useful provisional findings remain eligible for editorial selection');
+ for(const date of [null,'2026-09-30','2026-11-01'])
+   assert.equal(eligibleRecords([{...base,date}],{kind:'digest',from:'2026-10-01',through:'2026-10-08',now}).length,0);
+ assert.equal(eligibleRecords([{...base,date:null}],{now}).length,1);
 });
 
 test('deterministic previews and two durable delivery markers; confirmed and uncertain sends never repeat',async()=>{
@@ -44,15 +40,15 @@ test('deterministic previews and two durable delivery markers; confirmed and unc
   const other=await seed(db);
   const pending=await prepareMessage(db);
   assert.equal((await sendMessage(db,pending,async()=>{throw new Error('Unknown remote outcome');})).status,'unknown');
-  await db.query('update scout.records set version=2,accepted_version=2 where id=$1',[other]);
+  await db.query('update scout.records set modified=array_append(modified,clock_timestamp()) where id=$1',[other]);
   assert.equal((await prepareMessage(db)).payload,null);
-  assert.equal((await db.query('select last_communicated_at from scout.records where id=$1',[id])).rows[0].last_communicated_at,null,'Delivery marker is the durable dedupe; no third record mutation.');
+  assert.equal((await db.query('select cardinality(modified) n from scout.records where id=$1',[id])).rows[0].n,1,'Delivery does not change the record.');
  }finally{await db.close();}
 });
-test('a changed record version invalidates a prepared notification before network dispatch',async()=>{
+test('a changed record timestamp invalidates a prepared notification before network dispatch',async()=>{
  const db=await database();try{
   const id=await seed(db),preview=await prepareMessage(db);
-  await db.query('update scout.records set version=2,accepted_version=2 where id=$1',[id]);
+  await db.query('update scout.records set modified=array_append(modified,clock_timestamp()) where id=$1',[id]);
   await assert.rejects(sendMessage(db,preview,()=>assert.fail('Stale message')),/changed/);
   assert.equal((await db.query('select count(*)::int n from scout.delivery_state')).rows[0].n,0);
  }finally{await db.close();}

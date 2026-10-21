@@ -17,6 +17,6 @@ test('typed dates preserve calendar precision, unknown zones and DST ambiguity',
   for(const time of ['3PM','15:0','24:00','23:59:60'])assert.throws(()=>normalizeDate({value:'2028-02-29',precision:'day',time}));
   for(const zone of ['CEST','UTC+02:00','+24:00'])assert.throws(()=>normalizeDate({value:'2028-02-29',precision:'day',time:'15:00',zone}));
   for(const date of [{value:'0000',precision:'year'},{value:'2028-13',precision:'month'},{value:'2028-02',precision:'day'}])assert.throws(()=>normalizeDate(date));
-  assert.deepEqual(findingInterval({kind:'announcement',details:{published:{value:'2026-03',precision:'month'},effective:{value:'2027',precision:'year'}}}),['2026-03-01','2026-03-31']);
+  assert.deepEqual(findingInterval({type:'announcement',date:'2026-03'}),['2026-03-01','2026-03-31']);
   assert.equal(dateLabel({value:'2026-03',precision:'month'}),'2026-03 · month precision');
 });

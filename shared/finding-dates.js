@@ -39,12 +39,14 @@ export function normalizeDate(date){
   if(matches.length===1)result.utc=new Date(matches[0]).toISOString();
   return result;
 }
-export function findingInterval(record,meaning){
-  const fields=DATE_FIELDS[record.kind];if(!fields)return [null,null];
-  const start=dateInterval(record.details?.[meaning??fields[0]]);
-  if(!start)return [null,null];
-  const end=!meaning&&record.kind==='event'?dateInterval(record.details?.end):null;
-  return [start[0],end?.[1]??start[1]];
+export function recordDate(record){
+  const value=record.date,precision={4:'year',7:'month',10:'day'}[value?.length];
+  if(!dateInterval({value,precision}))return null;
+  return normalizeDate({value,precision,...precision==='day'&&record.starttime?{time:record.starttime,...record.timezone?{zone:record.timezone}:{}}:{}});
+}
+export function findingInterval(record,field='date'){
+  const value=record[field];
+  return dateInterval({value,precision:{4:'year',7:'month',10:'day'}[value?.length]})??[null,null];
 }
 export function dateLabel(date){
   if(!dateInterval(date))return 'Unknown';

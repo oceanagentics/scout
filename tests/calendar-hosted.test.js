@@ -7,23 +7,22 @@ import {hostedCalendar} from '../calendar/hosted.js';
 const user='11111111-1111-4111-8111-111111111111',token='a'.repeat(64);
 const profile={sub:'google-owner',email:'danny@oceanagentics.com',email_verified:true};
 const identity={...profile,iss:'https://accounts.google.com',custom_claims:{hd:'oceanagentics.com'}};
-const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',version:1,updated_at:'2026-10-12T10:00:00Z',kind:'event',
-  description:'Test fixture',organizations:[],canonical_url:'https://example.org/event',
-  details:{start:{value:'2001-10-22',precision:'day'}}};
+const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',modified:['2026-10-12T10:00:00Z'],type:'event',
+  description:'Test fixture',organizations:[],sources:['https://example.org/event'],date:'2001-10-22',starttime:null,timezone:null};
 
 test('hosted calendar with real SQL: access boundaries, expired trial does not block feed or sync',async()=>{
   const db=new PGlite(),queries=[];let signedIn=true,googleEvents=[],googleProfile=profile,calendarFailure;
   // Vault here is a test double for SQL contracts, not a test of production encryption.
   await db.exec(`create role anon;create role authenticated;create role service_role;create schema scout;create schema auth;create schema vault;
     create table auth.identities(user_id uuid,provider text,provider_id text,identity_data jsonb);
-    create table scout.records(id uuid,version int,updated_at timestamptz,kind text,description text,organizations jsonb,details jsonb,canonical_url text);
+    create table scout.records(id uuid,modified timestamptz[],type text,description text,organizations text[],sources text[],date text,starttime text,timezone text);
     create table vault.secrets(id uuid default gen_random_uuid(),name text unique,secret text);
     create view vault.decrypted_secrets as select name,secret as decrypted_secret from vault.secrets;
     create function vault.create_secret(value text,label text) returns uuid language sql as $$ insert into vault.secrets(name,secret) values(label,value) returning id $$;
     create function vault.update_secret(key uuid,value text) returns void language sql as $$ update vault.secrets set secret=value where id=key $$;`);
   await db.exec(await readFile(new URL('../supabase/migrations/20261012220000_scout_calendar.sql',import.meta.url),'utf8'));
   await db.query('insert into auth.identities values($1,$2,$3,$4)',[user,'google',profile.sub,identity]);
-  await db.query('insert into scout.records(id,version,updated_at,kind,description,organizations,canonical_url,details) values($1,$2,$3,$4,$5,$6,$7,$8)',Object.values(record));
+  await db.query('insert into scout.records(id,modified,type,description,organizations,sources,date,starttime,timezone) values($1,$2,$3,$4,$5,$6,$7,$8,$9)',Object.values(record));
   const config={databaseURL:'test',authenticate:async()=>signedIn?{data:{userClaims:{id:user}}}:{error:new Error('Invalid JWT')},
     connect:()=>({reserve:async()=>({unsafe:async(sql,params)=>{
       queries.push(sql);const result=await db.query(sql,params);return Object.assign(result.rows,{count:result.affectedRows});

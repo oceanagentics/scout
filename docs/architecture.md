@@ -1,6 +1,6 @@
 # Scout architecture
 
-The reader, production schema and website were deployed on 19 October 2026. Recurring collection and notifications remain paused.
+The flat record schema and its reader, website, notification and calendar consumers were deployed on 21 October 2026. Recurring collection and notifications remain paused.
 
 ## Tracker investigation
 
@@ -40,11 +40,27 @@ There is no stored status enum, permanent completion flag or separate source-sta
 
 ## Findings and model calls
 
-[findings.js](../reader/findings.js) converts the model response into records and saves them under a transaction advisory lock. Records have one `description`, no title, overrides or per-field provenance. Correction endpoints and protected-field merging are removed, without replacing their metadata elsewhere. Existing ordinary finding values and source URLs remain; correction-specific source labels are removed.
+[findings.js](../reader/findings.js) validates and saves the model's eight fields directly, under the existing transaction advisory lock. Every record has exactly these columns:
 
-The existing description/source matching heuristics remain temporarily: identity aliases, exact descriptions, word overlap and a sole same-kind source candidate. A live check confirmed that different wording and an index-page URL can duplicate an existing event; the duplicate created by verification was removed. Model-directed lookup is separate work. No record catalog is added to the prompt. All returned findings, descriptions and organizations are normalized without content-count or text-length truncation.
+| Field | Stored value |
+| --- | --- |
+| `id` | UUID |
+| `description` | Nonempty text |
+| `type` | event, announcement, treaty_status, or null |
+| `priority` | high, normal, low, or null |
+| `organizations` | Array of organization name strings |
+| `deadline`, `date` | A YYYY-MM-DD, YYYY-MM or YYYY string, or null |
+| `starttime`, `timezone` | Scalar strings or null |
+| `sources` | Array of URLs supplied to the model |
+| `modified` | Array of UTC timestamps: creation, then saved changes |
 
-Identical findings make no record writes. A substantive change increments the version; adding only source URLs or aliases preserves it. Missing optional fields do not erase existing facts. Dates retain their meaning and precision; missing clocks and timezones remain unknown.
+Dates stay as text to preserve partial dates. Calendar bounds and UTC instants are computed when needed; they are not stored fields. No title, kind, details, date_span, completeness, relevance, versions, identity aliases, overrides or provenance remain on records.
+
+Identical findings make no record writes. Each saved change, including an additional source URL, appends one timestamp to `modified`. Missing optional values do not erase established facts. The migration preserves the known creation and latest-change timestamps; it does not reconstruct missing historical updates. Legacy source and canonical URLs, including registration links, are flattened and deduplicated.
+
+Identity-key matching is removed. Existing description/source candidate lookup, exact descriptions, word overlap and sole same-type source selection remain pending a separate matching decision; no new matching system is introduced. The existing heuristic can still produce duplicates or associate findings incorrectly. All returned findings, descriptions and organizations are handled without content-count or text-length truncation.
+
+The findings RPC returns only these 11 columns. It accepts `p_type`; organization filtering uses name arrays, and date filtering selects `date` or `deadline`. RLS and server-side Workspace access checks remain.
 
 [The model gateway](../reader/models/gateway.js) makes one Gemini attempt and, for eligible failures, one OpenAI fallback. Gemini uses URL Context; OpenAI uses provider web access. The existing request timeouts remain (45 seconds for Gemini, 100 seconds total); provider errors defer the tracker until its retry time. Explicit diagnostic provider selection disables fallback. There is no generic admission dispatcher or database prerequisite for a model call.
 
@@ -55,19 +71,19 @@ The providers enforce their actual context, output and account limits. Scout doe
 ## Other components
 
 - [website/](../website/) displays findings and tracker state. Firebase hosts the static interface; Supabase Auth and RLS protect data. Verified Ocean Agentics Google identities retain reader access and backend-granted admin roles.
-- [scout-notify](../supabase/functions/scout-notify/index.ts) calls the existing [Slack workflow](../slackbot/slack.js) for explicitly requested sends. Delivery accounting and uncertain-send protection remain. No notifications are sent during reader checks.
-- [scout-calendar](../supabase/functions/scout-calendar/index.ts) retains the existing private subscription feed and explicit Google Calendar synchronization. It reads saved findings.
+- [scout-notify](../supabase/functions/scout-notify/index.ts) calls the existing [Slack workflow](../slackbot/slack.js) for explicitly requested sends. Existing delivery outcomes and uncertain-send protection remain in `delivery_state`; a delivered modification timestamp replaces the former record-version dependency. No notifications are sent during reader checks.
+- [scout-calendar](../supabase/functions/scout-calendar/index.ts) retains the existing private subscription feed and explicit Google Calendar synchronization. It reads the flat saved findings. Exact-day events become labelled date entries, with their supported start time and timezone in the description. No event duration is invented; partial/unknown dates are excluded. Record IDs continue to identify existing calendar entries.
 - [diagnostics/run-reader.js](../diagnostics/run-reader.js) launches a hosted check. Its explicit diagnostic mode reads the tracker once and runs the local reader with in-memory findings, with no shared database writes; see [diagnostics instructions](../diagnostics/README.md).
 - [collector/](../collector/), including `discovery/`, is retained for later review/removal. Nothing in the new hosted reader imports it. Legacy database integration tests use the pre-reader schema. The old deployed endpoint returns HTTP 410.
 
 Production stores findings, source URLs and compact current state. Source bodies, prompts, responses and proof trails are not production records. The requested local traffic capture remains confined to diagnostics.
 
-## Cutover and operating cost
+## Cutover
 
-The description-only, reader and quota-policy removal migrations are applied in production. The reader, notification and calendar functions and website are deployed. The replacement [scout-loop.sql](../supabase/scout-loop.sql) is installed with its hourly schedule disabled. All four Scout cron jobs remain paused. Do not run the legacy collector against the new schema.
+The flat-record migration converts existing findings in one transaction, preserving IDs, supported scalar values, source URLs, known timestamps, access controls and notification delivery outcomes. It removes obsolete record columns and their dependent indexes, the derived reader view and the old JSON date functions. The existing findings RPC is replaced with a direct projection of the flat table.
 
-The reader migration drops source-state rows, the backlog function/view, correction columns and the HTTPS-format constraint. It does not convert article URLs into trackers or reconstruct old operational history. The later model-accounting removal migration drops the model ledger and reservation, settlement and expiry functions. Notification delivery state and useful findings remain intact.
+The migration requires paused jobs, no active tracker lease and no sending notification. Deploy the reader, notification and calendar functions and the website with the schema change during a short maintenance window. Legacy collector files and their historical-schema tests remain outside the active runtime and must not run against the new schema.
 
-The model-accounting removal and content-cap changes are deployed. The updated reader was deployed before applying the removal migration, with recurring work paused. Verification confirmed that all 111 findings, 44 trackers and 12 delivery-state rows retained their values, the model ledger and accounting functions are absent, and all four cron jobs remain paused.
+Keep all four Scout cron jobs paused. Migration verification covers conversion, unchanged saves, updates, access boundaries and all active consumers. This migration does not add cost measurement or model accounting. No Slack messages or Google Calendar synchronization are part of verification.
 
-A normal check needs one generation, or two with fallback, and two tracker-row mutations plus changed/new finding writes. Model calls perform no SQL. SQL measurements remain invocation-local. Recurring collection and notifications stay paused; Bluesky pagination and incremental coverage remain a separate proposal.
+Production conversion preserved all 111 existing records, 44 trackers and 12 delivery outcomes. All 77 tests passed. The explicit pavilion tracker check subsequently created 99 records and changed none, bringing the total to 210; it exercised live model-to-database persistence, but the source blocked independent direct retrieval, so this does not establish the correctness of every returned finding. The deployed findings RPC returns exactly the 11 fields, and the private calendar feed still works.

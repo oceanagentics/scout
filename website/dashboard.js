@@ -1,11 +1,10 @@
-import { KINDS, stamp, eventLabel, trackerState,fieldLabel } from './records.js';
+import { TYPES, stamp, eventLabel,fieldLabel } from './records.js';
 import { sourceLink,eventTiming,orderRecords } from '../shared/records.js';
-import {findingInterval,dateLabel} from '../shared/finding-dates.js';
+import {findingInterval} from '../shared/finding-dates.js';
 
 const RECORD_FIELDS = [
-  'id', 'version', 'accepted_version', 'discovered_at', 'updated_at', 'last_communicated_at',
-  'kind', 'priority', 'description', 'canonical_url', 'organizations', 'details',
-  'completeness', 'relevance', 'date_span', 'sources', 'identities',
+  'id', 'description', 'type', 'priority', 'organizations', 'deadline', 'date',
+  'starttime', 'timezone', 'sources', 'modified',
 ];
 const TRACKER_FIELDS = [
   ['name','Name'], ['url','URL'], ['coverage','Coverage'], ['cadence','Cadence'], ['enabled','Enabled'],
@@ -14,14 +13,13 @@ const TRACKER_FIELDS = [
 ];
 
 export async function loadScout(client,{filters={},after=null}={}) {
-  const params=Object.fromEntries(['kind','priority','from','to','organization','search','meaning','order'].map(key=>['p_'+key,filters[key]||null]));
+  const params=Object.fromEntries(['type','priority','from','to','organization','search','meaning','order'].map(key=>['p_'+key,filters[key]||null]));
   const [page,inventory]=await Promise.all([
     client.rpc('findings',{...params,p_after:after,p_limit:50,p_id:filters.record||null}),
     client.from('trackers').select(TRACKER_FIELDS.map(([field])=>field).join(',')).order('name').limit(500)
   ]);
   if(page.error||inventory.error)throw page.error??inventory.error;
-  const records=page.data.map(r=>({...r,organization:r.organizations.map(o=>o.name).join(' / '),
-    event_url:r.canonical_url,registration_url:r.details.registration_url,location:r.details.location,status:r.details.status}));
+  const records=page.data;
   const last=records.at(-1);
   return {records,trackers:inventory.data,next:records.length===50?{rank:filters.order==='date'?0:({high:0,normal:1,low:2}[last.priority]??3),day:findingInterval(last)[0],id:last.id}:null};
 }
@@ -47,15 +45,15 @@ export function mountDashboard(root, load) {
     <section id="findings" aria-label="Records"><div class="findings-toolbar"><form id="filters" class="filters">
       <label class="search">Search records<input name="search" type="search" placeholder="Description, organization, topic…"></label>
       <div class="kind-filters" role="group" aria-label="Record type">
-        <label><input class="visually-hidden" type="radio" name="kind" value="" checked><span>All</span></label>
-        <label><input class="visually-hidden" type="radio" name="kind" value="announcement"><span>Announcements</span></label>
-        <label><input class="visually-hidden" type="radio" name="kind" value="event"><span>Events</span></label>
-        <label><input class="visually-hidden" type="radio" name="kind" value="treaty_status"><span>Treaty changes</span></label>
+        <label><input class="visually-hidden" type="radio" name="type" value="" checked><span>All</span></label>
+        <label><input class="visually-hidden" type="radio" name="type" value="announcement"><span>Announcements</span></label>
+        <label><input class="visually-hidden" type="radio" name="type" value="event"><span>Events</span></label>
+        <label><input class="visually-hidden" type="radio" name="type" value="treaty_status"><span>Treaty changes</span></label>
       </div>
       <label>Priority<select name="priority"><option value="">All priorities</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option><option value="unassessed">Not yet assessed</option></select></label>
       <label>Organization<input name="organization" placeholder="Exact organization name"></label>
       <label>From<input name="from" type="date"></label><label>Through<input name="to" type="date"></label>
-      <label>Date meaning<select name="meaning"><option value="primary">Start / publication / action</option><option value="effective">Effective date</option></select></label>
+      <label>Date meaning<select name="meaning"><option value="date">date</option><option value="deadline">deadline</option></select></label>
       <label>Order<select name="order"><option value="priority">Priority, then date</option><option value="date">Date</option><option value="column" hidden disabled>Selected column</option></select></label>
       </form><div class="view-switch" role="group" aria-label="Records layout">
         <button type="button" data-layout="table" aria-label="Table view" title="Table view" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M10 9v11"/></svg></button>
@@ -80,7 +78,7 @@ export function mountDashboard(root, load) {
     const tableView = layout === 'table';
     recordList.className = tableView ? 'table-scroll' : 'record-grid';
     if (!data) return;
-    timings = new Map(data.records.filter(record => record.kind === 'event').map(record => [record.id, eventTiming(record)]));
+    timings = new Map(data.records.filter(record => record.type === 'event').map(record => [record.id, eventTiming(record)]));
     const values = Object.fromEntries(new FormData(filters));
     const selected = new URLSearchParams(location.search).get('record');
     const records = sorts.records?orderRecords(data.records,sorts.records):data.records;
@@ -96,7 +94,7 @@ export function mountDashboard(root, load) {
       const table = node('table', null, 'data-table');
       table.append(node('caption', 'Record fields and sources', 'visually-hidden'));
       const head = node('thead'), row = node('tr');
-      const sort = sorts.records??{ field: values.order==='date'?'date_span':'priority', direction: 'ascending' };
+      const sort = sorts.records??{ field: values.order==='date'?'date':'priority', direction: 'ascending' };
       for (const field of RECORD_FIELDS) {
         const heading = node('th'); heading.scope = 'col'; row.append(heading);
         const button = node('button', field); button.type = 'button'; button.dataset.sort = field; heading.append(button);
@@ -106,14 +104,12 @@ export function mountDashboard(root, load) {
       head.append(row); table.append(head);
       body = node('tbody'); table.append(body); recordList.append(table);
     }
-    const trackers = new Map(data.trackers.map(tracker => [tracker.id, tracker]));
     for (const record of records) {
       const article = node(tableView ? 'tr' : 'article', null, 'record');
       if (tableView) {
         for (const field of RECORD_FIELDS) {
           const value = record[field], cell = node('td', null, `field-${field}`);
-          if (field.endsWith('_url') && value) cell.append(link(value, value));
-          else if (value !== null && typeof value === 'object') {
+          if (value !== null && typeof value === 'object') {
             const text = node('pre', JSON.stringify(value, null, 2), 'field-value'); text.tabIndex = 0; cell.append(text);
           }
           else cell.textContent = String(value);
@@ -123,44 +119,23 @@ export function mountDashboard(root, load) {
           article.append(cell);
         }
       } else {
-        article.append(node('p', KINDS[record.kind] || record.kind, 'eyebrow'), node('h3', record.description), node('p', fieldLabel(record,'organization'), 'organization'));
-        article.append(node('p',record.completeness.state),node('p',eventLabel(record),'event-date'));
-        for(const [field,label]of [['effective','Effective'],['response_due','Response due']])if(record.details[field])article.append(node('p',`${label} · ${dateLabel(record.details[field])}`,'event-date'));
-        if (record.kind === 'event') {
-          const badges = node('div', null, 'badges');
-          if (record.status === 'rescheduled') badges.append(node('span', 'Rescheduled', 'badge warning'));
-          badges.append(node('span', eventTiming(record), `badge ${record.status === 'cancelled' ? 'warning' : ''}`));
-          article.append(badges);
-        }
-        article.append(node('p',`${fieldLabel(record,'priority')} · ${fieldLabel(record,'priority_reason')}`));
-        if(record.kind==='event')article.append(node('p',`Location · ${fieldLabel(record,'location')}`));
+        article.append(node('p', TYPES[record.type] || 'Unknown type', 'eyebrow'), node('h3', record.description), node('p', fieldLabel(record,'organizations'), 'organization'));
+        article.append(node('p',eventLabel(record),'event-date'));
+        if(record.deadline)article.append(node('p',`Deadline · ${record.deadline}`,'event-date'));
+        if(record.type==='event')article.append(node('p',eventTiming(record),'badge'));
+        article.append(node('p',fieldLabel(record,'priority')));
       }
       const sourcesButton = node('button', tableView ? 'View sources' : 'Sources & record details', 'secondary'); sourcesButton.type = 'button';
       sourcesButton.addEventListener('click', () => {
-        sourceContent.replaceChildren(node('h3', record.description), node('p', `Record updated · ${stamp(record.updated_at)}`, 'meta'));
-        if (!(record.sources ?? []).length) sourceContent.append(node('p', 'No supporting source links available.', 'hint'));
-        for (const [index, source] of (record.sources ?? []).entries()) {
-          const section = node('section', null, 'source-entry'), fields = node('dl');
-          section.append(node('h3', `Source ${index + 1}`), fields);
-          const tracker = trackers.get(source.tracker_id), state = tracker && trackerState(tracker);
-          for (const [label, value] of [
-            ['Source URL', source.url ? link(source.url, source.url) : 'Unknown'],
-            ['Tracker', tracker?.name || 'Unknown'], ['Relationship', source.relationship || 'Unknown'],
-            ['Published', source.published_at ? stamp(source.published_at) : source.published_on || 'Unknown'],
-            ['Record priority reason', record.relevance?.reason || 'Unknown'], ['Record priority assessed', stamp(record.relevance?.assessed_at)],
-            ['Last checked', stamp(tracker?.last_checked_at)], ['Tracker state', state?.availability || 'Unknown'],
-            ['Collection error', tracker ? tracker.last_error || 'None recorded' : 'Unknown'],
-          ]) {
-            const detail = node('dd'); detail.append(value); fields.append(node('dt', label), detail);
-          }
-          sourceContent.append(section);
+        sourceContent.replaceChildren(node('h3', record.description), node('p', `Modified · ${stamp(record.modified.at(-1))}`, 'meta'));
+        if (!record.sources.length) sourceContent.append(node('p', 'No source URLs available.', 'hint'));
+        for (const source of record.sources) {
+          const section = node('p', null, 'source-entry'); section.append(link(source, source)); sourceContent.append(section);
         }
-        for(const [field,unknown]of Object.entries(record.completeness.unknowns??{}))sourceContent.append(node('p',`${field}: ${unknown.explanation??unknown.reason}`));
         sourceDialog.showModal();
       });
       const actions = node('div', null, 'actions');
-      if (!tableView && sourceLink(record.registration_url)) actions.append(link(record.status === 'cancelled' ? 'Original registration' : 'Registration', record.registration_url));
-      if (!tableView && sourceLink(record.event_url) && record.event_url !== record.registration_url) actions.append(link('Source page', record.event_url));
+      if (!tableView) for(const source of record.sources)if(sourceLink(source))actions.append(link(source,source));
       if (tableView) {
         article.querySelector('.field-sources').append(sourcesButton);
       } else article.append(actions, sourcesButton);
@@ -226,7 +201,7 @@ export function mountDashboard(root, load) {
       const button = event.target.closest('button[data-sort]');
       if (!button) return;
       const field = button.dataset.sort;
-      const previous = sorts[group]??{ field: filters.elements.order.value==='date'?'date_span':'priority', direction: 'ascending' };
+      const previous = sorts[group]??{ field: filters.elements.order.value==='date'?'date':'priority', direction: 'ascending' };
       sorts[group] = { field, direction: previous.field===field&&previous.direction==='ascending'?'descending':'ascending' };
       if (group==='records') {
         const option = filters.querySelector('[value="column"]'); option.hidden = false;
@@ -245,7 +220,7 @@ export function mountDashboard(root, load) {
   root.querySelector('#first-page').addEventListener('click',()=>{after=null;void reload();});
   root.querySelector('#next-page').addEventListener('click',()=>{after=data?.next;void reload();});
   const tick = () => {
-    if (data?.records.some(record => record.kind === 'event' && timings.get(record.id) !== eventTiming(record))) renderRecords();
+    if (data?.records.some(record => record.type === 'event' && timings.get(record.id) !== eventTiming(record))) renderRecords();
   };
   const timer = setInterval(tick, 30000);
   document.addEventListener('visibilitychange', tick);

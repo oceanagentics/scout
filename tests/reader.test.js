@@ -38,8 +38,8 @@ test('tracker URL -> one model investigation -> finding and tracker state; due r
   };
   const first=await intake(db,{modelFor});assert.equal(first.created,1);assert.equal(calls,1);
   const saved=(await raw.query('select * from scout.records')).rows[0];
-  for(const key of ['title','overrides','provenance'])assert.equal(Object.hasOwn(saved,key),false);
-  assert.deepEqual(saved.sources,[{url:tr.url,tracker_id:tr.id,relationship:'primary'}]);
+  for(const key of ['title','overrides','provenance','kind','version','details','date_span','identities','completeness','relevance'])assert.equal(Object.hasOwn(saved,key),false);
+  assert.deepEqual(saved.sources,[tr.url]);
   const state=(await raw.query('select * from scout.trackers')).rows[0];
   assert.equal(state.failure_count,0);assert.equal(state.lease_id,null);assert.equal(state.last_error,null);
   assert.ok(Date.parse(state.next_check_at)-Date.parse(state.last_checked_at)>=21599000);
@@ -92,10 +92,10 @@ test('multiple developments retain IDs, revised facts update once, and missing d
   assert.equal((await run(revised)).changed,1);assert.equal(calls,2);
   const after=(await raw.query('select * from scout.records order by description')).rows;
   assert.deepEqual(after.map(r=>r.id),before.map(r=>r.id));
-  assert.equal(after[0].version,before[0].version+1);assert.equal(after[0].details.start.utc,'2026-10-22T13:30:00.000Z');
+  assert.equal(after[0].modified.length,before[0].modified.length+1);assert.equal(after[0].date,'2026-10-22');assert.equal(after[0].starttime,'13:30');assert.equal(after[0].timezone,'UTC');
   assert.equal((await run(revised)).changed,0);
   await raw.exec('set role service_role');
-  assert.equal((await raw.query("select * from scout.findings(p_kind=>'treaty_status',p_from=>'2026-09-01',p_to=>'2026-09-01')")).rows.length,1);
+  assert.equal((await raw.query("select * from scout.findings(p_type=>'treaty_status',p_from=>'2026-09-01',p_to=>'2026-09-01')")).rows.length,1);
 });
 
 test('live lease excludes overlapping requests; URL changes and expired leases cannot save findings',async t=>{

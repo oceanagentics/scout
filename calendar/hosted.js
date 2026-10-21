@@ -6,7 +6,7 @@ import {calendarFeed} from './feed.js';
 import {googleAccessToken,syncCalendar} from './google.js';
 
 const owner='danny@oceanagentics.com',project='https://vhlfumeyhkeospnemukq.supabase.co';
-const columns='id,version,updated_at,kind,description,organizations,details,canonical_url';
+const columns='id,modified,type,description,organizations,date,starttime,timezone,sources';
 const fail=(message,status=400,code)=>Object.assign(new Error(message),{status,code});
 
 export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,env,connect=postgres,authenticate=verifyAuth,send=fetch}={}){
@@ -38,7 +38,7 @@ export async function hostedCalendar(request,{databaseURL,clientId,clientSecret,
       if(/^\s*(insert|update|delete)/i.test(sql))cost.row_mutations+=Number(rows.count??rows.length);return rows;};
     const secret=async name=>(await query('select decrypted_secret from vault.decrypted_secrets where name=$1',[name]))[0]?.decrypted_secret;
     const records=async()=>{
-      const rows=await query(`select ${columns} from scout.records where kind='event' order by id limit 251`);
+      const rows=await query(`select ${columns} from scout.records where type='event' order by id limit 251`);
       if(rows.length>250)throw fail('Event count exceeds the reviewed calendar limit',503);
       return rows;
     };

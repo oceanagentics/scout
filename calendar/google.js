@@ -1,4 +1,4 @@
-import {normalizeDate,dateInterval,dateLabel} from '../shared/finding-dates.js';
+import {recordDate,dateLabel} from '../shared/finding-dates.js';
 import {sourceLink} from '../shared/records.js';
 
 const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -9,25 +9,18 @@ const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;')
 
 export function calendarEvent(record){
   if(!uuid.test(record.id))throw new Error('Invalid Scout record ID');
-  if(record.kind!=='event'||record.details?.status==='cancelled')return null;
-  const date=value=>value&&normalizeDate(Object.fromEntries(Object.entries(value).filter(([k])=>k!=='utc')));
-  const start=date(record.details?.start),end=date(record.details?.end);
+  if(record.type!=='event')return null;
+  const start=recordDate(record);
   if(start?.precision!=='day')return null;
-  if(end&&(dateInterval(end)[1]<start.value||start.utc&&end.utc&&end.utc<start.utc))throw new Error('Invalid event date range');
-  const last=end?.precision==='day'?end.value:start.value;
-  // Calendar requires an end. Incomplete clocks use an explicitly labelled date entry.
-  const timed=Boolean(start.utc&&end?.utc&&end.utc>start.utc);
-  const timing=timed?[]:[`Calendar date entry; ${start.time?'complete timing unavailable':'time unknown'}.`,
-    'Source start: '+dateLabel(start),...(end?['Source end: '+dateLabel(end)]:['End time unknown.'])];
-  const links=[['Source',record.canonical_url],['Registration',record.details?.registration_url]]
-    .filter(([,url])=>sourceLink(url)).map(([label,url])=>label+': '+sourceLink(url));
+  const timing=['Calendar date entry; end time unknown.', 'Source start: '+dateLabel(start)];
+  const links=record.sources.filter(sourceLink).map(url=>'Source: '+url);
   return {
     summary:'[Scout] '+record.description,
-    description:[record.description,(record.organizations??[]).map(o=>o.name).join('; '),...timing,...links,
+    description:[record.description,record.organizations.join('; '),...timing,...links,
       'Informational event from Scout; registration may be required.',marker(record.id)].filter(Boolean).map(escape).join('\n\n'),
-    location:record.details?.location??'',
-    start:timed?{dateTime:start.utc}:{date:start.value},
-    end:timed?{dateTime:end.utc}:{date:new Date(Date.parse(last+'T00:00:00Z')+86400000).toISOString().slice(0,10)},
+    location:'',
+    start:{date:start.value},
+    end:{date:new Date(Date.parse(start.value+'T00:00:00Z')+86400000).toISOString().slice(0,10)},
     transparency:'transparent',visibility:'default',reminders:{useDefault:false,overrides:[]},
   };
 }

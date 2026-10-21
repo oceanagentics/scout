@@ -59,7 +59,7 @@ export async function diagnoseTracker({tracker,env,provider,ledger=managementDat
     const db=database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
     const result=await intake(db,{trackerId:tracker,modelFor:source=>trackerModel({source,provider,
       apiKey:env.GEMINI_API_KEY,openaiApiKey:env.SCOUT_OPENAI_API_KEY,fetch:traffic.fetch})});
-    const records=(await raw.query('select id,version,description,details,sources from scout.records order by id')).rows;
+    const records=(await raw.query('select * from scout.records order by id')).rows;
     return {traffic_file:output,result,records,cost:db.metrics};
   }finally{traffic?.close();await raw.close();}
 }

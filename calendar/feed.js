@@ -7,14 +7,13 @@ const plain=value=>value.replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAl
 export function calendarFeed(records){
   const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Ocean Agentics//Scout//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH','X-WR-CALNAME:Scout Events'];
   for(const record of records){
-    const cancelled=record.details?.status==='cancelled';
-    const event=calendarEvent(cancelled?{...record,details:{...record.details,status:null}}:record);
+    const event=calendarEvent(record);
     if(!event)continue;
     lines.push('BEGIN:VEVENT','UID:'+record.id+'@scout.oceanagentics.com',
-      'DTSTAMP:'+stamp(record.updated_at),'LAST-MODIFIED:'+stamp(record.updated_at),
-      'SEQUENCE:'+record.version,'SUMMARY:'+text(event.summary),
+      'DTSTAMP:'+stamp(record.modified.at(-1)),'LAST-MODIFIED:'+stamp(record.modified.at(-1)),
+      'SEQUENCE:'+Math.floor(Date.parse(record.modified.at(-1))/1000),'SUMMARY:'+text(event.summary),
       'DESCRIPTION:'+text(plain(event.description)),'LOCATION:'+text(event.location),'TRANSP:TRANSPARENT',
-      'STATUS:'+(cancelled?'CANCELLED':'CONFIRMED'));
+      'STATUS:CONFIRMED');
     for(const [name,value]of [['DTSTART',event.start],['DTEND',event.end]])
       lines.push(value.date?name+';VALUE=DATE:'+value.date.replaceAll('-',''):name+':'+stamp(value.dateTime));
     lines.push('URL:https://bbnj-scout.web.app/?record='+record.id,'END:VEVENT');

@@ -1,10 +1,10 @@
-import {findingInterval} from './finding-dates.js';
+import {findingInterval,recordDate} from './finding-dates.js';
 
 export function orderRecords(records, order='priority') {
   const rank = value => ({high:0,normal:1,low:2})[value]??3;
   if (typeof order==='object') return [...records].sort((a,b)=>{
     const [left,right]=[a,b].map(record=>{
-      const value=order.field==='starts_at'&&record.details?findingInterval(record)[0]:record[order.field];
+      const value=record[order.field];
       return value==null||value===''?null:order.field==='priority'?rank(value):order.field.endsWith('_at')?Date.parse(value)
         :order.field==='sources'?value.length:typeof value==='object'?JSON.stringify(value):value;
     });
@@ -25,11 +25,9 @@ export function sourceLink(value) {
 export const recordDates=record=>findingInterval(record);
 
 export function eventTiming(record, now = new Date()) {
-  if (record.kind !== 'event') return '';
-  if(record.details?.status==='cancelled')return 'Cancelled';
-  const start=record.details?.start,end=record.details?.end,[from,to]=findingInterval(record),today=now.toISOString().slice(0,10);
+  if (record.type !== 'event') return '';
+  const start=recordDate(record),[from,to]=findingInterval(record),today=now.toISOString().slice(0,10);
   if(!from)return 'Date unknown';
-  if(start.utc&&Date.parse(start.utc)>+now)return 'Upcoming';
-  if(start.utc&&end?.utc&&Date.parse(end.utc)>+now)return 'In progress';
-  return from>today?'Upcoming':to>=today&&!start.utc?'Date known · time unknown':'Past / started';
+  if(start.utc)return Date.parse(start.utc)>+now?'Upcoming':'Past / started';
+  return from>today?'Upcoming':to>=today?'Date known · time unknown':'Past / started';
 }

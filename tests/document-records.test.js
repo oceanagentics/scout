@@ -1,40 +1,28 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {normalizeFinding} from '../reader/findings.js';
-test('flat dates retain their meaning for each finding type and preserve supported precision',()=>{
+
+test('model fields stay flat, partial dates survive and organization names remain strings',()=>{
  const f=normalizeFinding({type:'announcement',description:'Brief',date:'2026-03',starttime:'12:00'},'https://example.org/a');
- assert.deepEqual(f.details,{published:{value:'2026-03',precision:'month'}});assert.equal(f.completeness.unknowns['details.published'],undefined);
+ assert.equal(f.date,'2026-03');assert.equal(f.starttime,'12:00');assert.equal(f.timezone,null);
  const event=normalizeFinding({type:'event',description:'Meeting',priority:'normal',organizations:['Ocean Institute','Ocean Institute','Partner'],date:'2026-04-02'},'https://example.org/a');
- assert.deepEqual(event.details.start,{value:'2026-04-02',precision:'day'});
- assert.deepEqual(event.organizations,[{name:'Ocean Institute'},{name:'Partner'}]);
- assert.equal(event.priority,'normal');assert.equal(Object.hasOwn(event,'title'),false);
- assert.deepEqual(event.completeness,{state:'complete',unknowns:{}});
- const treaty=normalizeFinding({type:'treaty_status',description:'Ratification',date:'2026-04-02'},'https://example.org/a');
- assert.deepEqual(treaty.details,{action_date:{value:'2026-04-02',precision:'day'}});assert.equal(treaty.completeness.unknowns['details.action_date'],undefined);
- assert.deepEqual(normalizeFinding({type:'event',description:'Meeting',date:'2026-03'},'https://example.org/a').details.start,{value:'2026-03',precision:'month'});
+ assert.deepEqual(event.organizations,['Ocean Institute','Partner']);assert.equal(event.type,'event');
+ assert.equal(event.priority,'normal');assert.deepEqual(event.sources,['https://example.org/a']);
+ assert.deepEqual(Object.keys(event).sort(),['description','type','priority','organizations','deadline','date','starttime','timezone','sources'].sort());
 });
-test('invalid dates and timezones do not discard the description or a supported local clock',()=>{
+test('invalid dates, clocks and zones remain null without losing the useful description',()=>{
  const f=normalizeFinding({type:'event',description:'Meeting',date:'2026-04-02',starttime:'13:30',timezone:'invalid'},'https://example.org/a');
- assert.deepEqual(f.details.start,{value:'2026-04-02',precision:'day',time:'13:30'});
- assert.equal(f.completeness.unknowns['details.start.zone'].reason,'invalid_timezone');
- const invalid=normalizeFinding({type:'event',description:'Meeting',date:'2026-02-30'},'https://example.org/a');
- assert.equal(invalid.description,'Meeting');assert.equal(invalid.details.start,undefined);
- assert.equal(invalid.completeness.unknowns['details.start'].reason,'invalid_date');
+ assert.equal(f.date,'2026-04-02');assert.equal(f.starttime,'13:30');assert.equal(f.timezone,null);
+ const invalid=normalizeFinding({description:'Meeting',date:'2026-02-30',starttime:'25:30'},'https://example.org/a');
+ assert.equal(invalid.description,'Meeting');assert.equal(invalid.date,null);assert.equal(invalid.starttime,null);assert.equal(invalid.type,null);
 });
-test('submission deadlines remain separate from event starts and never block useful records',()=>{
+test('deadline is an independent scalar for every type',()=>{
  for(const type of ['event','announcement','treaty_status']){
   const input={type,description:'Development',date:'2026-04-02',deadline:'2026-03-01'},f=normalizeFinding(input,'https://example.org/a');
-  assert.deepEqual(f.details.response_due,{value:'2026-03-01',precision:'day'});
-  assert.equal(f.details.start?.value,type==='event'?'2026-04-02':undefined);
+  assert.equal(f.deadline,'2026-03-01');assert.equal(f.date,'2026-04-02');
   for(const deadline of [undefined,null,'2026-02-30']){
    const partial=normalizeFinding({...input,deadline},'https://example.org/a');
-   assert.equal(partial.description,input.description);assert.equal(partial.details.response_due,undefined);
-   assert.equal(partial.details.start?.value,f.details.start?.value);
+   assert.equal(partial.deadline,null);assert.equal(partial.date,f.date);
   }
  }
-});
-
-test('normalization emits one finding description and ignores a supplied title',()=>{
- const finding=normalizeFinding({type:'announcement',description:'Useful description',title:'Duplicate label'},'https://example.org/a');
- assert.equal(finding.description,'Useful description');assert.equal(Object.hasOwn(finding,'title'),false);
 });

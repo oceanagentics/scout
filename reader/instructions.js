@@ -74,7 +74,7 @@ export const RESPONSE_SCHEMA={
       timezone:{type:['string','null']},
       deadline:{type:['string','null']}
     },
-    required:['description','type','priority','organizations','date','starttime','timezone'],
+    required:['description','type','priority','organizations','date','starttime','timezone','deadline'],
     additionalProperties:false
   }
 };

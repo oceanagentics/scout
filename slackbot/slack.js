@@ -5,23 +5,22 @@ export const CHANNEL='C0C5PE21KN1';
 const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('|','%7C');
 
 export async function readRecords(db){
-  return (await db.query(`select r.*,r.relevance->>'reason' priority_reason
-    from scout.records r where accepted_version=version and priority in ('high','normal')
-    and not exists(select 1 from scout.delivery_state d where d.record_id=r.id and (d.version=r.version or d.status in ('sending','unknown')))
-    order by updated_at desc,id limit 100`)).rows;
+  return (await db.query(`select r.*,r.modified::text[] as modified
+    from scout.records r where priority in ('high','normal')
+    and not exists(select 1 from scout.delivery_state d where d.record_id=r.id and (d.modified_at=r.modified[cardinality(r.modified)] or d.status in ('sending','unknown')))
+    order by modified[cardinality(modified)] desc,id limit 100`)).rows;
 }
 
 export function eligibleRecords(records,{kind='findings',from,through,now=new Date()}={}) {
   return orderRecords(records.filter(r=>{
-    if(r.verification_pending||!r.accepted_version||r.accepted_version!==r.version||r.relevance?.state!=='assessed')return false;
     if (kind==='digest') {
-      if (r.kind!=='event'||!['high','normal'].includes(r.priority)||r.details.status==='cancelled') return false;
+      if (r.type!=='event'||!['high','normal'].includes(r.priority)) return false;
       const [start,end]=recordDates(r);
       return !!start&&eventTiming(r,now)==='Upcoming'&&start<=through&&end>=from;
     }
-    const age=now.getTime()-Date.parse(r.discovered_at);
-    return r.priority==='high'&&!r.last_communicated_at&&age>=0&&age<=86400000&&
-      (r.kind!=='event'||!['Cancelled','Past / started','In progress'].includes(eventTiming(r,now)));
+    const age=now.getTime()-Date.parse(r.modified[0]);
+    return r.priority==='high'&&age>=0&&age<=86400000&&
+      (r.type!=='event'||eventTiming(r,now)!=='Past / started');
   }));
 }
 
@@ -35,7 +34,7 @@ export async function prepareMessage(db,{model,kind='findings',from,through,now=
   const records=candidates.slice(0,kind==='digest'?5:1);
   const lines=kind==='digest'?[`Upcoming events · ${from}–${through} UTC`]:[];
   for (const r of records) {
-    const url=(r.sources??[]).map(s=>sourceLink(s.url)).find(Boolean);
+    const url=(r.sources??[]).map(sourceLink).find(Boolean);
     if (!url) throw new Error('Notification requires a supporting source link');
     lines.push(`${escape(r.description)} <${escape(url)}|Read more>`);
   }
@@ -47,17 +46,18 @@ export async function sendMessage(db,preview,post,{now=()=>new Date()}={}) {
   if(now()-Date.parse(preview.prepared_at)>60000)throw new Error('Preview expired');
   await db.transaction(async tx=>{
     for(const r of preview.records){
-      const current=(await tx.query('select * from scout.records where id=$1 and version=$2 and accepted_version=version for update',[r.id,r.version])).rows[0];
-      if(!current||String(current.updated_at)!==String(r.updated_at)||String(current.last_communicated_at)!==String(r.last_communicated_at))throw new Error('Preview changed');
-      const claimed=(await tx.query(`insert into scout.delivery_state(record_id,version,status) values($1,$2,'sending')
-        on conflict(record_id) do update set version=excluded.version,status='sending',at=clock_timestamp()
-        where scout.delivery_state.version<excluded.version and scout.delivery_state.status='sent' returning record_id`,[r.id,r.version])).rows;
+      const modified=r.modified.at(-1);
+      const current=(await tx.query('select id from scout.records where id=$1 and modified[cardinality(modified)]=$2 for update',[r.id,modified])).rows[0];
+      if(!current)throw new Error('Preview changed');
+      const claimed=(await tx.query(`insert into scout.delivery_state(record_id,modified_at,status) values($1,$2,'sending')
+        on conflict(record_id) do update set modified_at=excluded.modified_at,status='sending',at=clock_timestamp()
+        where scout.delivery_state.modified_at<excluded.modified_at and scout.delivery_state.status='sent' returning record_id`,[r.id,modified])).rows;
       if(!claimed.length)throw new Error('Delivery already reserved');
     }
   });
   let status='unknown';
   try{const response=await post(preview.payload);status=response.status===200&&response.body.trim()==='ok'?'sent':response.status>=400&&response.status<500?'failed':'unknown';}catch{}
-  for(const r of preview.records)await db.query('update scout.delivery_state set status=$3,at=clock_timestamp() where record_id=$1 and version=$2 returning record_id',[r.id,r.version,status]);
+  for(const r of preview.records)await db.query('update scout.delivery_state set status=$3,at=clock_timestamp() where record_id=$1 and modified_at=$2 returning record_id',[r.id,r.modified.at(-1),status]);
   return {status,communicated:status==='sent'?preview.records.length:0};
 }
 
