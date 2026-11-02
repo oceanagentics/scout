@@ -8,6 +8,7 @@ const RECORD_FIELDS = [
 ];
 const TRACKER_FIELDS = [
   ['name','Name'], ['url','URL'], ['coverage','Coverage'], ['cadence','Cadence'], ['enabled','Enabled'],
+  ['retire_on','Retire on (UTC)'],
   ['last_checked_at','Last attempted (UTC)'], ['last_successful_check','Consumed through (UTC)'],
   ['failure_count','Consecutive attempts without success'], ['last_error','Last error'], ['id','ID'],
 ];
@@ -16,7 +17,8 @@ export async function loadScout(client,{filters={},after=null}={}) {
   const params=Object.fromEntries(['type','priority','from','to','organization','search','meaning','order'].map(key=>['p_'+key,filters[key]||null]));
   const [page,inventory]=await Promise.all([
     client.rpc('findings',{...params,p_after:after,p_limit:50,p_id:filters.record||null}),
-    client.from('trackers').select(TRACKER_FIELDS.map(([field])=>field).join(',')).order('name').limit(500)
+    client.from('trackers').select(TRACKER_FIELDS.map(([field])=>field).join(','))
+      .or('retire_on.is.null,retire_on.gt.'+new Date().toISOString().slice(0,10)).order('name').limit(500)
   ]);
   if(page.error||inventory.error)throw page.error??inventory.error;
   const records=page.data;

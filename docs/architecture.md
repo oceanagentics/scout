@@ -33,6 +33,7 @@ Source configuration and current progress live together in `scout.trackers`:
 
 | Field | Meaning |
 | --- | --- |
+| `retire_on` | Optional UTC date on which the tracker stops accepting checks and disappears from the website tracker list. Null keeps an ongoing source eligible. Saved findings remain available. |
 | `last_checked_at` | When the latest attempt started. A tracker is due when this is null or this date plus `cadence` has passed. |
 | `last_successful_check` | Source content consumed through this date. Initially seeded three weeks back; subsequently advanced only by successful processing. |
 | `last_error` | Short reason for the latest unsuccessful attempt; cleared on success. |
@@ -40,6 +41,8 @@ Source configuration and current progress live together in `scout.trackers`:
 | `lease_id`, `lease_until` | Temporary ownership of an in-flight check; cleared when finished. |
 
 A terminated worker's claim remains counted unless it committed progress. An explicit tracker-ID request starts another bounded cycle after three failures, without stealing a live lease. Failures retry on the tracker cadence; there is no separately stored next-check date. `last_checked_at` does not imply successful retrieval; inspect `last_error` too. The initial `last_successful_check` is a chosen starting boundary, not evidence of an earlier model check.
+
+Retirement applies to scheduled, explicit and local diagnostic checks without deleting tracker rows or findings. COP17-specific sources retire on 28 November 2026, four weeks after the conference closed; the general CBD side-event registry remains ongoing. The reader claim and scheduler use the UTC date, and the website excludes retired rows in its existing tracker query. No retirement job or history is stored.
 
 There is no stored status enum, permanent completion flag, seed-import key or separate source-state table. The legacy `collector` configuration column remains; the reader does not inspect it. The dashboard queries tracker rows directly, with no finding-job backlog view. Browser users cannot write operational state or read lease tokens.
 

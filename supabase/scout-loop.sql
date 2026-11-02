@@ -18,6 +18,7 @@ begin
   order by d.end_time limit 48);
  if not exists(select 1 from scout.trackers t
   where t.enabled and t.failure_count<3 and (t.last_checked_at is null or t.last_checked_at+t.cadence<=clock_timestamp())
+    and (t.retire_on is null or t.retire_on>(clock_timestamp() at time zone 'UTC')::date)
     and (t.lease_until is null or t.lease_until<=clock_timestamp())) then return;end if;
  select decrypted_secret into key from vault.decrypted_secrets where name='scout_loop_backend_key';
  if key is null then return;end if;

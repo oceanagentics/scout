@@ -11,6 +11,7 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch}){
     last_checked_at=date_trunc('milliseconds',clock_timestamp()),
     failure_count=case when $1::uuid is not null and failure_count>=3 then 1 else failure_count+1 end
     where id=(select id from scout.trackers where url is not null
+      and (retire_on is null or retire_on>(clock_timestamp() at time zone 'UTC')::date)
       and (lease_until is null or lease_until<=clock_timestamp())
       and (case when $1::uuid is not null then id=$1 else enabled and failure_count<3
         and (last_checked_at is null or last_checked_at+cadence<=clock_timestamp()) end)

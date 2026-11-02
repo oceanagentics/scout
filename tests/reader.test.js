@@ -156,6 +156,27 @@ test('tracker URL -> one model investigation -> finding and tracker state; due r
   t.diagnostic(JSON.stringify({mocked:true,first_and_idle:firstCost,repeat_mutations:2,tracker_row_bytes:storage.bytes}));
 });
 
+test('retirement blocks automatic and explicit checks on the UTC date without changing saved state',async t=>{
+  const raw=await setup(t),tr=await tracker(raw);
+  await raw.exec("insert into scout.records(description,sources) values('Preserved finding',array['https://example.org/saved'])");
+  const records=(await raw.query('select * from scout.records')).rows;
+  for(const days of [-1,0]){
+    await raw.query("update scout.trackers set retire_on=(clock_timestamp() at time zone 'UTC')::date+$1::int where id=$2",[days,tr.id]);
+    const before=(await raw.query('select * from scout.trackers')).rows;
+    for(const query of ['', 'tracker_id='+tr.id]){
+      const result=await (await hostedReader(request(query),{...options(raw),
+        sourceFetch:()=>assert.fail('Retired source must not be read'),modelFetch:()=>assert.fail('Retired tracker must not call a model')})).json();
+      assert.equal(result.state,'idle');assert.equal(result.cost.statements,1);assert.equal(result.cost.mutations,0);
+    }
+    assert.deepEqual((await raw.query('select * from scout.trackers')).rows,before);
+  }
+  for(const retirement of ["(clock_timestamp() at time zone 'UTC')::date+1",'null']){
+    await raw.exec('update scout.trackers set retire_on='+retirement);
+    assert.equal((await intake(database(driver(raw)),{trackerId:tr.id,modelFor:()=>async()=>answer([])})).state,'no_findings');
+  }
+  assert.deepEqual((await raw.query('select * from scout.records')).rows,records);
+});
+
 test('failed and crashed attempts stop at three, explicit retry works',async t=>{
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let calls=0;
   const failure=()=>async()=>{calls++;throw Object.assign(new Error('provider_unknown'),{dispatched:true});};

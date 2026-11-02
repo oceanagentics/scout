@@ -27,7 +27,9 @@ test('source links reject unsafe URLs and tracker freshness uses persisted run s
 test('reader sends filters and stable cursor to bounded server queries and surfaces errors',async()=>{
   const rows=Array.from({length:50},(_,i)=>({id:String(i),priority:'low',type:'announcement',organizations:[],date:'2026-03'})),calls=[];let fail=false;
   const client={rpc:async(name,args)=>{calls.push({name,args});return fail?{error:new Error('Unavailable')}:{data:name==='findings'?rows:[]};},
-    from:table=>{assert.equal(table,'trackers');return{select(){return this;},order(){return this;},limit(n){assert.equal(n,500);return{data:[]};}};}};
+    from:table=>{assert.equal(table,'trackers');return{select(fields){assert.ok(fields.split(',').includes('retire_on'));return this;},
+      or(filter){assert.equal(filter,'retire_on.is.null,retire_on.gt.'+new Date().toISOString().slice(0,10));return this;},
+      order(){return this;},limit(n){assert.equal(n,500);return{data:[]};}};}};
   const result=await loadScout(client,{filters:{type:'announcement',organization:'Ocean Institute',meaning:'deadline',from:'2027-01-01'}});
   assert.deepEqual(result.records,rows);assert.equal(result.records.length,50);assert.deepEqual(result.next,{rank:2,day:'2026-03-01',id:'49'});
   assert.equal(calls[0].args.p_limit,50);assert.equal(calls[0].args.p_organization,'Ocean Institute');assert.equal(calls[0].args.p_meaning,'deadline');
