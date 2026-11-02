@@ -28,14 +28,13 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
       queries.push(sql);const result=await db.query(sql,params);return Object.assign(result.rows,{count:result.affectedRows});
     },release(){}}),end:async()=>{}})};
   const request=(action,body,headers={})=>new Request('https://example.org/scout-calendar/'+action,{
-    method:['status','feed.ics'].includes(action.split('?')[0])?'GET':'POST',headers,
+    method:action.split('?')[0]==='feed.ics'?'GET':'POST',headers,
     ...(body?{body:JSON.stringify(body)}:{})});
   const run=(action,body,headers)=>hostedCalendar(request(action,body,headers),config);
   try{
-    for(const action of ['connect','sync'])assert.equal((await run(action)).status,404);
-    signedIn=false;assert.equal((await run('status')).status,401);assert.equal(queries.length,0);signedIn=true;
+    for(const action of ['status','connect','sync'])assert.equal((await run(action)).status,404);
+    signedIn=false;assert.equal((await run('feed-link')).status,401);assert.equal(queries.length,0);signedIn=true;
     await db.query("update scout.calendar_trial set remaining=0,expires_at='2000-01-01T00:00:00Z'");
-    assert.deepEqual(await (await run('status')).json(),{manager:true});
     await db.query('select scout.save_calendar_secret($1,$2)',['scout_calendar_feed',token]);
     await db.query('select scout.save_calendar_secret($1,$2)',['scout_calendar_google','old authorization']);
     await db.query('insert into vault.secrets(name,secret) values($1,$2)',['unrelated','keep']);
@@ -61,10 +60,13 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
     assert.equal(subscription.expires_at,undefined);
 
     await db.query('update auth.identities set identity_data=$1',[{...identity,email:'teammate@oceanagentics.com'}]);
-    assert.deepEqual(await (await run('status')).json(),{manager:false});
-    assert.equal((await run('feed-link')).status,403);
-    await db.query('update auth.identities set identity_data=$1',[{...identity,email_verified:false}]);
-    assert.equal((await run('status')).status,403);
+    const teammate=await run('feed-link');
+    assert.equal(teammate.status,200);
+    assert.deepEqual(await teammate.json(),subscription);
+    for(const claims of [{...identity,email_verified:false},{...identity,custom_claims:{hd:'example.com'}}]){
+      await db.query('update auth.identities set identity_data=$1',[claims]);
+      assert.equal((await run('feed-link')).status,403);
+    }
     assert.equal((await run('feed.ics?token='+token)).status,200);
     assert.equal(queries.some(sql=>sql.includes('calendar_trial')),false);
     assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,1);

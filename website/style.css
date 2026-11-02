@@ -36,7 +36,8 @@ nav button[aria-pressed="false"], .view-switch button[aria-pressed="false"], .se
 .kind-filters input:focus-visible + span { outline: 3px solid #d29237; outline-offset: 3px; }
 .view-switch { display: flex; gap: 4px; }
 .view-switch button { display: grid; place-items: center; width: 44px; height: 44px; padding: 10px; border: 1px solid #185c4a; }
-.view-switch svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.view-switch svg, #calendar-feed svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+#calendar-feed { display: inline-flex; align-items: center; gap: 8px; }
 .hint, .meta, #load-status, #record-count, #tracker-count { color: #567069; font-size: .85rem; line-height: 1.55; }
 #workspace:has(#trackers:not([hidden])) #load-status.loaded { display: none; }
 .meta { margin: 8px 0; }
