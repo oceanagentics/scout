@@ -2,7 +2,8 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
-import {readRecords,eligibleRecords,prepareMessage,sendMessage,webhookTransport} from '../slackbot/slack.js';
+import {eligibleRecords,prepareMessage,sendMessage,webhookTransport} from '../slackbot/slack.js';
+import {hostedNotify} from '../supabase/functions/scout-notify/index.ts';
 
 async function database(){
  const db=new PGlite();
@@ -27,30 +28,35 @@ test('eligibility uses priority, creation time and upcoming dates',()=>{
  assert.equal(eligibleRecords([{...base,date:null}],{now}).length,1);
 });
 
-test('deterministic previews and two durable delivery markers; confirmed and uncertain sends never repeat',async()=>{
+test('hosted explicit sends can repeat after every outcome and make no database writes',async()=>{
  const db=await database();try{
-  const id=await seed(db);let calls=0;
-  const preview=await prepareMessage(db,{model:()=>assert.fail('No notification model')});
-  assert.equal(preview.records.length,1);assert.ok(preview.payload.text.includes('Technical BBNJ ChM standards'));
-  const result=await sendMessage(db,preview,async()=>{calls++;return {status:200,body:'ok'};});
-  assert.equal(result.status,'sent');assert.equal(calls,1);
-  assert.equal((await db.query('select status from scout.delivery_state')).rows[0].status,'sent');
-  assert.equal((await prepareMessage(db)).payload,null);
-  await assert.rejects(sendMessage(db,preview,async()=>{calls++;}),/reserved/);assert.equal(calls,1);
-  const other=await seed(db);
-  const pending=await prepareMessage(db);
-  assert.equal((await sendMessage(db,pending,async()=>{throw new Error('Unknown remote outcome');})).status,'unknown');
-  await db.query('update scout.records set modified=array_append(modified,clock_timestamp()) where id=$1',[other]);
-  assert.equal((await prepareMessage(db)).payload,null);
-  assert.equal((await db.query('select cardinality(modified) n from scout.records where id=$1',[id])).rows[0].n,1,'Delivery does not change the record.');
+  await seed(db);const records=(await db.query('select * from scout.records')).rows;
+  const trackers=(await db.query('select * from scout.trackers order by id')).rows;
+  const secret='sb_secret_notify_test',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
+  const connect=()=>({reserve:async()=>({unsafe:async(q,p=[])=>{
+    const result=await db.query(q,p);return Object.assign(result.rows,{count:result.affectedRows??result.rows.length});
+  },release(){}}),end:async()=>{}});
+  const payloads=[];
+  for(const [outcome,status] of [[{status:200,body:'ok'},'sent'],[{status:200,body:'ok'},'sent'],
+    [{status:400,body:'invalid_payload'},'failed'],[{status:500,body:'upstream'},'unknown'],[new Error('Unknown remote outcome'),'unknown']]){
+    const response=await hostedNotify(new Request('https://example.test/notify',{method:'POST',headers:{apikey:secret}}),{
+      env,databaseURL:'unused',connect,post:async payload=>{payloads.push(payload);if(outcome instanceof Error)throw outcome;return outcome;}});
+    assert.equal(response.status,200);const result=await response.json();
+    assert.equal(result.status,status);assert.equal(result.communicated,status==='sent'?1:0);
+    assert.equal(result.cost.statements,2);assert.equal(result.cost.mutations,0);
+  }
+  assert.equal(payloads.length,5);assert.match(payloads[0].text,/Technical BBNJ ChM standards/);
+  for(const payload of payloads)assert.deepEqual(payload,payloads[0]);
+  assert.deepEqual((await db.query('select * from scout.records')).rows,records);
+  assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,trackers);
  }finally{await db.close();}
 });
 test('a changed record timestamp invalidates a prepared notification before network dispatch',async()=>{
  const db=await database();try{
   const id=await seed(db),preview=await prepareMessage(db);
+  await assert.rejects(sendMessage(db,preview,()=>assert.fail('Expired message'),{now:()=>new Date(Date.parse(preview.prepared_at)+60001)}),/expired/);
   await db.query('update scout.records set modified=array_append(modified,clock_timestamp()) where id=$1',[id]);
   await assert.rejects(sendMessage(db,preview,()=>assert.fail('Stale message')),/changed/);
-  assert.equal((await db.query('select count(*)::int n from scout.delivery_state')).rows[0].n,0);
  }finally{await db.close();}
 });
 test('webhooks require the confirmed Scout binding',()=>{

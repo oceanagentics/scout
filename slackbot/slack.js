@@ -7,7 +7,6 @@ const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;')
 export async function readRecords(db){
   return (await db.query(`select r.*,r.modified::text[] as modified
     from scout.records r where priority in ('high','normal')
-    and not exists(select 1 from scout.delivery_state d where d.record_id=r.id and (d.modified_at=r.modified[cardinality(r.modified)] or d.status in ('sending','unknown')))
     order by modified[cardinality(modified)] desc,id limit 100`)).rows;
 }
 
@@ -44,20 +43,12 @@ export async function prepareMessage(db,{model,kind='findings',from,through,now=
 export async function sendMessage(db,preview,post,{now=()=>new Date()}={}) {
   if (!preview.payload||!preview.records.length) return {status:'no_change',communicated:0};
   if(now()-Date.parse(preview.prepared_at)>60000)throw new Error('Preview expired');
-  await db.transaction(async tx=>{
-    for(const r of preview.records){
-      const modified=r.modified.at(-1);
-      const current=(await tx.query('select id from scout.records where id=$1 and modified[cardinality(modified)]=$2 for update',[r.id,modified])).rows[0];
-      if(!current)throw new Error('Preview changed');
-      const claimed=(await tx.query(`insert into scout.delivery_state(record_id,modified_at,status) values($1,$2,'sending')
-        on conflict(record_id) do update set modified_at=excluded.modified_at,status='sending',at=clock_timestamp()
-        where scout.delivery_state.modified_at<excluded.modified_at and scout.delivery_state.status='sent' returning record_id`,[r.id,modified])).rows;
-      if(!claimed.length)throw new Error('Delivery already reserved');
-    }
-  });
+  for(const r of preview.records){
+    const current=(await db.query('select id from scout.records where id=$1 and modified[cardinality(modified)]=$2',[r.id,r.modified.at(-1)])).rows[0];
+    if(!current)throw new Error('Preview changed');
+  }
   let status='unknown';
   try{const response=await post(preview.payload);status=response.status===200&&response.body.trim()==='ok'?'sent':response.status>=400&&response.status<500?'failed':'unknown';}catch{}
-  for(const r of preview.records)await db.query('update scout.delivery_state set status=$3,at=clock_timestamp() where record_id=$1 and modified_at=$2 returning record_id',[r.id,r.modified.at(-1),status]);
   return {status,communicated:status==='sent'?preview.records.length:0};
 }
 

@@ -1,4 +1,4 @@
-// Notifications use the same private production path and durable delivery markers.
+// Each explicit request can send the same eligible finding again.
 const args=process.argv.slice(2);
 if(args.length!==1||args[0]!=='--send')throw new Error('Usage after notification approval: npm run notify -- --send');
 process.loadEnvFile('.env.local');

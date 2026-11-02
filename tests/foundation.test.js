@@ -78,7 +78,7 @@ test('final schema protects findings, operational state and tracker management i
     const record = (await db.query("insert into scout.records(type,description) values('announcement','Private finding') returning id")).rows[0].id;
     await db.query("update scout.records set sources=$2 where id=$1", [record,['https://example.org/source']]);
     const publicReads = ['scout.records','scout.findings()'];
-    const privateTables = ['delivery_state'];
+    assert.equal((await db.query("select to_regclass('scout.delivery_state') name")).rows[0].name,null);
     await db.exec('set role anon');
     for (const view of publicReads) await assert.rejects(db.query('select * from ' + view), { code: '42501' });
     await assert.rejects(db.query('select scout.access_role()'), { code: '42501' });
@@ -88,10 +88,6 @@ test('final schema protects findings, operational state and tracker management i
       assert.equal((await db.query('select scout.access_role() role')).rows[0].role, role);
       assert.equal((await db.query('select * from otherservice.private_records')).rows.length, user === outsider ? 1 : 0);
       for (const view of publicReads) assert.equal((await db.query('select * from ' + view)).rows.length, role ? 1 : 0, view);
-      for (const table of privateTables) {
-        await assert.rejects(db.query('select * from scout.' + table), { code: '42501' });
-        await assert.rejects(db.query('delete from scout.' + table), { code: '42501' });
-      }
       await assert.rejects(db.query("insert into scout.records(type,description) values('announcement','Forged')"), { code: '42501' });
       await assert.rejects(db.query("update scout.records set description='Forged'"), { code: '42501' });
       await assert.rejects(db.query('delete from scout.records'), { code: '42501' });
@@ -115,10 +111,6 @@ test('final schema protects findings, operational state and tracker management i
     for (const edit of ["url=null"]) {
       await db.query('update scout.trackers set ' + edit + ',enabled=true where id=$1', [tracker]);
       assert.equal((await db.query('select enabled from scout.trackers where id=$1', [tracker])).rows[0].enabled, false);
-    }
-    for (const table of privateTables) {
-      await db.query('select * from scout.' + table);
-      for (const privilege of ['INSERT','UPDATE','DELETE']) assert.equal((await db.query("select has_table_privilege('service_role',$1,$2) allowed", ['scout.' + table,privilege])).rows[0].allowed, true);
     }
     await db.exec('reset role');
     assert.equal((await db.query("select bool_and(c.relrowsecurity) protected from pg_class c where c.relnamespace='scout'::regnamespace and c.relkind='r'")).rows[0].protected, true);
@@ -250,5 +242,33 @@ test('flat migration preserves IDs, scalar facts, URL arrays, known timestamps a
     assert.equal(page[0].type,'treaty_status');
     const next=(await db.query("select * from scout.findings(p_order=>'date',p_after=>$1,p_limit=>1)",[{rank:0,day:'2026-01-01',id:page[0].id}])).rows;
     assert.equal(next[0].type,'announcement');
+  }finally{await db.close();}
+});
+
+test('delivery-state removal requires paused jobs and preserves findings, trackers and calendar state',async()=>{
+  const db=new PGlite(),name='20261102180000_scout_remove_delivery_state.sql';
+  try{
+    await db.exec(auth);
+    for(const [file,sql] of migrations){if(file===name)break;await db.exec(sql);}
+    await db.exec(trackerSeed);
+    await db.exec(`insert into scout.records(description,sources)
+      select status,array['https://example.org/'||status] from unnest(array['sending','sent','failed','unknown']) status;
+      insert into scout.delivery_state(record_id,modified_at,status) select id,modified[1],description from scout.records;
+      create schema cron;create table cron.job(jobname text,command text,active boolean);
+      insert into cron.job values('scout-findings','select scout.loop_tick()',true),('unrelated','select 1',true);`);
+    const records=(await db.query('select * from scout.records order by id')).rows;
+    const trackers=(await db.query('select * from scout.trackers order by id')).rows;
+    const calendar=(await db.query('select * from scout.calendar_trial')).rows;
+    const sql=migrations.find(([file])=>file===name)[1];
+    await assert.rejects(db.exec(sql),/Pause Scout jobs/);await db.exec('rollback');
+    assert.equal((await db.query('select count(*)::int n from scout.delivery_state')).rows[0].n,4);
+    await db.exec("update cron.job set active=false where jobname='scout-findings'");
+    await db.exec(sql);
+    assert.equal((await db.query("select to_regclass('scout.delivery_state') name")).rows[0].name,null);
+    assert.deepEqual((await db.query('select * from scout.records order by id')).rows,records);
+    assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,trackers);
+    assert.deepEqual((await db.query('select * from scout.calendar_trial')).rows,calendar);
+    assert.deepEqual((await db.query('select jobname,active from cron.job order by jobname')).rows,
+      [{jobname:'scout-findings',active:false},{jobname:'unrelated',active:true}]);
   }finally{await db.close();}
 });

@@ -12,7 +12,7 @@ Recurring collection and notifications remain paused pending review. This guide 
 | [reader/](reader/) | Check tracker URLs, call models, save findings and update tracker state. |
 | [reader/models/](reader/models/) | Model gateway, provider adapters and accounted dispatch. |
 | [collector/](collector/), including [discovery/](collector/discovery/) | Retained legacy code. Excluded from the reader. |
-| [slackbot/](slackbot/) | Select saved findings, compose messages and track webhook delivery. No conversational Slack listener yet. |
+| [slackbot/](slackbot/) | Select saved findings, compose messages and send explicit webhook requests. Repeated requests can send the same finding again. No conversational Slack listener yet. |
 | [calendar/](calendar/) | Calendar subscription feed and explicit Google Calendar synchronization. |
 | [shared/](shared/) | Pure date and record rules used by multiple features. |
 | [supabase/](supabase/) | Database migrations, hosted entrypoints, access rules and operational SQL. |

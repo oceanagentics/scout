@@ -1,6 +1,6 @@
 # Scout architecture
 
-The flat record schema and its reader, website, notification and calendar consumers were deployed on 21 October 2026. Recurring collection and notifications remain paused.
+The flat record schema and its reader, website, notification and calendar consumers were deployed on 21 October 2026. Notification delivery state was removed on 2 November 2026. Recurring collection and notifications remain paused.
 
 ## Tracker investigation
 
@@ -71,7 +71,7 @@ The providers enforce their actual context, output and account limits. Scout doe
 ## Other components
 
 - [website/](../website/) displays findings and tracker state. Firebase hosts the static interface; Supabase Auth and RLS protect data. Verified Ocean Agentics Google identities retain reader access and backend-granted admin roles.
-- [scout-notify](../supabase/functions/scout-notify/index.ts) calls the existing [Slack workflow](../slackbot/slack.js) for explicitly requested sends. Existing delivery outcomes and uncertain-send protection remain in `delivery_state`; a delivered modification timestamp replaces the former record-version dependency. No notifications are sent during reader checks.
+- [scout-notify](../supabase/functions/scout-notify/index.ts) calls the existing [Slack workflow](../slackbot/slack.js) for explicitly requested sends. Findings use the existing high-priority, creation-time and event-date eligibility rules. Preview expiration and modification checks remain. Each request can send the same eligible finding again, including after a successful or uncertain send; concurrent requests can also repeat a send. Delivery outcomes are returned only to the caller. There is no persistent delivery state, reservation or suppression of repeat sends. No notifications are sent during reader checks.
 - [scout-calendar](../supabase/functions/scout-calendar/index.ts) retains the existing private subscription feed and explicit Google Calendar synchronization. It reads the flat saved findings. Exact-day events become labelled date entries, with their supported start time and timezone in the description. No event duration is invented; partial/unknown dates are excluded. Record IDs continue to identify existing calendar entries.
 - [diagnostics/run-reader.js](../diagnostics/run-reader.js) launches a hosted check. Its explicit diagnostic mode reads the tracker once and runs the local reader with in-memory findings, with no shared database writes; see [diagnostics instructions](../diagnostics/README.md).
 - [collector/](../collector/), including `discovery/`, is retained for later review/removal. Nothing in the new hosted reader imports it. Legacy database integration tests use the pre-reader schema. The old deployed endpoint returns HTTP 410.
@@ -87,3 +87,5 @@ The migration requires paused jobs, no active tracker lease and no sending notif
 Keep all four Scout cron jobs paused. Migration verification covers conversion, unchanged saves, updates, access boundaries and all active consumers. This migration does not add cost measurement or model accounting. No Slack messages or Google Calendar synchronization are part of verification.
 
 Production conversion preserved all 111 existing records, 44 trackers and 12 delivery outcomes. All 77 tests passed. The explicit pavilion tracker check subsequently created 99 records and changed none, bringing the total to 210; it exercised live model-to-database persistence, but the source blocked independent direct retrieval, so this does not establish the correctness of every returned finding. The deployed findings RPC returns exactly the 11 fields, and the private calendar feed still works.
+
+The [2 November delivery-state removal](../supabase/migrations/20261102180000_scout_remove_delivery_state.sql) drops `scout.delivery_state` and its existing rows. Deploy `scout-notify` first, with all Scout jobs paused and no active notification request, then apply the migration. No other consumer needs redeployment. Explicit single-finding sends now use two read queries and zero row mutations, with no model call or retained delivery bytes. Local hosted-function tests use real in-memory SQL and a mocked Slack response; verification must not send Slack messages or synchronize Google Calendar.
