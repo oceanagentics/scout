@@ -68,5 +68,16 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
     assert.equal((await run('feed.ics?token='+token)).status,200);
     assert.equal(queries.some(sql=>sql.includes('calendar_trial')),false);
     assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,1);
+
+    await db.exec(`insert into scout.records(id,modified,type,description,organizations,sources,date,starttime,timezone)
+      select gen_random_uuid(),array['2026-11-02T10:00:00Z']::timestamptz[],'event','Calendar event '||n,
+        '{}','{}','2026-11-05',null,null from generate_series(1,284) n`);
+    queries.length=0;
+    const expanded=await run('feed.ics?token='+token);
+    assert.equal(expanded.status,200);
+    const body=await expanded.text();
+    assert.equal((body.match(/BEGIN:VEVENT/g)??[]).length,285);
+    assert.match(body,/SUMMARY:\[Scout\] Calendar event 284/);
+    assert.equal(queries.length,2);
   }finally{await db.close();}
 });

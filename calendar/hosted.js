@@ -34,11 +34,7 @@ export async function hostedCalendar(request,{databaseURL,env,connect=postgres,a
     session=await sql.reserve();
     const query=(sql,params=[])=>session.unsafe(sql,params);
     const secret=async name=>(await query('select decrypted_secret from vault.decrypted_secrets where name=$1',[name]))[0]?.decrypted_secret;
-    const records=async()=>{
-      const rows=await query(`select ${columns} from scout.records where type='event' order by id limit 251`);
-      if(rows.length>250)throw fail('Event count exceeds the reviewed calendar limit',503);
-      return rows;
-    };
+    const records=()=>query(`select ${columns} from scout.records where type='event' order by id`);
     if(action==='feed.ics'){
       const token=await secret('scout_calendar_feed'),supplied=url.searchParams.get('token');
       if(!token||token.length!==supplied.length||!timingSafeEqual(Buffer.from(token),Buffer.from(supplied)))throw fail('Not found',404);
