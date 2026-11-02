@@ -21,7 +21,7 @@ export function calendarFeed(records){
       'Scout record: https://bbnj-scout.web.app/?record='+record.id].filter(Boolean).join('\n\n');
     lines.push('BEGIN:VEVENT','UID:'+record.id+'@scout.oceanagentics.com',
       'DTSTAMP:'+stamp(record.modified.at(-1)),'LAST-MODIFIED:'+stamp(record.modified.at(-1)),
-      'SEQUENCE:'+Math.floor(Date.parse(record.modified.at(-1))/1000),'SUMMARY:'+text('[Scout] '+record.description),
+      'SEQUENCE:'+Math.floor(Date.parse(record.modified.at(-1))/1000),'SUMMARY:'+text('🐧 '+record.description),
       'DESCRIPTION:'+text(description),'LOCATION:','TRANSP:TRANSPARENT','STATUS:CONFIRMED',
       'DTSTART;VALUE=DATE:'+start.value.replaceAll('-',''),'DTEND;VALUE=DATE:'+end.replaceAll('-',''));
     lines.push('URL:https://bbnj-scout.web.app/?record='+record.id,'END:VEVENT');

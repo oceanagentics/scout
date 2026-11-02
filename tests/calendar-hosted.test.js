@@ -53,7 +53,7 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
     queries.length=0;
     assert.equal((await run('feed.ics?token='+'b'.repeat(64))).status,404);assert.equal(queries.length,1);
     queries.length=0;
-    const feed=await run('feed.ics?token='+token);assert.equal(feed.status,200);assert.match(await feed.text(),/SUMMARY:\[Scout\] Test fixture/);
+    const feed=await run('feed.ics?token='+token);assert.equal(feed.status,200);assert.match(await feed.text(),/SUMMARY:🐧 Test fixture/);
     assert.equal(queries.length,2);assert.equal(queries.filter(sql=>sql.startsWith('update')).length,0);
     assert.equal((await run('feed.ics?token='+token,null,{'if-none-match':feed.headers.get('etag')})).status,304);
     const subscription=await (await run('feed-link')).json();assert.ok(subscription.url.endsWith('?token='+token));
@@ -79,7 +79,7 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
     assert.equal(expanded.status,200);
     const body=await expanded.text();
     assert.equal((body.match(/BEGIN:VEVENT/g)??[]).length,285);
-    assert.match(body,/SUMMARY:\[Scout\] Calendar event 284/);
+    assert.match(body,/SUMMARY:🐧 Calendar event 284/);
     assert.equal(queries.length,2);
   }finally{await db.close();}
 });
