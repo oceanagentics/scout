@@ -11,13 +11,12 @@ Recurring collection and notifications remain paused pending review. This guide 
 | [website/](website/) | Browser interface, sign-in, records, trackers and calendar controls. Includes the HTML entrypoint, public environment settings, Firebase configuration and generated `dist/`. |
 | [reader/](reader/) | Check tracker URLs, call models, save findings and update tracker state. |
 | [reader/models/](reader/models/) | Model gateway, provider adapters and accounted dispatch. |
-| [collector/](collector/), including [discovery/](collector/discovery/) | Retained legacy code. Excluded from the reader. |
 | [slackbot/](slackbot/) | Select saved findings, compose messages and send explicit webhook requests. Repeated requests can send the same finding again. No conversational Slack listener yet. |
 | [calendar/](calendar/) | Calendar subscription feed and explicit Google Calendar synchronization. |
 | [shared/](shared/) | Pure date and record rules used by multiple features. |
 | [supabase/](supabase/) | Database migrations, hosted entrypoints, access rules and operational SQL. |
 | [diagnostics/](diagnostics/) | Local model troubleshooting; see its [instructions](diagnostics/README.md). |
-| [tests/](tests/) | Automated checks and fixtures. |
+| [tests/](tests/) | Automated checks. |
 | [package.json](package.json), [package-lock.json](package-lock.json) | Commands and pinned dependencies for the whole project. |
 
 Read [architecture](docs/architecture.md) for the workflows and storage design, and [AGENTS.md](AGENTS.md) for engineering constraints. Completed plans and run diaries are available in Git history.

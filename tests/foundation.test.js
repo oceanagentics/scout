@@ -4,7 +4,6 @@ import { readFile, readdir } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 
 const migration = await readFile(new URL('../supabase/migrations/20261001050000_scout_foundation.sql', import.meta.url), 'utf8');
-const trackerSeed = await readFile(new URL('../supabase/seeds/trackers.sql', import.meta.url), 'utf8');
 const migrations = await Promise.all((await readdir(new URL('../supabase/migrations/', import.meta.url))).sort()
   .map(async name => [name, await readFile(new URL('../supabase/migrations/' + name, import.meta.url), 'utf8')]));
 const reader = '00000000-0000-0000-0000-000000000001';
@@ -147,27 +146,22 @@ test('final Workspace access requires verified provider proof, never editable me
   } finally { await db.close(); }
 });
 
-test('tracker seeds preserve app edits and remain idempotent on the final schema', async () => {
+test('seed-key removal preserves tracker IDs, edits, checking state and findings', async () => {
   const db = new PGlite();
+  const removal='20261102190000_scout_remove_tracker_seed_key.sql';
   try {
     await db.exec(auth);
-    for (const [, sql] of migrations) await db.exec(sql);
-    await db.exec(trackerSeed);
-    const initial = (await db.query('select * from scout.trackers order by seed_key')).rows;
-    assert.equal(initial.length, 41);
-    assert.deepEqual(initial.filter(r=>r.enabled).map(r=>r.seed_key), [17,18,19,20].map(n=>'bbnj-trackers-2026-10-01:'+n));
-    assert.ok(initial.filter(r=>!r.url).every(r=>!r.enabled));
-    assert.ok((await db.query('select last_checked_at from scout.trackers')).rows.every(r=>r.last_checked_at===null));
-    await db.query("update auth.users set raw_app_meta_data='{\"scout\":{\"admin\":true}}' where id=$1", [admin]);
-    await db.exec('set role authenticated');
-    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [admin]);
-    const feed = initial.find(r=>r.seed_key==='bbnj-trackers-2026-10-01:17');
-    await db.query("update scout.trackers set name='Edited',url='https://example.org/edited',collector='web',coverage='Edited coverage',cadence='2 days' where id=$1", [feed.id]);
-    await assert.rejects(db.query("update scout.trackers set seed_key='edited' where id=$1", [feed.id]), {code:'42501'});
-    await db.exec('reset role');
-    const edited = (await db.query('select * from scout.trackers order by id')).rows;
-    await db.exec(trackerSeed);await db.exec(trackerSeed);
-    assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows, edited);
+    for (const [name, sql] of migrations) {if(name===removal)break;await db.exec(sql);}
+    await db.exec(`insert into scout.trackers(name,url,collector,cadence,seed_key,last_checked_at,last_error,failure_count) values
+      ('Edited source','https://example.org/edited','web','2 days','bbnj-trackers-2026-10-01:17','2026-11-01','provider_rate_limit',1),
+      ('Non-BBNJ source','https://example.org/other','web','1 day',null,null,null,0);
+      insert into scout.records(description,sources) values('Keep finding',array['https://example.org/edited']);`);
+    const trackers=(await db.query('select * from scout.trackers order by id')).rows.map(({seed_key,...row})=>row);
+    const records=(await db.query('select * from scout.records order by id')).rows;
+    await db.exec(migrations.find(([name])=>name===removal)[1]);
+    assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,trackers);
+    assert.deepEqual((await db.query('select * from scout.records order by id')).rows,records);
+    assert.equal((await db.query("select to_regclass('scout.trackers_seed_key_key') name")).rows[0].name,null);
   } finally { await db.close(); }
 });
 
@@ -250,7 +244,7 @@ test('delivery-state removal requires paused jobs and preserves findings, tracke
   try{
     await db.exec(auth);
     for(const [file,sql] of migrations){if(file===name)break;await db.exec(sql);}
-    await db.exec(trackerSeed);
+    await db.exec("insert into scout.trackers(name,url,collector,cadence) values('Keep tracker','https://example.org','web','1 day')");
     await db.exec(`insert into scout.records(description,sources)
       select status,array['https://example.org/'||status] from unnest(array['sending','sent','failed','unknown']) status;
       insert into scout.delivery_state(record_id,modified_at,status) select id,modified[1],description from scout.records;

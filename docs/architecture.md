@@ -36,7 +36,7 @@ Source configuration and current progress live together in `scout.trackers`:
 
 A terminated worker's attempt remains counted. An explicit tracker-ID request starts another bounded cycle after three failures, without stealing a live lease. `last_checked_at` does not imply successful retrieval; inspect `last_error` too.
 
-There is no stored status enum, permanent completion flag or separate source-state table. The legacy `collector` configuration column remains for the retained scraper files; the reader does not inspect it. The dashboard queries tracker rows directly, with no finding-job backlog view. Browser users cannot write operational state or read lease tokens.
+There is no stored status enum, permanent completion flag, seed-import key or separate source-state table. The legacy `collector` configuration column remains; the reader does not inspect it. The dashboard queries tracker rows directly, with no finding-job backlog view. Browser users cannot write operational state or read lease tokens.
 
 ## Findings and model calls
 
@@ -74,7 +74,7 @@ The providers enforce their actual context, output and account limits. Scout doe
 - [scout-notify](../supabase/functions/scout-notify/index.ts) calls the existing [Slack workflow](../slackbot/slack.js) for explicitly requested sends. Findings use the existing high-priority, creation-time and event-date eligibility rules. Preview expiration and modification checks remain. Each request can send the same eligible finding again, including after a successful or uncertain send; concurrent requests can also repeat a send. Delivery outcomes are returned only to the caller. There is no persistent delivery state, reservation or suppression of repeat sends. No notifications are sent during reader checks.
 - [scout-calendar](../supabase/functions/scout-calendar/index.ts) retains the existing private subscription feed and explicit Google Calendar synchronization. It reads the flat saved findings. Exact-day events become labelled date entries, with their supported start time and timezone in the description. No event duration is invented; partial/unknown dates are excluded. Record IDs continue to identify existing calendar entries.
 - [diagnostics/run-reader.js](../diagnostics/run-reader.js) launches a hosted check. Its explicit diagnostic mode reads the tracker once and runs the local reader with in-memory findings, with no shared database writes; see [diagnostics instructions](../diagnostics/README.md).
-- [collector/](../collector/), including `discovery/`, is retained for later review/removal. Nothing in the new hosted reader imports it. Legacy database integration tests use the pre-reader schema. The old deployed endpoint returns HTTP 410.
+- The retired `collector/` pipeline and static tracker seed file were removed on 2 November 2026. Trackers are managed through the website. Their UUIDs identify existing rows; no replacement import bookkeeping is stored. The old `scout-collect-hsa` endpoint retains its HTTP 410 retirement response.
 
 Production stores findings, source URLs and compact current state. Source bodies, prompts, responses and proof trails are not production records. The requested local traffic capture remains confined to diagnostics.
 
@@ -82,7 +82,7 @@ Production stores findings, source URLs and compact current state. Source bodies
 
 The flat-record migration converts existing findings in one transaction, preserving IDs, supported scalar values, source URLs, known timestamps, access controls and notification delivery outcomes. It removes obsolete record columns and their dependent indexes, the derived reader view and the old JSON date functions. The existing findings RPC is replaced with a direct projection of the flat table.
 
-The migration requires paused jobs, no active tracker lease and no sending notification. Deploy the reader, notification and calendar functions and the website with the schema change during a short maintenance window. Legacy collector files and their historical-schema tests remain outside the active runtime and must not run against the new schema.
+The migration requires paused jobs, no active tracker lease and no sending notification. Deploy the reader, notification and calendar functions and the website with the schema change during a short maintenance window.
 
 Keep all four Scout cron jobs paused. Migration verification covers conversion, unchanged saves, updates, access boundaries and all active consumers. This migration does not add cost measurement or model accounting. No Slack messages or Google Calendar synchronization are part of verification.
 
