@@ -13,6 +13,7 @@ const migration='20261019200000_scout_reader.sql';
 async function setup(t,{before=false}={}){
   const raw=new PGlite();t.after(()=>raw.close());
   await raw.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;
+    create schema vault;create table vault.secrets(name text,secret text);
     create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');create table auth.identities(user_id uuid,provider text,identity_data jsonb);
     create function auth.uid() returns uuid language sql as $$select null::uuid$$;`);
   for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort()){

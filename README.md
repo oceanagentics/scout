@@ -12,7 +12,7 @@ Recurring collection and notifications remain paused pending review. This guide 
 | [reader/](reader/) | Check tracker URLs, call models, save findings and update tracker state. |
 | [reader/models/](reader/models/) | Model gateway, provider adapters and accounted dispatch. |
 | [slackbot/](slackbot/) | Select saved findings, compose messages and send explicit webhook requests. Repeated requests can send the same finding again. No conversational Slack listener yet. |
-| [calendar/](calendar/) | Calendar subscription feed and explicit Google Calendar synchronization. |
+| [calendar/](calendar/) | Private calendar subscription feed. |
 | [shared/](shared/) | Pure date and record rules used by multiple features. |
 | [supabase/](supabase/) | Database migrations, hosted entrypoints, access rules and operational SQL. |
 | [diagnostics/](diagnostics/) | Local model troubleshooting; see its [instructions](diagnostics/README.md). |
@@ -46,7 +46,7 @@ The build writes ignored `website/dist/`; preview serves that output. Database t
 
 ## Backend commands
 
-Backend settings stay in the ignored root `.env.local`; [the example](.env.example) documents the OpenAI and Calendar secret names. Hosted entrypoints read their own Edge Function secrets.
+Backend settings stay in the ignored root `.env.local`; [the example](.env.example) documents the OpenAI secret name. Hosted entrypoints read their own Edge Function secrets.
 
 The following commands contact production and require an explicitly scoped run within provider allowances. They do not start recurring work:
 

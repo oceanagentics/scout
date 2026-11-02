@@ -16,6 +16,7 @@ const auth = `
   create role authenticated;
   create role service_role bypassrls;
   create schema auth;
+  create schema vault;create table vault.secrets(name text,secret text);
   create table auth.users (id uuid primary key, raw_app_meta_data jsonb default '{}', raw_user_meta_data jsonb default '{}');
   create table auth.identities (user_id uuid, provider text, identity_data jsonb);
   create function auth.uid() returns uuid language sql stable as

@@ -1,21 +1,28 @@
-import {calendarEvent} from './google.js';
+import {recordDate,dateLabel} from '../shared/finding-dates.js';
+import {sourceLink} from '../shared/records.js';
 
+const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const text=value=>String(value??'').replaceAll('\\','\\\\').replace(/\r\n|\r|\n/g,'\\n').replaceAll(';','\\;').replaceAll(',','\\,');
 const stamp=value=>new Date(value).toISOString().replaceAll('-','').replaceAll(':','').replace(/\.\d{3}/,'');
-const plain=value=>value.replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&');
 
 export function calendarFeed(records){
   const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Ocean Agentics//Scout//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH','X-WR-CALNAME:Scout Events'];
   for(const record of records){
-    const event=calendarEvent(record);
-    if(!event)continue;
+    if(!uuid.test(record.id))throw new Error('Invalid Scout record ID');
+    if(record.type!=='event')continue;
+    const start=recordDate(record);
+    if(start?.precision!=='day')continue;
+    const end=new Date(Date.parse(start.value+'T00:00:00Z')+86400000).toISOString().slice(0,10);
+    const description=[record.description,record.organizations.join('; '),
+      'Calendar date entry; end time unknown.','Source start: '+dateLabel(start),
+      ...record.sources.filter(sourceLink).map(url=>'Source: '+url),
+      'Informational event from Scout; registration may be required.',
+      'Scout record: https://bbnj-scout.web.app/?record='+record.id].filter(Boolean).join('\n\n');
     lines.push('BEGIN:VEVENT','UID:'+record.id+'@scout.oceanagentics.com',
       'DTSTAMP:'+stamp(record.modified.at(-1)),'LAST-MODIFIED:'+stamp(record.modified.at(-1)),
-      'SEQUENCE:'+Math.floor(Date.parse(record.modified.at(-1))/1000),'SUMMARY:'+text(event.summary),
-      'DESCRIPTION:'+text(plain(event.description)),'LOCATION:'+text(event.location),'TRANSP:TRANSPARENT',
-      'STATUS:CONFIRMED');
-    for(const [name,value]of [['DTSTART',event.start],['DTEND',event.end]])
-      lines.push(value.date?name+';VALUE=DATE:'+value.date.replaceAll('-',''):name+':'+stamp(value.dateTime));
+      'SEQUENCE:'+Math.floor(Date.parse(record.modified.at(-1))/1000),'SUMMARY:'+text('[Scout] '+record.description),
+      'DESCRIPTION:'+text(description),'LOCATION:','TRANSP:TRANSPARENT','STATUS:CONFIRMED',
+      'DTSTART;VALUE=DATE:'+start.value.replaceAll('-',''),'DTEND;VALUE=DATE:'+end.replaceAll('-',''));
     lines.push('URL:https://bbnj-scout.web.app/?record='+record.id,'END:VEVENT');
   }
   lines.push('END:VCALENDAR');

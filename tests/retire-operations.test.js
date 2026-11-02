@@ -9,6 +9,7 @@ async function fixture(){
  const db=new PGlite();
  await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
  create schema auth;create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');
+ create schema vault;create table vault.secrets(name text,secret text);
  create table auth.identities(user_id uuid,provider text,identity_data jsonb);
  create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
  create schema cron;create table cron.job(jobid int,jobname text,command text,active boolean);

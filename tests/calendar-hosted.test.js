@@ -10,8 +10,8 @@ const identity={...profile,iss:'https://accounts.google.com',custom_claims:{hd:'
 const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',modified:['2026-10-12T10:00:00Z'],type:'event',
   description:'Test fixture',organizations:[],sources:['https://example.org/event'],date:'2001-10-22',starttime:null,timezone:null};
 
-test('hosted calendar with real SQL: access boundaries, expired trial does not block feed or sync',async()=>{
-  const db=new PGlite(),queries=[];let signedIn=true,googleEvents=[],googleProfile=profile,calendarFailure;
+test('hosted calendar with real SQL: subscription survives removal of personal-calendar sync',async()=>{
+  const db=new PGlite(),queries=[];let signedIn=true;
   // Vault here is a test double for SQL contracts, not a test of production encryption.
   await db.exec(`create role anon;create role authenticated;create role service_role;create schema scout;create schema auth;create schema vault;
     create table auth.identities(user_id uuid,provider text,provider_id text,identity_data jsonb);
@@ -26,26 +26,29 @@ test('hosted calendar with real SQL: access boundaries, expired trial does not b
   const config={databaseURL:'test',authenticate:async()=>signedIn?{data:{userClaims:{id:user}}}:{error:new Error('Invalid JWT')},
     connect:()=>({reserve:async()=>({unsafe:async(sql,params)=>{
       queries.push(sql);const result=await db.query(sql,params);return Object.assign(result.rows,{count:result.affectedRows});
-    },release(){}}),end:async()=>{}}),
-    send:async(url,options)=>{
-      if(url.includes('/userinfo'))return Response.json(googleProfile);
-      assert.ok(url.startsWith('https://www.googleapis.com/calendar/v3/calendars/danny%40oceanagentics.com/events'));
-      if(calendarFailure)return Response.json(calendarFailure.body,{status:calendarFailure.status});
-      if(options.method==='POST'){const saved={...JSON.parse(options.body),etag:'"1"'};googleEvents.push(saved);return Response.json(saved);}
-      return Response.json({items:googleEvents});
-    }};
+    },release(){}}),end:async()=>{}})};
   const request=(action,body,headers={})=>new Request('https://example.org/scout-calendar/'+action,{
     method:['status','feed.ics'].includes(action.split('?')[0])?'GET':'POST',headers,
     ...(body?{body:JSON.stringify(body)}:{})});
   const run=(action,body,headers)=>hostedCalendar(request(action,body,headers),config);
   try{
+    for(const action of ['connect','sync'])assert.equal((await run(action)).status,404);
     signedIn=false;assert.equal((await run('status')).status,401);assert.equal(queries.length,0);signedIn=true;
     await db.query("update scout.calendar_trial set remaining=0,expires_at='2000-01-01T00:00:00Z'");
-    assert.deepEqual(await (await run('status')).json(),{manager:true,connected:false,backend_ready:false,calendar_id:profile.email});
+    assert.deepEqual(await (await run('status')).json(),{manager:true});
     await db.query('select scout.save_calendar_secret($1,$2)',['scout_calendar_feed',token]);
+    await db.query('select scout.save_calendar_secret($1,$2)',['scout_calendar_google','old authorization']);
+    await db.query('insert into vault.secrets(name,secret) values($1,$2)',['unrelated','keep']);
+    await db.exec(await readFile(new URL('../supabase/migrations/20261102210000_scout_subscription_calendar.sql',import.meta.url),'utf8'));
+    assert.deepEqual((await db.query('select name,secret from vault.secrets order by name')).rows,
+      [{name:'scout_calendar_feed',secret:token},{name:'unrelated',secret:'keep'}]);
+    await assert.rejects(db.query('select scout.save_calendar_secret($1,$2)',['scout_calendar_google','new authorization']),/Invalid calendar secret/);
+    await db.query('select scout.save_calendar_secret($1,$2)',['scout_calendar_feed','b'.repeat(64)]);
+    assert.equal((await db.query("select secret from vault.secrets where name='scout_calendar_feed'")).rows[0].secret,token);
     await assert.rejects(db.query('select scout.save_calendar_secret($1,$2)',[null,'bad']),/Invalid calendar secret/);
     await db.exec('set role authenticated');
     await assert.rejects(db.query('select * from scout.calendar_trial'),/permission denied/);
+    await assert.rejects(db.query('select scout.save_calendar_secret($1,$2)',['scout_calendar_feed',token]),/permission denied/);
     await db.exec('reset role');
 
     queries.length=0;
@@ -56,31 +59,6 @@ test('hosted calendar with real SQL: access boundaries, expired trial does not b
     assert.equal((await run('feed.ics?token='+token,null,{'if-none-match':feed.headers.get('etag')})).status,304);
     const subscription=await (await run('feed-link')).json();assert.ok(subscription.url.endsWith('?token='+token));
     assert.equal(subscription.expires_at,undefined);
-
-    googleProfile={...profile,sub:'someone-else'};
-    assert.equal((await run('connect',{access_token:'test',refresh_token:'refresh'})).status,403);
-    assert.equal((await db.query("select count(*)::int n from vault.secrets where name='scout_calendar_google'")).rows[0].n,0);
-    googleProfile=profile;
-    for(const [reason,status,message] of [
-      ['accessNotConfigured',503,/administrator must enable/],['SERVICE_DISABLED',503,/Reconnecting will not fix/],
-      ['ACCESS_TOKEN_SCOPE_INSUFFICIENT',403,/permission was not granted/],['userRateLimitExceeded',429,/request limit/],
-    ]){
-      calendarFailure={status:403,body:{error:{message:'Private provider details',details:[{reason}]}}};
-      const failed=await run('connect',{access_token:'test',refresh_token:'refresh'}),detail=await failed.json();
-      assert.equal(failed.status,status);assert.match(detail.error,message);assert.doesNotMatch(detail.error,/Private provider/);
-      if(status===503)assert.equal(detail.code,'calendar_api_disabled');
-      assert.equal((await db.query("select count(*)::int n from vault.secrets where name='scout_calendar_google'")).rows[0].n,0);
-    }
-    calendarFailure=null;
-    assert.equal((await run('connect',{access_token:'test'})).status,200,'Foreground sync works without a refresh token');
-    assert.equal((await db.query("select count(*)::int n from vault.secrets where name='scout_calendar_google'")).rows[0].n,0);
-    assert.equal((await run('connect',{access_token:'test',refresh_token:'refresh'})).status,200);
-    const synced=await run('sync',{access_token:'test'});assert.equal(synced.status,200);
-    const first=await synced.json();assert.equal(first.created,1);assert.deepEqual(first.cost,{sql_statements:2,row_mutations:0,google_calendar_requests:2,google_calendar_writes:1});
-    assert.equal(googleEvents[0].start.date,'2001-10-22');
-    const repeat=await (await run('sync',{access_token:'test'})).json();assert.equal(repeat.unchanged,1);
-    assert.deepEqual(repeat.cost,{sql_statements:2,row_mutations:0,google_calendar_requests:1,google_calendar_writes:0});
-    assert.equal(googleEvents.length,1);
 
     await db.query('update auth.identities set identity_data=$1',[{...identity,email:'teammate@oceanagentics.com'}]);
     assert.deepEqual(await (await run('status')).json(),{manager:false});

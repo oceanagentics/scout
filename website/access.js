@@ -39,7 +39,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
     }
     window.sessionStorage.removeItem('scout-record');
     closeDashboard = mount(workspace, options => loadScout(client,options));
-    closeCalendar = mountCalendar(client, session, root.querySelector('#calendar-tools'));
+    closeCalendar = mountCalendar(client, root.querySelector('#calendar-tools'));
   }
 
   client.auth.onAuthStateChange((_event, session) => { void showSession(session); });
@@ -66,7 +66,6 @@ export function mountAccess(client, root, mount = mountDashboard) {
       window.sessionStorage.removeItem('scout-auth');
       window.sessionStorage.removeItem('scout-auth-code-verifier');
       window.sessionStorage.removeItem('scout-record');
-      window.sessionStorage.removeItem('scout-calendar-connect');
       window.location.replace('/');
     }
   });
