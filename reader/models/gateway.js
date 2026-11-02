@@ -24,7 +24,8 @@ export function trackerModel({apiKey,openaiApiKey,source,provider,deadline,fetch
         attempt.dispatched=true;attempt.diagnostics=answer._diagnostics;
         if(!['found','none','unreadable'].includes(answer.status)||!Array.isArray(answer.records))throw fail('invalid_output');
         if(answer.status==='unreadable')throw fail('model_unreadable');
-        if(answer.status==='found'&&!answer.records.some(r=>normalizeFinding(r,source.url)))throw fail('empty_findings');
+        if(answer.status==='found'&&!answer.records.length)throw fail('empty_findings');
+        if(answer.records.some(r=>!normalizeFinding(r,source.url))||answer.status==='none'&&answer.records.length)throw fail('invalid_output');
         return answer;
       }catch(error){
         attempt.dispatched=error.dispatched!==false;attempt.reason=modelErrorReason(error);

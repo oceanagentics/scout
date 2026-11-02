@@ -28,7 +28,7 @@ function merge(f,target){
   values.sources=[...new Set([...(target?.sources??[]),...f.sources])];
   return values;
 }
-export async function saveFindings(tx,tracker,findings){
+export async function saveFindings(tx,sourceUrl,findings){
   await tx.query("select pg_advisory_xact_lock(hashtextextended('scout:findings',0))");
   const counts={created:0,changed:0,saved:0,ambiguous:0},used=new Set(),seen=new Set();
   for(const f of findings){
@@ -38,7 +38,7 @@ export async function saveFindings(tx,tracker,findings){
     const candidates=(await tx.query(`select * from scout.records
       where type is not distinct from $1 and ((lower(description)=lower($2) and ($4::text is null or date is null or date=$4))
         or $3=any(sources)) order by modified[1],id limit 20`,
-      [f.type,f.description,tracker.url,f.date])).rows.filter(r=>!used.has(r.id));
+      [f.type,f.description,sourceUrl,f.date])).rows.filter(r=>!used.has(r.id));
     const exact=candidates.filter(r=>normalize(r.description)===normalize(f.description));
     const words=new Set(normalize(f.description).split(' '));
     const similar=candidates.filter(r=>{

@@ -1,4 +1,7 @@
-export const INTAKE_INSTRUCTION=`Open the source URL supplied in the input first.
+export const INTAKE_INSTRUCTION=`If content is supplied, read that single post and its embedded images,
+quoted post and reply context. Identify developments in that post only.
+Use browsing when needed to inspect images or verify missing details; do
+not browse the author's feed for other posts. Otherwise, open the source URL first.
 
 Identify the distinct developments described on the page: events,
 announcements, and official treaty developments.
@@ -46,6 +49,8 @@ including dates in the past. For events, use the schedule for that specific
 event, not its parent conference or the page's publication date.
 Use YYYY-MM-DD for date and deadline, or YYYY-MM / YYYY for partial dates.
 Use HH:MM for starttime, and UTC, a numeric offset, or an IANA timezone.
+Convert explicit timezone abbreviations to a numeric offset (±HH:MM) or
+IANA timezone when unambiguous in context; do not return abbreviations.
 Use null for unsupported values; do not guess. Use [] for unknown organizations.
 
 **High:** technical BBNJ Clearing-House Mechanism (ChM) developments, including architecture, data standards, interoperability and implementation workshops/consultations; officially verified BBNJ ratifications and important official treaty changes; substantive ocean-related funder information, including funding calls, grants and funder announcements.
@@ -59,7 +64,7 @@ details do not lower priority. Use null when relevance is unclear.
 
 Return a JSON array containing one object per development, with
 description, type, priority, organizations, date, starttime, timezone and deadline.
-Return [] when the page contains no developments.`;
+Return [] when the supplied post or page contains no developments.`;
 export const RESPONSE_SCHEMA={
   type:'array',
   items:{

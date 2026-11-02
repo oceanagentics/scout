@@ -4,7 +4,7 @@ import {database} from '../../../reader/database.js';
 import {trackerModel} from '../../../reader/models/gateway.js';
 import {intake} from '../../../reader/intake.js';
 
-export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,env,connect=postgres,modelFetch=fetch}={}){
+export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,env,connect=postgres,modelFetch=fetch,sourceFetch=fetch}={}){
   const {error}=await verifyAuth(request,{auth:'secret:default',env});
   if(error)return Response.json({error:'Backend secret required'},{status:401});
   if(request.method!=='POST')return Response.json({error:'POST required'},{status:405});
@@ -19,7 +19,7 @@ export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,env,
       types:{json:{to:114,from:[114,3802],parse:JSON.parse,serialize:value=>typeof value==='string'?value:JSON.stringify(value)}},
       connection:{application_name:'scout-reader',statement_timeout:5000}});
     session=await sql.reserve();const db=database(session);
-    const result=await intake(db,{trackerId,modelFor:tracker=>trackerModel({source:tracker,apiKey,openaiApiKey,fetch:modelFetch})});
+    const result=await intake(db,{trackerId,sourceFetch,modelFor:(source,{deadline})=>trackerModel({source,deadline,apiKey,openaiApiKey,fetch:modelFetch})});
     return Response.json({...result,cost:db.metrics});
   }catch{
     return Response.json({error:'Reader interrupted; the tracker lease expires before another check can run.'},{status:500});

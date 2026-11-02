@@ -9,18 +9,23 @@ flowchart TD
   start[Manual request or scheduled wake] --> endpoint[Supabase function: scout-reader]
   endpoint --> intake[reader/intake.js]
   trackers[(scout.trackers: URL and checking state)] -->|Select and claim one tracker| intake
-  intake -->|Stored tracker URL and instructions| model[reader/models: model reads the URL]
+  intake --> source[reader/sources.js]
+  source -->|One Bluesky post, or a web URL| model[reader/models]
   model -->|Findings| save[reader/findings.js: normalize and save]
   save --> records[(scout.records)]
-  save -->|Finish check in the same transaction| trackers
+  save -->|Advance consumed-through date in the same transaction| trackers
   records --> output[Website, Slack and calendar]
 ```
 
-[The Supabase function](../supabase/functions/scout-reader/index.ts) authenticates a backend secret, opens one database connection and calls [intake.js](../reader/intake.js). It accepts a POST without parameters for the next due tracker, or `tracker_id` for an explicit check/retry. The URL is read from that tracker, unchanged. `reader/` runs inside this function; it is not a separate hosted service.
+[The Supabase function](../supabase/functions/scout-reader/index.ts) authenticates a backend secret, opens one database connection and calls [intake.js](../reader/intake.js). It accepts a POST without parameters for the next due tracker, or `tracker_id` for an explicit check/retry. `reader/` runs inside this function; it is not a separate hosted service.
 
-Intake selects and claims a tracker atomically before model HTTP. A 120-second lease excludes overlapping checks. It supplies the URL, current date and [instructions/schema](../reader/instructions.js) to the model. There is no publisher dispatch, page preparation, article inventory, fingerprint check or separate scheduling-research pass. The model can follow relevant links during its investigation. Missing dates do not prevent saving useful findings.
+Intake selects and claims a tracker atomically before source/model HTTP. A 120-second lease excludes overlapping checks. Ordinary web trackers supply their URL, current date and [instructions/schema](../reader/instructions.js) to the model. The model can follow relevant links during its investigation. Missing dates do not prevent saving useful findings.
 
-The response is normalized and saved in a transaction that also finishes the tracker check. The lease and unchanged tracker URL are checked before saving. A changed URL resets its state and disables automatic checks until backend enablement. Failed saves roll back the finding and successful completion together.
+For Bluesky author API and profile URLs, [sources.js](../reader/sources.js) follows API cursors from newest posts back to `last_successful_check`. It keeps the window in memory and supplies each post, including native image, quote and reply context, to the same model workflow, oldest first. Original posts use the earlier of their creation/indexing dates; reposts use the repost date. Pinned entries are excluded. Search feeds are not included in this extension.
+
+Each successful post saves findings with its individual post URL and advances the cutoff in the same transaction. A valid empty result also advances. Posts sharing a timestamp commit together after every post in that group succeeds. Invalid output, ambiguous matching or a failed save leaves that group unconsumed. The lease and unchanged tracker URL are checked before saving. After the full window, including an empty window, the cutoff advances to the check's start time. Newer posts wait for the next check. An unchanged feed makes no model calls.
+
+A changed URL resets its cutoff to three weeks back and disables automatic checks until backend enablement. Date-only progress deliberately has no consumed-ID table or persistent API cursor: a failed timestamp group can replay, reposts and other trackers can revisit the same content, and a late/backdated insertion behind the cutoff can be missed.
 
 ## Tracker state
 
@@ -28,13 +33,13 @@ Source configuration and current progress live together in `scout.trackers`:
 
 | Field | Meaning |
 | --- | --- |
-| `next_check_at` | When an enabled tracker becomes eligible again. Success schedules from its cadence. |
-| `last_checked_at` | When the last attempt finished, including failure. |
+| `last_checked_at` | When the latest attempt started. A tracker is due when this is null or this date plus `cadence` has passed. |
+| `last_successful_check` | Source content consumed through this date. Initially seeded three weeks back; subsequently advanced only by successful processing. |
 | `last_error` | Short reason for the latest unsuccessful attempt; cleared on success. |
-| `failure_count` | Attempts since success, including the current claimed attempt. Three stop automatic retries. |
+| `failure_count` | Attempts since successful progress, including a claimed attempt. Three consecutive attempts without progress stop automatic retries. |
 | `lease_id`, `lease_until` | Temporary ownership of an in-flight check; cleared when finished. |
 
-A terminated worker's attempt remains counted. An explicit tracker-ID request starts another bounded cycle after three failures, without stealing a live lease. `last_checked_at` does not imply successful retrieval; inspect `last_error` too.
+A terminated worker's claim remains counted unless it committed progress. An explicit tracker-ID request starts another bounded cycle after three failures, without stealing a live lease. Failures retry on the tracker cadence; there is no separately stored next-check date. `last_checked_at` does not imply successful retrieval; inspect `last_error` too. The initial `last_successful_check` is a chosen starting boundary, not evidence of an earlier model check.
 
 There is no stored status enum, permanent completion flag, seed-import key or separate source-state table. The legacy `collector` configuration column remains; the reader does not inspect it. The dashboard queries tracker rows directly, with no finding-job backlog view. Browser users cannot write operational state or read lease tokens.
 
@@ -62,7 +67,7 @@ Identity-key matching is removed. Existing description/source candidate lookup, 
 
 The findings RPC returns only these 11 columns. It accepts `p_type`; organization filtering uses name arrays, and date filtering selects `date` or `deadline`. RLS and server-side Workspace access checks remain.
 
-[The model gateway](../reader/models/gateway.js) makes one Gemini attempt and, for eligible failures, one OpenAI fallback. Gemini uses URL Context; OpenAI uses provider web access. The existing request timeouts remain (45 seconds for Gemini, 100 seconds total); provider errors defer the tracker until its retry time. Explicit diagnostic provider selection disables fallback. There is no generic admission dispatcher or database prerequisite for a model call.
+[The model gateway](../reader/models/gateway.js) makes one Gemini attempt per source item and, for eligible failures, one OpenAI fallback. Gemini uses URL Context; OpenAI uses provider web access. Supplied posts do not require browsing metadata; browsing remains available for missing details and images. URL-only investigations still require retrieval evidence. The existing timeouts remain (45 seconds per Gemini attempt, 100 seconds shared by source retrieval and all model calls in the check). Earlier committed dates survive a later timeout. Explicit diagnostic provider selection disables fallback. There is no generic admission dispatcher or database prerequisite for a model call.
 
 The providers enforce their actual context, output and account limits. Scout does not set request/response byte, output-token, URL, tool-call or finding-count caps. Provider truncation and malformed output fail visibly. There is no model usage ledger, uncertain-charge estimate, application spending limit, reservation/settlement call or quota cleanup. Scheduling is controlled by the cron job itself, which remains disabled.
 
@@ -79,6 +84,8 @@ The providers enforce their actual context, output and account limits. Scout doe
 Production stores findings, source URLs and compact current state. Source bodies, prompts, responses and proof trails are not production records. The requested local traffic capture remains confined to diagnostics.
 
 ## Cutover
+
+The [Bluesky feed migration](../supabase/migrations/20261102200000_scout_feed_reader.sql) replaces `next_check_at` with `last_successful_check`, initialized three weeks before migration time. It requires paused jobs and no active tracker lease. Deploy the reader and website and reinstall [the paused scheduler](../supabase/scout-loop.sql) with this schema change. No finding rows are migrated. Each completed timestamp group adds one tracker update; model calls scale with new posts, not old feed content. An empty window uses five SQL statements and two tracker row mutations, with zero model calls. Source bodies and API cursors are discarded at the end of the invocation.
 
 The flat-record migration converts existing findings in one transaction, preserving IDs, supported scalar values, source URLs, known timestamps, access controls and notification delivery outcomes. It removes obsolete record columns and their dependent indexes, the derived reader view and the old JSON date functions. The existing findings RPC is replaced with a direct projection of the flat table.
 

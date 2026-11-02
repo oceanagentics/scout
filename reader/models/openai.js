@@ -23,7 +23,7 @@ export function strictSchema(schema){
   return visit(schema);
 }
 
-// The provider investigates URLs; Scout does not fetch or prepare their bodies.
+// Supplied posts can be read directly; URL-only investigations require browsing.
 export function openai({apiKey,urls=[],model=OPENAI_MODEL,fetch:send=fetch,now=Date.now}){
   if(model!==OPENAI_MODEL)throw fail('model_configuration');
   const initial=urls;
@@ -39,7 +39,7 @@ export function openai({apiKey,urls=[],model=OPENAI_MODEL,fetch:send=fetch,now=D
       const body=JSON.stringify({model,store:false,service_tier:'default',reasoning:{effort:'low'},
         instructions:instruction+(schema?.type==='array'?'\nFor this API, return the array inside an object with the single key records.':''),
         input:JSON.stringify({input,urls:requested}),
-        ...(requested.length?{tools:[{type:'web_search',search_content_types:['text','image'],image_settings:{caption:true}}],tool_choice:'required',include:['web_search_call.action.sources']}:{}),
+        ...(requested.length?{tools:[{type:'web_search',search_content_types:['text','image'],image_settings:{caption:true}}],tool_choice:input.content?'auto':'required',include:['web_search_call.action.sources']}:{}),
         text:{format:{type:'json_schema',name:'scout_result',schema:strictSchema(transportSchema),strict:true}}});
       dispatched=true;
       let response;
@@ -84,8 +84,8 @@ export function openai({apiKey,urls=[],model=OPENAI_MODEL,fetch:send=fetch,now=D
         .map(url=>({url,status:'URL_RETRIEVAL_STATUS_SUCCESS',method:'provider_web'}));
       if(content.some(part=>part.type==='refusal'))throw fail('provider_refused');
       if(result.output.some(item=>!['message','reasoning','web_search_call'].includes(item.type)))throw fail('unexpected_tool');
-      if(requested.length&&!web.length)throw fail('retrieval_metadata_missing');
-      if(requested.length&&!diagnostics.retrieval.length)throw fail('url_retrieval_failed');
+      if(!input.content&&requested.length&&!web.length)throw fail('retrieval_metadata_missing');
+      if(!input.content&&requested.length&&!diagnostics.retrieval.length)throw fail('url_retrieval_failed');
       let answer;try{answer=JSON.parse(content.filter(part=>part.type==='output_text').map(part=>part.text).join(''));}catch{throw fail('invalid_output');}
       if(!answer||Array.isArray(answer)||typeof answer!=='object')throw fail('invalid_output');
       if(schema?.type==='array'){

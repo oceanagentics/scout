@@ -6,6 +6,25 @@ import {gemini} from '../reader/models/gemini.js';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../reader/instructions.js';
 
 const url='https://example.org/source';
+
+test('supplied posts work without retrieval metadata; both providers retain optional browsing',async()=>{
+  const input={url,content:{post:{record:{text:'BBNJ workshop announcement'}}}};
+  for(const provider of ['gemini','openai']){
+    let calls=0;
+    const model=trackerModel({provider,source:{url},apiKey:'test',openaiApiKey:'test',fetch:async(_url,options)=>{
+      calls++;const body=JSON.parse(options.body);
+      assert.ok(body.tools.length);
+      if(provider==='openai'){
+        assert.equal(body.tool_choice,'auto');assert.deepEqual(JSON.parse(body.input).input,input);
+        return result([],[]);
+      }
+      assert.deepEqual(JSON.parse(body.contents[0].parts[0].text),input);
+      return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});
+    }});
+    const answer=await model(INTAKE_INSTRUCTION,input,RESPONSE_SCHEMA);
+    assert.equal(answer.status,'none');assert.equal(calls,1);
+  }
+});
 const result=(records=[],web=[{type:'web_search_call',status:'completed',action:{type:'open_page',url}}])=>Response.json({
   status:'completed',output:[...web,{type:'message',content:[{type:'output_text',text:JSON.stringify({records})}]}]});
 const envelope=(text='[]',extra={})=>Response.json({candidates:[{finishReason:'STOP',

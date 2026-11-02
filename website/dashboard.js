@@ -8,7 +8,7 @@ const RECORD_FIELDS = [
 ];
 const TRACKER_FIELDS = [
   ['name','Name'], ['url','URL'], ['coverage','Coverage'], ['cadence','Cadence'], ['enabled','Enabled'],
-  ['last_checked_at','Last checked (UTC)'], ['next_check_at','Next check (UTC)'],
+  ['last_checked_at','Last attempted (UTC)'], ['last_successful_check','Consumed through (UTC)'],
   ['failure_count','Consecutive attempts without success'], ['last_error','Last error'], ['id','ID'],
 ];
 
