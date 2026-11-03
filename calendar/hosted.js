@@ -5,7 +5,7 @@ import {Buffer} from 'node:buffer';
 import {calendarFeed} from './feed.js';
 
 const project='https://vhlfumeyhkeospnemukq.supabase.co';
-const columns='id,modified,type,description,organizations,date,starttime,timezone,sources,registration';
+const columns='id,modified,type,description,organizations,date,starttime,timezone,sources';
 const fail=(message,status=400)=>Object.assign(new Error(message),{status});
 
 export async function hostedCalendar(request,{databaseURL,env,connect=postgres,authenticate=verifyAuth}={}){

@@ -36,9 +36,6 @@ For each development, provide:
   action date, according to the development's type.
 - starttime: The time associated with that date, when supported.
 - timezone: The timezone associated with that time, when supported.
-- registration: For an event, the URL where attendees register, from the page
-  or a page it links to. Use the page's own URL when registration takes place
-  there. Use null when no registration is supported or the event is not an event.
 
 For calls for expressions of interest, applications, proposals or comments,
 actively look for the submission deadline, including on announcements.
@@ -66,7 +63,7 @@ Judge priority by the development’s substance. Missing scheduling
 details do not lower priority. Use null when relevance is unclear.
 
 Return a JSON array containing one object per development, with
-description, type, priority, organizations, date, starttime, timezone, deadline and registration.
+description, type, priority, organizations, date, starttime, timezone and deadline.
 Return [] when the supplied post or page contains no developments.`;
 export const RESPONSE_SCHEMA={
   type:'array',
@@ -80,10 +77,9 @@ export const RESPONSE_SCHEMA={
       date:{type:['string','null']},
       starttime:{type:['string','null']},
       timezone:{type:['string','null']},
-      deadline:{type:['string','null']},
-      registration:{type:['string','null']}
+      deadline:{type:['string','null']}
     },
-    required:['description','type','priority','organizations','date','starttime','timezone','deadline','registration'],
+    required:['description','type','priority','organizations','date','starttime','timezone','deadline'],
     additionalProperties:false
   }
 };

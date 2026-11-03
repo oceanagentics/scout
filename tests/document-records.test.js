@@ -8,13 +8,7 @@ test('model fields stay flat, partial dates survive and organization names remai
  const event=normalizeFinding({type:'event',description:'Meeting',priority:'normal',organizations:['Ocean Institute','Ocean Institute','Partner'],date:'2026-04-02'},'https://example.org/a');
  assert.deepEqual(event.organizations,['Ocean Institute','Partner']);assert.equal(event.type,'event');
  assert.equal(event.priority,'normal');assert.deepEqual(event.sources,['https://example.org/a']);
- assert.deepEqual(Object.keys(event).sort(),['description','type','priority','organizations','deadline','date','starttime','timezone','sources','registration'].sort());
-});
-test('registration keeps only a safe http(s) URL and is otherwise null',()=>{
- const url='https://www.deepoceanbbnj.cn/2026.html',raw={type:'event',description:'Conference'};
- assert.equal(normalizeFinding({...raw,registration:' '+url+' '},'https://example.org/a').registration,url);
- for(const registration of [null,undefined,'','not a url','javascript:alert(1)','https://user:pass@example.org/'])
-  assert.equal(normalizeFinding({...raw,registration},'https://example.org/a').registration,null);
+ assert.deepEqual(Object.keys(event).sort(),['description','type','priority','organizations','deadline','date','starttime','timezone','sources'].sort());
 });
 test('invalid dates, clocks and zones remain null without losing the useful description',()=>{
  const f=normalizeFinding({type:'event',description:'Meeting',date:'2026-04-02',starttime:'13:30',timezone:'invalid'},'https://example.org/a');

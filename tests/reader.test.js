@@ -10,14 +10,14 @@ import {hostedReader} from '../supabase/functions/scout-reader/index.ts';
 import {hostedNotify} from '../supabase/functions/scout-notify/index.ts';
 
 const migration='20261019200000_scout_reader.sql';
-async function setup(t,{before=false,until=null}={}){
+async function setup(t,{before=false}={}){
   const raw=new PGlite();t.after(()=>raw.close());
   await raw.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;
     create schema vault;create table vault.secrets(name text,secret text);
     create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');create table auth.identities(user_id uuid,provider text,identity_data jsonb);
     create function auth.uid() returns uuid language sql as $$select null::uuid$$;`);
   for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort()){
-    if(before&&name===migration||until&&name===until)break;
+    if(before&&name===migration)break;
     await raw.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
   }
   return raw;
@@ -154,29 +154,6 @@ test('tracker URL -> one model investigation -> finding and tracker state; due r
   assert.equal(db.metrics.mutations-firstCost.mutations,2);
   const storage=(await raw.query('select pg_column_size(t) bytes from scout.trackers t')).rows[0];
   t.diagnostic(JSON.stringify({mocked:true,first_and_idle:firstCost,repeat_mutations:2,tracker_row_bytes:storage.bytes}));
-});
-
-test('a registration link is saved with the event; repeats and a later null change nothing',async t=>{
-  const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));
-  const registration='https://www.deepoceanbbnj.cn/2026.html';let reply={...event,date:'2026-11-05',registration};
-  const modelFor=()=>async()=>answer([reply]);
-  assert.equal((await intake(db,{modelFor})).created,1);
-  const saved=()=>raw.query('select registration from scout.records').then(r=>r.rows);
-  assert.deepEqual(await saved(),[{registration}]);
-  await due(raw);assert.equal((await intake(db,{modelFor})).changed,0);
-  reply={...reply,registration:null};await due(raw);
-  assert.equal((await intake(db,{modelFor})).changed,0);assert.deepEqual(await saved(),[{registration}]);
-});
-
-test('registration migration promotes an existing registration source and leaves other records empty',async t=>{
-  const name='20261104120000_scout_registration.sql',raw=await setup(t,{until:name});
-  await raw.exec(`insert into scout.records(description,type,sources) values
-    ('Webinar','event',array['https://example.org/event','https://us06web.zoom.us/webinar/register/WN_abc']),
-    ('Talk','event',array['https://example.org/talk']),
-    ('Brief','announcement',array['https://example.org/register-for-updates'])`);
-  await raw.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
-  const rows=Object.fromEntries((await raw.query('select description,registration from scout.records')).rows.map(r=>[r.description,r.registration]));
-  assert.deepEqual(rows,{Webinar:'https://us06web.zoom.us/webinar/register/WN_abc',Talk:null,Brief:null});
 });
 
 test('retirement blocks automatic and explicit checks on the UTC date without changing saved state',async t=>{

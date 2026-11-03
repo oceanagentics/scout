@@ -48,7 +48,7 @@ There is no stored status enum, permanent completion flag, seed-import key or se
 
 ## Findings and model calls
 
-[findings.js](../reader/findings.js) validates and saves the model's nine fields directly, under the existing transaction advisory lock. Every record has exactly these columns:
+[findings.js](../reader/findings.js) validates and saves the model's eight fields directly, under the existing transaction advisory lock. Every record has exactly these columns:
 
 | Field | Stored value |
 | --- | --- |
@@ -60,7 +60,6 @@ There is no stored status enum, permanent completion flag, seed-import key or se
 | `deadline`, `date` | A YYYY-MM-DD, YYYY-MM or YYYY string, or null |
 | `starttime`, `timezone` | Scalar strings or null |
 | `sources` | Array of URLs supplied to the model |
-| `registration` | An http(s) URL where attendees register for an event, or null; the calendar labels it "Registration link" |
 | `modified` | Array of UTC timestamps: creation, then saved changes |
 
 Dates stay as text to preserve partial dates. Calendar bounds and UTC instants are computed when needed; they are not stored fields. No title, kind, details, date_span, completeness, relevance, versions, identity aliases, overrides or provenance remain on records.
@@ -69,7 +68,7 @@ Identical findings make no record writes. Each saved change, including an additi
 
 Identity-key matching is removed. Existing description/source candidate lookup, exact descriptions, word overlap and sole same-type source selection remain pending a separate matching decision; no new matching system is introduced. The existing heuristic can still produce duplicates or associate findings incorrectly. All returned findings, descriptions and organizations are handled without content-count or text-length truncation.
 
-The findings RPC returns only these 12 columns. It accepts `p_type`; organization filtering uses name arrays, and date filtering selects `date` or `deadline`. RLS and server-side Workspace access checks remain.
+The findings RPC returns only these 11 columns. It accepts `p_type`; organization filtering uses name arrays, and date filtering selects `date` or `deadline`. RLS and server-side Workspace access checks remain.
 
 [The model gateway](../reader/models/gateway.js) makes one Gemini attempt per source item and, for eligible failures, one OpenAI fallback. Gemini uses URL Context; OpenAI uses provider web access. Supplied posts do not require browsing metadata; browsing remains available for missing details and images. URL-only investigations still require retrieval evidence. The existing timeouts remain (45 seconds per Gemini attempt, 100 seconds shared by source retrieval and all model calls in the check). Earlier committed dates survive a later timeout. Explicit diagnostic provider selection disables fallback. There is no generic admission dispatcher or database prerequisite for a model call.
 
