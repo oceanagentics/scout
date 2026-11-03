@@ -26,9 +26,18 @@ test('feed includes dated past events and excludes undated records',()=>{
 
 test('feed date entries preserve supported start times and skip non-events or partial dates',()=>{
   const unfolded=calendarFeed([record]).replaceAll('\r\n ','');
-  assert.match(unfolded,/15:30 \+02:00/);assert.match(unfolded,/end time unknown/);
+  assert.match(unfolded,/15:30 \+02:00/);assert.doesNotMatch(unfolded,/end time unknown|Calendar date entry/);
   assert.match(unfolded,/TRANSP:TRANSPARENT/);assert.ok(unfolded.includes('A & B <demo>'));
   for(const change of [{type:'announcement'},{date:null},{date:'2026-10'},{date:'2026'}])
     assert.doesNotMatch(calendarFeed([{...record,...change}]),/BEGIN:VEVENT/);
   assert.throws(()=>calendarFeed([{...record,id:'invalid'}]),/Invalid Scout record ID/);
+});
+
+test('feed labels registration links and states registration is required only when one exists',()=>{
+  const registration='https://us06web.zoom.us/meeting/register/X7ub2wxiR2-eFKqk8Taqvg#/registration';
+  const withLink=calendarFeed([{...record,sources:['https://example.org/event',registration]}]).replaceAll('\r\n ','');
+  assert.match(withLink,/Source: https:\/\/example.org\/event/);
+  assert.ok(withLink.includes('Registration link: '+registration));assert.doesNotMatch(withLink,/Source: https:\/\/us06web/);
+  assert.match(withLink,/Registration is required\./);assert.doesNotMatch(withLink,/Informational event/);
+  assert.match(calendarFeed([record]).replaceAll('\r\n ',''),/Informational event from Scout\\; registration may be required\./);
 });
