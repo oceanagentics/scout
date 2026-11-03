@@ -1,7 +1,8 @@
 import {normalizeDate,dateInterval} from '../shared/finding-dates.js';
+import {sourceLink} from '../shared/records.js';
 
 const text=v=>typeof v==='string'?v.toWellFormed().replace(/\s+/g,' ').trim():null;
-const fields=['description','type','priority','organizations','deadline','date','starttime','timezone','sources'];
+const fields=['description','type','priority','organizations','deadline','date','starttime','timezone','sources','registration'];
 
 export function normalizeFinding(raw,url){
   const description=text(raw?.description);
@@ -14,7 +15,8 @@ export function normalizeFinding(raw,url){
     priority:['high','normal','low'].includes(raw.priority)?raw.priority:null,
     organizations:[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).flatMap(o=>{
       const name=text(o);return name?[[name.toLowerCase(),name]]:[];
-    })).values()],deadline:date(raw.deadline),date:date(raw.date),starttime,timezone,sources:[url]};
+    })).values()],deadline:date(raw.deadline),date:date(raw.date),starttime,timezone,sources:[url],
+    registration:sourceLink(text(raw.registration))};
 }
 
 const normalize=value=>value.normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').trim().toLowerCase();
@@ -53,12 +55,12 @@ export async function saveFindings(tx,sourceUrl,findings){
     if(changed){
       const params=fields.map(k=>values[k]);
       const columns=`description=$1,type=$2,priority=$3,organizations=array(select jsonb_array_elements_text($4::jsonb)),
-        deadline=$5,date=$6,starttime=$7,timezone=$8,sources=array(select jsonb_array_elements_text($9::jsonb))`;
+        deadline=$5,date=$6,starttime=$7,timezone=$8,sources=array(select jsonb_array_elements_text($9::jsonb)),registration=$10`;
       record=target?(await tx.query(`update scout.records set ${columns},
         modified=array_append(modified,greatest(date_trunc('milliseconds',clock_timestamp()),modified[cardinality(modified)]+interval '1 millisecond'))
-        where id=$10 returning *`,[...params,target.id])).rows[0]
+        where id=$11 returning *`,[...params,target.id])).rows[0]
         :(await tx.query(`insert into scout.records(${fields.join(',')})
-          values($1,$2,$3,array(select jsonb_array_elements_text($4::jsonb)),$5,$6,$7,$8,array(select jsonb_array_elements_text($9::jsonb))) returning *`,params)).rows[0];
+          values($1,$2,$3,array(select jsonb_array_elements_text($4::jsonb)),$5,$6,$7,$8,array(select jsonb_array_elements_text($9::jsonb)),$10) returning *`,params)).rows[0];
       if(!record)throw fail('stale_record');
       counts[target?'changed':'created']++;
     }

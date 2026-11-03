@@ -15,7 +15,7 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
   // Vault here is a test double for SQL contracts, not a test of production encryption.
   await db.exec(`create role anon;create role authenticated;create role service_role;create schema scout;create schema auth;create schema vault;
     create table auth.identities(user_id uuid,provider text,provider_id text,identity_data jsonb);
-    create table scout.records(id uuid,modified timestamptz[],type text,description text,organizations text[],sources text[],date text,starttime text,timezone text);
+    create table scout.records(id uuid,modified timestamptz[],type text,description text,organizations text[],sources text[],date text,starttime text,timezone text,registration text);
     create table vault.secrets(id uuid default gen_random_uuid(),name text unique,secret text);
     create view vault.decrypted_secrets as select name,secret as decrypted_secret from vault.secrets;
     create function vault.create_secret(value text,label text) returns uuid language sql as $$ insert into vault.secrets(name,secret) values(label,value) returning id $$;

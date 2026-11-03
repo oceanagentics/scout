@@ -13,11 +13,12 @@ export function calendarFeed(records){
     const start=recordDate(record);
     if(start?.precision!=='day')continue;
     const end=new Date(Date.parse(start.value+'T00:00:00Z')+86400000).toISOString().slice(0,10);
-    const links=record.sources.filter(sourceLink),registrationLinks=links.filter(url=>/regist/i.test(url));
+    const registration=sourceLink(record.registration);
     const description=[record.description,record.organizations.join('; '),
       'Source start: '+(start.utc?`${start.utc.slice(0,10)} · ${start.utc.slice(11,16)} UTC`:dateLabel(start)),
-      ...links.map(url=>(registrationLinks.includes(url)?'Registration link: ':'Source: ')+url),
-      registrationLinks.length?'Registration is required.':'Informational event from Scout; registration may be required.',
+      ...record.sources.filter(url=>sourceLink(url)&&url!==registration).map(url=>'Source: '+url),
+      ...registration?['Registration link: '+registration,'Registration is required.']
+        :['Informational event from Scout; registration may be required.'],
       'Scout record: https://bbnj-scout.web.app/?record='+record.id].filter(Boolean).join('\n\n');
     lines.push('BEGIN:VEVENT','UID:'+record.id+'@scout.oceanagentics.com',
       'DTSTAMP:'+stamp(record.modified.at(-1)),'LAST-MODIFIED:'+stamp(record.modified.at(-1)),

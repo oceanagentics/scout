@@ -36,11 +36,13 @@ test('feed date entries preserve supported start times and skip non-events or pa
   assert.throws(()=>calendarFeed([{...record,id:'invalid'}]),/Invalid Scout record ID/);
 });
 
-test('feed labels registration links and states registration is required only when one exists',()=>{
-  const registration='https://us06web.zoom.us/meeting/register/X7ub2wxiR2-eFKqk8Taqvg#/registration';
-  const withLink=calendarFeed([{...record,sources:['https://example.org/event',registration]}]).replaceAll('\r\n ','');
+test('feed labels the saved registration link and states registration is required only when one exists',()=>{
+  const registration='https://www.deepoceanbbnj.cn/2026.html';
+  const withLink=calendarFeed([{...record,sources:['https://example.org/event',registration],registration}]).replaceAll('\r\n ','');
   assert.match(withLink,/Source: https:\/\/example.org\/event/);
-  assert.ok(withLink.includes('Registration link: '+registration));assert.doesNotMatch(withLink,/Source: https:\/\/us06web/);
+  assert.ok(withLink.includes('Registration link: '+registration));assert.doesNotMatch(withLink,/Source: https:\/\/www.deepoceanbbnj/);
   assert.match(withLink,/Registration is required\./);assert.doesNotMatch(withLink,/Informational event/);
+  const unsafe=calendarFeed([{...record,registration:'javascript:alert(1)'}]).replaceAll('\r\n ','');
+  assert.doesNotMatch(unsafe,/Registration link|javascript/);
   assert.match(calendarFeed([record]).replaceAll('\r\n ',''),/Informational event from Scout\\; registration may be required\./);
 });

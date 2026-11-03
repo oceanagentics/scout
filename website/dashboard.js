@@ -4,7 +4,7 @@ import {findingInterval} from '../shared/finding-dates.js';
 
 const RECORD_FIELDS = [
   'id', 'description', 'type', 'priority', 'organizations', 'deadline', 'date',
-  'starttime', 'timezone', 'sources', 'modified',
+  'starttime', 'timezone', 'registration', 'sources', 'modified',
 ];
 const TRACKER_FIELDS = [
   ['name','Name'], ['url','URL'], ['coverage','Coverage'], ['cadence','Cadence'], ['enabled','Enabled'],
