@@ -26,7 +26,10 @@ test('feed includes dated past events and excludes undated records',()=>{
 
 test('feed date entries preserve supported start times and skip non-events or partial dates',()=>{
   const unfolded=calendarFeed([record]).replaceAll('\r\n ','');
-  assert.match(unfolded,/15:30 \+02:00/);assert.doesNotMatch(unfolded,/end time unknown|Calendar date entry/);
+  assert.match(unfolded,/Source start: 2026-10-22 · 13:30 UTC/);assert.doesNotMatch(unfolded,/end time unknown|Calendar date entry/);
+  const eastern=calendarFeed([{...record,date:'2026-11-04',starttime:'10:00',timezone:'-05:00'}]).replaceAll('\r\n ','');
+  assert.match(eastern,/Source start: 2026-11-04 · 15:00 UTC/);
+  assert.match(calendarFeed([{...record,timezone:null}]).replaceAll('\r\n ',''),/Source start: 2026-10-22 · 15:30 \(timezone unknown\)/);
   assert.match(unfolded,/TRANSP:TRANSPARENT/);assert.ok(unfolded.includes('A & B <demo>'));
   for(const change of [{type:'announcement'},{date:null},{date:'2026-10'},{date:'2026'}])
     assert.doesNotMatch(calendarFeed([{...record,...change}]),/BEGIN:VEVENT/);

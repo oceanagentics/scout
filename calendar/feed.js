@@ -15,7 +15,7 @@ export function calendarFeed(records){
     const end=new Date(Date.parse(start.value+'T00:00:00Z')+86400000).toISOString().slice(0,10);
     const links=record.sources.filter(sourceLink),registrationLinks=links.filter(url=>/regist/i.test(url));
     const description=[record.description,record.organizations.join('; '),
-      'Source start: '+dateLabel(start),
+      'Source start: '+(start.utc?`${start.utc.slice(0,10)} · ${start.utc.slice(11,16)} UTC`:dateLabel(start)),
       ...links.map(url=>(registrationLinks.includes(url)?'Registration link: ':'Source: ')+url),
       registrationLinks.length?'Registration is required.':'Informational event from Scout; registration may be required.',
       'Scout record: https://bbnj-scout.web.app/?record='+record.id].filter(Boolean).join('\n\n');
