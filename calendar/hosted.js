@@ -4,7 +4,7 @@ import {randomBytes,timingSafeEqual,createHash} from 'node:crypto';
 import {Buffer} from 'node:buffer';
 import {calendarFeed} from './feed.js';
 
-const owner='danny@oceanagentics.com',project='https://vhlfumeyhkeospnemukq.supabase.co';
+const project='https://vhlfumeyhkeospnemukq.supabase.co';
 const columns='id,modified,type,description,organizations,date,starttime,timezone,sources,registration';
 const fail=(message,status=400)=>Object.assign(new Error(message),{status});
 
@@ -16,8 +16,8 @@ export async function hostedCalendar(request,{databaseURL,env,connect=postgres,a
     'Access-Control-Allow-Methods':'GET,POST,OPTIONS',Vary:'Origin'});
   const json=(body,status=200)=>Response.json(body,{status,headers});
   if(request.method==='OPTIONS')return new Response(null,{status:204,headers});
-  if(!['status','feed-link','feed.ics'].includes(action))return json({error:'Not found'},404);
-  if(request.method!==(['status','feed.ics'].includes(action)?'GET':'POST'))return json({error:'Method not allowed'},405);
+  if(!['feed-link','feed.ics'].includes(action))return json({error:'Not found'},404);
+  if(request.method!==(action==='feed.ics'?'GET':'POST'))return json({error:'Method not allowed'},405);
   if(url.searchParams.size!==(action==='feed.ics'?1:0))return json({error:'Invalid request'},400);
   let auth;
   if(action!=='feed.ics'){
@@ -43,11 +43,9 @@ export async function hostedCalendar(request,{databaseURL,env,connect=postgres,a
       const feedHeaders={...headers,'Content-Type':'text/calendar; charset=utf-8',ETag:etag};
       return new Response(request.headers.get('if-none-match')===etag?null:body,{status:request.headers.get('if-none-match')===etag?304:200,headers:feedHeaders});
     }
-    const identity=(await query(`select identity_data->>'email' email from auth.identities
+    const identity=(await query(`select 1 from auth.identities
       where user_id=$1 and provider='google' and identity_data @> '{"iss":"https://accounts.google.com","email_verified":true,"custom_claims":{"hd":"oceanagentics.com"}}'`,[auth.userClaims.id]))[0];
     if(!identity)throw fail('Ocean Agentics Google identity required',403);
-    if(identity.email!==owner)return action==='status'?json({manager:false}):json({error:'Only the calendar owner can configure this calendar'},403);
-    if(action==='status')return json({manager:true});
     let token=await secret('scout_calendar_feed');
     if(!token){
       await query('select scout.save_calendar_secret($1,$2)',['scout_calendar_feed',randomBytes(32).toString('hex')]);

@@ -1,6 +1,6 @@
 # Scout architecture
 
-The flat record schema and its reader, website, notification and calendar consumers were deployed on 21 October 2026. Notification delivery state was removed on 2 November 2026. Recurring collection and notifications remain paused.
+Scout uses flat saved findings shared by the reader, website, notifications and calendar. Recurring collection and notifications remain paused. For credentials, deployment commands and live verification, follow [README → Supabase deployment](../README.md#supabase-deployment). Completed cutover instructions and run results remain in Git history.
 
 ## Tracker investigation
 
@@ -81,22 +81,8 @@ The providers enforce their actual context, output and account limits. Scout doe
 
 - [website/](../website/) displays findings and tracker state. Firebase hosts the static interface; Supabase Auth and RLS protect data. Verified Ocean Agentics Google identities retain reader access and backend-granted admin roles.
 - [scout-notify](../supabase/functions/scout-notify/index.ts) calls the existing [Slack workflow](../slackbot/slack.js) for explicitly requested sends. Findings use the existing high-priority, creation-time and event-date eligibility rules. Preview expiration and modification checks remain. Each request can send the same eligible finding again, including after a successful or uncertain send; concurrent requests can also repeat a send. Delivery outcomes are returned only to the caller. There is no persistent delivery state, reservation or suppression of repeat sends. No notifications are sent during reader checks.
-- [scout-calendar](../supabase/functions/scout-calendar/index.ts) serves the private subscription feed. Direct writes to personal Google calendars were removed on 2 November 2026. It reads the flat saved findings. Exact-day events become labelled date entries, with their supported start time and timezone in the description. No event duration is invented; partial/unknown dates are excluded. Record IDs continue to identify existing subscription entries.
+- [scout-calendar](../supabase/functions/scout-calendar/index.ts) serves the private subscription feed. Verified Ocean Agentics users retrieve its link through the Scout Calendar button. Direct writes to personal Google calendars were removed on 2 November 2026. It reads the flat saved findings. Exact-day events become labelled date entries, with their supported start time and timezone in the description. No event duration is invented; partial/unknown dates are excluded. Record IDs continue to identify existing subscription entries.
 - [diagnostics/run-reader.js](../diagnostics/run-reader.js) launches a hosted check. Its explicit diagnostic mode reads the tracker once and runs the local reader with in-memory findings, with no shared database writes; see [diagnostics instructions](../diagnostics/README.md).
 - The retired `collector/` pipeline and static tracker seed file were removed on 2 November 2026. Trackers are managed through the website. Their UUIDs identify existing rows; no replacement import bookkeeping is stored. The old `scout-collect-hsa` endpoint retains its HTTP 410 retirement response.
 
 Production stores findings, source URLs and compact current state. Source bodies, prompts, responses and proof trails are not production records. The requested local traffic capture remains confined to diagnostics.
-
-## Cutover
-
-The [Bluesky feed migration](../supabase/migrations/20261102200000_scout_feed_reader.sql) replaces `next_check_at` with `last_successful_check`, initialized three weeks before migration time. It requires paused jobs and no active tracker lease. Deploy the reader and website and reinstall [the paused scheduler](../supabase/scout-loop.sql) with this schema change. No finding rows are migrated. Each completed timestamp group adds one tracker update; model calls scale with new posts, not old feed content. An empty window uses five SQL statements and two tracker row mutations, with zero model calls. Source bodies and API cursors are discarded at the end of the invocation.
-
-The flat-record migration converts existing findings in one transaction, preserving IDs, supported scalar values, source URLs, known timestamps, access controls and notification delivery outcomes. It removes obsolete record columns and their dependent indexes, the derived reader view and the old JSON date functions. The existing findings RPC is replaced with a direct projection of the flat table.
-
-The migration requires paused jobs, no active tracker lease and no sending notification. Deploy the reader, notification and calendar functions and the website with the schema change during a short maintenance window.
-
-Keep all four Scout cron jobs paused. Migration verification covers conversion, unchanged saves, updates, access boundaries and all active consumers. This migration does not add cost measurement or model accounting. No Slack messages or Google Calendar synchronization are part of verification.
-
-Production conversion preserved all 111 existing records, 44 trackers and 12 delivery outcomes. All 77 tests passed. The explicit pavilion tracker check subsequently created 99 records and changed none, bringing the total to 210; it exercised live model-to-database persistence, but the source blocked independent direct retrieval, so this does not establish the correctness of every returned finding. The deployed findings RPC returns exactly the 11 fields, and the private calendar feed still works.
-
-The [2 November delivery-state removal](../supabase/migrations/20261102180000_scout_remove_delivery_state.sql) drops `scout.delivery_state` and its existing rows. Deploy `scout-notify` first, with all Scout jobs paused and no active notification request, then apply the migration. No other consumer needs redeployment. Explicit single-finding sends now use two read queries and zero row mutations, with no model call or retained delivery bytes. Local hosted-function tests use real in-memory SQL and a mocked Slack response; verification must not send Slack messages or synchronize Google Calendar.
