@@ -2,7 +2,7 @@
 
 Scout collects BBNJ events, announcements and official treaty developments, saves useful findings with source URLs, and makes them available through a private website, Slack and calendar tools.
 
-Recurring collection and notifications remain paused pending review. This guide describes the local code; it does not certify what is currently deployed.
+Collection wakes every six minutes and checks one due tracker. Current trackers have a daily cadence: a fully successful check completes that Pacific calendar day. Notifications remain paused. This guide describes the local code; it does not certify what is currently deployed.
 
 ## Files and responsibilities
 

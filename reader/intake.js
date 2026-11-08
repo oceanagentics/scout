@@ -14,8 +14,10 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch}){
       and (retire_on is null or retire_on>(clock_timestamp() at time zone 'UTC')::date)
       and (lease_until is null or lease_until<=clock_timestamp())
       and (case when $1::uuid is not null then id=$1 else enabled and failure_count<3
-        and (last_checked_at is null or last_checked_at+cadence<=clock_timestamp()) end)
-      order by last_checked_at+cadence nulls first,id for update skip locked limit 1)
+        and (last_checked_at is null or last_successful_check is distinct from last_checked_at
+          or date_trunc('day',last_successful_check at time zone 'America/Los_Angeles')+cadence
+            <=date_trunc('day',clock_timestamp() at time zone 'America/Los_Angeles')) end)
+      order by last_checked_at nulls first,id for update skip locked limit 1)
     returning *`,[trackerId,randomUUID()])).rows[0];
   if(!tracker)return {state:'idle',created:0,changed:0};
   const counts={created:0,changed:0,saved:0,ambiguous:0},through=new Date(tracker.last_checked_at).toISOString();

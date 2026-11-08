@@ -1,6 +1,6 @@
 # Scout architecture
 
-Scout uses flat saved findings shared by the reader, website, notifications and calendar. Recurring collection and notifications remain paused. For credentials, deployment commands and live verification, follow [README → Supabase deployment](../README.md#supabase-deployment). Completed cutover instructions and run results remain in Git history.
+Scout uses flat saved findings shared by the reader, website, notifications and calendar. Collection wakes every six minutes and checks one due tracker; notifications remain paused. For credentials, deployment commands and live verification, follow [README → Supabase deployment](../README.md#supabase-deployment). Completed cutover instructions and run results remain in Git history.
 
 ## Tracker investigation
 
@@ -34,13 +34,13 @@ Source configuration and current progress live together in `scout.trackers`:
 | Field | Meaning |
 | --- | --- |
 | `retire_on` | Optional UTC date on which the tracker stops accepting checks and disappears from the website tracker list. Null keeps an ongoing source eligible. Saved findings remain available. |
-| `last_checked_at` | When the latest attempt started. A tracker is due when this is null or this date plus `cadence` has passed. |
+| `last_checked_at` | When the latest attempt started. A check is fully complete when this equals `last_successful_check`. Incomplete attempts remain eligible for retry. After completion, `cadence` runs from midnight of that Pacific calendar day. Current trackers use one day. |
 | `last_successful_check` | Source content consumed through this date. Initially seeded three weeks back; subsequently advanced only by successful processing. |
 | `last_error` | Short reason for the latest unsuccessful attempt; cleared on success. |
 | `failure_count` | Attempts since successful progress, including a claimed attempt. Three consecutive attempts without progress stop automatic retries. |
 | `lease_id`, `lease_until` | Temporary ownership of an in-flight check; cleared when finished. |
 
-A terminated worker's claim remains counted unless it committed progress. An explicit tracker-ID request starts another bounded cycle after three failures, without stealing a live lease. Failures retry on the tracker cadence; there is no separately stored next-check date. `last_checked_at` does not imply successful retrieval; inspect `last_error` too. The initial `last_successful_check` is a chosen starting boundary, not evidence of an earlier model check.
+A terminated worker's claim remains counted unless it committed progress. An explicit tracker-ID request starts another bounded cycle after three failures, without stealing a live lease. Failures can retry on later six-minute wakes, with older attempts selected first; there is no separately stored next-check date. A partial Bluesky checkpoint does not equal the attempt start time and therefore cannot complete the day, even if the worker dies before storing an error. `last_checked_at` does not imply successful retrieval; inspect `last_error` too. The initial `last_successful_check` is a chosen starting boundary, not evidence of an earlier model check. An explicit tracker-ID request can recheck a source already completed today.
 
 Retirement applies to scheduled, explicit and local diagnostic checks without deleting tracker rows or findings. COP17-specific sources retire on 28 November 2026, four weeks after the conference closed; the general CBD side-event registry remains ongoing. The reader claim and scheduler use the UTC date, and the website excludes retired rows in its existing tracker query. No retirement job or history is stored.
 
@@ -72,7 +72,7 @@ The findings RPC returns only these 11 columns. It accepts `p_type`; organizatio
 
 [The model gateway](../reader/models/gateway.js) makes one Gemini attempt per source item and, for eligible failures, one OpenAI fallback. Gemini uses URL Context; OpenAI uses provider web access. Supplied posts do not require browsing metadata; browsing remains available for missing details and images. URL-only investigations still require retrieval evidence. The existing timeouts remain (45 seconds per Gemini attempt, 100 seconds shared by source retrieval and all model calls in the check). Earlier committed dates survive a later timeout. Explicit diagnostic provider selection disables fallback. There is no generic admission dispatcher or database prerequisite for a model call.
 
-The providers enforce their actual context, output and account limits. Scout does not set request/response byte, output-token, URL, tool-call or finding-count caps. Provider truncation and malformed output fail visibly. There is no model usage ledger, uncertain-charge estimate, application spending limit, reservation/settlement call or quota cleanup. Scheduling is controlled by the cron job itself, which remains disabled.
+The providers enforce their actual context, output and account limits. Scout does not set request/response byte, output-token, URL, tool-call or finding-count caps. Provider truncation and malformed output fail visibly. There is no model usage ledger, uncertain-charge estimate, application spending limit, reservation/settlement call or quota cleanup. The six-minute cron job invokes the reader only while an eligible tracker remains. When all trackers are complete, wakes do only eligibility checks and existing cron-history housekeeping; they make no model calls or finding writes. The scheduler installation SQL leaves jobs paused so the deployed reader can be verified before collection is enabled.
 
 [database.js](../reader/database.js) wraps the Postgres connection with parameterized queries and transactions. It returns invocation-local SQL statement, mutation and byte measurements without gating work or retaining query parameters or result bodies. It is an internal SQL wrapper, not another network API.
 

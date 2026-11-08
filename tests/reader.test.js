@@ -23,7 +23,7 @@ async function setup(t,{before=false}={}){
   return raw;
 }
 const driver=raw=>({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;},release(){}});
-const tracker=async raw=>(await raw.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Tracker','https://example.org/list?raw=%2B','web','6 hours',true) returning *")).rows[0];
+const tracker=async raw=>(await raw.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Tracker','https://example.org/list?raw=%2B','web','1 day',true) returning *")).rows[0];
 const due=raw=>raw.exec("update scout.trackers set last_checked_at=clock_timestamp()-cadence-interval '1 second'");
 const event={description:'BBNJ implementation workshop',type:'event',priority:'high',organizations:['Ocean Institute'],date:'2026-10',starttime:null,timezone:null};
 const answer=(records=[event])=>({status:records.length?'found':'none',records});
@@ -188,6 +188,27 @@ test('failed and crashed attempts stop at three, explicit retry works',async t=>
   // A terminated worker still consumes its attempt, including the third one.
   await raw.exec("update scout.trackers set failure_count=3,lease_id=gen_random_uuid(),lease_until=now()-interval '1 second',last_checked_at=now()-cadence");
   assert.equal((await intake(db,{modelFor:failure})).state,'idle');assert.equal(calls,3);
+});
+
+test('daily scheduling skips completed checks, resumes partial checks and retries failures without waiting a day',async t=>{
+  const raw=await setup(t);await tracker(raw);
+  const db=database(driver(raw));let calls=0;
+  const modelFor=()=>async()=>{calls++;return answer([]);};
+  assert.equal((await intake(db,{modelFor})).state,'no_findings');
+  assert.equal((await intake(db,{modelFor})).state,'idle');assert.equal(calls,1);
+  // The prior Pacific day's final millisecond is due even before 24 hours pass.
+  await raw.exec(`update scout.trackers set last_checked_at=
+    (date_trunc('day',clock_timestamp() at time zone 'America/Los_Angeles') at time zone 'America/Los_Angeles')-interval '1 millisecond';
+    update scout.trackers set last_successful_check=last_checked_at`);
+  assert.equal((await intake(db,{modelFor})).state,'no_findings');assert.equal(calls,2);
+  // A worker can commit part of a feed today and then die with no stored error.
+  await raw.exec(`update scout.trackers set last_successful_check=last_checked_at-interval '1 millisecond',
+    lease_id=gen_random_uuid(),lease_until=clock_timestamp()-interval '1 second'`);
+  assert.equal((await intake(db,{modelFor})).state,'no_findings');assert.equal(calls,3);
+  await raw.exec("update scout.trackers set last_successful_check=last_checked_at-interval '1 millisecond'");
+  assert.equal((await intake(db,{modelFor:()=>async()=>{throw new Error('provider_unavailable');}})).state,'deferred');
+  assert.equal((await intake(db,{modelFor})).state,'no_findings');assert.equal(calls,4);
+  assert.equal((await intake(db,{modelFor})).state,'idle');assert.equal(calls,4);
 });
 
 test('all returned findings and their text/organizations survive without content or SQL caps',async t=>{
