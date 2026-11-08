@@ -1,52 +1,57 @@
 import { request } from 'node:https';
-import { eventTiming,recordDates,sourceLink,orderRecords } from '../shared/records.js';
+import {Buffer} from 'node:buffer';
+import {eventTiming,sourceLink} from '../shared/records.js';
+import {recordDate,dateLabel,scoutDay,SCOUT_TIMEZONE} from '../shared/finding-dates.js';
 
 export const CHANNEL='C0C5PE21KN1';
 const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('|','%7C');
 
-export async function readRecords(db){
-  return (await db.query(`select r.*,r.modified::text[] as modified
-    from scout.records r where priority in ('high','normal')
-    order by modified[cardinality(modified)] desc,id limit 100`)).rows;
+export async function readRecords(db,{kind,ids=[],now=new Date()}){
+  if(kind==='findings'&&!ids.length)return [];
+  const where=kind==='findings'?'r.id=any($1::uuid[])':kind==='morning'?"r.type='event' and length(r.date)=10":
+    "r.priority='high' and (r.type='event' or (r.type='announcement' and r.modified[1]>=((($1::timestamptz at time zone 'America/New_York')-interval '7 days') at time zone 'America/New_York') and r.modified[1]<$1::timestamptz))";
+  return (await db.query(`select r.*,r.modified::text[] as modified from scout.records r where ${where} order by r.date nulls last,r.id`,
+    kind==='findings'?[ids]:kind==='weekly'?[now.toISOString()]:[])).rows;
 }
 
-export function eligibleRecords(records,{kind='findings',from,through,now=new Date()}={}) {
-  return orderRecords(records.filter(r=>{
-    if (kind==='digest') {
-      if (r.type!=='event'||!['high','normal'].includes(r.priority)) return false;
-      const [start,end]=recordDates(r);
-      return !!start&&eventTiming(r,now)==='Upcoming'&&start<=through&&end>=from;
+export async function prepareMessage(db,{kind='weekly',ids=[],now=new Date()}={}) {
+  if(!['findings','morning','weekly'].includes(kind))throw new Error('Unknown notification kind');
+  const today=scoutDay(now);
+  const records=(await readRecords(db,{kind,ids,now})).filter(r=>{
+    if(kind==='findings')return true;
+    if(kind==='weekly')return r.type==='announcement'||eventTiming(r,now)!=='Past / started';
+    const start=recordDate(r);
+    return (start?.utc?scoutDay(new Date(start.utc)):start?.value)===today;
+  });
+  if(!records.length)return {records:[],payload:null};
+  const lines=[kind==='findings'?'New findings':kind==='morning'?`Today’s events · ${today} · New York`:`Weekly digest · ${today} · New York`];
+  const groups=kind==='weekly'?[
+    ['Pending high-priority events',records.filter(r=>r.type==='event'&&recordDate(r))],
+    ['High-priority events · date unknown',records.filter(r=>r.type==='event'&&!recordDate(r))],
+    ['High-priority announcements · discovered in the past seven days',records.filter(r=>r.type==='announcement')]
+  ]:[['',records]];
+  for(const [heading,group] of groups){
+    if(!group.length)continue;
+    if(heading)lines.push('\n'+heading);
+    for(const r of group){
+      const url=(r.sources??[]).map(sourceLink).find(Boolean);
+      if(!url)throw new Error('Notification requires a supporting source link');
+      const start=recordDate(r),timing=start?.utc?
+        new Intl.DateTimeFormat('en-US',{timeZone:SCOUT_TIMEZONE,dateStyle:'medium',timeStyle:'short'}).format(new Date(start.utc))+' New York; source: '+dateLabel(start):dateLabel(start);
+      const type={event:'Event',announcement:'Announcement',treaty_status:'Treaty change'}[r.type]??'Finding';
+      lines.push(`• ${escape(r.priority??'Unassessed')} · ${type} · ${escape(r.description)}\n  ${escape(timing)} · <${escape(url)}|Read more>`);
     }
-    const age=now.getTime()-Date.parse(r.modified[0]);
-    return r.priority==='high'&&age>=0&&age<=86400000&&
-      (r.type!=='event'||eventTiming(r,now)!=='Past / started');
-  }));
-}
-
-export async function prepareMessage(db,{model,kind='findings',from,through,now=new Date(),exclude=[]}={}) {
-  const day=value=>/^\d{4}-\d{2}-\d{2}$/.test(value??'')&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString().slice(0,10)===value;
-  if (!['findings','digest'].includes(kind)) throw new Error('Unknown notification kind');
-  if (kind==='digest'&&(!day(from)||!day(through)||through<from||Date.parse(through)-Date.parse(from)>31*86400000)) throw new Error('Use an inclusive UTC digest window of at most 32 days');
-  const candidates=eligibleRecords(await readRecords(db),{kind,from,through,now})
-    .filter(r=>!exclude.some(e=>e.id===r.id)).slice(0,10);
-  if (!candidates.length) return {records:[],payload:null};
-  const records=candidates.slice(0,kind==='digest'?5:1);
-  const lines=kind==='digest'?[`Upcoming events · ${from}–${through} UTC`]:[];
-  for (const r of records) {
-    const url=(r.sources??[]).map(sourceLink).find(Boolean);
-    if (!url) throw new Error('Notification requires a supporting source link');
-    lines.push(`${escape(r.description)} <${escape(url)}|Read more>`);
   }
   return {records,payload:{text:lines.join('\n'),parse:'none',unfurl_links:false,unfurl_media:false},prepared_at:now.toISOString()};
 }
 
 export async function sendMessage(db,preview,post,{now=()=>new Date()}={}) {
-  if (!preview.payload||!preview.records.length) return {status:'no_change',communicated:0};
+  if(!preview.payload||!preview.records.length)return {status:'no_change',communicated:0};
   if(now()-Date.parse(preview.prepared_at)>60000)throw new Error('Preview expired');
-  for(const r of preview.records){
-    const current=(await db.query('select id from scout.records where id=$1 and modified[cardinality(modified)]=$2',[r.id,r.modified.at(-1)])).rows[0];
-    if(!current)throw new Error('Preview changed');
-  }
+  const current=(await db.query(`select r.id from scout.records r join unnest($1::uuid[],$2::text[]) expected(id,modified)
+    on r.id=expected.id and r.modified[cardinality(r.modified)]=expected.modified::timestamptz`,
+    [preview.records.map(r=>r.id),preview.records.map(r=>r.modified.at(-1))])).rows;
+  if(current.length!==preview.records.length)throw new Error('Preview changed');
   let status='unknown';
   try{const response=await post(preview.payload);status=response.status===200&&response.body.trim()==='ok'?'sent':response.status>=400&&response.status<500?'failed':'unknown';}catch{}
   return {status,communicated:status==='sent'?preview.records.length:0};

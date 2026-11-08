@@ -7,7 +7,11 @@ export async function hostedNotify(request,{databaseURL,webhook,env,connect=post
   const {error}=await verifyAuth(request,{auth:'secret:default',env});
   if(error)return Response.json({error:'Backend secret required'},{status:401});
   if(request.method!=='POST')return Response.json({error:'POST required'},{status:405});
-  if(new URL(request.url).search||request.body&&await request.text())return Response.json({error:'No parameters or body required'},{status:400});
+  const params=new URL(request.url).searchParams,kind=params.get('kind'),ids=params.get('ids')?.split(',')??[];
+  if(!['morning','weekly','findings'].includes(kind)||[...params.keys()].some(k=>!['kind','ids'].includes(k))||
+    params.getAll('kind').length!==1||params.getAll('ids').length>1||
+    (kind==='findings'?!ids.length||ids.some(id=>!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)):params.has('ids'))||
+    request.body&&await request.text())return Response.json({error:'Use kind=morning, kind=weekly, or kind=findings with comma-separated ids; no body.'},{status:400});
   if(!databaseURL)return Response.json({error:'Database unavailable'},{status:503});
   let sql,session;
   try{
@@ -15,7 +19,7 @@ export async function hostedNotify(request,{databaseURL,webhook,env,connect=post
       types:{json:{to:114,from:[114,3802],parse:JSON.parse,serialize:value=>typeof value==='string'?value:JSON.stringify(value)}},
       connection:{application_name:'scout-notify',statement_timeout:5000}});
     session=await sql.reserve();const db=database(session);
-    const preview=await prepareMessage(db),result=await sendMessage(db,preview,post??webhookTransport(webhook));
+    const preview=await prepareMessage(db,{kind,ids}),result=await sendMessage(db,preview,post??webhookTransport(webhook));
     return Response.json({...result,cost:db.metrics});
   }catch{return Response.json({error:'Notification interrupted'},{status:500});}
   finally{session?.release();await sql?.end({timeout:1}).catch(()=>{});}

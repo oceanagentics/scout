@@ -1,4 +1,4 @@
-import {recordDate,dateLabel} from '../shared/finding-dates.js';
+import {recordDate,dateLabel,scoutDay,SCOUT_TIMEZONE} from '../shared/finding-dates.js';
 export const TYPES = { event: 'Event', announcement: 'Announcement', treaty_status: 'Treaty change' };
 export const PRIORITIES = { high:'High', normal:'Normal', low:'Low' };
 export function fieldLabel(record, field) {
@@ -10,7 +10,9 @@ export function fieldLabel(record, field) {
 const dayValid = value => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '') && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 const instantValid = value => typeof value === 'string' && dayValid(value.slice(0, 10)) && /T\d{2}:\d{2}.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
 export function stamp(value) {
-  return instantValid(value) ? `${new Date(value).toISOString().slice(0, 16).replace('T', ' ')} UTC` : 'Unknown';
+  if(!instantValid(value))return 'Unknown';
+  const at=new Date(value);
+  return scoutDay(at)+' '+new Intl.DateTimeFormat('en-US',{timeZone:SCOUT_TIMEZONE,hour:'2-digit',minute:'2-digit',hourCycle:'h23',timeZoneName:'short'}).format(at);
 }
 
 export function eventLabel(record) {

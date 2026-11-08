@@ -50,8 +50,9 @@ test('database failure rolls back and does not disclose connection or source det
  await assert.rejects(db.transaction(tx=>tx.query('broken')),e=>e.message==='database_operation'&&!e.message.includes('secret'));
  assert.deepEqual(queries,['begin','broken','rollback']);
 });
-test('scheduler wakes every six minutes, installs paused, and has no report, notification or history-scanning health loop',async()=>{
+test('scheduler installs collection and both digests paused without a retired health loop',async()=>{
  const text=await readFile(new URL('../supabase/scout-loop.sql',import.meta.url),'utf8');
  assert.match(text,/'\*\/6 \* \* \* \*'/);assert.match(text,/active:=false/);assert.ok(!text.includes('collection_runs'));
+ assert.match(text,/'scout-morning','0 12,13 \* \* \*'/);assert.match(text,/'scout-weekly','0 13,14 \* \* 1'/);
  assert.ok(!text.includes('loop_tick(\'notify\')'));assert.ok(!text.includes("s.state<>'parked'"));
 });

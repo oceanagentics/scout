@@ -1,4 +1,6 @@
 // Shared typed values. Calendar dates never pass through the viewer's timezone.
+export const SCOUT_TIMEZONE='America/New_York';
+export const scoutDay=(now=new Date())=>new Intl.DateTimeFormat('en-CA',{timeZone:SCOUT_TIMEZONE,year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
 export const DATE_FIELDS={event:['start','end','response_due'],announcement:['published','effective','response_due'],treaty_status:['action_date','effective','response_due']};
 export function dateInterval(date){
   if(!date||typeof date.value!=='string')return null;

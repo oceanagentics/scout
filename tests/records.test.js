@@ -1,8 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {eventLabel,trackerState,fieldLabel} from '../website/records.js';
+import {eventLabel,trackerState,fieldLabel,stamp} from '../website/records.js';
 import {eventTiming,recordDates,sourceLink,orderRecords} from '../shared/records.js';
 import {loadScout} from '../website/dashboard.js';
+import {scoutDay} from '../shared/finding-dates.js';
 
 test('flat reader displays local date/time and organization strings',()=>{
   const event={id:'event',type:'event',organizations:['Ocean Institute','Second Institute'],date:'2026-10-15',starttime:'00:30',timezone:'+08:00'};
@@ -28,11 +29,18 @@ test('reader sends filters and stable cursor to bounded server queries and surfa
   const rows=Array.from({length:50},(_,i)=>({id:String(i),priority:'low',type:'announcement',organizations:[],date:'2026-03'})),calls=[];let fail=false;
   const client={rpc:async(name,args)=>{calls.push({name,args});return fail?{error:new Error('Unavailable')}:{data:name==='findings'?rows:[]};},
     from:table=>{assert.equal(table,'trackers');return{select(fields){assert.ok(fields.split(',').includes('retire_on'));return this;},
-      or(filter){assert.equal(filter,'retire_on.is.null,retire_on.gt.'+new Date().toISOString().slice(0,10));return this;},
+      or(filter){assert.equal(filter,'retire_on.is.null,retire_on.gt.'+scoutDay());return this;},
       order(){return this;},limit(n){assert.equal(n,500);return{data:[]};}};}};
   const result=await loadScout(client,{filters:{type:'announcement',organization:'Ocean Institute',meaning:'deadline',from:'2027-01-01'}});
   assert.deepEqual(result.records,rows);assert.equal(result.records.length,50);assert.deepEqual(result.next,{rank:2,day:'2026-03-01',id:'49'});
   assert.equal(calls[0].args.p_limit,50);assert.equal(calls[0].args.p_organization,'Ocean Institute');assert.equal(calls[0].args.p_meaning,'deadline');
   await loadScout(client,{after:result.next});assert.deepEqual(calls[1].args.p_after,result.next);
   assert.ok(calls.every(c=>c.name==='findings'));fail=true;await assert.rejects(loadScout(client),/Unavailable/);
+});
+
+test('Scout calendar days and operational timestamps use New York across DST',()=>{
+ assert.equal(scoutDay(new Date('2026-11-09T04:30:00Z')),'2026-11-08');
+ assert.equal(stamp('2026-11-09T04:30:00Z'),'2026-11-08 23:30 EST');
+ assert.equal(stamp('2026-07-09T03:30:00Z'),'2026-07-08 23:30 EDT');
+ assert.equal(eventTiming({type:'event',date:'2026-11-08'},new Date('2026-11-09T04:30:00Z')),'Date known · time unknown');
 });

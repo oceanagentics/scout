@@ -1,6 +1,6 @@
 import { TYPES, stamp, eventLabel,fieldLabel } from './records.js';
 import { sourceLink,eventTiming,orderRecords } from '../shared/records.js';
-import {findingInterval} from '../shared/finding-dates.js';
+import {findingInterval,scoutDay} from '../shared/finding-dates.js';
 
 const RECORD_FIELDS = [
   'id', 'description', 'type', 'priority', 'organizations', 'deadline', 'date',
@@ -8,8 +8,8 @@ const RECORD_FIELDS = [
 ];
 const TRACKER_FIELDS = [
   ['name','Name'], ['url','URL'], ['coverage','Coverage'], ['cadence','Cadence'], ['enabled','Enabled'],
-  ['retire_on','Retire on (UTC)'],
-  ['last_checked_at','Last attempted (UTC)'], ['last_successful_check','Consumed through (UTC)'],
+  ['retire_on','Retire on (New York)'],
+  ['last_checked_at','Last attempted (New York)'], ['last_successful_check','Consumed through (New York)'],
   ['failure_count','Consecutive attempts without success'], ['last_error','Last error'], ['id','ID'],
 ];
 
@@ -18,7 +18,7 @@ export async function loadScout(client,{filters={},after=null}={}) {
   const [page,inventory]=await Promise.all([
     client.rpc('findings',{...params,p_after:after,p_limit:50,p_id:filters.record||null}),
     client.from('trackers').select(TRACKER_FIELDS.map(([field])=>field).join(','))
-      .or('retire_on.is.null,retire_on.gt.'+new Date().toISOString().slice(0,10)).order('name').limit(500)
+      .or('retire_on.is.null,retire_on.gt.'+scoutDay()).order('name').limit(500)
   ]);
   if(page.error||inventory.error)throw page.error??inventory.error;
   const records=page.data;
@@ -162,7 +162,7 @@ export function mountDashboard(root, load) {
         const value = tracker[field], cell = node('td', null, `field-${field}`);
         if (field === 'url' && value) cell.append(link(value, value));
         else cell.textContent = value == null || value === '' ? '—' : typeof value === 'boolean' ? value ? 'Yes' : 'No'
-          : field.endsWith('_at') ? stamp(value) : value;
+          : field.endsWith('_at')||field==='last_successful_check' ? stamp(value) : value;
         if (cell.textContent.length > 240 && ['coverage', 'last_error'].includes(field)) {
           const text = node('div', cell.textContent, 'field-value'); text.tabIndex = 0; cell.replaceChildren(text);
         }

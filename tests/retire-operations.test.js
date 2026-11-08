@@ -93,3 +93,27 @@ test('replacement scheduler bounds its own history without a policy table',async
   assert.equal((await db.query("select to_regclass('scout.quota_reservations') name")).rows[0].name,null);
  }finally{await db.close();}
 });
+
+test('digest scheduler dispatches once at the New York hour in winter and summer',async()=>{
+ const {db}=await fixture();try{
+  await db.exec(`create view vault.decrypted_secrets as select name,secret as decrypted_secret from vault.secrets;
+   insert into vault.secrets values('scout_loop_backend_key','fixture');
+   create table net.requests(url text);
+   create function net.http_post(url text,headers jsonb,body jsonb,timeout_milliseconds int) returns bigint
+   language sql as $$insert into net.requests values(url) returning 1::bigint$$;`);
+  const scheduler=(await readFile(new URL('../supabase/scout-loop.sql',import.meta.url),'utf8'))
+   .match(/create or replace function scout\.loop_tick[\s\S]+?end \$\$;/)[0];
+  for(const [day,morning,weekly] of [['2026-11-09',13,14],['2026-07-06',12,13]]){
+   for(const [mode,hours,expected] of [['morning',[12,13],morning],['weekly',[13,14],weekly]]){
+    for(const hour of hours){
+     await db.exec(scheduler.replaceAll('clock_timestamp()',`'${day}T${hour}:00:00Z'::timestamptz`));
+     await db.query('select scout.loop_tick($1)',[mode]);
+     const requests=(await db.query('select * from net.requests')).rows;
+     assert.equal(requests.length,hour===expected?1:0);
+     if(requests.length)assert.ok(requests[0].url.endsWith('scout-notify?kind='+mode));
+     await db.exec('delete from net.requests');
+    }
+   }
+  }
+ }finally{await db.close();}
+});

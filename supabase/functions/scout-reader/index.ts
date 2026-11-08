@@ -3,8 +3,9 @@ import postgres from 'postgres';
 import {database} from '../../../reader/database.js';
 import {trackerModel} from '../../../reader/models/gateway.js';
 import {intake} from '../../../reader/intake.js';
+import {prepareMessage,sendMessage,webhookTransport} from '../../../slackbot/slack.js';
 
-export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,env,connect=postgres,modelFetch=fetch,sourceFetch=fetch}={}){
+export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,webhook,post,env,connect=postgres,modelFetch=fetch,sourceFetch=fetch}={}){
   const {error}=await verifyAuth(request,{auth:'secret:default',env});
   if(error)return Response.json({error:'Backend secret required'},{status:401});
   if(request.method!=='POST')return Response.json({error:'POST required'},{status:405});
@@ -19,7 +20,8 @@ export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,env,
       types:{json:{to:114,from:[114,3802],parse:JSON.parse,serialize:value=>typeof value==='string'?value:JSON.stringify(value)}},
       connection:{application_name:'scout-reader',statement_timeout:5000}});
     session=await sql.reserve();const db=database(session);
-    const result=await intake(db,{trackerId,sourceFetch,modelFor:(source,{deadline})=>trackerModel({source,deadline,apiKey,openaiApiKey,fetch:modelFetch})});
+    const result=await intake(db,{trackerId,sourceFetch,modelFor:(source,{deadline})=>trackerModel({source,deadline,apiKey,openaiApiKey,fetch:modelFetch}),
+      notify:async ids=>sendMessage(db,await prepareMessage(db,{kind:'findings',ids}),post??webhookTransport(webhook))});
     return Response.json({...result,cost:db.metrics});
   }catch{
     return Response.json({error:'Reader interrupted; the tracker lease expires before another check can run.'},{status:500});
@@ -27,4 +29,4 @@ export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,env,
 }
 
 if(typeof Deno!=='undefined')Deno.serve(request=>hostedReader(request,{databaseURL:Deno.env.get('SUPABASE_DB_URL'),
-  apiKey:Deno.env.get('SCOUT_GEMINI_API_KEY'),openaiApiKey:Deno.env.get('SCOUT_OPENAI_API_KEY')}));
+  apiKey:Deno.env.get('SCOUT_GEMINI_API_KEY'),openaiApiKey:Deno.env.get('SCOUT_OPENAI_API_KEY'),webhook:Deno.env.get('SCOUT_SLACK_WEBHOOK_URL')}));

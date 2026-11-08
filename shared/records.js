@@ -1,4 +1,4 @@
-import {findingInterval,recordDate} from './finding-dates.js';
+import {findingInterval,recordDate,scoutDay} from './finding-dates.js';
 
 export function orderRecords(records, order='priority') {
   const rank = value => ({high:0,normal:1,low:2})[value]??3;
@@ -26,7 +26,7 @@ export const recordDates=record=>findingInterval(record);
 
 export function eventTiming(record, now = new Date()) {
   if (record.type !== 'event') return '';
-  const start=recordDate(record),[from,to]=findingInterval(record),today=now.toISOString().slice(0,10);
+  const start=recordDate(record),[from,to]=findingInterval(record),today=scoutDay(now);
   if(!from)return 'Date unknown';
   if(start.utc)return Date.parse(start.utc)>+now?'Upcoming':'Past / started';
   return from>today?'Upcoming':to>=today?'Date known · time unknown':'Past / started';

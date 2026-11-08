@@ -8,6 +8,7 @@ import {readSource} from '../reader/sources.js';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../reader/instructions.js';
 import {hostedReader} from '../supabase/functions/scout-reader/index.ts';
 import {hostedNotify} from '../supabase/functions/scout-notify/index.ts';
+import {scoutDay} from '../shared/finding-dates.js';
 
 const migration='20261019200000_scout_reader.sql';
 async function setup(t,{before=false}={}){
@@ -137,7 +138,7 @@ test('tracker URL -> one model investigation -> finding and tracker state; due r
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let calls=0;
   const modelFor=selected=>async(prompt,input,schema)=>{
     calls++;assert.equal(selected.id,tr.id);assert.equal(prompt,INTAKE_INSTRUCTION);assert.equal(schema,RESPONSE_SCHEMA);
-    assert.deepEqual(input,{url:tr.url,current_date:new Date().toISOString().slice(0,10)});return answer();
+    assert.deepEqual(input,{url:tr.url,current_date:scoutDay()});return answer();
   };
   const first=await intake(db,{modelFor});assert.equal(first.created,1);assert.equal(calls,1);
   const saved=(await raw.query('select * from scout.records')).rows[0];
@@ -156,12 +157,12 @@ test('tracker URL -> one model investigation -> finding and tracker state; due r
   t.diagnostic(JSON.stringify({mocked:true,first_and_idle:firstCost,repeat_mutations:2,tracker_row_bytes:storage.bytes}));
 });
 
-test('retirement blocks automatic and explicit checks on the UTC date without changing saved state',async t=>{
+test('retirement blocks automatic and explicit checks on the New York date without changing saved state',async t=>{
   const raw=await setup(t),tr=await tracker(raw);
   await raw.exec("insert into scout.records(description,sources) values('Preserved finding',array['https://example.org/saved'])");
   const records=(await raw.query('select * from scout.records')).rows;
   for(const days of [-1,0]){
-    await raw.query("update scout.trackers set retire_on=(clock_timestamp() at time zone 'UTC')::date+$1::int where id=$2",[days,tr.id]);
+    await raw.query("update scout.trackers set retire_on=(clock_timestamp() at time zone 'America/New_York')::date+$1::int where id=$2",[days,tr.id]);
     const before=(await raw.query('select * from scout.trackers')).rows;
     for(const query of ['', 'tracker_id='+tr.id]){
       const result=await (await hostedReader(request(query),{...options(raw),
@@ -170,7 +171,7 @@ test('retirement blocks automatic and explicit checks on the UTC date without ch
     }
     assert.deepEqual((await raw.query('select * from scout.trackers')).rows,before);
   }
-  for(const retirement of ["(clock_timestamp() at time zone 'UTC')::date+1",'null']){
+  for(const retirement of ["(clock_timestamp() at time zone 'America/New_York')::date+1",'null']){
     await raw.exec('update scout.trackers set retire_on='+retirement);
     assert.equal((await intake(database(driver(raw)),{trackerId:tr.id,modelFor:()=>async()=>answer([])})).state,'no_findings');
   }
@@ -196,9 +197,9 @@ test('daily scheduling skips completed checks, resumes partial checks and retrie
   const modelFor=()=>async()=>{calls++;return answer([]);};
   assert.equal((await intake(db,{modelFor})).state,'no_findings');
   assert.equal((await intake(db,{modelFor})).state,'idle');assert.equal(calls,1);
-  // The prior Pacific day's final millisecond is due even before 24 hours pass.
+  // The prior New York day's final millisecond is due even before 24 hours pass.
   await raw.exec(`update scout.trackers set last_checked_at=
-    (date_trunc('day',clock_timestamp() at time zone 'America/Los_Angeles') at time zone 'America/Los_Angeles')-interval '1 millisecond';
+    (date_trunc('day',clock_timestamp() at time zone 'America/New_York') at time zone 'America/New_York')-interval '1 millisecond';
     update scout.trackers set last_successful_check=last_checked_at`);
   assert.equal((await intake(db,{modelFor})).state,'no_findings');assert.equal(calls,2);
   // A worker can commit part of a feed today and then die with no stored error.
@@ -268,26 +269,26 @@ test('finding failure rolls back the finding and successful tracker completion t
 });
 
 test('hosted reader works without quota policy and retains finite fallback without model accounting',async t=>{
-  const raw=await setup(t),tr=await tracker(raw);let gemini=0,openai=0;
-  const config={...options(raw),openaiApiKey:'test',modelFetch:async(url,init)=>{
+  const raw=await setup(t),tr=await tracker(raw);let gemini=0,openai=0,posts=0;
+  const config={...options(raw),openaiApiKey:'test',post:async()=>{posts++;return {status:200,body:'ok'};},modelFetch:async(url,init)=>{
     const body=JSON.parse(init.body);
     if(url.includes('googleapis')){gemini++;return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}
-    openai++;assert.deepEqual(JSON.parse(body.input),{input:{url:tr.url,current_date:new Date().toISOString().slice(0,10)},urls:[tr.url]});
+    openai++;assert.deepEqual(JSON.parse(body.input),{input:{url:tr.url,current_date:scoutDay()},urls:[tr.url]});
     return Response.json({status:'completed',usage:{input_tokens:100,output_tokens:100},output:[
       {type:'web_search_call',status:'completed',action:{type:'open_page',url:tr.url}},
       {type:'message',content:[{type:'output_text',text:JSON.stringify({records:[event]})}]}]});
   }};
   assert.equal((await raw.query("select to_regclass('scout.quota_policy') name")).rows[0].name,null);
-  const notification=await (await hostedNotify(request(),{...options(raw),post:()=>assert.fail('No findings to notify')})).json();
+  const notification=await (await hostedNotify(request('kind=weekly'),{...options(raw),post:()=>assert.fail('No findings to notify')})).json();
   assert.equal(notification.status,'no_change');
   await due(raw);const response=await hostedReader(request(),config);assert.equal(response.status,200);
-  const saved=await response.json();assert.equal(saved.created,1);assert.equal(gemini,1);assert.equal(openai,1);
+  const saved=await response.json();assert.equal(saved.created,1);assert.deepEqual(saved.notifications,[{status:'sent',communicated:1}]);assert.equal(posts,1);assert.equal(gemini,1);assert.equal(openai,1);
   assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,1);
   const repeat=await (await hostedReader(request('tracker_id='+tr.id),{...config,modelFetch:async()=>Response.json({
     usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:1000,candidatesTokenCount:300,totalTokenCount:1700},
     candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:tr.url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
       content:{parts:[{text:JSON.stringify([event])}]}}]})})).json();
-  assert.equal(repeat.diagnostics.attempts.length,1);assert.equal(repeat.created,0);assert.equal(repeat.changed,0);
+  assert.equal(repeat.diagnostics.attempts.length,1);assert.equal(repeat.created,0);assert.equal(repeat.changed,0);assert.equal(posts,1);
   t.diagnostic(JSON.stringify({mocked_providers:true,real_local_sql:true,fallback:saved.cost,primary_repeat:repeat.cost,attempts:saved.diagnostics.attempts.length}));
 });
 
@@ -314,4 +315,18 @@ test('reader migration removes source state and correction metadata, preserves f
   for(const field of ['failure_count','lease_id','next_check_at','last_checked_at','last_error'])
     await assert.rejects(raw.query('update scout.trackers set '+field+'='+field),{code:'42501'});
   await assert.rejects(raw.query('select lease_id from scout.trackers'),{code:'42501'});
+});
+
+test('new-finding delivery follows committed saves and delivery errors cannot replay collection',async t=>{
+ const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let sends=0;
+ const run=records=>intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer(records),notify:async ids=>{
+   sends++;assert.equal((await raw.query('select id from scout.records where id=any($1::uuid[])',[ids])).rows.length,ids.length);
+   throw new Error('Slack timeout');
+ }});
+ const first=await run([event]);assert.equal(first.created,1);assert.equal(first.state,'saved');
+ assert.deepEqual(first.notifications,[{status:'unknown',communicated:0}]);assert.equal(sends,1);
+ assert.equal((await run([event])).created,0);assert.equal(sends,1);
+ assert.equal((await run([{...event,priority:'low'}])).changed,1);assert.equal(sends,1);
+ await raw.exec("alter table scout.records add constraint fail_notification_fixture check(description<>'Rollback finding')");
+ assert.equal((await run([{...event,description:'Rollback finding',type:'announcement'}])).state,'deferred');assert.equal(sends,1);
 });

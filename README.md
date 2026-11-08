@@ -2,7 +2,7 @@
 
 Scout collects BBNJ events, announcements and official treaty developments, saves useful findings with source URLs, and makes them available through a private website, Slack and calendar tools.
 
-Collection wakes every six minutes and checks one due tracker. Current trackers have a daily cadence: a fully successful check completes that Pacific calendar day. Notifications remain paused. This guide describes the local code; it does not certify what is currently deployed.
+Collection wakes every six minutes and checks one due tracker. Current trackers have a daily cadence: a fully successful check completes that New York calendar day. New findings post to Slack after saving; morning events post daily at 8 a.m. and the weekly high-priority digest posts Mondays at 9 a.m., America/New_York. This guide describes the local code; it does not certify what is currently deployed.
 
 ## Files and responsibilities
 
@@ -11,7 +11,7 @@ Collection wakes every six minutes and checks one due tracker. Current trackers 
 | [website/](website/) | Browser interface, sign-in, records, trackers and calendar controls. Includes the HTML entrypoint, public environment settings, Firebase configuration and generated `dist/`. |
 | [reader/](reader/) | Check tracker URLs, call models, save findings and update tracker state. |
 | [reader/models/](reader/models/) | Model gateway and provider adapters. |
-| [slackbot/](slackbot/) | Select saved findings, compose messages and send explicit webhook requests. Repeated requests can send the same finding again. No conversational Slack listener yet. |
+| [slackbot/](slackbot/) | Post newly saved findings and scheduled digests through the Scout webhook. Explicit repeated requests can send the same findings again. No conversational Slack listener yet. |
 | [calendar/](calendar/) | Private calendar subscription feed. |
 | [shared/](shared/) | Pure date and record rules used by multiple features. |
 | [supabase/](supabase/) | Database migrations, hosted entrypoints, access rules and operational SQL. |
@@ -52,10 +52,23 @@ The following commands contact production and require an explicitly scoped run w
 
 ```sh
 npm run reader -- --tracker=UUID
-npm run notify -- --send
+npm run notify -- --send --kind=weekly
 ```
 
 Omit `--tracker` to check the next due enabled tracker. An explicit tracker ID also retries a tracker that stopped after three unsuccessful attempts. URLs come from the tracker row. Both commands require `SCOUT_BACKEND_KEY`. Local model diagnostics also make real model calls; use [diagnostics/README.md](diagnostics/README.md) for their separate behavior and capture exception.
+
+## Slack schedules and timezone
+
+Scout uses `America/New_York` for schedules, calendar-day boundaries, tracker retirement, model “today” and operational time display. Stored timestamps remain UTC; source dates and timezones remain as published.
+
+- New findings: the hosted reader posts newly created record IDs after each committed save group, at every priority. Updates and unchanged findings do not post.
+- Morning: 8 a.m. daily, all exact-day events occurring today in New York. Without a known instant, use the published calendar date. Partial dates are excluded.
+- Weekly: 9 a.m. Monday, pending high-priority events (undated separately), plus high-priority announcements first saved in the preceding seven New York days.
+- Empty digests are skipped. Slack uses saved descriptions and source links without model calls. Delivery is best effort, with no persistent delivery state or automatic retry after uncertain sends.
+
+[scout-loop.sql](supabase/scout-loop.sql) installs three paused jobs and replaces the obsolete notification jobs. Supabase cron uses GMT: digest jobs wake at both possible UTC hours and dispatch only at the matching New York hour, including daylight saving. The shared loop bounds these jobs’ completed cron history to one day. After deploying and verifying the reader and notifier, explicitly enable `scout-collection`, `scout-morning` and `scout-weekly`.
+
+Manual notification requests require `kind=morning`, `kind=weekly`, or `kind=findings&ids=UUID,...`. Repeating a request may repeat the post. `npm run notify -- --send --kind=morning` sends the morning digest immediately, regardless of hour.
 
 ## Supabase deployment
 
