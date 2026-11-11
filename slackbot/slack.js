@@ -1,7 +1,7 @@
 import { request } from 'node:https';
 import {Buffer} from 'node:buffer';
 import {eventTiming,sourceLink} from '../shared/records.js';
-import {recordDate,dateLabel,scoutDay,SCOUT_TIMEZONE} from '../shared/finding-dates.js';
+import {recordDate,scoutDay} from '../shared/finding-dates.js';
 
 export const CHANNEL='C0C5PE21KN1';
 const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('|','%7C');
@@ -36,10 +36,8 @@ export async function prepareMessage(db,{kind='weekly',ids=[],now=new Date()}={}
     for(const r of group){
       const url=(r.sources??[]).map(sourceLink).find(Boolean);
       if(!url)throw new Error('Notification requires a supporting source link');
-      const start=recordDate(r),timing=start?.utc?
-        new Intl.DateTimeFormat('en-US',{timeZone:SCOUT_TIMEZONE,dateStyle:'medium',timeStyle:'short'}).format(new Date(start.utc))+' New York; source: '+dateLabel(start):dateLabel(start);
-      const type={event:'Event',announcement:'Announcement',treaty_status:'Treaty change'}[r.type]??'Finding';
-      lines.push(`• ${escape(r.priority??'Unassessed')} · ${type} · ${escape(r.description)}\n  ${escape(timing)} · <${escape(url)}|Read more>`);
+      const tag=(r.priority??'unassessed')[0]+(r.type??'finding')[0];
+      lines.push(`${escape(r.description)} [${tag}] · <${escape(url)}|Read more>`);
     }
   }
   return {records,payload:{text:lines.join('\n'),parse:'none',unfurl_links:false,unfurl_media:false},prepared_at:now.toISOString()};

@@ -28,8 +28,13 @@ test('morning includes all priorities on the New York day and preserves source d
    await db.query("insert into scout.records(type,description,date,starttime,timezone,priority,sources) values('event',$1,$2,$3,$4,$5,array['https://example.org/event'])",[description,date,starttime,timezone,priority]);
   const preview=await prepareMessage(db,{kind:'morning',now:new Date('2026-11-08T13:00:00Z')});
   assert.deepEqual(preview.records.map(r=>r.description).sort(),['Date only','Tomorrow in Asia, today in New York','Unknown timezone']);
-  assert.match(preview.payload.text,/low · Event/);assert.match(preview.payload.text,/New York; source: 2026-11-09 · 00:30 \+08:00/);
-  assert.match(preview.payload.text,/Time unknown/);assert.match(preview.payload.text,/timezone unknown/);
+  const [heading,...entries]=preview.payload.text.split('\n');
+  assert.equal(heading,'Today’s events · 2026-11-08 · New York');
+  assert.deepEqual(entries.sort(),[
+   'Date only [ne] · <https://example.org/event|Read more>',
+   'Tomorrow in Asia, today in New York [le] · <https://example.org/event|Read more>',
+   'Unknown timezone [ue] · <https://example.org/event|Read more>'
+  ]);
  }finally{await db.close();}
 });
 
