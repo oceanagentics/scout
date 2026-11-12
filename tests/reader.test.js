@@ -229,6 +229,85 @@ test('all returned findings and their text/organizations survive without content
   assert.equal(full.organizations.length,15);
 });
 
+test('exact matches beyond twenty older source-page findings retain IDs without finding writes',async t=>{
+  const raw=await setup(t);
+  for(const [url,description,date] of [
+    ['https://globalfishingwatch.org/mediacenter/','A New Course for Panama: How Data Is Transforming Fisheries Management','2026-11-04'],
+    ['https://www.minderoo.org/media/','Minderoo commits $10 million to accelerate protection of nature across the Commonwealth','2026-11-03']]){
+    const tr=await tracker(raw);await raw.query('update scout.trackers set url=$2 where id=$1',[tr.id,url]);
+    for(let i=0;i<21;i++)await raw.query(`insert into scout.records(description,type,date,sources,modified)
+      values($1,'announcement','2020-01-01',array[$2],array['2020-01-01'::timestamptz])`,['Older unrelated finding '+i,url]);
+    const saved=(await raw.query(`insert into scout.records(description,type,priority,date,sources)
+      values($1,'announcement','normal',$2,array[$3]) returning *`,[description,date,url])).rows[0];
+    const db=database(driver(raw));let calls=0;
+    const result=await intake(db,{trackerId:tr.id,modelFor:()=>async()=>{calls++;return answer([
+      {description,type:'announcement',priority:'normal',date}
+    ]);},notify:()=>assert.fail('An existing finding must not notify')});
+    assert.equal(calls,1);assert.equal(result.created,0);assert.equal(result.changed,0);assert.equal(result.saved,1);
+    assert.equal(db.metrics.mutations,2);
+    assert.deepEqual((await raw.query('select * from scout.records where id=$1',[saved.id])).rows[0],saved);
+  }
+});
+
+test('conflicting dates and deadlines defer without overwriting, duplicating or consuming the source',async t=>{
+  const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));
+  const cop1={...event,description:'First Conference of the Parties to the BBNJ Agreement (BBNJ COP1)',date:'2027-01-11',deadline:'2026-12-18'};
+  await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([cop1])});
+  const saved=(await raw.query('select * from scout.records')).rows;
+  for(const [i,records] of [[{...cop1,date:'2027-01-01'}],[{...cop1,deadline:'2026-12-17'}],[cop1,{...cop1,date:'2027-01-01'}]].entries()){
+    await raw.query('update scout.trackers set url=$2 where id=$1',[tr.id,'https://example.org/cop1-report/'+i]);
+    const cutoff=(await raw.query('select last_successful_check from scout.trackers where id=$1',[tr.id])).rows[0].last_successful_check;
+    const result=await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer(records),notify:()=>assert.fail('A conflict must not notify')});
+    assert.equal(result.reason,'ambiguous_findings');assert.equal(result.created,0);assert.equal(result.changed,0);
+    assert.deepEqual((await raw.query('select * from scout.records')).rows,saved);
+    assert.deepEqual((await raw.query('select last_successful_check from scout.trackers where id=$1',[tr.id])).rows[0].last_successful_check,cutoff);
+  }
+});
+
+test('a past gathering keeps its existing ID when corrected from announcement to event',async t=>{
+  const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));
+  const webinar={...event,description:'From Development to Implementation: Making Management Procedures More Efficient Webinar',date:'2026-11-04'};
+  await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([{...webinar,type:'announcement'}])});
+  const original=(await raw.query('select * from scout.records')).rows[0];
+  const corrected=await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([webinar])});
+  assert.equal(corrected.created,0);assert.equal(corrected.changed,1);
+  const stored=(await raw.query('select * from scout.records')).rows[0];
+  assert.equal(stored.id,original.id);assert.equal(stored.type,'event');assert.equal(stored.date,original.date);
+  const repeated=await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([webinar])});
+  assert.equal(repeated.created,0);assert.equal(repeated.changed,0);
+  const publication=await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([
+    {...webinar,type:'announcement',description:'Publication of the webinar recording',date:'2026-11-05'}
+  ])});
+  assert.equal(publication.created,1);
+  assert.deepEqual((await raw.query('select * from scout.records where id=$1',[original.id])).rows[0],stored);
+});
+
+test('a compatible partial date cannot downgrade a saved day, deadline, clock or timezone',async t=>{
+  const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));
+  const cop1={...event,description:'BBNJ COP1',date:'2027-01-11',deadline:'2026-12-18',starttime:'10:00',timezone:'America/New_York'};
+  await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([cop1])});
+  const saved=(await raw.query('select * from scout.records')).rows,before=db.metrics.mutations;
+  const result=await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([
+    {...cop1,date:'2027-01',deadline:'2026-12',starttime:'09:00',timezone:'UTC'}
+  ])});
+  assert.equal(result.created,0);assert.equal(result.changed,0);assert.equal(db.metrics.mutations-before,2);
+  assert.deepEqual((await raw.query('select * from scout.records')).rows,saved);
+});
+
+test('similarly named gatherings on different dates remain separate and repeat without writes',async t=>{
+  const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));
+  const title='Towards living in harmony with the ocean from coasts to areas beyond national jurisdiction: Synergies between the BBNJ Agreement and the work under the CBD, a side event at ';
+  const first={...event,description:title+'CBD SBSTTA-26',date:'2024-05-13'},second={...event,description:title+'CBD COP16',date:'2024-10-21'};
+  await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([first])});
+  const original=(await raw.query('select * from scout.records')).rows[0];
+  assert.equal((await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([second])})).created,1);
+  const stored=(await raw.query('select * from scout.records order by date')).rows;
+  assert.equal(stored.length,2);assert.deepEqual(stored[0],original);
+  const repeat=await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([first,second])});
+  assert.equal(repeat.created,0);assert.equal(repeat.changed,0);
+  assert.deepEqual((await raw.query('select * from scout.records order by date')).rows,stored);
+});
+
 test('multiple developments retain IDs, revised facts update once, and missing dates do not start another model pass',async t=>{
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let calls=0;
   const records=[event,{...event,description:'Treaty ratification',type:'treaty_status',date:'2026-09-01'},{...event,description:'Implementation report',type:'announcement',date:null}];

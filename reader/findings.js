@@ -25,6 +25,12 @@ function merge(f,target){
   for(const key of fields){
     if(values[key]==null||Array.isArray(values[key])&&!values[key].length)values[key]=target?.[key]??values[key];
   }
+  for(const key of ['date','deadline']){
+    if(target?.[key]&&values[key]&&values[key].length<target[key].length){
+      values[key]=target[key];
+      if(key==='date'){values.starttime=target.starttime;values.timezone=target.timezone;}
+    }
+  }
   values.sources=[...new Set([...(target?.sources??[]),...f.sources])];
   return values;
 }
@@ -34,20 +40,22 @@ export async function saveFindings(tx,sourceUrl,findings){
   for(const f of findings){
     const key=JSON.stringify([f.type,normalize(f.description),f.date]);
     if(seen.has(key))continue;
-    // Retain the existing description/source matching while matching is deferred.
     const candidates=(await tx.query(`select * from scout.records
-      where type is not distinct from $1 and ((lower(description)=lower($2) and ($4::text is null or date is null or date=$4))
-        or $3=any(sources)) order by modified[1],id limit 20`,
-      [f.type,f.description,sourceUrl,f.date])).rows.filter(r=>!used.has(r.id));
+      where lower(description)=lower($2) or (type is not distinct from $1 and $3=any(sources))
+      order by modified[1],id`,[f.type,f.description,sourceUrl])).rows;
     const exact=candidates.filter(r=>normalize(r.description)===normalize(f.description));
+    const compatible=candidates.filter(r=>!used.has(r.id)&&
+      (!f.date||!r.date||f.date.startsWith(r.date)||r.date.startsWith(f.date)));
     const words=new Set(normalize(f.description).split(' '));
-    const similar=candidates.filter(r=>{
+    const similar=compatible.filter(r=>{
       const other=new Set(normalize(r.description).split(' ')),common=[...words].filter(w=>other.has(w)).length;
       return common/Math.max(words.size,other.size)>=0.8;
     });
     const sole=findings.filter(r=>r.type===f.type).length===1;
-    const target=exact.length?exact[0]:similar.length===1?similar[0]:sole&&candidates.length===1?candidates[0]:null;
-    if(!target&&candidates.length&&sole){counts.ambiguous++;continue;}
+    const target=exact.length?exact[0]:similar.length===1?similar[0]:sole&&candidates.length===1&&compatible.length===1?compatible[0]:null;
+    if(!target&&compatible.length&&(sole||similar.length>1)){counts.ambiguous++;continue;}
+    if(target&&['date','deadline'].some(key=>f[key]&&target[key]&&
+      !f[key].startsWith(target[key])&&!target[key].startsWith(f[key]))){counts.ambiguous++;continue;}
     const values=merge(f,target),changed=!target||fields.some(k=>JSON.stringify(target[k])!==JSON.stringify(values[k]));
     let record=target;
     if(changed){
