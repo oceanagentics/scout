@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
-import {prepareMessage,sendMessage,webhookTransport} from '../slackbot/slack.js';
+import {prepareMessages,sendMessages,webhookTransport} from '../slackbot/slack.js';
 import {hostedNotify} from '../supabase/functions/scout-notify/index.ts';
 
 async function database(){
@@ -17,23 +17,24 @@ async function database(){
 async function seed(db){
  return (await db.query("insert into scout.records(type,description,priority,sources) values('announcement','Technical BBNJ ChM standards','high',array['https://example.org/standards']) returning id")).rows[0].id;
 }
-test('morning includes all priorities on the New York day and preserves source dates without a known instant',async()=>{
+test('morning posts high-priority events individually on the New York day, using source dates without a known instant',async()=>{
  const db=await database();try{
   for(const [description,date,starttime,timezone,priority] of [
-    ['Tomorrow in Asia, today in New York','2026-11-09','00:30','+08:00','low'],
+    ['Tomorrow in Asia, today in New York','2026-11-09','00:30','+08:00','high'],
     ['Today in Asia, yesterday in New York','2026-11-08','01:00','+08:00','high'],
-    ['Date only','2026-11-08',null,null,'normal'],
-    ['Unknown timezone','2026-11-08','09:00',null,null],
+    ['Date only','2026-11-08',null,null,'high'],
+    ['Unknown timezone','2026-11-08','09:00',null,'high'],
+    ['Normal event','2026-11-08',null,null,'normal'],
+    ['Low event','2026-11-08',null,null,'low'],
+    ['Unassessed event','2026-11-08',null,null,null],
     ['Month only','2026-11',null,null,'high']])
    await db.query("insert into scout.records(type,description,date,starttime,timezone,priority,sources) values('event',$1,$2,$3,$4,$5,array['https://example.org/event'])",[description,date,starttime,timezone,priority]);
-  const preview=await prepareMessage(db,{kind:'morning',now:new Date('2026-11-08T13:00:00Z')});
+  const preview=await prepareMessages(db,{kind:'morning',now:new Date('2026-11-08T13:00:00Z')});
   assert.deepEqual(preview.records.map(r=>r.description).sort(),['Date only','Tomorrow in Asia, today in New York','Unknown timezone']);
-  const [heading,...entries]=preview.payload.text.split('\n');
-  assert.equal(heading,'Today’s events · 2026-11-08 · New York');
-  assert.deepEqual(entries.sort(),[
-   'Date only [ne] · <https://example.org/event|Read more>',
-   'Tomorrow in Asia, today in New York [le] · <https://example.org/event|Read more>',
-   'Unknown timezone [ue] · <https://example.org/event|Read more>'
+  assert.deepEqual(preview.payloads.map(p=>p.text).sort(),[
+   'Date only [he] · <https://example.org/event|Read more>',
+   'Tomorrow in Asia, today in New York [he] · <https://example.org/event|Read more>',
+   'Unknown timezone [he] · <https://example.org/event|Read more>'
   ]);
  }finally{await db.close();}
 });
@@ -53,51 +54,71 @@ test('weekly includes all pending high events and seven local days of newly save
     ['Normal news','announcement','normal',null,'2026-11-01T12:00:00Z'],
     ['Treaty update','treaty_status','high',null,'2026-11-01T12:00:00Z']])
    await db.query("insert into scout.records(description,type,priority,date,modified,sources) values($1,$2,$3,$4,array[$5::timestamptz],array['https://example.org/source'])",[description,type,priority,date,created]);
-  const preview=await prepareMessage(db,{kind:'weekly',now});
+  const preview=await prepareMessages(db,{kind:'weekly',now});
   assert.deepEqual(preview.records.map(r=>r.description).sort(),['Exactly seven local days','Far future','Partially dated future','Undated','Within seven New York days']);
-  assert.match(preview.payload.text,/Pending high-priority events/);assert.match(preview.payload.text,/High-priority events · date unknown/);assert.match(preview.payload.text,/High-priority announcements/);
+  assert.deepEqual(preview.payloads.map(p=>p.text).sort(),[
+   'Exactly seven local days [ha] · <https://example.org/source|Read more>',
+   'Far future [he] · <https://example.org/source|Read more>',
+   'Partially dated future [he] · <https://example.org/source|Read more>',
+   'Undated [he] · <https://example.org/source|Read more>',
+   'Within seven New York days [ha] · <https://example.org/source|Read more>'
+  ]);
  }finally{await db.close();}
 });
 
-test('hosted explicit sends can repeat after every outcome and make no database writes',async()=>{
+test('hosted sends post one high-priority finding at a time, stop on errors, and make no database writes',async()=>{
  const db=await database();try{
-  await seed(db);const records=(await db.query('select * from scout.records')).rows;
+  await seed(db);
+  await db.query("insert into scout.records(description,priority,sources) values('Second high finding','high',array['https://example.org/second']),('Normal finding','normal',array['https://example.org/normal'])");
+  const records=(await db.query('select * from scout.records')).rows;
   const trackers=(await db.query('select * from scout.trackers order by id')).rows;
   const secret='sb_secret_notify_test',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
   const connect=()=>({reserve:async()=>({unsafe:async(q,p=[])=>{
     const result=await db.query(q,p);return Object.assign(result.rows,{count:result.affectedRows??result.rows.length});
   },release(){}}),end:async()=>{}});
-  const payloads=[];
-  for(const [outcome,status] of [[{status:200,body:'ok'},'sent'],[{status:200,body:'ok'},'sent'],
-    [{status:400,body:'invalid_payload'},'failed'],[{status:500,body:'upstream'},'unknown'],[new Error('Unknown remote outcome'),'unknown']]){
-    const response=await hostedNotify(new Request('https://example.test/notify?kind=findings&ids='+records[0].id,{method:'POST',headers:{apikey:secret}}),{
-      env,databaseURL:'unused',connect,post:async payload=>{payloads.push(payload);if(outcome instanceof Error)throw outcome;return outcome;}});
+  const ok={status:200,body:'ok'},failed={status:400,body:'invalid_payload'},unknown={status:500,body:'upstream'};
+  let successfulPayloads;
+  for(const [outcomes,status,communicated] of [[[ok,ok],'sent',2],[[ok,ok],'sent',2],[[failed],'failed',0],
+    [[ok,failed],'failed',1],[[ok,unknown],'unknown',1],[[ok,new Error('Unknown remote outcome')],'unknown',1]]){
+    const payloads=[],remaining=[...outcomes];
+    const response=await hostedNotify(new Request('https://example.test/notify?kind=findings&ids='+records.map(r=>r.id).join(','),{method:'POST',headers:{apikey:secret}}),{
+      env,databaseURL:'unused',connect,post:async payload=>{
+        payloads.push(payload);const outcome=remaining.shift();assert.ok(outcome,'Must stop after an unsuccessful send');
+        if(outcome instanceof Error)throw outcome;return outcome;
+      }});
     assert.equal(response.status,200);const result=await response.json();
-    assert.equal(result.status,status);assert.equal(result.communicated,status==='sent'?1:0);
+    assert.equal(result.status,status);assert.equal(result.communicated,communicated);
     assert.equal(result.cost.statements,2);assert.equal(result.cost.mutations,0);
+    assert.equal(payloads.length,outcomes.length);
+    if(status==='sent'){
+      assert.deepEqual(payloads.map(p=>p.text).sort(),[
+        'Second high finding [hf] · <https://example.org/second|Read more>',
+        'Technical BBNJ ChM standards [ha] · <https://example.org/standards|Read more>'
+      ]);
+      if(successfulPayloads)assert.deepEqual(payloads,successfulPayloads);
+      successfulPayloads=payloads;
+    }
   }
-  assert.equal(payloads.length,5);assert.match(payloads[0].text,/Technical BBNJ ChM standards/);
-  for(const payload of payloads)assert.deepEqual(payload,payloads[0]);
   assert.deepEqual((await db.query('select * from scout.records')).rows,records);
   assert.deepEqual((await db.query('select * from scout.trackers order by id')).rows,trackers);
  }finally{await db.close();}
 });
 test('a changed record timestamp invalidates a prepared notification before network dispatch',async()=>{
  const db=await database();try{
-  const id=await seed(db),preview=await prepareMessage(db,{kind:'findings',ids:[id]});
-  await assert.rejects(sendMessage(db,preview,()=>assert.fail('Expired message'),{now:()=>new Date(Date.parse(preview.prepared_at)+60001)}),/expired/);
+  const id=await seed(db),preview=await prepareMessages(db,{kind:'findings',ids:[id]});
+  await assert.rejects(sendMessages(db,preview,()=>assert.fail('Expired message'),{now:()=>new Date(Date.parse(preview.prepared_at)+60001)}),/expired/);
   await db.query('update scout.records set modified=array_append(modified,clock_timestamp()) where id=$1',[id]);
-  await assert.rejects(sendMessage(db,preview,()=>assert.fail('Stale message')),/changed/);
+  await assert.rejects(sendMessages(db,preview,()=>assert.fail('Stale message')),/changed/);
  }finally{await db.close();}
 });
 test('preview validation preserves PostgreSQL microseconds in older findings',async()=>{
  const db=await database();try{
   const id=await seed(db);
   await db.query("update scout.records set modified=array['2026-10-01T12:00:00.000001Z'::timestamptz] where id=$1",[id]);
-  const preview=await prepareMessage(db,{kind:'findings',ids:[id]});
-  assert.equal((await sendMessage(db,preview,async()=>({status:200,body:'ok'}))).status,'sent');
+  const preview=await prepareMessages(db,{kind:'findings',ids:[id]});
+  assert.equal((await sendMessages(db,preview,async()=>({status:200,body:'ok'}))).status,'sent');
   await db.query("update scout.records set modified=array['2026-10-01T12:00:00.000002Z'::timestamptz] where id=$1",[id]);
-  await assert.rejects(sendMessage(db,preview,()=>assert.fail('Changed by one microsecond')),/changed/);
+  await assert.rejects(sendMessages(db,preview,()=>assert.fail('Changed by one microsecond')),/changed/);
  }finally{await db.close();}
 });
 test('webhooks require the confirmed Scout binding',()=>{
@@ -105,13 +126,13 @@ test('webhooks require the confirmed Scout binding',()=>{
  assert.equal(typeof webhookTransport('https://hooks.slack.com/services/TFZ8FRLBV/B0C5TEK4R38/fixture'),'function');
 });
 
-test('new-finding batches include every requested priority and skip empty digests',async()=>{
+test('new findings exclude normal, low and unassessed records and skip empty notifications',async()=>{
  const db=await database();try{
-  const empty=await prepareMessage(db,{kind:'morning'});
-  assert.equal((await sendMessage(db,empty,()=>assert.fail('Empty digest'))).status,'no_change');
+  const empty=await prepareMessages(db,{kind:'morning'});
+  assert.equal((await sendMessages(db,empty,()=>assert.fail('Empty digest'))).status,'no_change');
   const ids=[];
-  for(let i=0;i<12;i++)ids.push((await db.query("insert into scout.records(description,priority,sources) values($1,$2,array['https://example.org/source']) returning id",['Finding '+i,i%2?'low':'normal'])).rows[0].id);
-  const preview=await prepareMessage(db,{kind:'findings',ids});assert.equal(preview.records.length,12);
-  assert.equal((await sendMessage(db,preview,async()=>({status:200,body:'ok'}))).communicated,12);
+  for(const priority of ['normal','low',null])ids.push((await db.query("insert into scout.records(description,priority,sources) values('Finding',$1,array['https://example.org/source']) returning id",[priority])).rows[0].id);
+  const preview=await prepareMessages(db,{kind:'findings',ids});assert.equal(preview.records.length,0);
+  assert.equal((await sendMessages(db,preview,()=>assert.fail('No high-priority findings'))).status,'no_change');
  }finally{await db.close();}
 });

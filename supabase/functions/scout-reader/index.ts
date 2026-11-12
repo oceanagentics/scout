@@ -3,7 +3,7 @@ import postgres from 'postgres';
 import {database} from '../../../reader/database.js';
 import {trackerModel} from '../../../reader/models/gateway.js';
 import {intake} from '../../../reader/intake.js';
-import {prepareMessage,sendMessage,webhookTransport} from '../../../slackbot/slack.js';
+import {prepareMessages,sendMessages,webhookTransport} from '../../../slackbot/slack.js';
 
 export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,webhook,post,env,connect=postgres,modelFetch=fetch,sourceFetch=fetch}={}){
   const {error}=await verifyAuth(request,{auth:'secret:default',env});
@@ -21,7 +21,7 @@ export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,webh
       connection:{application_name:'scout-reader',statement_timeout:5000}});
     session=await sql.reserve();const db=database(session);
     const result=await intake(db,{trackerId,sourceFetch,modelFor:(source,{deadline})=>trackerModel({source,deadline,apiKey,openaiApiKey,fetch:modelFetch}),
-      notify:async ids=>sendMessage(db,await prepareMessage(db,{kind:'findings',ids}),post??webhookTransport(webhook))});
+      notify:async ids=>sendMessages(db,await prepareMessages(db,{kind:'findings',ids}),post??webhookTransport(webhook))});
     return Response.json({...result,cost:db.metrics});
   }catch{
     return Response.json({error:'Reader interrupted; the tracker lease expires before another check can run.'},{status:500});

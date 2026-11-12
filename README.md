@@ -61,10 +61,12 @@ Omit `--tracker` to check the next due enabled tracker. An explicit tracker ID a
 
 Scout uses `America/New_York` for schedules, calendar-day boundaries, tracker retirement, model “today” and operational time display. Stored timestamps remain UTC; source dates and timezones remain as published.
 
-- New findings: the hosted reader posts newly created record IDs after each committed save group, at every priority. Updates and unchanged findings do not post.
-- Morning: 8 a.m. daily, all exact-day events occurring today in New York. Without a known instant, use the published calendar date. Partial dates are excluded.
-- Weekly: 9 a.m. Monday, pending high-priority events (undated separately), plus high-priority announcements first saved in the preceding seven New York days.
-- Empty digests are skipped. Slack uses saved descriptions and source links without model calls. Delivery is best effort, with no persistent delivery state or automatic retry after uncertain sends.
+- New findings: the hosted reader posts newly created high-priority records after each committed save group. Updates and unchanged findings do not post.
+- Morning: 8 a.m. daily, high-priority exact-day events occurring today in New York. Without a known instant, use the published calendar date. Partial dates are excluded.
+- Weekly: 9 a.m. Monday, pending high-priority events, including undated events, plus high-priority announcements first saved in the preceding seven New York days.
+- Every Slack message contains one high-priority finding: its saved description, priority/type initials and source link. Messages send sequentially, spaced at least one second apart; no grouped posts or model calls. Empty notifications are skipped. Delivery stops on a failed or uncertain send and reports the confirmed send count. Delivery is best effort, with no persistent delivery state or automatic retry after uncertain sends.
+
+The model's priority rubric is stored in [reader/instructions.js](reader/instructions.js). The high-priority filter, individual message format and delivery rules are enforced in [slackbot/slack.js](slackbot/slack.js), shared by the reader and scheduled notifier.
 
 [scout-loop.sql](supabase/scout-loop.sql) installs three paused jobs and replaces the obsolete notification jobs. Supabase cron uses GMT: digest jobs wake at both possible UTC hours and dispatch only at the matching New York hour, including daylight saving. The shared loop bounds these jobs’ completed cron history to one day. After deploying and verifying the reader and notifier, explicitly enable `scout-collection`, `scout-morning` and `scout-weekly`.
 

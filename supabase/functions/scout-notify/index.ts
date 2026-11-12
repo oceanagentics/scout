@@ -1,7 +1,7 @@
 import {verifyAuth} from '@supabase/server/core';
 import postgres from 'postgres';
 import {database} from '../../../reader/database.js';
-import {prepareMessage,sendMessage,webhookTransport} from '../../../slackbot/slack.js';
+import {prepareMessages,sendMessages,webhookTransport} from '../../../slackbot/slack.js';
 
 export async function hostedNotify(request,{databaseURL,webhook,env,connect=postgres,post}={}){
   const {error}=await verifyAuth(request,{auth:'secret:default',env});
@@ -19,7 +19,7 @@ export async function hostedNotify(request,{databaseURL,webhook,env,connect=post
       types:{json:{to:114,from:[114,3802],parse:JSON.parse,serialize:value=>typeof value==='string'?value:JSON.stringify(value)}},
       connection:{application_name:'scout-notify',statement_timeout:5000}});
     session=await sql.reserve();const db=database(session);
-    const preview=await prepareMessage(db,{kind,ids}),result=await sendMessage(db,preview,post??webhookTransport(webhook));
+    const preview=await prepareMessages(db,{kind,ids}),result=await sendMessages(db,preview,post??webhookTransport(webhook));
     return Response.json({...result,cost:db.metrics});
   }catch{return Response.json({error:'Notification interrupted'},{status:500});}
   finally{session?.release();await sql?.end({timeout:1}).catch(()=>{});}

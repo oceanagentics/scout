@@ -4,6 +4,6 @@ if(args.length!==2||!args.includes('--send')||!['morning','weekly'].includes(kin
 process.loadEnvFile('.env.local');
 if(!process.env.SCOUT_BACKEND_KEY)throw new Error('SCOUT_BACKEND_KEY required');
 const response=await fetch('https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-notify?kind='+kind,
-  {method:'POST',headers:{apikey:process.env.SCOUT_BACKEND_KEY},signal:AbortSignal.timeout(30000)});
+  {method:'POST',headers:{apikey:process.env.SCOUT_BACKEND_KEY},signal:AbortSignal.timeout(125000)});
 if(!response.ok)throw new Error('Notification returned HTTP '+response.status);
 console.log(await response.text());
