@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mountAccess } from '../website/access.js';
 
 test('Workspace UI trusts the server role, handles auth races and clears data before sign-out completes', async () => {
-  const nodes = Object.fromEntries(['status', 'sign-in', 'sign-out', 'workspace', 'button'].map(id => [id, {
+  const nodes = Object.fromEntries(['status', 'sign-in', 'sign-out', 'scout-views', 'workspace', 'button'].map(id => [id, {
     hidden: true, textContent: '', events: {}, addEventListener(name, handler) { this.events[name] = handler; },
     querySelector() { return nodes.button; }, replaceChildren() { this.textContent = ''; },
   }]));
@@ -27,6 +27,7 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
     });
     authChanged('INITIAL_SESSION', null);
     assert.equal(nodes['sign-in'].hidden, false);
+    assert.equal(nodes['scout-views'].hidden, true);
     await nodes['sign-in'].events.submit({ preventDefault() {} });
     assert.equal(oauth.provider, 'google');
     assert.equal(oauth.options.redirectTo, 'https://bbnj-scout.web.app/');
@@ -40,9 +41,11 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
     authChanged('SIGNED_IN', session); await tick();
     assert.equal(renders, 0); // Forged browser metadata is ignored.
     assert.equal(nodes.workspace.hidden, true);
+    assert.equal(nodes['scout-views'].hidden, true);
     role = 'reader'; authChanged('SIGNED_IN', session); await tick();
     assert.equal(renders, 1);
     assert.equal(nodes.workspace.textContent, 'private findings');
+    assert.equal(nodes['scout-views'].hidden, false);
     assert.equal(new URL(window.location.href).searchParams.get('record'), record);
     assert.equal(storage.has('scout-record'), false);
     let resolveAccess;
@@ -53,8 +56,11 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
     assert.equal(renders, 1); // Late access responses cannot restore signed-out data.
     client.rpc = async () => ({ data: 'reader' });
     authChanged('SIGNED_IN', session); await tick();
-    const logout = nodes['sign-out'].events.click(); await tick();
+    let navigationPrevented = false;
+    const logout = nodes['sign-out'].events.click({ preventDefault() { navigationPrevented = true; } }); await tick();
+    assert.equal(navigationPrevented, true);
     assert.equal(nodes.workspace.hidden, true);
+    assert.equal(nodes['scout-views'].hidden, true);
     assert.equal(nodes.workspace.textContent, '');
     authChanged('TOKEN_REFRESHED', session); await tick();
     assert.equal(renders, 2);

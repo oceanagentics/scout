@@ -40,10 +40,9 @@ function link(text, url) {
   return element;
 }
 
-export function mountDashboard(root, load) {
+export function mountDashboard(root, load, views) {
   // Static markup only; every source-supplied value is rendered with textContent.
-  root.innerHTML = `<div class="workspace-heading"><nav aria-label="Scout views"><button type="button" data-view="findings" aria-pressed="true">Records</button><button type="button" data-view="trackers" aria-pressed="false">Trackers</button></nav><button type="button" id="refresh" class="secondary">Refresh data</button></div>
-    <p id="load-status" role="status"></p>
+  root.innerHTML = `<p id="load-status" role="status"></p>
     <section id="findings" aria-label="Records"><div class="findings-toolbar"><form id="filters" class="filters">
       <label class="search">Search records<input name="search" type="search" placeholder="Description, organization, topic…"></label>
       <label>Record type<select name="type"><option value="">All</option><option value="announcement">Announcements</option><option value="event">Events</option><option value="treaty_status">Treaty changes</option></select></label>
@@ -56,7 +55,7 @@ export function mountDashboard(root, load) {
       </div></div><p id="record-count" role="status"></p><div id="record-list" tabindex="0" role="region" aria-label="Records results"></div><button type="button" id="first-page" class="secondary">First page</button><button type="button" id="next-page" class="secondary">Next page</button></section>
     <section id="trackers" aria-label="Trackers" hidden>
       <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>`;
-  const status = root.querySelector('#load-status'), refresh = root.querySelector('#refresh');
+  const status = root.querySelector('#load-status');
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
   let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table', after=null,request=0,filterTimer;
   const sourceDialog = node('dialog', null, 'source-dialog'), sourceContent = node('div');
@@ -167,7 +166,6 @@ export function mountDashboard(root, load) {
 
   async function reload() {
     const sequence=++request;
-    refresh.disabled = true;
     status.hidden = false;
     status.textContent = data ? 'Refreshing data…' : 'Loading records and trackers…';
     root.setAttribute('aria-busy', 'true');
@@ -179,12 +177,25 @@ export function mountDashboard(root, load) {
       status.textContent = '';
       status.hidden = true;
     } catch {
-      if (active&&sequence===request) status.textContent = `Could not load Scout data. ${data ? `Showing data loaded ${stamp(loadedAt)}. ` : ''}Use “Refresh data” to try again.`;
-    } finally { if (active&&sequence===request) { refresh.disabled = false; root.removeAttribute('aria-busy'); } }
+      if (active&&sequence===request) status.textContent = `Could not load Scout data. ${data ? `Showing data loaded ${stamp(loadedAt)}. ` : ''}Reload the page to try again.`;
+    } finally { if (active&&sequence===request) root.removeAttribute('aria-busy'); }
   }
-  for (const button of root.querySelectorAll('[data-view]')) button.addEventListener('click', () => {
-    for (const other of root.querySelectorAll('[data-view]')) { const selected = other === button; other.setAttribute('aria-pressed', String(selected)); root.querySelector(`#${other.dataset.view}`).hidden = !selected; }
-  });
+  for (const link of views.querySelectorAll('[data-view]')) {
+    if (link.dataset.view==='findings') link.setAttribute('aria-current','page');
+    else link.removeAttribute('aria-current');
+  }
+  const navigate = event => {
+    const link = event.target.closest('[data-view]');
+    if (!link) return;
+    event.preventDefault();
+    for (const other of views.querySelectorAll('[data-view]')) {
+      const selected = other === link;
+      if (selected) other.setAttribute('aria-current','page');
+      else other.removeAttribute('aria-current');
+      root.querySelector(`#${other.dataset.view}`).hidden = !selected;
+    }
+  };
+  views.addEventListener('click', navigate);
   for (const button of root.querySelectorAll('[data-layout]')) button.addEventListener('click', () => {
     layout = button.dataset.layout;
     for (const other of root.querySelectorAll('[data-layout]')) other.setAttribute('aria-pressed', String(other === button));
@@ -205,7 +216,6 @@ export function mountDashboard(root, load) {
     after=null;clearTimeout(filterTimer);filterTimer=setTimeout(reload,250);
   });
   filters.addEventListener('submit', event => event.preventDefault());
-  refresh.addEventListener('click', reload);
   root.querySelector('#first-page').addEventListener('click',()=>{after=null;void reload();});
   root.querySelector('#next-page').addEventListener('click',()=>{after=data?.next;void reload();});
   const tick = () => {
@@ -214,5 +224,5 @@ export function mountDashboard(root, load) {
   const timer = setInterval(tick, 30000);
   document.addEventListener('visibilitychange', tick);
   root.hidden = false; void reload();
-  return () => { active = false; clearTimeout(filterTimer);if (sourceDialog.open) sourceDialog.close();clearInterval(timer); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
+  return () => { active = false; views.removeEventListener('click', navigate);clearTimeout(filterTimer);if (sourceDialog.open) sourceDialog.close();clearInterval(timer); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
 }

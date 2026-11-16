@@ -3,7 +3,7 @@ import { mountCalendar } from './calendar.js';
 
 export function mountAccess(client, root, mount = mountDashboard) {
   const status = root.querySelector('#status'), form = root.querySelector('#sign-in');
-  const signOut = root.querySelector('#sign-out'), workspace = root.querySelector('#workspace');
+  const signOut = root.querySelector('#sign-out'), workspace = root.querySelector('#workspace'), views = root.querySelector('#scout-views');
   let generation = 0, signingOut = false, closeDashboard, closeCalendar;
 
   async function showSession(session) {
@@ -12,6 +12,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
     closeDashboard?.(); closeDashboard = null;
     closeCalendar?.(); closeCalendar = null;
     workspace.replaceChildren(); workspace.hidden = true;
+    views.hidden = true;
     form.hidden = Boolean(session);
     signOut.hidden = !session;
     status.hidden = false;
@@ -38,7 +39,8 @@ export function mountAccess(client, root, mount = mountDashboard) {
       window.history.replaceState(null, '', url);
     }
     window.sessionStorage.removeItem('scout-record');
-    closeDashboard = mount(workspace, options => loadScout(client,options));
+    closeDashboard = mount(workspace, options => loadScout(client,options), views);
+    views.hidden = false;
     closeCalendar = mountCalendar(client, root.querySelector('#calendar-tools'));
   }
 
@@ -58,7 +60,8 @@ export function mountAccess(client, root, mount = mountDashboard) {
     button.disabled = false;
     if (error) status.textContent = 'Google sign-in is unavailable. Please try again later.';
   });
-  signOut.addEventListener('click', async () => {
+  signOut.addEventListener('click', async event => {
+    event.preventDefault();
     signingOut = true;
     await showSession(null);
     try { await client.auth.signOut({ scope: 'local' }); }
