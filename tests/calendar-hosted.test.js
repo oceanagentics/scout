@@ -54,8 +54,8 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
     assert.equal((await run('feed.ics?token='+'b'.repeat(64))).status,404);assert.equal(queries.length,1);
     queries.length=0;
     const feed=await run('feed.ics?token='+token);assert.equal(feed.status,200);
-    const initialBody=await feed.text();assert.match(initialBody,/SUMMARY:! 🐧 Test fixture/);
-    assert.ok(initialBody.includes('SEQUENCE:'+(Math.floor(Date.parse(record.modified[0])/1000)+2)));
+    const initialBody=await feed.text();assert.match(initialBody,/SUMMARY:⭐ 🐧 Test fixture/);
+    assert.ok(initialBody.includes('SEQUENCE:'+(Math.floor(Date.parse(record.modified[0])/1000)+3)));
     assert.match(initialBody,/DTSTART:20261117T030000Z/);assert.doesNotMatch(initialBody,/DTSTART;VALUE=DATE|DTEND|DURATION/);
     assert.match(initialBody,/UID:89a76621-0fac-447f-9429-62e1e8f985d1@scout.oceanagentics.com/);
     assert.equal(queries.length,2);assert.equal(queries.filter(sql=>sql.startsWith('update')).length,0);
