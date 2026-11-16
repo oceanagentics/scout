@@ -10,7 +10,9 @@ npm run reader -- --diagnostic --tracker=UUID
 ```
 
 Add `--provider=gemini` or `--provider=openai` to test one model without fallback.
-Omit it to use the normal Gemini-to-OpenAI route. To retain separate captures when
+Web investigations use OpenAI's linked-read/native-document loop; Gemini cannot
+be selected for that input. Supplied Bluesky posts retain the Gemini-to-OpenAI
+route. Omit the option to use the input's normal route. To retain separate captures when
 comparing runs, call `diagnoseTracker({tracker, env, provider, output})` with a
 different local output path for each run.
 
@@ -36,6 +38,10 @@ module outside hosted/browser import graphs; do not add a production capture fla
 or deploy this diagnostic. No production database receives traffic.
 
 The CLI prints normalized records and workflow diagnostics separately from the
-raw traffic. There is no separate scheduling follow-up. Provider retrieval metadata
+raw traffic, including request/token totals, source body bytes and any malformed
+optional scheduling fields. Continuation requests share the check's 100-second
+deadline; a model attempt can contain several HTTP requests. Broken documents,
+incomplete coverage and conflicting saved dates do not block other findings or
+progress. There is no cleanup or scheduling follow-up. Provider retrieval metadata
 may omit the page body and image alt text. Successful retrieval alone does not
 prove which content the model saw, even with the full provider reply captured.

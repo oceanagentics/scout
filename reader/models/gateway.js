@@ -8,17 +8,19 @@ const fallbackReasons=new Set(['url_retrieval_failed','retrieval_metadata_missin
 const fail=(reason,details={})=>Object.assign(new Error(reason),{reason,...details});
 
 // One primary attempt and, for eligible failures, one fallback. No model ledger.
-export function trackerModel({apiKey,openaiApiKey,source,provider,deadline,fetch:send=fetch}){
+export function trackerModel({apiKey,openaiApiKey,source,provider,deadline,readUrl,fetch:send=fetch}){
   if(provider!==undefined&&!['gemini','openai'].includes(provider))throw fail('configuration');
+  if(provider==='gemini'&&source.source_kind==='web')throw fail('model_configuration');
+  const primary=provider??(source.source_kind==='post'?'gemini':'openai');
   const providers={gemini:{model:MODEL,generate:gemini({apiKey,fetch:send})},
-    openai:{model:OPENAI_MODEL,generate:openai({apiKey:openaiApiKey,urls:[source.url],fetch:send})}};
+    openai:{model:OPENAI_MODEL,generate:openai({apiKey:openaiApiKey,urls:[source.url],readUrl,fetch:send})}};
   return async(instruction,input,schema)=>{
     const ends=deadline??Date.now()+100000,attempts=[];
     const call=async name=>{
       const config=providers[name],attempt={provider:name,model:config.model,dispatched:false,reason:null};
       attempts.push(attempt);
       try{
-        const remaining=Math.min(name==='gemini'?45000:100000,ends-Date.now());
+        const remaining=Math.min(name==='gemini'?45000:Infinity,ends-Date.now());
         if(remaining<=0)throw fail('runtime_bound',{dispatched:false});
         const answer=await config.generate(instruction,input,schema,{signal:AbortSignal.timeout(remaining)});
         attempt.dispatched=true;attempt.diagnostics=answer._diagnostics;
@@ -35,8 +37,8 @@ export function trackerModel({apiKey,openaiApiKey,source,provider,deadline,fetch
     };
     try{
       let answer;
-      try{answer=await call(provider??'gemini');}catch(error){
-        if(provider||!error.dispatched||!fallbackReasons.has(error.reason))throw error;
+      try{answer=await call(primary);}catch(error){
+        if(provider||primary!=='gemini'||!error.dispatched||!fallbackReasons.has(error.reason))throw error;
         answer=await call('openai');
       }
       return {...answer,_diagnostics:{provider:attempts.at(-1).provider,model:attempts.at(-1).model,attempts}};

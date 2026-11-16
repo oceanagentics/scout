@@ -1,14 +1,54 @@
-import {test} from 'node:test';
+import {test,beforeEach} from 'node:test';
+import dns from 'node:dns/promises';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {database} from '../reader/database.js';
 import {intake} from '../reader/intake.js';
-import {readSource} from '../reader/sources.js';
+import {readSource,readUrl} from '../reader/sources.js';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../reader/instructions.js';
 import {hostedReader} from '../supabase/functions/scout-reader/index.ts';
 import {hostedNotify} from '../supabase/functions/scout-notify/index.ts';
 import {scoutDay} from '../shared/finding-dates.js';
+
+beforeEach(t=>{
+  t.mock.method(dns,'lookup',async()=>[{address:'93.184.216.34',family:4}]);
+  t.mock.method(globalThis,'fetch',async()=>new Response('<main>BBNJ workshop</main>',{headers:{'content-type':'text/html'}}));
+});
+
+test('web reading preserves schedule rows, relative links, images and published structured data',async()=>{
+  const page=await readUrl('https://example.org/events/list',{fetch:async()=>new Response(`
+    <nav>Unrelated navigation</nav><main><h1>Directory</h1><table><tr><td>Opening</td><td>09:30</td></tr>
+    <tr><td>Event B</td><td><a href="../agenda">Programme</a><img src="flyer.jpg" alt="Event flyer"></td></tr></table></main>
+    <script type="application/ld+json">{"startDate":"2026-10-24T09:30:00+04:00"}</script><script>privateCode()</script>`,{headers:{'content-type':'text/html'}})});
+  assert.match(page.content,/Opening \| 09:30 \|/);assert.match(page.content,/\[Programme\]\(https:\/\/example.org\/agenda\)/);
+  assert.match(page.content,/!\[Event flyer\]\(https:\/\/example.org\/events\/flyer.jpg\)/);
+  assert.match(page.content,/2026-10-24T09:30:00\+04:00/);assert.doesNotMatch(page.content,/Unrelated navigation|privateCode/);
+});
+
+test('CBD reads the exact page articles, caches parallel reads, and retains the public source URL',async()=>{
+  let requests=0;const cache=new Map(),url='https://www.cbd.int/conferences/2026/parallel-meetings/nature-culture-summit';
+  const options={cache,fetch:async value=>{
+    requests++;const parsed=new URL(value);
+    assert.equal(parsed.pathname,'/api/v2017/articles');
+    assert.deepEqual(JSON.parse(parsed.searchParams.get('q')),{adminTags:{$all:['conferences','2026','parallel-meetings','nature-culture-summit']}});
+    return Response.json([{adminTags:['conferences','2026','parallel-meetings','nature-culture-summit'],title:{en:'Summit'},content:{en:'<table><tr><td>Opening</td><td>10:00</td></tr></table><a href="agenda.pdf">Agenda</a>'}}]);
+  }};
+  const [a,b]=await Promise.all([readUrl(url,options),readUrl(url+'#programme',options)]);
+  assert.deepEqual(a,b);assert.equal(requests,1);assert.equal(a.url,url);assert.match(a.content[0].content,/10:00/);
+});
+
+test('native-file metadata reads cancel bodies and private redirect targets are rejected',async()=>{
+  let cancelled=false;
+  const page=await readUrl('https://example.org/programme.pdf',{fetch:async()=>new Response(new ReadableStream({cancel(){cancelled=true;}}),{headers:{'content-type':'application/pdf'}})});
+  assert.deepEqual(page,{url:'https://example.org/programme.pdf',media_type:'application/pdf'});assert.equal(cancelled,true);
+  let calls=0;
+  await assert.rejects(readUrl('https://example.org/redirect',{fetch:async()=>{calls++;return new Response(null,{status:302,headers:{location:'http://127.0.0.1/private'}});}}),{reason:'source_invalid'});
+  assert.equal(calls,1);
+  for(const url of ['http://169.254.169.254/latest','http://[::1]/','http://user:password@example.org/']){
+    await assert.rejects(readUrl(url,{fetch:()=>assert.fail('Private sources must not be fetched')}),{reason:'source_invalid'});
+  }
+});
 
 const migration='20261019200000_scout_reader.sql';
 async function setup(t,{before=false}={}){
@@ -138,7 +178,8 @@ test('tracker URL -> one model investigation -> finding and tracker state; due r
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let calls=0;
   const modelFor=selected=>async(prompt,input,schema)=>{
     calls++;assert.equal(selected.id,tr.id);assert.equal(prompt,INTAKE_INSTRUCTION);assert.equal(schema,RESPONSE_SCHEMA);
-    assert.deepEqual(input,{url:tr.url,current_date:scoutDay()});return answer();
+    assert.equal(input.url,tr.url);assert.equal(input.current_date,scoutDay());assert.equal(input.source_kind,'web');
+    assert.equal(input.content.content,'BBNJ workshop');return answer();
   };
   const first=await intake(db,{modelFor});assert.equal(first.created,1);assert.equal(calls,1);
   const saved=(await raw.query('select * from scout.records')).rows[0];
@@ -249,19 +290,37 @@ test('exact matches beyond twenty older source-page findings retain IDs without 
   }
 });
 
-test('conflicting dates and deadlines defer without overwriting, duplicating or consuming the source',async t=>{
+test('conflicting dates and deadlines skip the affected finding and advance progress',async t=>{
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));
   const cop1={...event,description:'First Conference of the Parties to the BBNJ Agreement (BBNJ COP1)',date:'2027-01-11',deadline:'2026-12-18'};
   await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([cop1])});
   const saved=(await raw.query('select * from scout.records')).rows;
-  for(const [i,records] of [[{...cop1,date:'2027-01-01'}],[{...cop1,deadline:'2026-12-17'}],[cop1,{...cop1,date:'2027-01-01'}]].entries()){
-    await raw.query('update scout.trackers set url=$2 where id=$1',[tr.id,'https://example.org/cop1-report/'+i]);
-    const cutoff=(await raw.query('select last_successful_check from scout.trackers where id=$1',[tr.id])).rows[0].last_successful_check;
+  for(const records of [[{...cop1,date:'2027-01-01'}],[{...cop1,deadline:'2026-12-17'}],[cop1,{...cop1,date:'2027-01-01'}]]){
     const result=await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer(records),notify:()=>assert.fail('A conflict must not notify')});
-    assert.equal(result.reason,'ambiguous_findings');assert.equal(result.created,0);assert.equal(result.changed,0);
+    assert.equal(result.ambiguous,1);assert.equal(result.created,0);assert.equal(result.changed,0);
     assert.deepEqual((await raw.query('select * from scout.records')).rows,saved);
-    assert.deepEqual((await raw.query('select last_successful_check from scout.trackers where id=$1',[tr.id])).rows[0].last_successful_check,cutoff);
+    const state=(await raw.query('select * from scout.trackers where id=$1',[tr.id])).rows[0];
+    assert.deepEqual(state.last_successful_check,state.last_checked_at);assert.equal(state.last_error,null);
   }
+});
+
+test('partial evidence and malformed optional fields save while a conflicting existing record stays unchanged',async t=>{
+  const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));
+  const original={...event,description:'Existing event',date:'2026-10-24',starttime:'10:00',timezone:'UTC'};
+  await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([original])});
+  const saved=(await raw.query('select * from scout.records')).rows[0];
+  const result=await intake(db,{trackerId:tr.id,sourceFetch:async url=>url.endsWith('/broken.pdf')?new Response(null,{status:404}):new Response('<main><a href="/broken.pdf">Missing programme</a><a href="/another">Another event</a></main>',{headers:{'content-type':'text/html'}}),
+    modelFor:(_source,{readUrl})=>async()=>{
+      await assert.rejects(readUrl('https://example.org/broken.pdf'),{reason:'source_unavailable'});
+      return answer([{...original,date:'2026-10-25'},
+        {...event,description:'New useful event',date:'2026-12-01',starttime:null},
+        {...event,type:'announcement',description:'Useful announcement with malformed scheduling',date:'2026-02-30',starttime:'9:00 AM',timezone:'not/a-zone'}]);
+    }});
+  assert.equal(result.created,2);assert.equal(result.ambiguous,1);assert.equal(result.changed,0);
+  assert.deepEqual((await raw.query('select * from scout.records where id=$1',[saved.id])).rows[0],saved);
+  const malformed=(await raw.query("select date,starttime,timezone from scout.records where type='announcement'")).rows[0];
+  assert.deepEqual(malformed,{date:null,starttime:null,timezone:null});assert.deepEqual(result.diagnostics.invalid_scheduling,{date:1,starttime:1,timezone:1});
+  const state=(await raw.query('select * from scout.trackers')).rows[0];assert.deepEqual(state.last_successful_check,state.last_checked_at);assert.equal(state.last_error,null);
 });
 
 test('a past gathering keeps its existing ID when corrected from announcement to event',async t=>{
@@ -328,12 +387,12 @@ test('live lease excludes overlapping requests; URL changes and expired leases c
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));
   const result=await intake(db,{modelFor:()=>async()=>{
     assert.equal((await intake(db,{trackerId:tr.id,modelFor:()=>assert.fail('No overlapping model')})).state,'idle');
-    await raw.query("update scout.trackers set url='unreadable input' where id=$1",[tr.id]);return answer();
+    await raw.query("update scout.trackers set url='https://example.org/changed' where id=$1",[tr.id]);return answer();
   }});
   assert.equal(result.state,'stale');assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,0);
   assert.equal((await raw.query('select failure_count from scout.trackers')).rows[0].failure_count,0);
   const expired=await intake(db,{trackerId:tr.id,modelFor:tr=>async(_p,input)=>{
-    assert.equal(input.url,'unreadable input');assert.equal(tr.url,input.url);
+    assert.equal(input.url,'https://example.org/changed');assert.equal(tr.url,input.url);
     await raw.exec("update scout.trackers set lease_until=now()-interval '1 second'");return answer();
   }});
   assert.equal(expired.state,'stale');assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,0);
@@ -347,28 +406,26 @@ test('finding failure rolls back the finding and successful tracker completion t
   const state=(await raw.query('select * from scout.trackers')).rows[0];assert.equal(state.failure_count,1);assert.equal(state.last_error,'database_operation');
 });
 
-test('hosted reader works without quota policy and retains finite fallback without model accounting',async t=>{
+test('hosted web reader uses OpenAI directly without model accounting',async t=>{
   const raw=await setup(t),tr=await tracker(raw);let gemini=0,openai=0,posts=0;
   const config={...options(raw),openaiApiKey:'test',post:async()=>{posts++;return {status:200,body:'ok'};},modelFetch:async(url,init)=>{
     const body=JSON.parse(init.body);
     if(url.includes('googleapis')){gemini++;return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});}
-    openai++;assert.deepEqual(JSON.parse(body.input),{input:{url:tr.url,current_date:scoutDay()},urls:[tr.url]});
+    openai++;const supplied=JSON.parse(body.input[0].content[0].text);assert.equal(supplied.input.url,tr.url);
+    assert.equal(supplied.input.source_kind,'web');assert.equal(supplied.input.content.content,'BBNJ workshop');
     return Response.json({status:'completed',usage:{input_tokens:100,output_tokens:100},output:[
       {type:'web_search_call',status:'completed',action:{type:'open_page',url:tr.url}},
-      {type:'message',content:[{type:'output_text',text:JSON.stringify({records:[event]})}]}]});
+      {type:'message',content:[{type:'output_text',text:JSON.stringify({status:'found',records:[event]})}]}]});
   }};
   assert.equal((await raw.query("select to_regclass('scout.quota_policy') name")).rows[0].name,null);
   const notification=await (await hostedNotify(request('kind=weekly'),{...options(raw),post:()=>assert.fail('No findings to notify')})).json();
   assert.equal(notification.status,'no_change');
   await due(raw);const response=await hostedReader(request(),config);assert.equal(response.status,200);
-  const saved=await response.json();assert.equal(saved.created,1);assert.deepEqual(saved.notifications,[{status:'sent',communicated:1}]);assert.equal(posts,1);assert.equal(gemini,1);assert.equal(openai,1);
+  const saved=await response.json();assert.equal(saved.created,1);assert.deepEqual(saved.notifications,[{status:'sent',communicated:1}]);assert.equal(posts,1);assert.equal(gemini,0);assert.equal(openai,1);
   assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,1);
-  const repeat=await (await hostedReader(request('tracker_id='+tr.id),{...config,modelFetch:async()=>Response.json({
-    usageMetadata:{promptTokenCount:400,toolUsePromptTokenCount:1000,candidatesTokenCount:300,totalTokenCount:1700},
-    candidates:[{finishReason:'STOP',urlContextMetadata:{urlMetadata:[{retrievedUrl:tr.url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
-      content:{parts:[{text:JSON.stringify([event])}]}}]})})).json();
+  const repeat=await (await hostedReader(request('tracker_id='+tr.id),config)).json();
   assert.equal(repeat.diagnostics.attempts.length,1);assert.equal(repeat.created,0);assert.equal(repeat.changed,0);assert.equal(posts,1);
-  t.diagnostic(JSON.stringify({mocked_providers:true,real_local_sql:true,fallback:saved.cost,primary_repeat:repeat.cost,attempts:saved.diagnostics.attempts.length}));
+  t.diagnostic(JSON.stringify({mocked_providers:true,real_local_sql:true,initial:saved.cost,repeat:repeat.cost,attempts:saved.diagnostics.attempts.length}));
 });
 
 test('reader migration removes source state and correction metadata, preserves findings/accounting, and restricts state writes',async t=>{

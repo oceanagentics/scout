@@ -15,7 +15,7 @@ test('supplied posts work without retrieval metadata; both providers retain opti
       calls++;const body=JSON.parse(options.body);
       assert.ok(body.tools.length);
       if(provider==='openai'){
-        assert.equal(body.tool_choice,'auto');assert.deepEqual(JSON.parse(body.input).input,input);
+        assert.equal(body.tool_choice,'auto');assert.deepEqual(JSON.parse(body.input[0].content[0].text).input,input);
         return result([],[]);
       }
       assert.deepEqual(JSON.parse(body.contents[0].parts[0].text),input);
@@ -26,7 +26,7 @@ test('supplied posts work without retrieval metadata; both providers retain opti
   }
 });
 const result=(records=[],web=[{type:'web_search_call',status:'completed',action:{type:'open_page',url}}])=>Response.json({
-  status:'completed',output:[...web,{type:'message',content:[{type:'output_text',text:JSON.stringify({records})}]}]});
+  status:'completed',output:[...web,{type:'message',content:[{type:'output_text',text:JSON.stringify({status:records.length?'found':'none',records})}]}]});
 const envelope=(text='[]',extra={})=>Response.json({candidates:[{finishReason:'STOP',
   urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
   content:{parts:[{text}]}}],...extra});
@@ -49,7 +49,7 @@ test('provider calls accept large inputs and outputs without accounting or Scout
   }
   const urls=Array.from({length:6},(_,i)=>url+'/'+i);
   await openai({apiKey:'test',urls,fetch:async(_,options)=>{
-    assert.deepEqual(JSON.parse(JSON.parse(options.body).input).urls,urls);return result();
+    assert.deepEqual(JSON.parse(JSON.parse(options.body).input[0].content[0].text).urls,urls);return result();
   }})('Read',{},RESPONSE_SCHEMA);
 });
 
@@ -66,7 +66,7 @@ test('fallback is one attempt and preserves provider diagnostics',async t=>{
     ['safety',()=>envelope('[]',{promptFeedback:{blockReason:'SAFETY'}}),false]];
   for(const [name,response,recover] of cases)await t.test(name,async()=>{
     const calls=[];
-    const model=trackerModel({source:{url},apiKey:'test',openaiApiKey:'test',fetch:async target=>{
+    const model=trackerModel({source:{url,source_kind:'post'},apiKey:'test',openaiApiKey:'test',fetch:async target=>{
       calls.push(target);return target.includes('googleapis')?response():result();
     }});
     const answer=await model(INTAKE_INSTRUCTION,{url},RESPONSE_SCHEMA).catch(e=>e);
@@ -75,7 +75,7 @@ test('fallback is one attempt and preserves provider diagnostics',async t=>{
     if(recover)assert.deepEqual(answer._diagnostics.attempts.map(a=>a.provider),['gemini','openai']);
   });
   let calls=0;
-  const model=trackerModel({source:{url},apiKey:'test',openaiApiKey:'test',fetch:async()=>{calls++;return new Response('{}',{status:503});}});
+  const model=trackerModel({source:{url,source_kind:'post'},apiKey:'test',openaiApiKey:'test',fetch:async()=>{calls++;return new Response('{}',{status:503});}});
   await assert.rejects(model('Read',{url},RESPONSE_SCHEMA),{reason:'provider_unavailable'});assert.equal(calls,2);
 });
 
@@ -123,4 +123,65 @@ test('strict schema preserves input and closes optional nested objects',()=>{
   assert.deepEqual(next.required,['optional','nested']);assert.deepEqual(next.properties.optional.type,['string','null']);
   assert.equal(next.properties.nested.items.additionalProperties,false);
   assert.equal(RESPONSE_SCHEMA.maxItems,undefined);
+});
+
+test('web investigations use OpenAI directly and preserve batched linked/native reads through continuation',async()=>{
+  let requests=0;const signals=[],seen=[];
+  const model=trackerModel({source:{url,source_kind:'web'},openaiApiKey:'test',readUrl:async target=>{
+    seen.push(target);return target.endsWith('.pdf')?{url:target,media_type:'application/pdf'}:{url:target,media_type:'text/html',content:'Programme opens at 09:30 UTC'};
+  },fetch:async(target,options)=>{
+    assert.equal(target,'https://api.openai.com/v1/responses');signals.push(options.signal);
+    const body=JSON.parse(options.body);assert.equal(body.store,false);assert.equal(body.previous_response_id,undefined);
+    if(++requests===1)return Response.json({status:'completed',usage:{input_tokens:100,output_tokens:20,total_tokens:120},output:[
+      {type:'reasoning',id:'r',encrypted_content:'opaque',summary:[]},
+      {type:'function_call',name:'read_url',call_id:'page',arguments:JSON.stringify({url:url+'/agenda'})},
+      {type:'function_call',name:'read_url',call_id:'pdf',arguments:JSON.stringify({url:url+'/programme.pdf'})}]});
+    assert.ok(body.input.some(i=>i.type==='reasoning'&&i.encrypted_content==='opaque'));
+    const outputs=body.input.filter(i=>i.type==='function_call_output');assert.deepEqual(outputs.map(i=>i.call_id),['page','pdf']);
+    assert.match(outputs[0].output[0].text,/09:30 UTC/);assert.deepEqual(outputs[1].output[1],{type:'input_file',file_url:url+'/programme.pdf'});
+    return result([{description:'Workshop',date:'2026-10-24',starttime:'09:30',timezone:'UTC'}],[]);
+  }});
+  const answer=await model('Read',{url,source_kind:'web',content:{url,media_type:'text/html',content:'Directory'}},RESPONSE_SCHEMA);
+  assert.equal(answer.status,'found');assert.equal(requests,2);assert.deepEqual(seen,[url+'/agenda',url+'/programme.pdf']);
+  assert.equal(signals[0],signals[1]);assert.equal(answer._diagnostics.attempts.length,1);
+  assert.equal(answer._diagnostics.attempts[0].diagnostics.usage.input_tokens,100);
+  assert.throws(()=>trackerModel({provider:'gemini',source:{url,source_kind:'web'}}),{reason:'model_configuration'});
+});
+
+test('broken linked reads return errors while other findings survive, without provider fallback',async()=>{
+  let requests=0;
+  const generate=openai({apiKey:'test',urls:[url],readUrl:async()=>{throw Object.assign(new Error('Not found'),{reason:'source_unavailable'});},fetch:async(_target,options)=>{
+    if(++requests===1)return Response.json({status:'completed',output:[{type:'function_call',name:'read_url',call_id:'broken',arguments:JSON.stringify({url:url+'/404.pdf'})}]});
+    const output=JSON.parse(options.body).input.find(i=>i.type==='function_call_output');assert.equal(JSON.parse(output.output).error,'source_unavailable');
+    return result([{description:'Useful event with unknown time',date:'2026-10-24',starttime:null}],[]);
+  }});
+  const answer=await generate('Read',{content:{content:'Directory'}},RESPONSE_SCHEMA);
+  assert.equal(answer.records.length,1);assert.equal(answer.records[0].starttime,null);assert.equal(requests,2);
+});
+
+test('rejected and oversized native images are removed from replay and become failed reads',async t=>{
+  for(const error of [{code:'invalid_image_url',message:'Could not download image'},
+    {code:'invalid_value',message:'The image you provided requires 33383 patches after processing, exceeding the limit of 30000. Please resize the image and try again.'}])await t.test(error.code,async()=>{
+  let requests=0;
+  const generate=openai({apiKey:'test',urls:[url],fetch:async(_target,options)=>{
+    const parts=JSON.parse(options.body).input.flatMap(i=>i.content??[]);
+    if(++requests===1){assert.ok(parts.some(p=>p.type==='input_image'));return Response.json({error},{status:400});}
+    assert.ok(!parts.some(p=>p.type==='input_image'));assert.ok(parts.some(p=>p.text?.includes('source_unavailable')));
+    return result([{description:'Event retained from the source label'}],[]);
+  }});
+  const answer=await generate('Read',{url,source_kind:'web',content:{url,media_type:'image/jpeg'}},RESPONSE_SCHEMA);
+  assert.equal(answer.status,'found');assert.equal(requests,2);assert.equal(answer._diagnostics.retrieval[0].status,'NATIVE_INPUT_FAILED');
+  });
+});
+
+test('continuations honor cancellation and unknown or malformed read operations fail',async()=>{
+  for(const call of [{name:'other',call_id:'x',arguments:'{}'},{name:'read_url',call_id:'x',arguments:'{"url":3}'}]){
+    const generate=openai({apiKey:'test',readUrl:()=>assert.fail('Invalid operation'),fetch:async()=>Response.json({status:'completed',output:[{type:'function_call',...call}]})});
+    await assert.rejects(generate('Read',{content:{}},RESPONSE_SCHEMA),{reason:call.name==='other'?'unexpected_tool':'invalid_output'});
+  }
+  const controller=new AbortController();let requests=0;
+  const generate=openai({apiKey:'test',readUrl:async()=>{controller.abort();throw new Error('aborted');},fetch:async()=>{
+    requests++;return Response.json({status:'completed',output:[{type:'function_call',name:'read_url',call_id:'x',arguments:JSON.stringify({url})}]});
+  }});
+  await assert.rejects(generate('Read',{content:{}},RESPONSE_SCHEMA,{signal:controller.signal}),{reason:'runtime_bound'});assert.equal(requests,1);
 });

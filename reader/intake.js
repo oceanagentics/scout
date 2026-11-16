@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from './instructions.js';
 import {normalizeFinding,saveFindings} from './findings.js';
-import {readSource} from './sources.js';
+import {readSource,readUrl} from './sources.js';
 import {scoutDay} from '../shared/finding-dates.js';
 
 const fail=reason=>Object.assign(new Error(reason),{reason});
@@ -23,22 +23,27 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,notif
   if(!tracker)return {state:'idle',created:0,changed:0};
   const counts={created:0,changed:0,saved:0,ambiguous:0},through=new Date(tracker.last_checked_at).toISOString();
   const deadline=Date.parse(through)+100000;
-  let diagnostics,processed=0;const notifications=[];
+  let diagnostics,processed=0;const notifications=[],cache=new Map(),sourceMetrics={requests:0,bytes:0};
+  const read=url=>{
+    const remaining=deadline-Date.now();if(remaining<=0)throw fail('runtime_bound');
+    return readUrl(url,{fetch:sourceFetch,signal:AbortSignal.timeout(remaining),cache,metrics:sourceMetrics});
+  };
   try{
-    const items=await readSource(tracker,{through,fetch:sourceFetch,signal:AbortSignal.timeout(Math.max(1,deadline-Date.now()))});
+    const items=await readSource(tracker,{through,fetch:sourceFetch,readUrl:read,signal:AbortSignal.timeout(Math.max(1,deadline-Date.now()))});
     // An empty feed still commits the successful scan time, without a model call.
     for(let start=0;start<items.length||start===0;){
       let end=start+1;
       while(end<items.length&&items[end].at===items[start].at)end++;
       const group=items.slice(start,end),prepared=[];
       for(const item of group){
-        const model=modelFor({...tracker,...item},{deadline});
-        const answer=await model(INTAKE_INSTRUCTION,{url:item.url,current_date:scoutDay(new Date(through)),
+        const model=modelFor({...tracker,...item},{deadline,readUrl:read});
+        const answer=await model(INTAKE_INSTRUCTION,{url:item.url,source_kind:item.source_kind,current_date:scoutDay(new Date(through)),
           ...(item.content?{content:item.content}:{})},RESPONSE_SCHEMA);
-        diagnostics=answer._diagnostics;
+        diagnostics={...answer._diagnostics,source:sourceMetrics};
         if(!['found','none','unreadable'].includes(answer.status)||!Array.isArray(answer.records))throw fail('invalid_output');
         if(answer.status==='unreadable')throw fail('model_unreadable');
-        const findings=answer.records.map(r=>normalizeFinding(r,item.url));
+        const invalidScheduling={},findings=answer.records.map(r=>normalizeFinding(r,item.url,invalidScheduling));
+        if(Object.keys(invalidScheduling).length)diagnostics.invalid_scheduling=invalidScheduling;
         if(findings.some(f=>!f)||answer.status==='none'&&findings.length)throw fail('invalid_output');
         if(answer.status==='found'&&!findings.length)throw fail('empty_findings');
         prepared.push({url:item.url,findings});
@@ -51,7 +56,6 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,notif
         for(const item of prepared){
           if(!item.findings.length)continue;
           const result=await saveFindings(tx,item.url,item.findings);
-          if(result.ambiguous)throw fail('ambiguous_findings');
           for(const key of Object.keys(totals))totals[key]+=result[key];
           createdIds.push(...result.createdIds);
         }

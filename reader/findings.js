@@ -3,18 +3,22 @@ import {normalizeDate,dateInterval} from '../shared/finding-dates.js';
 const text=v=>typeof v==='string'?v.toWellFormed().replace(/\s+/g,' ').trim():null;
 const fields=['description','type','priority','organizations','deadline','date','starttime','timezone','sources'];
 
-export function normalizeFinding(raw,url){
+export function normalizeFinding(raw,url,invalidScheduling){
   const description=text(raw?.description);
   if(!description)return null;
   const date=value=>dateInterval({value,precision:{4:'year',7:'month',10:'day'}[value?.length]})?value:null;
   const starttime=/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(raw.starttime??'')?raw.starttime:null;
   let timezone=text(raw.timezone)||null;
   if(timezone)try{normalizeDate({value:'2026-01-01',precision:'day',time:'12:00',zone:timezone});}catch{timezone=null;}
-  return {description,type:['event','announcement','treaty_status'].includes(raw.type)?raw.type:null,
+  const finding={description,type:['event','announcement','treaty_status'].includes(raw.type)?raw.type:null,
     priority:['high','normal','low'].includes(raw.priority)?raw.priority:null,
     organizations:[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).flatMap(o=>{
       const name=text(o);return name?[[name.toLowerCase(),name]]:[];
     })).values()],deadline:date(raw.deadline),date:date(raw.date),starttime,timezone,sources:[url]};
+  if(invalidScheduling)for(const key of ['date','deadline','starttime','timezone']){
+    if(raw[key]!=null&&finding[key]===null)invalidScheduling[key]=(invalidScheduling[key]??0)+1;
+  }
+  return finding;
 }
 
 const normalize=value=>value.normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').trim().toLowerCase();
