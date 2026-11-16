@@ -48,7 +48,6 @@ export function mountDashboard(root, load) {
       <label class="search">Search records<input name="search" type="search" placeholder="Description, organization, topic…"></label>
       <label>Record type<select name="type"><option value="">All</option><option value="announcement">Announcements</option><option value="event">Events</option><option value="treaty_status">Treaty changes</option></select></label>
       <label>Priority<select name="priority"><option value="">All priorities</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option><option value="unassessed">Not yet assessed</option></select></label>
-      <label>Organization<input name="organization" placeholder="Exact organization name"></label>
       <label>From<input name="from" type="date"></label><label>Through<input name="to" type="date"></label>
       <label>Date meaning<select name="meaning"><option value="date">date</option><option value="deadline">deadline</option></select></label>
       <label>Order<select name="order"><option value="priority">Priority, then date</option><option value="date">Date</option><option value="column" hidden disabled>Selected column</option></select></label>
