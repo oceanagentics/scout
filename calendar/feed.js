@@ -6,7 +6,8 @@ const text=value=>String(value??'').replaceAll('\\','\\\\').replace(/\r\n|\r|\n/
 const stamp=value=>new Date(value).toISOString().replaceAll('-','').replaceAll(':','').replace(/\.\d{3}/,'');
 
 export function calendarFeed(records){
-  const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Ocean Agentics//Scout//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH','X-WR-CALNAME:Scout Events'];
+  const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Ocean Agentics//Scout//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH',
+    'NAME:Scout Events','X-WR-CALNAME;VALUE=TEXT:Scout Events'];
   for(const record of records){
     if(!uuid.test(record.id))throw new Error('Invalid Scout record ID');
     if(record.type!=='event')continue;
