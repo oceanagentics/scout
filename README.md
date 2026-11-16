@@ -39,10 +39,10 @@ Local sign-in uses the hosted Supabase project. Its Auth Redirect URLs must incl
 ```sh
 npm test
 npm run build
-npm run preview
+npm run preview -- --port 5173 --strictPort
 ```
 
-The build writes ignored `website/dist/`; preview serves that output. Database tests use in-memory PGlite. Mocked tests establish mechanics, not live extraction accuracy or production costs.
+The build writes ignored `website/dist/`; preview serves that output. Stop the dev server before previewing so port 5173 is available. Use the same `http://127.0.0.1:5173/` origin for sign-in and calendar controls. Database tests use in-memory PGlite. Mocked tests establish mechanics, not live extraction accuracy or production costs.
 
 ## Backend commands
 
@@ -120,7 +120,8 @@ Replace `scout-calendar` only when deploying a different changed function:
 | --- | --- |
 | `calendar/` or its entrypoint | `scout-calendar` |
 | `reader/` or its hosted entrypoint | `scout-reader` |
-| `slackbot/` or its hosted entrypoint | `scout-notify` |
+| `slackbot/slack.js` | `scout-reader` and `scout-notify` |
+| `supabase/functions/scout-notify/index.ts` | `scout-notify` |
 | A shared module | Each function importing that module, directly or indirectly. |
 
 Keep the entrypoint, import map and `verify_jwt` settings in [supabase/config.toml](supabase/config.toml). The functions enforce their own request authentication. Specify the function name rather than deploying unrelated functions or pruning the shared project. `--use-api` performs server-side bundling without Docker; see the [CLI reference](https://supabase.com/docs/reference/cli/supabase-functions-deploy).
