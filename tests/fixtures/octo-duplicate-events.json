@@ -1,0 +1,91 @@
+{
+  "sourceUrl": "https://octogroup.org/webinars/",
+  "cases": [
+    {
+      "name": "mpa-compliance-2026-12-01",
+      "original": {
+        "id": "2576cca8-2285-4bfe-b898-746328c57355",
+        "description": "Why enforcement isn't enough: A new framework for improving compliance in Marine Protected Areas",
+        "type": "event",
+        "priority": "normal",
+        "organizations": [
+          "OCTO",
+          "James Cook University",
+          "University of New England",
+          "University of Hawaiʻi at Hilo",
+          "The Waitt Institute",
+          "WildAid"
+        ],
+        "date": "2026-12-01",
+        "deadline": null,
+        "starttime": "19:00",
+        "timezone": "+00:00",
+        "sources": ["https://octogroup.org/webinars/"],
+        "modified": [
+          "2026-11-08 22:44:04.556+00",
+          "2026-11-09 06:24:18.024+00",
+          "2026-11-10 06:24:04.043+00",
+          "2026-11-11 06:24:06.14+00"
+        ]
+      },
+      "duplicate": {
+        "id": "25959dcb-864d-4dbc-926e-c1414f78d2fc",
+        "description": "OCTO webinar presenting an adaptive management framework for improving compliance in marine protected areas.",
+        "type": "event",
+        "priority": "normal",
+        "organizations": [
+          "OCTO",
+          "James Cook University",
+          "University of New England",
+          "University of Hawaiʻi at Hilo",
+          "The Waitt Institute",
+          "WildAid"
+        ],
+        "date": "2026-12-01",
+        "deadline": null,
+        "starttime": "19:00",
+        "timezone": "UTC",
+        "sources": ["https://octogroup.org/webinars/"],
+        "modified": ["2026-11-16 19:06:18.828+00"]
+      }
+    },
+    {
+      "name": "marine-heatwaves-2026-12-03",
+      "original": {
+        "id": "ba43e11f-4a0d-46bf-bcb6-be7c8855acaa",
+        "description": "Watching the ocean before the heat arrives: Coordinated marine heatwave monitoring for the 2026-27 El Niño",
+        "type": "event",
+        "priority": "normal",
+        "organizations": ["OCTO", "University of Victoria"],
+        "date": "2026-12-03",
+        "deadline": null,
+        "starttime": "17:00",
+        "timezone": "+00:00",
+        "sources": ["https://octogroup.org/webinars/"],
+        "modified": [
+          "2026-11-02 19:11:48.059+00",
+          "2026-11-08 22:44:04.809+00",
+          "2026-11-09 06:24:18.048+00",
+          "2026-11-10 06:24:04.068+00"
+        ]
+      },
+      "duplicate": {
+        "id": "5ead1ac8-d00b-4f17-8219-216e0720e480",
+        "description": "OCTO and the Pew Fellows Program in Marine Conservation webinar on coordinated monitoring of marine heatwaves ahead of the 2026–27 El Niño.",
+        "type": "event",
+        "priority": "normal",
+        "organizations": [
+          "The Pew Fellows Program in Marine Conservation",
+          "OCTO",
+          "University of Victoria"
+        ],
+        "date": "2026-12-03",
+        "deadline": null,
+        "starttime": "17:00",
+        "timezone": "UTC",
+        "sources": ["https://octogroup.org/webinars/"],
+        "modified": ["2026-11-16 19:06:18.838+00"]
+      }
+    }
+  ]
+}
