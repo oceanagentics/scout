@@ -176,7 +176,7 @@ export function mountDashboard(root, load) {
   async function reload() {
     const sequence=++request;
     refresh.disabled = true;
-    status.classList.remove('loaded');
+    status.hidden = false;
     status.textContent = data ? 'Refreshing data…' : 'Loading records and trackers…';
     root.setAttribute('aria-busy', 'true');
     try {
@@ -184,8 +184,8 @@ export function mountDashboard(root, load) {
       if (!active||sequence!==request) return;
       data = next; loadedAt = new Date().toISOString();
       renderRecords(); renderTrackers();
-      status.textContent = `Data loaded · ${stamp(loadedAt)}. Tracker checking times are shown for each source.`;
-      status.classList.add('loaded');
+      status.textContent = '';
+      status.hidden = true;
     } catch {
       if (active&&sequence===request) status.textContent = `Could not load Scout data. ${data ? `Showing data loaded ${stamp(loadedAt)}. ` : ''}Use “Refresh data” to try again.`;
     } finally { if (active&&sequence===request) { refresh.disabled = false; root.removeAttribute('aria-busy'); } }
