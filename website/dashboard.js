@@ -3,8 +3,8 @@ import { sourceLink,eventTiming,orderRecords } from '../shared/records.js';
 import {findingInterval,scoutDay} from '../shared/finding-dates.js';
 
 const RECORD_FIELDS = [
-  'id', 'description', 'type', 'priority', 'organizations', 'deadline', 'date',
-  'starttime', 'timezone', 'sources', 'modified',
+  'description', 'type', 'priority', 'organizations', 'deadline', 'date',
+  'starttime', 'timezone', 'sources', 'modified', 'id',
 ];
 const TRACKER_FIELDS = [
   ['name','Name'], ['url','URL'], ['coverage','Coverage'], ['cadence','Cadence'], ['enabled','Enabled'],
