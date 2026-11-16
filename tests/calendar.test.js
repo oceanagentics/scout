@@ -13,6 +13,7 @@ test('feed has stable identity/revisions, UTC dates, safe text and byte-correct 
   assert.match(unfolded,/UID:89a76621-0fac-447f-9429-62e1e8f985d1@scout.oceanagentics.com/);
   assert.match(unfolded,/DTSTART:20261022T133000Z/);assert.doesNotMatch(unfolded,/DTEND|DURATION/);
   assert.match(unfolded,/DTSTAMP:20261012T100000Z/);assert.ok(unfolded.includes('SEQUENCE:'+(Math.floor(Date.parse(record.modified[0])/1000)+1)));
+  assert.match(unfolded,/\r\nSUMMARY:🐧 /);
   assert.ok(unfolded.includes('one\\,two\\;three\\\\four\\nfive'));
 });
 
