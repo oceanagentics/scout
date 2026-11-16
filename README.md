@@ -68,7 +68,7 @@ Scout uses `America/New_York` for schedules, calendar-day boundaries, tracker re
 
 The model's priority rubric is stored in [reader/instructions.js](reader/instructions.js). The high-priority filter, individual message format and delivery rules are enforced in [slackbot/slack.js](slackbot/slack.js), shared by the reader and scheduled notifier.
 
-[scout-loop.sql](supabase/scout-loop.sql) installs three paused jobs and replaces the obsolete notification jobs. Supabase cron uses GMT: digest jobs wake at both possible UTC hours and dispatch only at the matching New York hour, including daylight saving. The shared loop bounds these jobs’ completed cron history to one day. After deploying and verifying the reader and notifier, explicitly enable `scout-collection`, `scout-morning` and `scout-weekly`.
+[scout-loop.sql](supabase/scout-loop.sql) installs three paused jobs and replaces the obsolete notification jobs. Supabase cron uses GMT: digest jobs wake at both possible UTC hours and dispatch only at the matching New York hour, including daylight saving. The shared loop bounds these jobs’ completed cron history to one day. After deploying and verifying the reader and notifier, restore each job's prior active state as required by [AGENTS.md](AGENTS.md). On initial setup or an explicitly requested restart, enable `scout-collection`, `scout-morning` and `scout-weekly`.
 
 Manual notification requests require `kind=morning`, `kind=weekly`, or `kind=findings&ids=UUID,...`. Repeating a request may repeat the post. `npm run notify -- --send --kind=morning` sends the morning digest immediately, regardless of hour.
 
@@ -159,7 +159,7 @@ Confirm the returned deployment status/version, then read it back through `GET h
 
 For calendar changes, request the existing private feed URL in memory and require HTTP 200, `BEGIN:VCALENDAR` and the expected event content. Keep the subscription token and event IDs unchanged. Google Calendar refreshes its own copy separately; check the live feed before attributing missing updates to Google. Never print the private token URL. For website changes, deploy Firebase separately and verify the released assets too.
 
-A function deployment does not apply database migrations. For a requested schema change, inspect remote migration history and apply only the reviewed pending Scout migrations, coordinating the affected consumers. Keep recurring jobs paused. Do not invoke the reader, send Slack messages, or run historical cutover SQL merely to verify deployment. Report what was checked locally, what was verified live, and any remaining blocker.
+A function deployment does not apply database migrations. For a requested schema change, inspect remote migration history and apply only the reviewed pending Scout migrations, coordinating the affected consumers. If the release requires a temporary pause, restore each job's prior active state after verification as required by [AGENTS.md](AGENTS.md). Do not invoke the reader, send Slack messages, or run historical cutover SQL merely to verify deployment. Report what was checked locally, what was verified live, and any remaining blocker.
 
 ## Website deployment
 
