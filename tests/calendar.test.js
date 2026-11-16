@@ -12,8 +12,8 @@ test('feed has stable identity/revisions, UTC dates, safe text and byte-correct 
   for(const line of feed.split('\r\n'))assert.ok(Buffer.byteLength(line)<=75);
   assert.match(unfolded,/UID:89a76621-0fac-447f-9429-62e1e8f985d1@scout.oceanagentics.com/);
   assert.match(unfolded,/DTSTART:20261022T133000Z/);assert.doesNotMatch(unfolded,/DTEND|DURATION/);
-  assert.match(unfolded,/DTSTAMP:20261012T100000Z/);assert.ok(unfolded.includes('SEQUENCE:'+(Math.floor(Date.parse(record.modified[0])/1000)+1)));
-  assert.match(unfolded,/\r\nSUMMARY:🐧 /);
+  assert.match(unfolded,/DTSTAMP:20261012T100000Z/);assert.ok(unfolded.includes('SEQUENCE:'+(Math.floor(Date.parse(record.modified[0])/1000)+2)));
+  assert.match(unfolded,/\r\nSUMMARY:🌊/);
   assert.ok(unfolded.includes('one\\,two\\;three\\\\four\\nfive'));
 });
 
@@ -24,7 +24,7 @@ test('feed includes dated past events and excludes undated records',()=>{
   assert.equal((feed.match(/BEGIN:VEVENT/g)??[]).length,2);
   assert.match(feed,/DTSTART;VALUE=DATE:20010901/);assert.match(feed,/DTEND;VALUE=DATE:20010902/);
   const dateEntry=feed.split('BEGIN:VEVENT')[2];
-  assert.ok(dateEntry.includes('SEQUENCE:'+Math.floor(Date.parse(record.modified[0])/1000)));
+  assert.ok(dateEntry.includes('SEQUENCE:'+(Math.floor(Date.parse(record.modified[0])/1000)+1)));
 });
 
 test('feed uses stored timezones, preserves clocks without a timezone and skips partial dates',()=>{

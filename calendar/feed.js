@@ -21,9 +21,9 @@ export function calendarFeed(records){
       'Scout record: https://bbnj-scout.web.app/?record='+record.id].filter(Boolean).join('\n\n');
     lines.push('BEGIN:VEVENT','UID:'+record.id+'@scout.oceanagentics.com',
       'DTSTAMP:'+stamp(record.modified.at(-1)),'LAST-MODIFIED:'+stamp(record.modified.at(-1)),
-      // Advance existing subscription entries for timed starts and high-priority titles.
-      'SEQUENCE:'+(Math.floor(Date.parse(record.modified.at(-1))/1000)+(start.time?1:0)+(record.priority==='high'?1:0)),
-      'SUMMARY:'+text((record.priority==='high'?'! ':'')+'🐧 '+record.description),
+      // Advance existing subscription entries for timed starts and priority title formats.
+      'SEQUENCE:'+(Math.floor(Date.parse(record.modified.at(-1))/1000)+(start.time?1:0)+(record.priority==='high'||record.priority==='low'?1:0)),
+      'SUMMARY:'+text((record.priority==='high'?'! ':'')+(record.priority==='low'?'':'🐧 ')+record.description),
       'DESCRIPTION:'+text(description),'LOCATION:','TRANSP:TRANSPARENT','STATUS:CONFIRMED');
     if(start.time)lines.push('DTSTART:'+(start.utc?stamp(start.utc):start.value.replaceAll('-','')+'T'+start.time.replaceAll(':','').padEnd(6,'0')));
     else{
