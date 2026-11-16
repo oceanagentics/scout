@@ -50,7 +50,6 @@ export function mountDashboard(root, load) {
       <label>Priority<select name="priority"><option value="">All priorities</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option><option value="unassessed">Not yet assessed</option></select></label>
       <label>From<input name="from" type="date"></label><label>Through<input name="to" type="date"></label>
       <label>Date meaning<select name="meaning"><option value="date">date</option><option value="deadline">deadline</option></select></label>
-      <label>Order<select name="order"><option value="priority">Priority, then date</option><option value="date">Date</option><option value="column" hidden disabled>Selected column</option></select></label>
       </form><div class="view-switch" role="group" aria-label="Records layout">
         <button type="button" data-layout="table" aria-label="Table view" title="Table view" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M10 9v11"/></svg></button>
         <button type="button" data-layout="cards" aria-label="Card view" title="Card view" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
@@ -75,7 +74,6 @@ export function mountDashboard(root, load) {
     recordList.className = tableView ? 'table-scroll' : 'record-grid';
     if (!data) return;
     timings = new Map(data.records.filter(record => record.type === 'event').map(record => [record.id, eventTiming(record)]));
-    const values = Object.fromEntries(new FormData(filters));
     const selected = new URLSearchParams(location.search).get('record');
     const records = sorts.records?orderRecords(data.records,sorts.records):data.records;
     const count = root.querySelector('#record-count');
@@ -90,7 +88,7 @@ export function mountDashboard(root, load) {
       const table = node('table', null, 'data-table');
       table.append(node('caption', 'Record fields and sources', 'visually-hidden'));
       const head = node('thead'), row = node('tr');
-      const sort = sorts.records??{ field: values.order==='date'?'date':'priority', direction: 'ascending' };
+      const sort = sorts.records??{ field: 'priority', direction: 'ascending' };
       for (const field of RECORD_FIELDS) {
         const heading = node('th'); heading.scope = 'col'; row.append(heading);
         const button = node('button', field); button.type = 'button'; button.dataset.sort = field; heading.append(button);
@@ -197,18 +195,13 @@ export function mountDashboard(root, load) {
       const button = event.target.closest('button[data-sort]');
       if (!button) return;
       const field = button.dataset.sort;
-      const previous = sorts[group]??{ field: filters.elements.order.value==='date'?'date':'priority', direction: 'ascending' };
+      const previous = sorts[group]??{ field: 'priority', direction: 'ascending' };
       sorts[group] = { field, direction: previous.field===field&&previous.direction==='ascending'?'descending':'ascending' };
-      if (group==='records') {
-        const option = filters.querySelector('[value="column"]'); option.hidden = false;
-        option.textContent = `${button.textContent} (${sorts.records.direction})`; filters.elements.order.value = 'column';
-      }
       render();
       root.querySelector(`${section} button[data-sort="${field}"]`)?.focus({ preventScroll: true });
     });
   }
-  filters.addEventListener('input', event => {
-    if (event.target.name==='order') { sorts.records = null; filters.querySelector('[value="column"]').hidden = true; }
+  filters.addEventListener('input', () => {
     after=null;clearTimeout(filterTimer);filterTimer=setTimeout(reload,250);
   });
   filters.addEventListener('submit', event => event.preventDefault());
