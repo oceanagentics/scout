@@ -12,7 +12,6 @@ export function calendarFeed(records){
     if(record.type!=='event')continue;
     const start=recordDate(record);
     if(start?.precision!=='day')continue;
-    const end=new Date(Date.parse(start.value+'T00:00:00Z')+86400000).toISOString().slice(0,10);
     const links=record.sources.filter(sourceLink),registrationLinks=links.filter(url=>/regist/i.test(url));
     const description=[record.description,record.organizations.join('; '),
       'Source start: '+dateLabel(start),
@@ -21,9 +20,14 @@ export function calendarFeed(records){
       'Scout record: https://bbnj-scout.web.app/?record='+record.id].filter(Boolean).join('\n\n');
     lines.push('BEGIN:VEVENT','UID:'+record.id+'@scout.oceanagentics.com',
       'DTSTAMP:'+stamp(record.modified.at(-1)),'LAST-MODIFIED:'+stamp(record.modified.at(-1)),
-      'SEQUENCE:'+Math.floor(Date.parse(record.modified.at(-1))/1000),'SUMMARY:'+text('🐧 '+record.description),
-      'DESCRIPTION:'+text(description),'LOCATION:','TRANSP:TRANSPARENT','STATUS:CONFIRMED',
-      'DTSTART;VALUE=DATE:'+start.value.replaceAll('-',''),'DTEND;VALUE=DATE:'+end.replaceAll('-',''));
+      // Advance existing subscription entries when their representation becomes timed.
+      'SEQUENCE:'+(Math.floor(Date.parse(record.modified.at(-1))/1000)+(start.time?1:0)),'SUMMARY:'+text('🐧 '+record.description),
+      'DESCRIPTION:'+text(description),'LOCATION:','TRANSP:TRANSPARENT','STATUS:CONFIRMED');
+    if(start.time)lines.push('DTSTART:'+(start.utc?stamp(start.utc):start.value.replaceAll('-','')+'T'+start.time.replaceAll(':','').padEnd(6,'0')));
+    else{
+      const end=new Date(Date.parse(start.value+'T00:00:00Z')+86400000).toISOString().slice(0,10);
+      lines.push('DTSTART;VALUE=DATE:'+start.value.replaceAll('-',''),'DTEND;VALUE=DATE:'+end.replaceAll('-',''));
+    }
     lines.push('URL:https://bbnj-scout.web.app/?record='+record.id,'END:VEVENT');
   }
   lines.push('END:VCALENDAR');

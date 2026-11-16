@@ -8,7 +8,7 @@ const user='11111111-1111-4111-8111-111111111111',token='a'.repeat(64);
 const profile={sub:'google-owner',email:'danny@oceanagentics.com',email_verified:true};
 const identity={...profile,iss:'https://accounts.google.com',custom_claims:{hd:'oceanagentics.com'}};
 const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',modified:['2026-10-12T10:00:00Z'],type:'event',
-  description:'Test fixture',organizations:[],sources:['https://example.org/event'],date:'2001-10-22',starttime:null,timezone:null};
+  description:'Test fixture',organizations:[],sources:['https://example.org/event'],date:'2026-11-17',starttime:'03:00',timezone:'+00:00'};
 
 test('hosted calendar with real SQL: subscription survives removal of personal-calendar sync',async()=>{
   const db=new PGlite(),queries=[];let signedIn=true;
@@ -53,7 +53,10 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
     queries.length=0;
     assert.equal((await run('feed.ics?token='+'b'.repeat(64))).status,404);assert.equal(queries.length,1);
     queries.length=0;
-    const feed=await run('feed.ics?token='+token);assert.equal(feed.status,200);assert.match(await feed.text(),/SUMMARY:🐧 Test fixture/);
+    const feed=await run('feed.ics?token='+token);assert.equal(feed.status,200);
+    const initialBody=await feed.text();assert.match(initialBody,/SUMMARY:🐧 Test fixture/);
+    assert.match(initialBody,/DTSTART:20261117T030000Z/);assert.doesNotMatch(initialBody,/DTSTART;VALUE=DATE|DTEND|DURATION/);
+    assert.match(initialBody,/UID:89a76621-0fac-447f-9429-62e1e8f985d1@scout.oceanagentics.com/);
     assert.equal(queries.length,2);assert.equal(queries.filter(sql=>sql.startsWith('update')).length,0);
     assert.equal((await run('feed.ics?token='+token,null,{'if-none-match':feed.headers.get('etag')})).status,304);
     const subscription=await (await run('feed-link')).json();assert.ok(subscription.url.endsWith('?token='+token));
