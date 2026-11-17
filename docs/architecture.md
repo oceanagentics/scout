@@ -60,18 +60,18 @@ There is no stored status enum, permanent completion flag, seed-import key or se
 | `type` | event, announcement, treaty_status, or null |
 | `priority` | high, normal, low, or null |
 | `organizations` | Array of organization name strings |
-| `deadline`, `date` | A YYYY-MM-DD, YYYY-MM or YYYY string, or null |
-| `starttime`, `timezone` | Scalar strings or null |
-| `sources` | Array of URLs supplied to the model |
+| `deadline`, `date`, `enddate` | A YYYY-MM-DD, YYYY-MM or YYYY string, or null |
+| `starttime`, `endtime`, `timezone` | Scalar strings or null |
+| `sources` | Array of supporting source URLs |
 | `modified` | Array of UTC timestamps: creation, then saved changes |
 
-Dates stay as text to preserve partial dates. Calendar bounds and UTC instants are computed when needed; they are not stored fields. No title, kind, details, date_span, completeness, relevance, versions, identity aliases, overrides or provenance remain on records.
+Dates stay as text to preserve partial dates. `enddate` is the inclusive published final day; `endtime` uses the record's `timezone`. Unsupported ends remain null. The model contract and calendar serializers currently omit the end fields. UTC instants are computed when needed; they are not stored fields. No title, kind, details, date_span, completeness, relevance, versions, identity aliases, overrides or provenance remain on records.
 
 Identical findings make no record writes. Each saved change, including an additional source URL, appends one timestamp to `modified`. Missing optional values do not erase established facts. Compatible partial dates do not replace more precise saved dates; a less precise event date also preserves its saved clock and timezone. The migration preserves the known creation and latest-change timestamps; it does not reconstruct missing historical updates. Legacy source and canonical URLs, including registration links, are flattened and deduplicated.
 
 Identity-key matching is removed. Description/source candidate lookup reads all exact descriptions and same-type source candidates without requiring matching dates. Exact descriptions retain their IDs even when a type is corrected. Word overlap and sole same-type source selection require compatible event dates. Conflicting non-null dates/deadlines and ambiguous matches increment the existing ambiguity count and skip that finding, leaving its saved record unchanged; unrelated findings and progress still commit, including when every returned finding conflicts. Malformed optional dates, clocks and timezones become null with field counts in invocation diagnostics; they do not reject other useful fields or trigger model fallback. Gatherings remain events after their dates pass; distinct recap and recording publications are announcements. These matching heuristics can still miss differently worded findings on unrelated URLs or associate findings incorrectly. All returned findings, descriptions and organizations are handled without content-count or text-length truncation.
 
-The findings RPC returns only these 11 columns. It accepts `p_type`; organization filtering uses name arrays, and date filtering selects `date` or `deadline`. RLS and server-side Workspace access checks remain.
+The findings RPC returns these 13 columns. It accepts `p_type`; organization filtering uses name arrays, and date filtering selects `date` or `deadline`. RLS and server-side Workspace access checks remain.
 
 [The model gateway](../reader/models/gateway.js) sends web investigations directly to OpenAI. Its native inputs and custom read loop support linked investigation; the current Gemini adapter does not provide that loop and is not a web fallback. Supplied Bluesky posts retain one Gemini attempt and, for eligible failures, one OpenAI fallback. Explicit diagnostic provider selection disables fallback; requesting Gemini for a prepared web investigation fails before dispatch. Supplied readable content does not require provider browsing metadata; an investigation without readable supplied content still requires retrieval evidence. Diagnostics distinguish Scout reads, provider web references and accepted/failed native inputs rather than treating citations as proof of reading.
 

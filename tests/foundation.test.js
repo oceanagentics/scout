@@ -76,7 +76,8 @@ test('final schema protects findings, operational state and tracker management i
       { other: 'keep', scout: { preference: 'keep', admin: true } });
     const tracker = (await db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Source','https://example.org','web','1 day',true) returning id")).rows[0].id;
     const record = (await db.query("insert into scout.records(type,description) values('announcement','Private finding') returning id")).rows[0].id;
-    await db.query("update scout.records set sources=$2 where id=$1", [record,['https://example.org/source']]);
+    await db.query("update scout.records set sources=$2,enddate='2026-11-17',endtime='14:30' where id=$1", [record,['https://example.org/source']]);
+    await assert.rejects(db.query("update scout.records set endtime='25:00' where id=$1", [record]), { code: '23514' });
     const publicReads = ['scout.records','scout.findings()'];
     assert.equal((await db.query("select to_regclass('scout.delivery_state') name")).rows[0].name,null);
     await db.exec('set role anon');
@@ -101,6 +102,8 @@ test('final schema protects findings, operational state and tracker management i
     }
     const finding = (await db.query('select * from scout.findings()')).rows[0];
     assert.deepEqual(finding.sources, ['https://example.org/source']);
+    assert.equal(finding.enddate, '2026-11-17');
+    assert.equal(finding.endtime, '14:30');
     await db.query("update scout.trackers set url='https://example.org/edited' where id=$1", [tracker]);
     assert.equal((await db.query('select enabled from scout.trackers where id=$1', [tracker])).rows[0].enabled, false);
     const inserted = (await db.query("insert into scout.trackers(name,url,collector,cadence) values('Unproven','https://example.org/new','web','1 day') returning enabled")).rows[0];
