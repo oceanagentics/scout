@@ -3,7 +3,7 @@ verify_jwt = false
 entrypoint = "./functions/scout-collect-hsa/index.ts"
 import_map = "./functions/scout-reader/deno.json"
 
-# Feed requests authenticate with a secret URL; all management actions verify user JWTs.
+# Feed URLs carry a token; feed-link verifies a user JWT and reconciliation requires the backend secret.
 [functions.scout-calendar]
 verify_jwt = false
 entrypoint = "./functions/scout-calendar/index.ts"

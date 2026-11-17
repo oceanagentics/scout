@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {calendarFeed} from '../calendar/feed.js';
+import {googleEvent,syncCalendar} from '../calendar/google.js';
 
 const id='89a76621-0fac-447f-9429-62e1e8f985d1';
 const record={id,modified:['2026-10-12T10:00:00Z'],type:'event',priority:'low',description:'A & B <demo>',
@@ -51,4 +52,53 @@ test('feed labels registration links and states registration is required only wh
   assert.ok(withLink.includes('Registration link: '+registration));assert.doesNotMatch(withLink,/Source: https:\/\/us06web/);
   assert.match(withLink,/Registration is required\./);assert.doesNotMatch(withLink,/Informational event/);
   assert.match(calendarFeed([record]).replaceAll('\r\n ',''),/Informational event from Scout\\; registration may be required\./);
+});
+
+test('Google entries label placeholder ends and retain unresolved source clocks as date entries',()=>{
+  const timed=googleEvent(record);
+  assert.equal(timed.start.dateTime,'2026-10-22T13:30:00.000Z');
+  assert.equal(timed.end.dateTime,'2026-10-22T14:00:00.000Z');
+  assert.match(timed.description,/End time unknown; displayed end is a 30-minute placeholder/);
+  const unknown=googleEvent({...record,timezone:null});
+  assert.deepEqual(unknown.start,{date:'2026-10-22'});assert.deepEqual(unknown.end,{date:'2026-10-23'});
+  assert.match(unknown.description,/15:30 \(timezone unknown\)/);
+  for(const change of [{date:'2026-10'},{date:null},{type:'announcement'}])assert.equal(googleEvent({...record,...change}),null);
+});
+
+test('reconciliation creates, updates and removes managed entries, then repeats without writes',async()=>{
+  const second={...record,id:'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb'};
+  const old=googleEvent({...record,description:'Old title',modified:['2026-10-01T00:00:00Z']});old.etag='revision';old.status='cancelled';
+  const orphan={...googleEvent({...record,id:'cccccccc-cccc-4ccc-cccc-cccccccccccc'}),etag:'orphan-revision'};
+  const deleted={...orphan,id:'deleted',status:'cancelled'};
+  const events=new Map([[old.id,old],[orphan.id,orphan],[deleted.id,deleted],['manual',{id:'manual'}]]),writes=[],queries=[];
+  let paginated=true,records=[record,second];
+  const db={query:async(sql,params)=>{
+    queries.push({sql,params});return {rows:sql.includes('vault.')?[{decrypted_secret:JSON.stringify({client_id:'client',client_secret:'secret',refresh_token:'refresh'})}]:records};
+  }};
+  const send=async(url,options)=>{
+    if(url.includes('oauth2'))return Response.json({access_token:'access',scope:'https://www.googleapis.com/auth/calendar.events.owned'});
+    const parsed=new URL(url),method=options.method,id=parsed.pathname.split('/').at(-1);
+    if(method==='GET'&&id==='events'){
+      assert.equal(parsed.searchParams.get('privateExtendedProperty'),'scout=1');
+      assert.equal(parsed.searchParams.get('showDeleted'),'true');
+      if(paginated&&!parsed.searchParams.has('pageToken'))return Response.json({items:[old],nextPageToken:'next'});
+      const items=paginated?[orphan,deleted,{id:'manual'}]:[...events.values()];paginated=false;return Response.json({items});
+    }
+    if(method==='GET')return events.has(id)?Response.json(events.get(id)):Response.json({}, {status:404});
+    assert.equal(parsed.searchParams.get('sendUpdates'),'none');writes.push(method);
+    if(method==='DELETE'){
+      assert.equal(options.headers['If-Match'],events.get(id).etag);events.delete(id);return new Response(null,{status:204});
+    }
+    const event=JSON.parse(options.body);
+    if(method==='PUT')assert.equal(options.headers['If-Match'],events.get(id).etag);
+    events.set(event.id,{...event,etag:'new-revision'});return Response.json(events.get(event.id));
+  };
+  assert.deepEqual(await syncCalendar(db,{fetch:send}),{status:'ok',created:1,updated:1,removed:1,unchanged:0,google_requests:6});
+  assert.deepEqual(writes,['PUT','POST','DELETE']);assert.ok(events.has('manual'));
+  writes.length=0;
+  assert.deepEqual(await syncCalendar(db,{fetch:send}),{status:'ok',created:0,updated:0,removed:0,unchanged:2,google_requests:2});
+  assert.deepEqual(writes,[]);assert.equal(queries.length,4);
+  records=[{...second,type:'announcement'}];
+  const removal=await syncCalendar(db,{ids:[second.id],fetch:send});assert.equal(removal.removed,1);
+  assert.equal(events.has(googleEvent(second).id),false);assert.ok(events.has(old.id));
 });

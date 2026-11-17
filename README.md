@@ -12,7 +12,7 @@ Collection wakes every six minutes and checks one due tracker. Current trackers 
 | [reader/](reader/) | Check tracker URLs, call models, save findings and update tracker state. |
 | [reader/models/](reader/models/) | Model gateway and provider adapters. |
 | [slackbot/](slackbot/) | Post newly saved findings and scheduled digests through the Scout webhook. Explicit repeated requests can send the same findings again. No conversational Slack listener yet. |
-| [calendar/](calendar/) | Private calendar subscription feed. |
+| [calendar/](calendar/) | Private subscription feed and OAuth publishing to the shared Scout Google calendar. |
 | [shared/](shared/) | Pure date and record rules used by multiple features. |
 | [supabase/](supabase/) | Database migrations, hosted entrypoints, access rules and operational SQL. |
 | [diagnostics/](diagnostics/) | Local model troubleshooting; see its [instructions](diagnostics/README.md). |
@@ -118,7 +118,8 @@ Replace `scout-calendar` only when deploying a different changed function:
 
 | Changed code | Function to deploy |
 | --- | --- |
-| `calendar/` or its entrypoint | `scout-calendar` |
+| `calendar/` shared publishing code | `scout-calendar` and `scout-reader` |
+| Calendar hosted entrypoint | `scout-calendar` |
 | `reader/` or its hosted entrypoint | `scout-reader` |
 | `slackbot/slack.js` | `scout-reader` and `scout-notify` |
 | `supabase/functions/scout-notify/index.ts` | `scout-notify` |
@@ -148,6 +149,8 @@ supabase/functions/scout-calendar/index.ts
 supabase/functions/scout-reader/deno.json
 calendar/hosted.js
 calendar/feed.js
+calendar/google.js
+reader/database.js
 shared/finding-dates.js
 shared/records.js
 ```
@@ -159,6 +162,8 @@ Follow any additional local imports introduced by the change. The [Supabase API 
 Confirm the returned deployment status/version, then read it back through `GET https://api.supabase.com/v1/projects/vhlfumeyhkeospnemukq/functions/scout-calendar` using Management API authentication. Metadata confirms which deployment is active; also verify the requested behavior.
 
 For calendar changes, request the existing private feed URL in memory and require HTTP 200, `BEGIN:VCALENDAR` and the expected event content. Keep the subscription token and event IDs unchanged. Google Calendar refreshes its own copy separately; check the live feed before attributing missing updates to Google. Never print the private token URL. For website changes, deploy Firebase separately and verify the released assets too.
+
+Google publishing uses the encrypted Vault secret `scout_calendar_google` containing `client_id`, `client_secret`, `user_id` and `refresh_token`. The backend-only `POST scout-calendar/reconcile` accepts an empty body and the existing backend `apikey`. It returns confirmed create/update/remove/unchanged counts, Google request counts and SQL costs. Run it after deploying the shared publishing code; a repeat should make no event writes. The daily job reconciles at 4 a.m. New York time. Restore each existing job's prior active state after installing `supabase/scout-loop.sql`, and enable `scout-calendar` after live verification.
 
 A function deployment does not apply database migrations. For a requested schema change, inspect remote migration history and apply only the reviewed pending Scout migrations, coordinating the affected consumers. If the release requires a temporary pause, restore each job's prior active state after verification as required by [AGENTS.md](AGENTS.md). Do not invoke the reader, send Slack messages, or run historical cutover SQL merely to verify deployment. Report what was checked locally, what was verified live, and any remaining blocker.
 

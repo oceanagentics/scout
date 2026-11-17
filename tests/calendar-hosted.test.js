@@ -10,6 +10,21 @@ const identity={...profile,iss:'https://accounts.google.com',custom_claims:{hd:'
 const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',modified:['2026-10-12T10:00:00Z'],type:'event',priority:'high',
   description:'Test fixture',organizations:[],sources:['https://example.org/event'],date:'2026-11-17',starttime:'03:00',timezone:'+00:00'};
 
+test('reconciliation requires the backend secret before reading credentials or findings',async()=>{
+  const key='sb_secret_calendar_test',env={url:'https://example.supabase.co',secretKeys:{default:key},
+    publishableKeys:{default:'sb_publishable_test'},jwks:null};let connects=0;
+  for(const apikey of ['',env.publishableKeys.default,'invalid']){
+    const response=await hostedCalendar(new Request('https://example.org/scout-calendar/reconcile',{method:'POST',headers:{apikey}}),
+      {env,databaseURL:'test',connect:()=>{connects++;}});
+    assert.equal(response.status,401);
+  }
+  assert.equal(connects,0);
+  const response=await hostedCalendar(new Request('https://example.org/scout-calendar/reconcile',{method:'POST',headers:{apikey:key}}),
+    {env,databaseURL:'test',connect:()=>({reserve:async()=>({unsafe:async()=>{connects++;return [];},release(){}}),end:async()=>{}})});
+  assert.equal(response.status,502);assert.equal(connects,1);
+  assert.equal((await response.json()).error,'Google Calendar OAuth credential is unavailable.');
+});
+
 test('hosted calendar with real SQL: subscription survives removal of personal-calendar sync',async()=>{
   const db=new PGlite(),queries=[];let signedIn=true;
   // Vault here is a test double for SQL contracts, not a test of production encryption.

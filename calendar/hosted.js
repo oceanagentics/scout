@@ -3,12 +3,14 @@ import postgres from 'postgres';
 import {randomBytes,timingSafeEqual,createHash} from 'node:crypto';
 import {Buffer} from 'node:buffer';
 import {calendarFeed} from './feed.js';
+import {syncCalendar} from './google.js';
+import {database} from '../reader/database.js';
 
 const project='https://vhlfumeyhkeospnemukq.supabase.co';
 const columns='id,modified,type,priority,description,organizations,date,starttime,timezone,sources';
 const fail=(message,status=400)=>Object.assign(new Error(message),{status});
 
-export async function hostedCalendar(request,{databaseURL,env,connect=postgres,authenticate=verifyAuth}={}){
+export async function hostedCalendar(request,{databaseURL,env,connect=postgres,authenticate=verifyAuth,fetch}={}){
   const url=new URL(request.url),action=url.pathname.split('/').at(-1),origin=request.headers.get('origin');
   const headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'};
   if(['https://bbnj-scout.web.app','http://127.0.0.1:5173'].includes(origin))Object.assign(headers,{
@@ -16,13 +18,14 @@ export async function hostedCalendar(request,{databaseURL,env,connect=postgres,a
     'Access-Control-Allow-Methods':'GET,POST,OPTIONS',Vary:'Origin'});
   const json=(body,status=200)=>Response.json(body,{status,headers});
   if(request.method==='OPTIONS')return new Response(null,{status:204,headers});
-  if(!['feed-link','feed.ics'].includes(action))return json({error:'Not found'},404);
+  if(!['feed-link','feed.ics','reconcile'].includes(action))return json({error:'Not found'},404);
   if(request.method!==(action==='feed.ics'?'GET':'POST'))return json({error:'Method not allowed'},405);
   if(url.searchParams.size!==(action==='feed.ics'?1:0))return json({error:'Invalid request'},400);
   let auth;
   if(action!=='feed.ics'){
-    const result=await authenticate(request,{auth:'user',issuer:project+'/auth/v1',audience:'authenticated',env});
-    if(result.error)return json({error:'Sign in to Scout first'},401);
+    const result=await authenticate(request,action==='reconcile'?{auth:'secret:default',env}:
+      {auth:'user',issuer:project+'/auth/v1',audience:'authenticated',env});
+    if(result.error)return json({error:action==='reconcile'?'Backend secret required':'Sign in to Scout first'},401);
     auth=result.data;
   }else if(!/^[a-f0-9]{64}$/.test(url.searchParams.get('token')??''))return json({error:'Not found'},404);
   if(!databaseURL)return json({error:'Calendar backend unavailable'},503);
@@ -35,6 +38,11 @@ export async function hostedCalendar(request,{databaseURL,env,connect=postgres,a
     const query=(sql,params=[])=>session.unsafe(sql,params);
     const secret=async name=>(await query('select decrypted_secret from vault.decrypted_secrets where name=$1',[name]))[0]?.decrypted_secret;
     const records=()=>query(`select ${columns} from scout.records where type='event' order by id`);
+    if(action==='reconcile'){
+      if(request.body&&await request.text())return json({error:'Empty body required'},400);
+      const db=database(session),result=await syncCalendar(db,{fetch});
+      return json({...result,cost:db.metrics},result.status==='ok'?200:502);
+    }
     if(action==='feed.ics'){
       const token=await secret('scout_calendar_feed'),supplied=url.searchParams.get('token');
       if(!token||token.length!==supplied.length||!timingSafeEqual(Buffer.from(token),Buffer.from(supplied)))throw fail('Not found',404);

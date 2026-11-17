@@ -40,7 +40,7 @@ function merge(f,target){
 }
 export async function saveFindings(tx,sourceUrl,findings){
   await tx.query("select pg_advisory_xact_lock(hashtextextended('scout:findings',0))");
-  const counts={created:0,changed:0,saved:0,ambiguous:0,createdIds:[]},used=new Set(),seen=new Set();
+  const counts={created:0,changed:0,saved:0,ambiguous:0,createdIds:[],calendarIds:[]},used=new Set(),seen=new Set();
   for(const f of findings){
     const key=JSON.stringify([f.type,normalize(f.description),f.date]);
     if(seen.has(key))continue;
@@ -74,6 +74,7 @@ export async function saveFindings(tx,sourceUrl,findings){
       if(!record)throw fail('stale_record');
       counts[target?'changed':'created']++;
       if(!target)counts.createdIds.push(record.id);
+      if(record.type==='event'||target?.type==='event')counts.calendarIds.push(record.id);
     }
     used.add(record.id);seen.add(key);counts.saved++;
   }

@@ -453,16 +453,22 @@ test('reader migration removes source state and correction metadata, preserves f
   await assert.rejects(raw.query('select lease_id from scout.trackers'),{code:'42501'});
 });
 
-test('new-finding delivery follows committed saves and delivery errors cannot replay collection',async t=>{
- const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let sends=0;
+test('Slack and calendar delivery follow committed saves and failures cannot replay collection',async t=>{
+ const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let sends=0,publishes=0;
  const run=records=>intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer(records),notify:async ids=>{
    sends++;assert.equal((await raw.query('select id from scout.records where id=any($1::uuid[])',[ids])).rows.length,ids.length);
    throw new Error('Slack timeout');
+ },publishCalendar:async ids=>{
+   publishes++;assert.equal((await raw.query('select id from scout.records where id=any($1::uuid[])',[ids])).rows.length,ids.length);
+   assert.equal((await raw.query('select lease_id from scout.trackers')).rows[0].lease_id,null);
+   throw new Error('Google timeout');
  }});
  const first=await run([event]);assert.equal(first.created,1);assert.equal(first.state,'saved');
  assert.deepEqual(first.notifications,[{status:'unknown',communicated:0}]);assert.equal(sends,1);
- assert.equal((await run([event])).created,0);assert.equal(sends,1);
- assert.equal((await run([{...event,priority:'low'}])).changed,1);assert.equal(sends,1);
+ assert.deepEqual(first.calendar,[{status:'failed'}]);assert.equal(publishes,1);
+ assert.equal((await run([event])).created,0);assert.equal(sends,1);assert.equal(publishes,1);
+ assert.equal((await run([{...event,priority:'low'}])).changed,1);assert.equal(sends,1);assert.equal(publishes,2);
+ assert.equal((await run([{...event,type:'announcement',priority:'low'}])).changed,1);assert.equal(publishes,3);
  await raw.exec("alter table scout.records add constraint fail_notification_fixture check(description<>'Rollback finding')");
- assert.equal((await run([{...event,description:'Rollback finding',type:'announcement'}])).state,'deferred');assert.equal(sends,1);
+ assert.equal((await run([{...event,description:'Rollback finding',type:'announcement'}])).state,'deferred');assert.equal(sends,1);assert.equal(publishes,3);
 });
