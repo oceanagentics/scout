@@ -16,15 +16,16 @@ export async function registerItems(db,tracker,discovery,deadline){
      or scout.source_items.observed_version is distinct from excluded.observed_version`,
    [tracker.id,JSON.stringify(discovery.items.map(i=>({key:i.key,url:i.url,version:i.version??null})))]);
   if(!discovery.unchanged&&!discovery.excluded)await tx.query('delete from scout.source_items where tracker_id=$1 and not pending and not(item_key=any($2::text[]))',[tracker.id,discovery.items.map(i=>i.key)]);
-  if(!discovery.excluded)await tx.query('update scout.trackers set discovery_request_url=$2,discovery_checked_at=$3 where id=$1',
-   [tracker.id,discovery.source.request_url,discovery.source.checked_at]);
+  if(!discovery.excluded)await tx.query('update scout.trackers set discovery_request_url=$2,discovery_checked_at=$3,discovery_fingerprint=$4 where id=$1',
+   [tracker.id,discovery.source.request_url,discovery.source.checked_at,discovery.source.fingerprint??null]);
  },{deadline});
 }
 export async function consumeItem(tx,tracker,row,resource){
  const result=await tx.query(`update scout.source_items set pending=false,consumed_version=observed_version,consumed_at=clock_timestamp(),
-  request_url=coalesce($4,request_url),request_checked_at=coalesce($5::timestamptz,request_checked_at)
+  request_url=coalesce($4,request_url),request_checked_at=coalesce($5::timestamptz,request_checked_at),
+  request_fingerprint=case when $4::text is null then request_fingerprint else $6 end
   where tracker_id=$1 and item_key=$2 and observed_version is not distinct from $3 and pending returning item_key`,
-  [tracker.id,row.item_key,row.observed_version,resource?.request_url??null,resource?.checked_at??null]);
+  [tracker.id,row.item_key,row.observed_version,resource?.request_url??null,resource?.checked_at??null,resource?.fingerprint??null]);
  if(!result.rows.length)throw fail('stale_record');
  await tx.query('update scout.trackers set failure_count=0,last_error=null where id=$1',[tracker.id]);
 }

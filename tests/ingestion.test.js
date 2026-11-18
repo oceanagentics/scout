@@ -123,7 +123,8 @@ test('RSS handles GUIDs, entities and Atom links, while webpage discovery keeps 
  }});
  assert.equal(discoveries,1);assert.equal(investigations,1);assert.equal(result.created,1);
  assert.equal(result.state,'deferred');assert.ok(result.diagnostics.some(d=>d.excluded_items===1));
- assert.equal((await raw.query('select discovery_checked_at from scout.trackers where id=$1',[tracker.id])).rows[0].discovery_checked_at,null);
+ const progress=(await raw.query('select discovery_checked_at,discovery_fingerprint from scout.trackers where id=$1',[tracker.id])).rows[0];
+ assert.equal(progress.discovery_checked_at,null);assert.equal(progress.discovery_fingerprint,null);
 });
 
 test('three unsuccessful attempts stop automatic retries, explicit retry recovers, and retirement prevents collection',async t=>{
@@ -157,7 +158,7 @@ test('web freshness gates discovery and article investigation separately, while 
   const index=url===feedURL;if(index)indexReads++;else articleReads++;
   const unchanged=index?indexUnchanged:articleUnchanged;
   if(unchanged){assert.ok(options.headers?.['If-Modified-Since']);return new Response(null,{status:304});}
-  return new Response(index?'<main><a href="/articles/chm">CHM news</a></main>':'<main>Technical CHM webinar</main>',{headers:{'content-type':'text/html'}});
+  return new Response(index?`<main><a href="/articles/chm">CHM news ${indexReads}</a></main>`:`<main>Technical CHM webinar ${articleReads}</main>`,{headers:{'content-type':'text/html'}});
  },modelFor:(_item,options)=>async(_p,_input,schema)=>{
   if(schema.properties.items){discoveries++;return {items:[{url:publication,summary:'CHM news'}]};}
   investigations++;if(broken)throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});
@@ -169,6 +170,44 @@ test('web freshness gates discovery and article investigation separately, while 
  articleUnchanged=false;broken=true;assert.equal((await run()).state,'deferred');
  assert.equal((await raw.query('select pending from scout.source_items')).rows[0].pending,true);
  indexUnchanged=true;broken=false;assert.equal((await run()).processed,1);assert.deepEqual([discoveries,investigations,indexReads,articleReads],[3,3,4,4]);
+});
+
+test('content fingerprints skip unchanged indexes and articles and advance only after successful processing',async t=>{
+ const {raw,db,tracker}=await setup(t);let indexVersion=0,articleVersion=0,noise=0,failure=null,discoveries=0,investigations=0,indexReads=0;
+ const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>{
+  const index=url===feedURL;if(index)indexReads++;
+  return new Response(`<nav>${noise}</nav><script>noise(${noise})</script><main>`+(index?
+   `<a href="/articles/chm">CHM news ${indexVersion}</a>`:`Technical CHM webinar ${articleVersion}`)+'</main>',{headers:{'content-type':'text/html'}});
+ },modelFor:(_item,options)=>async(_p,_input,schema)=>{
+  if(schema.properties.items){discoveries++;return {items:[{url:publication,summary:'CHM news'}]};}
+  investigations++;
+  if(failure==='model')throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});
+  if(failure==='save'){await options.functions[0].run({queries:['HSA'],urls:[]});return answer([create({...finding,description:'Reject'})]);}
+  return answer([]);
+ }});
+ assert.equal((await run()).processed,1);
+ const initial=(await raw.query('select request_fingerprint from scout.source_items')).rows[0].request_fingerprint;
+ assert.match(initial,/^[a-f0-9]{64}$/);
+ const before={...db.metrics};noise++;assert.equal((await run()).processed,0);
+ assert.deepEqual([discoveries,investigations],[1,1]);
+ t.diagnostic(JSON.stringify({unchanged_index_sql:Object.fromEntries(Object.keys(before).map(k=>[k,db.metrics[k]-before[k]]))}));
+ indexVersion++;assert.equal((await run()).processed,1);assert.deepEqual([discoveries,investigations],[2,1]);
+ indexVersion++;articleVersion++;failure='model';assert.equal((await run()).state,'deferred');
+ let item=(await raw.query('select * from scout.source_items')).rows[0];assert.equal(item.pending,true);assert.equal(item.request_fingerprint,initial);
+ const reads=indexReads;failure=null;assert.equal((await run()).processed,1);assert.equal(indexReads,reads);
+ item=(await raw.query('select * from scout.source_items')).rows[0];assert.equal(item.pending,false);assert.notEqual(item.request_fingerprint,initial);
+ const committed=item.request_fingerprint;
+ await raw.exec("alter table scout.records add constraint reject_fingerprint_fixture check(description<>'Reject')");
+ indexVersion++;articleVersion++;failure='save';assert.equal((await run()).state,'deferred');
+ item=(await raw.query('select * from scout.source_items')).rows[0];assert.equal(item.pending,true);assert.equal(item.request_fingerprint,committed);
+ failure=null;assert.equal((await run()).processed,1);
+ item=(await raw.query('select * from scout.source_items')).rows[0];assert.equal(item.pending,false);assert.notEqual(item.request_fingerprint,committed);
+ const bytes=(await raw.query('select pg_column_size(discovery_fingerprint) n from scout.trackers where id=$1',[tracker.id])).rows[0].n;
+ assert.equal(bytes,65);t.diagnostic(JSON.stringify({fingerprint_column_bytes:bytes,findings:(await raw.query('select count(*)::int n from scout.records')).rows[0].n}));
+ await raw.exec('set role authenticated');await assert.rejects(raw.query('select discovery_fingerprint from scout.trackers'),{code:'42501'});await raw.exec('reset role');
+ await raw.query('update scout.trackers set url=$2 where id=$1',[tracker.id,'https://example.org/new']);
+ assert.equal((await raw.query('select discovery_fingerprint from scout.trackers')).rows[0].discovery_fingerprint,null);
+ assert.equal((await raw.query('select count(*)::int n from scout.source_items')).rows[0].n,0);
 });
 
 test('a create based only on empty narrow searches is rejected before progress commits',async t=>{

@@ -2,7 +2,7 @@ import {parse} from 'parse5';
 import dns from 'node:dns/promises';
 import {isIP} from 'node:net';
 import {Buffer} from 'node:buffer';
-import {checkFreshness} from './freshness.js';
+import {checkFreshness,checkContentFreshness} from './freshness.js';
 
 const fail=reason=>Object.assign(new Error(reason),{reason});
 
@@ -51,11 +51,13 @@ export function readable(html,url){
 }
 
 // Every HTTP operation is bounded, public, and cached only for this invocation.
-export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),metrics,lastSuccessfulCheck=null,previousRequestURL=value}={}){
+export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),metrics,lastSuccessfulCheck=null,previousRequestURL=value,previousFingerprint=null}={}){
   let url;try{url=new URL(value);url.hash='';}catch{throw fail('source_invalid');}
   if(!['https:','http:'].includes(url.protocol)||url.username||url.password)throw fail('source_invalid');
-  if(cache.has(url.href)){const prior=await cache.get(url.href);if(!prior.unchanged||lastSuccessfulCheck)return prior;cache.delete(url.href);}
-  const pending=(async()=>{
+  // A cached body can serve different checkpoints; a 304 cannot.
+  let pending=cache.get(url.href);
+  if(pending&&(await pending).unchanged)pending=null;
+  pending??=(async()=>{
     const checked_at=new Date().toISOString();
     const bounded=AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(15000)]),visited=new Set();
     const request=async target=>{
@@ -107,5 +109,7 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
   })().then(result=>{if(!cache.has(result.url))cache.set(result.url,Promise.resolve(result));return result;})
     .catch(error=>{throw fail(signal?.aborted?'runtime_bound':error.reason??'source_unavailable');});
   cache.set(url.href,pending);
-  return pending;
+  const source=await pending,prior=source.request_url===previousRequestURL?previousFingerprint:null;
+  if(source.unchanged)return {...source,fingerprint:prior};
+  return Object.hasOwn(source,'content')?{...source,...checkContentFreshness(source,prior)}:source;
 }

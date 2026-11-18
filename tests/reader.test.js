@@ -48,6 +48,24 @@ test('web reading preserves schedule rows, relative links, images and published 
   assert.match(page.content,/2026-10-24T09:30:00\+04:00/);assert.doesNotMatch(page.content,/Unrelated navigation|privateCode/);
 });
 
+test('fingerprints compare prepared content per resource and per caller, after HTTP checks',async()=>{
+ const url='https://example.org/article?q=one',cache=new Map();let reads=0;
+ const fetch=async()=>{reads++;return new Response('<main>Published article</main>',{headers:{'content-type':'text/html'}});};
+ const first=await readUrl(url,{fetch,cache});assert.equal(first.unchanged,false);
+ const repeat=await readUrl(url,{fetch,cache,previousFingerprint:first.fingerprint});assert.equal(repeat.unchanged,true);assert.equal(reads,1);
+ assert.equal((await readUrl(url,{fetch,cache})).unchanged,false);
+ assert.equal((await readUrl(url,{fetch,cache,previousRequestURL:url.replace('one','two'),previousFingerprint:first.fingerprint})).unchanged,false);
+ const redirect=await readUrl('https://example.org/redirect',{previousFingerprint:first.fingerprint,fetch:async target=>target.endsWith('/redirect')?
+  new Response(null,{status:302,headers:{location:url}}):fetch()});assert.equal(redirect.unchanged,false);
+ const httpCache=new Map(),checkpoint='2026-11-16T12:00:00Z';let conditionalReads=0;
+ const conditional=async(_url,options)=>{conditionalReads++;return options.headers?new Response(null,{status:304}):fetch();};
+ const unchanged=await readUrl(url,{cache:httpCache,fetch:conditional,lastSuccessfulCheck:checkpoint,previousFingerprint:first.fingerprint});
+ assert.equal(unchanged.unchanged,true);assert.equal(unchanged.fingerprint,first.fingerprint);assert.equal(unchanged.content,undefined);
+ const unread=await readUrl(url,{cache:httpCache,fetch:conditional});assert.equal(unread.unchanged,false);assert.ok(unread.content);assert.equal(conditionalReads,2);
+ const native=await readUrl(url,{previousFingerprint:first.fingerprint,fetch:async()=>new Response(null,{headers:{'content-type':'application/pdf'}})});
+ assert.equal(native.fingerprint,undefined);assert.equal(native.unchanged,undefined);
+});
+
 test('CBD reads the exact page articles, caches parallel reads, and retains the public source URL',async()=>{
   let requests=0;const cache=new Map(),url='https://www.cbd.int/conferences/2026/parallel-meetings/nature-culture-summit';
   const options={cache,fetch:async value=>{

@@ -38,7 +38,7 @@ export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,dead
   const request=cbdRequest(row.url)??row.url;
   let content=item?.content?.request_url===request?item.content:null;
   if(!content)try{
-   content=await readUrl(request,{lastSuccessfulCheck:row.request_checked_at,previousRequestURL:row.request_url});
+   content=await readUrl(request,{lastSuccessfulCheck:row.request_checked_at,previousRequestURL:row.request_url,previousFingerprint:row.request_fingerprint});
    if(!content.unchanged&&cbdRequest(row.url))content=prepareCBD(content,row.url);
   }
   catch(error){
