@@ -14,14 +14,15 @@ const content=event=>JSON.stringify([event.summary??'',event.description??'',tim
 export function googleEvent(record){
   const event=calendarEvent(record);
   if(!event)return null;
-  const {start}=event;
+  const {start,end,allDay}=event;
   let timing,description=event.description;
-  if(start.utc){
-    timing={start:{dateTime:start.utc},end:{dateTime:new Date(Date.parse(start.utc)+30*60000).toISOString()}};
-    description+='\n\nEnd time unknown; displayed end is a 30-minute placeholder.';
+  if(start.utc&&!allDay){
+    timing={start:{dateTime:start.utc},end:{dateTime:end?.utc??new Date(Date.parse(start.utc)+30*60000).toISOString()}};
+    if(!end?.utc)description+='\n\nEnd time unknown; displayed end is a 30-minute placeholder.';
   }else{
-    timing={start:{date:start.value},end:{date:new Date(Date.parse(start.value+'T00:00:00Z')+86400000).toISOString().slice(0,10)}};
-    if(start.time)description+='\n\nCalendar date entry; the published clock cannot be resolved to a unique instant.';
+    const through=end?.precision==='day'?end.value:start.value;
+    timing={start:{date:start.value},end:{date:new Date(Date.parse(through+'T00:00:00Z')+86400000).toISOString().slice(0,10)}};
+    if(start.time&&!allDay)description+='\n\nCalendar date entry; the published clock cannot be resolved to a unique instant.';
   }
   return {id:eventId(record.id),summary:event.summary,description,...timing,status:'confirmed',
     transparency:'transparent',reminders:{useDefault:false},extendedProperties:{private:{scout:'1',
@@ -77,7 +78,7 @@ export async function syncCalendar(db,{ids=null,deadline=Date.now()+110000,fetch
       existing=[];
       for(const id of ids){const event=await google.get(eventId(id));if(event)existing.push(event);}
     }else existing=await google.list();
-    const records=(await db.query(`select id,modified,type,priority,description,organizations,date,starttime,timezone,sources
+    const records=(await db.query(`select id,modified,type,priority,description,organizations,date,starttime,timezone,enddate,endtime,sources
       from scout.records ${ids?'where id=any($1::uuid[])':"where type='event'"} order by id`,ids?[ids]:[])).rows;
     // Complete mapping before any writes, including removals.
     const desired=new Map();

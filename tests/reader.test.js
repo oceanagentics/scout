@@ -198,6 +198,34 @@ test('tracker URL -> one model investigation -> finding and tracker state; due r
   t.diagnostic(JSON.stringify({mocked:true,first_and_idle:firstCost,repeat_mutations:2,tracker_row_bytes:storage.bytes}));
 });
 
+test('optional ends survive collection, omission preserves them, and unusable ends never block saving',async t=>{
+  const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let calls=0;
+  const timed={...event,description:'Published webinar',date:'2026-10-24',starttime:'10:00',timezone:'UTC',enddate:'2026-10-24',endtime:'11:30'};
+  const records=[timed,{...timed,description:'Multi-day summit',enddate:'2026-10-25',endtime:null},
+    {...timed,description:'Finish unknown',enddate:null,endtime:null},
+    {...timed,description:'Conflicting final date',enddate:'2026-10-23'},
+    {...timed,description:'Changing final day',endtime:'13:00'},{...timed,description:'Timezone shift'}];
+  const run=records=>intake(db,{trackerId:tr.id,modelFor:()=>async()=>{calls++;return answer(records);}});
+  const first=await run(records);assert.equal(first.created,6);assert.equal(first.state,'saved');assert.equal(calls,1);
+  const saved=(await raw.query('select * from scout.records order by description')).rows;
+  assert.equal(saved.find(r=>r.description===timed.description).endtime,'11:30');
+  assert.equal(saved.find(r=>r.description==='Multi-day summit').enddate,'2026-10-25');
+  for(const description of ['Finish unknown','Conflicting final date']){
+    const record=saved.find(r=>r.description===description);assert.equal(record.enddate,null);assert.equal(record.endtime,null);
+  }
+  const before={...db.metrics};
+  const repeated=await run(records.map(({enddate,endtime,...r})=>r));
+  assert.equal(repeated.changed,0);assert.equal(calls,2);assert.equal(db.metrics.mutations-before.mutations,2);
+  assert.deepEqual((await raw.query('select * from scout.records order by description')).rows,saved);
+  const changed=await run([{...timed,starttime:'12:00',enddate:null,endtime:null},
+    {...records[4],enddate:'2026-10-25',endtime:null},
+    {...records[5],starttime:'08:00',timezone:'-02:00',enddate:null,endtime:null}]);
+  assert.equal(changed.changed,3);assert.equal(calls,3);
+  for(const row of (await raw.query("select endtime from scout.records where description in ('Published webinar','Changing final day','Timezone shift')")).rows)
+    assert.equal(row.endtime,null);
+  t.diagnostic(JSON.stringify({mocked_model:true,real_local_sql:true,first_and_repeat:before,repeat_finding_writes:0}));
+});
+
 test('retirement blocks automatic and explicit checks on the New York date without changing saved state',async t=>{
   const raw=await setup(t),tr=await tracker(raw);
   await raw.exec("insert into scout.records(description,sources) values('Preserved finding',array['https://example.org/saved'])");

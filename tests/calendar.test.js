@@ -65,6 +65,26 @@ test('Google entries label placeholder ends and retain unresolved source clocks 
   for(const change of [{date:'2026-10'},{date:null},{type:'announcement'}])assert.equal(googleEvent({...record,...change}),null);
 });
 
+test('published ends become timed ranges and inclusive multi-day dates become full date entries',()=>{
+  const timed={...record,enddate:record.date,endtime:'16:15'},google=googleEvent(timed);
+  assert.deepEqual(google.end,{dateTime:'2026-10-22T14:15:00.000Z'});assert.doesNotMatch(google.description,/placeholder/);
+  assert.match(calendarFeed([timed]),/DTEND:20261022T141500Z/);
+  const floating={...timed,timezone:null},feed=calendarFeed([floating]).replaceAll('\r\n ','');
+  assert.match(feed,/DTSTART:20261022T153000\r\nDTEND:20261022T161500\r\n/);
+  const overnight={...record,starttime:'23:30',enddate:'2026-10-23',endtime:'01:00'};
+  assert.deepEqual(googleEvent(overnight).end,{dateTime:'2026-10-22T23:00:00.000Z'});
+  for(const starttime of [null,'15:30']){
+    const span={...record,starttime,enddate:'2026-10-24',endtime:null},event=googleEvent(span);
+    assert.deepEqual(event.start,{date:'2026-10-22'});assert.deepEqual(event.end,{date:'2026-10-25'});
+    assert.match(calendarFeed([span]),/DTSTART;VALUE=DATE:20261022\r\nDTEND;VALUE=DATE:20261025/);
+    if(starttime)assert.match(event.description,/Source start: 2026-10-22 · 15:30/);
+  }
+  const invalid=googleEvent({...timed,endtime:'14:00'});
+  assert.match(invalid.description,/30-minute placeholder/);
+  const fold={...record,date:'2026-11-01',starttime:'01:30',timezone:'America/New_York',enddate:'2026-11-01',endtime:'02:30'};
+  assert.match(calendarFeed([fold]),/DTSTART:20261101T013000\r\nDTEND:20261101T023000\r\n/);
+});
+
 test('reconciliation creates, updates and removes managed entries, then repeats without writes',async()=>{
   const second={...record,id:'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb'};
   const old=googleEvent({...record,description:'Old title',modified:['2026-10-01T00:00:00Z']});old.etag='revision';old.status='cancelled';

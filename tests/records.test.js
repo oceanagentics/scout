@@ -8,6 +8,7 @@ import {scoutDay} from '../shared/finding-dates.js';
 test('flat reader displays local date/time and organization strings',()=>{
   const event={id:'event',type:'event',organizations:['Ocean Institute','Second Institute'],date:'2026-10-15',starttime:'00:30',timezone:'+08:00'};
   assert.deepEqual(recordDates(event),['2026-10-15','2026-10-15']);assert.ok(eventLabel(event).includes('2026-10-15 · 00:30 +08:00'));
+  assert.match(eventLabel({...event,enddate:'2026-10-15',endtime:'01:30'}),/→ 2026-10-15 · 01:30 \+08:00/);
   assert.equal(fieldLabel(event,'organizations'),'Ocean Institute; Second Institute');
   assert.equal(eventTiming(event,new Date('2026-10-14T16:00:00Z')),'Upcoming');
   assert.equal(eventTiming({...event,date:'2026-10-04',starttime:null},new Date('2026-10-04T12:00:00Z')),'Date known · time unknown');

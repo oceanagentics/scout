@@ -51,6 +51,8 @@ For each development, provide:
   action date, according to the development's type.
 - starttime: The time associated with that date, when supported.
 - timezone: The timezone associated with that time, when supported.
+- enddate: The event's inclusive final date, when supported.
+- endtime: The event's final clock time in the same timezone, when supported.
 
 For calls for expressions of interest, applications, proposals or comments,
 actively look for the submission deadline, including on announcements.
@@ -65,12 +67,22 @@ event, not its parent conference or the page's publication date.
 Use the first scheduled event day and that day's programme start. Distinguish
 registration, doors opening, later sessions, field visits and separate ceremonies.
 Keep a multi-day gathering as one event, still looking for its first-day start.
+Capture an event's published end date and time when available in the content and
+relevant programmes being read. Use the specific event's end, not its parent
+conference's end or the first day's closing time for a multi-day gathering.
+A final date can be known without a final clock time. When an explicit duration
+and a sufficiently precise start are published, calculate the end, including
+any change of day. Do not invent a duration or finish time.
+If only a start is published, leave both end fields null.
+End fields apply only to events. Missing, invalid or conflicting ends must not
+prevent returning a useful record: use null and continue. Do not make additional
+reads or searches solely to fill missing ends, or repeat an investigation for them.
 Interpret UTC timestamps and local times using an evidenced timezone. Resolve
 contradictory schedules with independent official material when available;
 otherwise leave the unresolved value null and return the other supported facts.
-Use YYYY-MM-DD for date and deadline, or YYYY-MM / YYYY for partial dates.
+Use YYYY-MM-DD for date, deadline and enddate, or YYYY-MM / YYYY for partial dates.
 Preserve the published precision: January 2027 is 2027-01, not 2027-01-01.
-Use HH:MM for starttime, and UTC, a numeric offset, or an IANA timezone.
+Use HH:MM for starttime and endtime, and UTC, a numeric offset, or an IANA timezone.
 Convert explicit timezone abbreviations to a numeric offset (±HH:MM) or
 IANA timezone when unambiguous in context; do not return abbreviations.
 Use null for unsupported values; do not guess. Use [] for unknown organizations.
@@ -85,7 +97,8 @@ Judge priority by the development’s substance. Missing scheduling
 details do not lower priority. Use null when relevance is unclear.
 
 Return a JSON array containing one object per development, with
-description, type, priority, organizations, date, starttime, timezone and deadline.
+description, type, priority, organizations, date, starttime, timezone, enddate,
+endtime and deadline.
 Return [] when the supplied post or page contains no developments.`;
 export const RESPONSE_SCHEMA={
   type:'array',
@@ -99,6 +112,8 @@ export const RESPONSE_SCHEMA={
       date:{type:['string','null']},
       starttime:{type:['string','null']},
       timezone:{type:['string','null']},
+      enddate:{type:['string','null']},
+      endtime:{type:['string','null']},
       deadline:{type:['string','null']}
     },
     required:['description','type','priority','organizations','date','starttime','timezone','deadline'],

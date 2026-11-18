@@ -30,7 +30,7 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
   // Vault here is a test double for SQL contracts, not a test of production encryption.
   await db.exec(`create role anon;create role authenticated;create role service_role;create schema scout;create schema auth;create schema vault;
     create table auth.identities(user_id uuid,provider text,provider_id text,identity_data jsonb);
-    create table scout.records(id uuid,modified timestamptz[],type text,priority text,description text,organizations text[],sources text[],date text,starttime text,timezone text);
+    create table scout.records(id uuid,modified timestamptz[],type text,priority text,description text,organizations text[],sources text[],date text,starttime text,timezone text,enddate text,endtime text);
     create table vault.secrets(id uuid default gen_random_uuid(),name text unique,secret text);
     create view vault.decrypted_secrets as select name,secret as decrypted_secret from vault.secrets;
     create function vault.create_secret(value text,label text) returns uuid language sql as $$ insert into vault.secrets(name,secret) values(label,value) returning id $$;
@@ -75,6 +75,9 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
     assert.match(initialBody,/UID:89a76621-0fac-447f-9429-62e1e8f985d1@scout.oceanagentics.com/);
     assert.equal(queries.length,2);assert.equal(queries.filter(sql=>sql.startsWith('update')).length,0);
     assert.equal((await run('feed.ics?token='+token,null,{'if-none-match':feed.headers.get('etag')})).status,304);
+    await db.exec("update scout.records set enddate='2026-11-17',endtime='04:15'");
+    const withEnd=await (await run('feed.ics?token='+token)).text();
+    assert.match(withEnd,/DTSTART:20261117T030000Z\r\nDTEND:20261117T041500Z/);
     const subscription=await (await run('feed-link')).json();assert.ok(subscription.url.endsWith('?token='+token));
     assert.equal(subscription.expires_at,undefined);
 
@@ -91,12 +94,13 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
     assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,1);
 
     await db.exec(`insert into scout.records(id,modified,type,description,organizations,sources,date,starttime,timezone)
-      select gen_random_uuid(),array['2026-11-02T10:00:00Z']::timestamptz[],'event','Calendar event '||n,
+      select gen_random_uuid(),array['2026-11-02T10:00:00Z']::timestamptz[],'event','Calendar event '||n||repeat('a',2000),
         '{}','{}','2026-11-05',null,null from generate_series(1,284) n`);
     queries.length=0;
     const expanded=await run('feed.ics?token='+token);
     assert.equal(expanded.status,200);
     const body=await expanded.text();
+    assert.ok(Buffer.byteLength(body)>524288);
     assert.equal((body.match(/BEGIN:VEVENT/g)??[]).length,285);
     assert.match(body,/SUMMARY:🐧 Calendar event 284/);
     assert.equal(queries.length,2);

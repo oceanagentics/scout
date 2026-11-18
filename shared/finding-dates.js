@@ -46,6 +46,21 @@ export function recordDate(record){
   if(!dateInterval({value,precision}))return null;
   return normalizeDate({value,precision,...precision==='day'&&record.starttime?{time:record.starttime,...record.timezone?{zone:record.timezone}:{}}:{}});
 }
+export function recordEnd(record){
+  if(record.type!=='event')return null;
+  const value=record.enddate,precision={4:'year',7:'month',10:'day'}[value?.length],span=dateInterval({value,precision});
+  if(!span)return null;
+  const start=recordDate(record);
+  if(start&&span[1]<dateInterval(start)[0])return null;
+  const time=precision==='day'&&typeof record.endtime==='string'&&/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(record.endtime)?record.endtime:null;
+  const end=normalizeDate({value,precision,...time?{time,...record.timezone?{zone:record.timezone}:{}}:{}});
+  if(start?.time&&end.time){
+    const [from,to]=start.utc&&end.utc?[start.utc,end.utc]:
+      [start.value+'T'+start.time.padEnd(8,':00'),end.value+'T'+end.time.padEnd(8,':00')];
+    if(to<=from)return normalizeDate({value,precision});
+  }
+  return end;
+}
 export function findingInterval(record,field='date'){
   const value=record[field];
   return dateInterval({value,precision:{4:'year',7:'month',10:'day'}[value?.length]})??[null,null];

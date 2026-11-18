@@ -4,7 +4,7 @@ import {findingInterval,scoutDay} from '../shared/finding-dates.js';
 
 const RECORD_FIELDS = [
   'description', 'type', 'priority', 'organizations', 'deadline', 'date',
-  'starttime', 'timezone', 'sources', 'modified', 'id',
+  'starttime', 'timezone', 'enddate', 'endtime', 'sources', 'modified', 'id',
 ];
 const TRACKER_FIELDS = [
   ['name','Name'], ['url','URL'], ['coverage','Coverage'], ['cadence','Cadence'], ['enabled','Enabled'],

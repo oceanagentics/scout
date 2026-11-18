@@ -1,7 +1,7 @@
-import {normalizeDate,dateInterval} from '../shared/finding-dates.js';
+import {normalizeDate,dateInterval,recordEnd} from '../shared/finding-dates.js';
 
 const text=v=>typeof v==='string'?v.toWellFormed().replace(/\s+/g,' ').trim():null;
-const fields=['description','type','priority','organizations','deadline','date','starttime','timezone','sources'];
+const fields=['description','type','priority','organizations','deadline','date','starttime','timezone','enddate','endtime','sources'];
 
 export function normalizeFinding(raw,url,invalidScheduling){
   const description=text(raw?.description);
@@ -14,8 +14,9 @@ export function normalizeFinding(raw,url,invalidScheduling){
     priority:['high','normal','low'].includes(raw.priority)?raw.priority:null,
     organizations:[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).flatMap(o=>{
       const name=text(o);return name?[[name.toLowerCase(),name]]:[];
-    })).values()],deadline:date(raw.deadline),date:date(raw.date),starttime,timezone,sources:[url]};
-  if(invalidScheduling)for(const key of ['date','deadline','starttime','timezone']){
+    })).values()],deadline:date(raw.deadline),date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[url]};
+  const end=recordEnd(finding);finding.enddate=end?.value??null;finding.endtime=end?.time??null;
+  if(invalidScheduling)for(const key of ['date','deadline','starttime','timezone','enddate','endtime']){
     if(raw[key]!=null&&finding[key]===null)invalidScheduling[key]=(invalidScheduling[key]??0)+1;
   }
   return finding;
@@ -29,12 +30,25 @@ function merge(f,target){
   for(const key of fields){
     if(values[key]==null||Array.isArray(values[key])&&!values[key].length)values[key]=target?.[key]??values[key];
   }
-  for(const key of ['date','deadline']){
+  for(const key of ['date','deadline','enddate']){
     if(target?.[key]&&values[key]&&values[key].length<target[key].length){
       values[key]=target[key];
-      if(key==='date'){values.starttime=target.starttime;values.timezone=target.timezone;}
+      if(key==='date'){
+        values.starttime=target.starttime;values.timezone=target.timezone;
+        if(f.endtime&&f.timezone&&f.timezone!==values.timezone){values.enddate=target.enddate;values.endtime=target.endtime;}
+      }
+      if(key==='enddate')values.endtime=target.endtime;
     }
   }
+  if(target?.timezone&&target.timezone!==values.timezone&&target.endtime&&!f.endtime){
+    const saved=recordEnd(target),reinterpreted=recordEnd({...target,timezone:values.timezone});
+    if(!saved?.utc||saved.utc!==reinterpreted?.utc){
+      if(!f.enddate)values.enddate=null;
+      values.endtime=null;
+    }
+  }
+  if(target?.enddate&&values.enddate!==target.enddate&&!f.endtime)values.endtime=null;
+  const end=recordEnd(values);values.enddate=end?.value??null;values.endtime=end?.time??null;
   values.sources=[...new Set([...(target?.sources??[]),...f.sources])];
   return values;
 }
@@ -65,12 +79,12 @@ export async function saveFindings(tx,sourceUrl,findings){
     if(changed){
       const params=fields.map(k=>values[k]);
       const columns=`description=$1,type=$2,priority=$3,organizations=array(select jsonb_array_elements_text($4::jsonb)),
-        deadline=$5,date=$6,starttime=$7,timezone=$8,sources=array(select jsonb_array_elements_text($9::jsonb))`;
+        deadline=$5,date=$6,starttime=$7,timezone=$8,enddate=$9,endtime=$10,sources=array(select jsonb_array_elements_text($11::jsonb))`;
       record=target?(await tx.query(`update scout.records set ${columns},
         modified=array_append(modified,greatest(date_trunc('milliseconds',clock_timestamp()),modified[cardinality(modified)]+interval '1 millisecond'))
-        where id=$10 returning *`,[...params,target.id])).rows[0]
+        where id=$12 returning *`,[...params,target.id])).rows[0]
         :(await tx.query(`insert into scout.records(${fields.join(',')})
-          values($1,$2,$3,array(select jsonb_array_elements_text($4::jsonb)),$5,$6,$7,$8,array(select jsonb_array_elements_text($9::jsonb))) returning *`,params)).rows[0];
+          values($1,$2,$3,array(select jsonb_array_elements_text($4::jsonb)),$5,$6,$7,$8,$9,$10,array(select jsonb_array_elements_text($11::jsonb))) returning *`,params)).rows[0];
       if(!record)throw fail('stale_record');
       counts[target?'changed':'created']++;
       if(!target)counts.createdIds.push(record.id);

@@ -7,7 +7,7 @@ import {syncCalendar} from './google.js';
 import {database} from '../reader/database.js';
 
 const project='https://vhlfumeyhkeospnemukq.supabase.co';
-const columns='id,modified,type,priority,description,organizations,date,starttime,timezone,sources';
+const columns='id,modified,type,priority,description,organizations,date,starttime,timezone,enddate,endtime,sources';
 const fail=(message,status=400)=>Object.assign(new Error(message),{status});
 
 export async function hostedCalendar(request,{databaseURL,env,connect=postgres,authenticate=verifyAuth,fetch}={}){
@@ -47,7 +47,6 @@ export async function hostedCalendar(request,{databaseURL,env,connect=postgres,a
       const token=await secret('scout_calendar_feed'),supplied=url.searchParams.get('token');
       if(!token||token.length!==supplied.length||!timingSafeEqual(Buffer.from(token),Buffer.from(supplied)))throw fail('Not found',404);
       const body=calendarFeed(await records()),etag='"'+createHash('sha256').update(body).digest('hex')+'"';
-      if(Buffer.byteLength(body)>524288)throw fail('Feed exceeds the reviewed size limit',503);
       const feedHeaders={...headers,'Content-Type':'text/calendar; charset=utf-8',ETag:etag};
       return new Response(request.headers.get('if-none-match')===etag?null:body,{status:request.headers.get('if-none-match')===etag?304:200,headers:feedHeaders});
     }
