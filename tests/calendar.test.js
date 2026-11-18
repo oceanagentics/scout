@@ -5,7 +5,7 @@ import {googleEvent,syncCalendar} from '../calendar/google.js';
 
 const id='89a76621-0fac-447f-9429-62e1e8f985d1';
 const record={id,modified:['2026-10-12T10:00:00Z'],type:'event',priority:'low',description:'A & B <demo>',
-  organizations:['HUB Ocean'],sources:['https://example.org/event'],date:'2026-10-22',starttime:'15:30',timezone:'+02:00'};
+  organizations:['HUB Ocean'],sources:[{url:'https://example.org/event',role:'finding'}],date:'2026-10-22',starttime:'15:30',timezone:'+02:00'};
 test('feed has stable identity/revisions, UTC dates, safe text and byte-correct folding',()=>{
   const unsafe={...record,description:'🌊'.repeat(30)+'one,two;three\\four\r\nfive'};
   const feed=calendarFeed([unsafe]),unfolded=feed.replaceAll('\r\n ','');
@@ -47,7 +47,7 @@ test('feed uses stored timezones, preserves clocks without a timezone and skips 
 
 test('feed labels registration links and states registration is required only when one exists',()=>{
   const registration='https://us06web.zoom.us/meeting/register/X7ub2wxiR2-eFKqk8Taqvg#/registration';
-  const withLink=calendarFeed([{...record,sources:['https://example.org/event',registration]}]).replaceAll('\r\n ','');
+  const withLink=calendarFeed([{...record,sources:[{url:'https://example.org/event',role:'finding'},{url:registration,role:'supporting'}]}]).replaceAll('\r\n ','');
   assert.match(withLink,/Source: https:\/\/example.org\/event/);
   assert.ok(withLink.includes('Registration link: '+registration));assert.doesNotMatch(withLink,/Source: https:\/\/us06web/);
   assert.match(withLink,/Registration is required\./);assert.doesNotMatch(withLink,/Informational event/);

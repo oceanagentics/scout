@@ -1,9 +1,12 @@
+import {Buffer} from 'node:buffer';
+import {randomUUID} from 'node:crypto';
+import {sourceLink} from '../shared/records.js';
 import {normalizeDate,dateInterval,recordEnd} from '../shared/finding-dates.js';
 
 const text=v=>typeof v==='string'?v.toWellFormed().replace(/\s+/g,' ').trim():null;
-const fields=['description','type','priority','organizations','deadline','date','starttime','timezone','enddate','endtime','sources'];
+const fields=['description','type','priority','organizations','deadline','date','starttime','timezone','enddate','endtime','sources','details'];
 
-export function normalizeFinding(raw,url,invalidScheduling){
+export function normalizeFinding(raw,url,invalidFields){
   const description=text(raw?.description);
   if(!description)return null;
   const date=value=>dateInterval({value,precision:{4:'year',7:'month',10:'day'}[value?.length]})?value:null;
@@ -14,18 +17,18 @@ export function normalizeFinding(raw,url,invalidScheduling){
     priority:['high','normal','low'].includes(raw.priority)?raw.priority:null,
     organizations:[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).flatMap(o=>{
       const name=text(o);return name?[[name.toLowerCase(),name]]:[];
-    })).values()],deadline:date(raw.deadline),date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[url]};
+    })).values()],deadline:date(raw.deadline),date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[{url,role:'finding'},...(raw.supporting_urls??[]).filter(sourceLink).map(url=>({url,role:'supporting'}))],details:typeof raw.details==='string'&&Buffer.byteLength(raw.details,'utf8')<=4096?raw.details.trim()||null:null};
   const end=recordEnd(finding);finding.enddate=end?.value??null;finding.endtime=end?.time??null;
-  if(invalidScheduling)for(const key of ['date','deadline','starttime','timezone','enddate','endtime']){
-    if(raw[key]!=null&&finding[key]===null)invalidScheduling[key]=(invalidScheduling[key]??0)+1;
+  if(invalidFields&&raw.details!=null&&finding.details===null)invalidFields.details=(invalidFields.details??0)+1;
+  if(invalidFields)for(const key of ['date','deadline','starttime','timezone','enddate','endtime']){
+    if(raw[key]!=null&&finding[key]===null)invalidFields[key]=(invalidFields[key]??0)+1;
   }
   return finding;
 }
 
-const normalize=value=>value.normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').trim().toLowerCase();
 const fail=reason=>Object.assign(new Error(reason),{reason});
 
-function merge(f,target){
+export function mergeFinding(f,target){
   const values={...f};
   for(const key of fields){
     if(values[key]==null||Array.isArray(values[key])&&!values[key].length)values[key]=target?.[key]??values[key];
@@ -49,48 +52,94 @@ function merge(f,target){
   }
   if(target?.enddate&&values.enddate!==target.enddate&&!f.endtime)values.endtime=null;
   const end=recordEnd(values);values.enddate=end?.value??null;values.endtime=end?.time??null;
-  values.sources=[...new Set([...(target?.sources??[]),...f.sources])];
+  const sources=new Map((target?.sources??[]).map(s=>[sourceLink(s.url)??s.url,s]));
+  for(const s of f.sources){const key=sourceLink(s.url),old=sources.get(key);if(key)sources.set(key,{url:key,role:old?.role==='finding'||s.role==='finding'?'finding':s.role});}
+  values.sources=[...sources.values()];
   return values;
 }
-export async function saveFindings(tx,sourceUrl,findings){
-  await tx.query("select pg_advisory_xact_lock(hashtextextended('scout:findings',0))");
-  const counts={created:0,changed:0,saved:0,ambiguous:0,createdIds:[],calendarIds:[]},used=new Set(),seen=new Set();
-  for(const f of findings){
-    const key=JSON.stringify([f.type,normalize(f.description),f.date]);
-    if(seen.has(key))continue;
-    const candidates=(await tx.query(`select * from scout.records
-      where lower(description)=lower($2) or (type is not distinct from $1 and $3=any(sources))
-      order by modified[1],id`,[f.type,f.description,sourceUrl])).rows;
-    const exact=candidates.filter(r=>normalize(r.description)===normalize(f.description));
-    const compatible=candidates.filter(r=>!used.has(r.id)&&
-      (!f.date||!r.date||f.date.startsWith(r.date)||r.date.startsWith(f.date)));
-    const words=new Set(normalize(f.description).split(' '));
-    const similar=compatible.filter(r=>{
-      const other=new Set(normalize(r.description).split(' ')),common=[...words].filter(w=>other.has(w)).length;
-      return common/Math.max(words.size,other.size)>=0.8;
-    });
-    const sole=findings.filter(r=>r.type===f.type).length===1;
-    const target=exact.length?exact[0]:similar.length===1?similar[0]:sole&&candidates.length===1&&compatible.length===1?compatible[0]:null;
-    if(!target&&compatible.length&&(sole||similar.length>1)){counts.ambiguous++;continue;}
-    if(target&&['date','deadline'].some(key=>f[key]&&target[key]&&
-      !f[key].startsWith(target[key])&&!target[key].startsWith(f[key]))){counts.ambiguous++;continue;}
-    const values=merge(f,target),changed=!target||fields.some(k=>JSON.stringify(target[k])!==JSON.stringify(values[k]));
-    let record=target;
-    if(changed){
-      const params=fields.map(k=>values[k]);
-      const columns=`description=$1,type=$2,priority=$3,organizations=array(select jsonb_array_elements_text($4::jsonb)),
-        deadline=$5,date=$6,starttime=$7,timezone=$8,enddate=$9,endtime=$10,sources=array(select jsonb_array_elements_text($11::jsonb))`;
-      record=target?(await tx.query(`update scout.records set ${columns},
-        modified=array_append(modified,greatest(date_trunc('milliseconds',clock_timestamp()),modified[cardinality(modified)]+interval '1 millisecond'))
-        where id=$12 returning *`,[...params,target.id])).rows[0]
-        :(await tx.query(`insert into scout.records(${fields.join(',')})
-          values($1,$2,$3,array(select jsonb_array_elements_text($4::jsonb)),$5,$6,$7,$8,$9,$10,array(select jsonb_array_elements_text($11::jsonb))) returning *`,params)).rows[0];
-      if(!record)throw fail('stale_record');
-      counts[target?'changed':'created']++;
-      if(!target)counts.createdIds.push(record.id);
-      if(record.type==='event'||target?.type==='event')counts.calendarIds.push(record.id);
-    }
-    used.add(record.id);seen.add(key);counts.saved++;
+export async function searchFindings(db,{queries,urls}){
+ if(!Array.isArray(queries)||!Array.isArray(urls)||queries.some(q=>typeof q!=='string')||urls.some(u=>!sourceLink(u))||!queries.some(q=>q.trim())&&!urls.length)throw fail('invalid_output');
+ const records=(await db.query(`select r.*,r.modified::text[] as modified,r.modified[cardinality(r.modified)]::text as revision from scout.records r
+ where exists(select 1 from unnest($1::text[]) q where length(trim(q))>0 and
+  to_tsvector('simple',r.description||' '||array_to_string(r.organizations,' ')||' '||coalesce(r.details,'')) @@ plainto_tsquery('simple',q))
+ or exists(select 1 from jsonb_array_elements(r.sources) s where s->>'url'=any($2::text[])) order by r.id`,[queries,urls])).rows;
+ return {records,count:records.length};
+}
+
+// A tied native timestamp group is one transaction. Later posts must see earlier
+// proposed facts and URLs without holding a database transaction during model calls.
+export function proposedFindings(entries){
+ const records=new Map();
+ for(const {item,investigation} of entries){
+  for(const lookup of investigation.lookups)for(const r of lookup.records)if(!records.has(r.id))records.set(r.id,r);
+  for(const d of investigation.decisions){
+   if(!['create','update'].includes(d.action))continue;
+   const old=d.action==='update'?records.get(d.id):null;
+   if(d.action==='update'&&!old)continue;
+   const f=normalizeFinding(d.fields,item.url);if(!f)continue;
+   if(d.action==='create')d.created_id??=randomUUID();
+   const id=old?.id??d.created_id;
+   records.set(id,{...mergeFinding(f,old),id,revision:old?.revision??null,pending:true});
   }
-  return counts;
+ }
+ return [...records.values()].filter(r=>r.pending);
+}
+
+export async function applyDecisions(tx,entries){
+ const counts={created:0,changed:0,saved:0,ambiguous:0,createdIds:[],calendarIds:[]};
+ const operations=entries.flatMap(e=>e.investigation.decisions).filter(d=>d.action!=='skip');
+ if(operations.length)await tx.query("select pg_advisory_xact_lock(hashtextextended('scout:findings',0))");
+ const snapshots=new Map();
+ const signature=records=>JSON.stringify(records.map(r=>[r.id,r.revision]).sort((a,b)=>a[0].localeCompare(b[0])));
+ for(const {investigation} of entries){
+ const candidates=new Map();
+ for(const lookup of investigation.lookups){
+  const current=await searchFindings(tx,lookup.args);
+  if(operations.length&&signature(current.records)!==signature(lookup.records))throw fail('stale_record');
+  for(const r of current.records)candidates.set(r.id,r);
+ }
+ snapshots.set(investigation,candidates);
+ }
+ const working=new Map(),created=new Set(),createSources=new Map();
+ const createKey=f=>JSON.stringify(fields.filter(k=>k!=='sources').map(k=>f[k]));
+ for(const {item,investigation} of entries)for(const d of investigation.decisions)if(d.action==='create'){
+  const f=normalizeFinding(d.fields,item.url);if(!f)throw fail('invalid_output');
+  const key=createKey(f);createSources.set(key,[...(createSources.get(key)??[]),...f.sources]);
+ }
+ for(const {item,investigation} of entries){
+ const candidates=snapshots.get(investigation),used=new Set();
+ for(const d of investigation.decisions){
+  if(d.action==='skip'){counts.ambiguous++;continue;}
+  if(d.action==='create'&&!investigation.lookups.length)throw fail('invalid_output');
+  const target=d.action==='create'?null:working.get(d.id)??candidates.get(d.id);
+  if(d.action!=='create'&&(!target||target.revision!==d.expected_revision||used.has(d.id)))throw fail('stale_record');
+  if(target)used.add(target.id);
+  if(d.action==='no_change'){
+   if(!target.sources.some(s=>s.role==='finding'&&s.url===item.url))throw fail('invalid_output');
+   counts.saved++;continue;
+  }
+  const f=normalizeFinding(d.fields,item.url,investigation.invalid_fields);
+  if(!f)throw fail('invalid_output');
+  if(target&&['date','deadline'].some(k=>f[k]&&target[k]&&!f[k].startsWith(target[k])&&!target[k].startsWith(f[k]))){counts.ambiguous++;continue;}
+  const identity=createKey(f);
+  if(!target)f.sources=createSources.get(identity);
+  const values=mergeFinding(f,target);
+  if(!target&&created.has(identity))continue;
+  if(!target)created.add(identity);
+  if(target&&!fields.some(k=>JSON.stringify(target[k])!==JSON.stringify(values[k]))){counts.saved++;continue;}
+  const params=fields.map(k=>['sources','organizations'].includes(k)?JSON.stringify(values[k]):values[k]);
+  const createdID=d.created_id??randomUUID();
+  const expressions=fields.map((k,i)=>k==='organizations'?`array(select jsonb_array_elements_text($${i+1}::jsonb))`:k==='sources'?`$${i+1}::jsonb`:`$${i+1}`);
+  const record=target?(await tx.query(`update scout.records set ${fields.map((k,i)=>k+'='+expressions[i]).join(',')},
+   modified=array_append(modified,greatest(date_trunc('milliseconds',clock_timestamp()),modified[cardinality(modified)]+interval '1 millisecond'))
+   where id=$${params.length+1} returning id`,[...params,target.id])).rows[0]
+   :(await tx.query(`insert into scout.records(${fields.join(',')},id) values(${expressions.join(',')},$${params.length+1}) returning id`,[...params,createdID])).rows[0];
+  if(!record)throw fail('stale_record');
+  working.set(record.id,{...values,id:record.id,revision:target?.revision??null});
+  counts[target?'changed':'created']++;counts.saved++;
+  if(!target)counts.createdIds.push(record.id);
+  if(values.type==='event'||target?.type==='event')counts.calendarIds.push(record.id);
+ }
+ }
+ return counts;
 }

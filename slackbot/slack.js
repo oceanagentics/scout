@@ -24,15 +24,14 @@ export async function prepareMessages(db,{kind='weekly',ids=[],now=new Date()}={
     return (start?.utc?scoutDay(new Date(start.utc)):start?.value)===today;
   });
   const payloads=records.map(r=>{
-    const url=(r.sources??[]).map(sourceLink).find(Boolean);
-    if(!url)throw new Error('Notification requires a supporting source link');
+    const url=(r.sources??[]).filter(s=>s.role==='finding').map(s=>sourceLink(s.url)).find(Boolean);
     const tag=r.priority[0]+(r.type??'finding')[0];
-    return {text:`${escape(r.description)} [${tag}] · <${escape(url)}|Read more>`,parse:'none',unfurl_links:false,unfurl_media:false};
+    return {text:`${escape(r.description)} [${tag}]${url?' · <'+escape(url)+'|Read more>':''}`,parse:'none',unfurl_links:false,unfurl_media:false};
   });
   return {records,payloads,prepared_at:now.toISOString()};
 }
 
-export async function sendMessages(db,preview,post,{now=()=>new Date()}={}) {
+export async function sendMessages(db,preview,post,{now=()=>new Date(),deadline=Infinity}={}) {
   if(!preview.records.length)return {status:'no_change',communicated:0};
   if(now()-Date.parse(preview.prepared_at)>60000)throw new Error('Preview expired');
   const current=(await db.query(`select r.id from scout.records r join unnest($1::uuid[],$2::text[]) expected(id,modified)
@@ -41,6 +40,7 @@ export async function sendMessages(db,preview,post,{now=()=>new Date()}={}) {
   if(current.length!==preview.records.length)throw new Error('Preview changed');
   let communicated=0;
   for(const payload of preview.payloads){
+    if(+now()>=deadline)return {status:'unknown',communicated};
     if(communicated)await new Promise(resolve=>setTimeout(resolve,1000));
     let status='unknown';
     try{const response=await post(payload);status=response.status===200&&response.body.trim()==='ok'?'sent':response.status>=400&&response.status<500?'failed':'unknown';}catch{}
@@ -50,13 +50,13 @@ export async function sendMessages(db,preview,post,{now=()=>new Date()}={}) {
   return {status:'sent',communicated};
 }
 
-export function webhookTransport(value,send) {
+export function webhookTransport(value,send,{deadline=Infinity}={}) {
   let url;
   try { url=new URL(value); } catch { throw new Error('Missing Scout webhook'); }
   if (url.protocol!=='https:'||url.host!=='hooks.slack.com'||url.username||url.password||url.search||url.hash||
       !/^\/services\/TFZ8FRLBV\/B0C5TEK4R38\/[A-Za-z0-9]+$/.test(url.pathname)) throw new Error('Webhook does not match the confirmed Scout installation');
   if(send)return async body=>{
-    const response=await send(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(12000)});
+    const response=await send(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(Math.max(1,Math.min(12000,deadline-Date.now())))});
     const reader=response.body?.getReader();let content='',bytes=0;
     try{for(;;){const part=await reader?.read();if(!part||part.done)break;bytes+=part.value.byteLength;
       if(bytes>4096)throw new Error('Response limit');content+=new TextDecoder().decode(part.value);}}
@@ -69,7 +69,7 @@ export function webhookTransport(value,send) {
       res.on('data',chunk=>{content+=chunk;if(Buffer.byteLength(content)>4096)req.destroy(new Error('Response limit'));});
       res.on('error',reject);res.on('end',()=>resolve({status:res.statusCode,body:content}));
     });
-    const timer=setTimeout(()=>req.destroy(new Error('Delivery timeout')),12000);
+    const timer=setTimeout(()=>req.destroy(new Error('Delivery timeout')),Math.max(1,Math.min(12000,deadline-Date.now())));
     req.on('close',()=>clearTimeout(timer));req.on('error',reject);req.end(JSON.stringify(body));
   });
 }

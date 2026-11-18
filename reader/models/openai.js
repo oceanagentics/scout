@@ -24,16 +24,14 @@ export function strictSchema(schema){
 }
 
 // Retrieval, native inputs and continuations share one attempt and abort signal.
-export function openai({apiKey,urls=[],readUrl,model=OPENAI_MODEL,fetch:send=fetch,now=Date.now}){
+export function openai({apiKey,urls=[],readUrl,functions=[],model=OPENAI_MODEL,fetch:send=fetch,now=Date.now}){
   if(model!==OPENAI_MODEL)throw fail('model_configuration');
   const initial=urls;
   return async(instruction,input,schema,{signal}={})=>{
     const started=now(),diagnostics={provider:'openai',model,retrieval:[],tool_calls:0,requests:0,usage:{input_tokens:0,output_tokens:0,total_tokens:0}};
     let dispatched=false;
     try{
-      // OpenAI requires an object at the root; keep the list wrapper in this adapter.
-      if(schema?.type==='array'&&schema.items?.type!=='object')throw fail('invalid_schema');
-      const transportSchema=schema?.type==='array'?{type:'object',properties:{status:{type:'string',enum:['found','none','unreadable']},records:schema},required:['status','records'],additionalProperties:false}:schema;
+      const transportSchema=schema;
       const requested=initial;
       if(!apiKey)throw fail('configuration');
       const supplied=new Set(),failedFiles=new Set();let nativeBatch=[],hasEvidence=!!input.content&&!input.content.error;
@@ -48,19 +46,20 @@ export function openai({apiKey,urls=[],readUrl,model=OPENAI_MODEL,fetch:send=fet
         return parts;
       };
       const first=[{type:'input_text',text:JSON.stringify({input,urls:requested})}];
-      if(input.source_kind==='web'&&input.content&&!input.content.error){
+      if(input.content&&input.content.url===input.url&&!input.content.error){
         supplied.add(input.url);
       }
       const history=[{role:'user',content:first}];
-      if(input.source_kind==='web'&&input.content&&!input.content.error&&!Object.hasOwn(input.content,'content'))history.push({role:'user',content:partsFor(input.content)});
+      if(input.content?.media_type&&!input.content.error&&!Object.hasOwn(input.content,'content'))history.push({role:'user',content:partsFor(input.content)});
       const tools=[
+        ...functions.map(({name,description,parameters})=>({type:'function',name,description,parameters,strict:true})),
         ...(requested.length?[{type:'web_search',search_content_types:['text','image'],image_settings:{caption:true}}]:[]),
         ...(readUrl?[{type:'function',name:'read_url',description:'Read a relevant public page, JSON content, PDF or image URL. Failed reads return an error; continue with other evidence.',
           strict:true,parameters:{type:'object',properties:{url:{type:'string'}},required:['url'],additionalProperties:false}}]:[])];
       for(;;){
         if(signal?.aborted)throw fail('runtime_bound');
         const body=JSON.stringify({model,store:false,service_tier:'default',reasoning:{effort:'low'},
-          instructions:instruction+(schema?.type==='array'?'\nFor this API, return {status, records}, where records contains the requested array. Use found for useful findings even if incomplete, none for no returned findings, and unreadable only when no usable source evidence could be read. Broken linked documents must not discard other findings.':''),
+          instructions:instruction,
           input:history,...(tools.length?{tools,tool_choice:hasEvidence?'auto':'required'}:{}),
           include:['reasoning.encrypted_content',...(requested.length?['web_search_call.action.sources']:[])],
           text:{format:{type:'json_schema',name:'scout_result',schema:strictSchema(transportSchema),strict:true}}});
@@ -124,17 +123,18 @@ export function openai({apiKey,urls=[],readUrl,model=OPENAI_MODEL,fetch:send=fet
         const calls=result.output.filter(item=>item.type==='function_call');
         if(calls.length){
           for(const call of calls){
-            if(call.name!=='read_url'||!readUrl)throw fail('unexpected_tool');
+            if(call.name==='read_url'?!readUrl:!functions.some(f=>f.name===call.name))throw fail('unexpected_tool');
             let args;try{args=JSON.parse(call.arguments);}catch{throw fail('invalid_output');}
-            if(!args||typeof args.url!=='string'||Object.keys(args).length!==1||typeof call.call_id!=='string')throw fail('invalid_output');
+            if(!args||typeof args!=='object'||typeof call.call_id!=='string'||call.name==='read_url'&&(typeof args.url!=='string'||Object.keys(args).length!==1))throw fail('invalid_output');
           }
           diagnostics.tool_calls+=calls.length;
           const outputs=await Promise.all(calls.map(async call=>{
+            if(call.name!=='read_url'){const value=await functions.find(f=>f.name===call.name).run(JSON.parse(call.arguments));return {type:'function_call_output',call_id:call.call_id,output:JSON.stringify(value)};}
             const {url}=JSON.parse(call.arguments);
             if(failedFiles.has(url))return {type:'function_call_output',call_id:call.call_id,output:JSON.stringify({url,error:'source_unavailable'})};
             if(supplied.has(url))return {type:'function_call_output',call_id:call.call_id,output:JSON.stringify({url,status:'already_supplied'})};
             let source;
-            try{source=await readUrl(url);}catch(error){
+            try{source=await readUrl(url,{signal});}catch(error){
               if(signal?.aborted)throw fail('runtime_bound');
               diagnostics.retrieval.push({url,status:'URL_RETRIEVAL_FAILED',method:'scout_http'});
               return {type:'function_call_output',call_id:call.call_id,output:JSON.stringify({url,error:error.reason??'source_unavailable'})};
@@ -149,10 +149,6 @@ export function openai({apiKey,urls=[],readUrl,model=OPENAI_MODEL,fetch:send=fet
         if(!hasEvidence&&requested.length)throw fail(diagnostics.retrieval.length?'url_retrieval_failed':'retrieval_metadata_missing');
         let answer;try{answer=JSON.parse(content.filter(part=>part.type==='output_text').map(part=>part.text).join(''));}catch{throw fail('invalid_output');}
         if(!answer||Array.isArray(answer)||typeof answer!=='object')throw fail('invalid_output');
-        if(schema?.type==='array'){
-          if(!Array.isArray(answer.records))throw fail('invalid_output');
-          if(!['found','none','unreadable'].includes(answer.status))throw fail('invalid_output');
-        }
         diagnostics.elapsed_ms=now()-started;
         return {...answer,_diagnostics:diagnostics,_retrieval:diagnostics.retrieval};
       }

@@ -4,7 +4,7 @@ Scout collects BBNJ events, announcements and official treaty developments, save
 
 Collection wakes every six minutes and checks one due tracker. Current trackers have a daily cadence: a fully successful check completes that New York calendar day. New findings post to Slack after saving; morning events post daily at 8 a.m. and the weekly high-priority digest posts Mondays at 9 a.m., America/New_York. This guide describes the local code; it does not certify what is currently deployed.
 
-Bluesky collection resumes after its last successfully committed checkpoint so consumed posts are not investigated again. New trackers and changed URLs have no checkpoint; a Bluesky first check consumes all available history oldest first across bounded attempts, with no arbitrary look-back window. Web checks use the existing successful checkpoint for HTTP freshness checks and skip the model when the source is unchanged. Changed or unverified pages are investigated; a page checkpoint does not identify already read entries or linked pages.
+Bluesky collection resumes after its last successfully committed checkpoint so consumed posts are not investigated again. New trackers and changed URLs have no checkpoint; a Bluesky first check consumes all available history oldest first across bounded attempts, with no arbitrary look-back window. RSS and webpage discovery supply individual publication URLs to the same item ingestion service. Compact pending-item state resumes interrupted lists. Index freshness is checked before discovery, and article freshness before investigation; unknown freshness still requires investigation. A parent checkpoint never establishes article freshness. Finding URLs are saved separately from supporting and unclassified legacy URLs.
 
 ## Files and responsibilities
 
@@ -63,10 +63,10 @@ Omit `--tracker` to check the next due enabled tracker. An explicit tracker ID a
 
 Scout uses `America/New_York` for schedules, calendar-day boundaries, tracker retirement, model “today” and operational time display. Stored timestamps remain UTC; source dates and timezones remain as published.
 
-- New findings: the hosted reader posts newly created high-priority records after each committed save group. Updates and unchanged findings do not post.
+- New findings: the hosted reader posts newly created high-priority records after committed collection work. Updates and unchanged findings do not post.
 - Morning: 8 a.m. daily, high-priority exact-day events occurring today in New York. Without a known instant, use the published calendar date. Partial dates are excluded.
 - Weekly: 9 a.m. Monday, pending high-priority events, including undated events, plus high-priority announcements first saved in the preceding seven New York days.
-- Every Slack message contains one high-priority finding: its saved description, priority/type initials and source link. Messages send sequentially, spaced at least one second apart; no grouped posts or model calls. Empty notifications are skipped. Delivery stops on a failed or uncertain send and reports the confirmed send count. Delivery is best effort, with no persistent delivery state or automatic retry after uncertain sends.
+- Every Slack message contains one high-priority finding: its saved description, priority/type initials and evidenced finding link. Legacy records without an evidenced finding URL omit Read more. Messages send sequentially, spaced at least one second apart; no grouped posts or model calls. Empty notifications are skipped. Delivery stops on a failed or uncertain send and reports the confirmed send count. Delivery is best effort, with no persistent delivery state or automatic retry after uncertain sends.
 
 The model's priority rubric is stored in [reader/instructions.js](reader/instructions.js). The high-priority filter, individual message format and delivery rules are enforced in [slackbot/slack.js](slackbot/slack.js), shared by the reader and scheduled notifier.
 

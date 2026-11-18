@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "2.117.2",
+    "fast-xml-parser": "5.12.1",
     "parse5": "8.1.1"
   },
   "devDependencies": {

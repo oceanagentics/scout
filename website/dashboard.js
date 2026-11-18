@@ -121,14 +121,15 @@ export function mountDashboard(root, load, views) {
       const sourcesButton = node('button', tableView ? 'View sources' : 'Sources & record details', 'secondary'); sourcesButton.type = 'button';
       sourcesButton.addEventListener('click', () => {
         sourceContent.replaceChildren(node('h3', record.description), node('p', `Modified · ${stamp(record.modified.at(-1))}`, 'meta'));
+        if(record.details)sourceContent.append(node('p',record.details,'finding-details'));
         if (!record.sources.length) sourceContent.append(node('p', 'No source URLs available.', 'hint'));
         for (const source of record.sources) {
-          const section = node('p', null, 'source-entry'); section.append(link(source, source)); sourceContent.append(section);
+          const section = node('p', null, 'source-entry'); section.append(link(source.url,source.role+' · '+source.url)); sourceContent.append(section);
         }
         sourceDialog.showModal();
       });
       const actions = node('div', null, 'actions');
-      if (!tableView) for(const source of record.sources)if(sourceLink(source))actions.append(link(source,source));
+      if (!tableView) for(const source of record.sources)if(sourceLink(source.url))actions.append(link(source.url,source.role+' · '+source.url));
       if (tableView) {
         article.querySelector('.field-sources').append(sourcesButton);
       } else article.append(actions, sourcesButton);

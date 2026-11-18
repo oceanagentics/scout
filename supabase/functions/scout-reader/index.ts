@@ -21,8 +21,8 @@ export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,webh
       types:{json:{to:114,from:[114,3802],parse:JSON.parse,serialize:value=>typeof value==='string'?value:JSON.stringify(value)}},
       connection:{application_name:'scout-reader',statement_timeout:5000}});
     session=await sql.reserve();const db=database(session);
-    const result=await intake(db,{trackerId,sourceFetch,modelFor:(source,{deadline,readUrl})=>trackerModel({source,deadline,readUrl,apiKey,openaiApiKey,fetch:modelFetch}),
-      notify:async ids=>sendMessages(db,await prepareMessages(db,{kind:'findings',ids}),post??webhookTransport(webhook)),
+    const result=await intake(db,{trackerId,sourceFetch,modelFor:(source,{deadline,readUrl,functions,validate})=>trackerModel({source,deadline,readUrl,functions,validate,apiKey,openaiApiKey,fetch:modelFetch}),
+      notify:async(ids,{deadline})=>sendMessages(db,await prepareMessages(db,{kind:'findings',ids}),post??webhookTransport(webhook,undefined,{deadline}),{deadline}),
       publishCalendar:(ids,{deadline})=>syncCalendar(db,{ids,deadline,fetch:calendarFetch})});
     return Response.json({...result,cost:db.metrics});
   }catch{

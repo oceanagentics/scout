@@ -1,6 +1,5 @@
 import {MODEL,gemini} from './gemini.js';
 import {OPENAI_MODEL,openai} from './openai.js';
-import {normalizeFinding} from '../findings.js';
 import {modelErrorReason} from './contract.js';
 
 const fallbackReasons=new Set(['url_retrieval_failed','retrieval_metadata_missing','model_unreadable','invalid_json','invalid_output',
@@ -8,12 +7,12 @@ const fallbackReasons=new Set(['url_retrieval_failed','retrieval_metadata_missin
 const fail=(reason,details={})=>Object.assign(new Error(reason),{reason,...details});
 
 // One primary attempt and, for eligible failures, one fallback. No model ledger.
-export function trackerModel({apiKey,openaiApiKey,source,provider,deadline,readUrl,fetch:send=fetch}){
+export function trackerModel({apiKey,openaiApiKey,source,provider,deadline,readUrl,functions=[],validate,fetch:send=fetch}){
   if(provider!==undefined&&!['gemini','openai'].includes(provider))throw fail('configuration');
   if(provider==='gemini'&&source.source_kind==='web')throw fail('model_configuration');
   const primary=provider??(source.source_kind==='post'?'gemini':'openai');
-  const providers={gemini:{model:MODEL,generate:gemini({apiKey,fetch:send})},
-    openai:{model:OPENAI_MODEL,generate:openai({apiKey:openaiApiKey,urls:[source.url],readUrl,fetch:send})}};
+  const providers={gemini:{model:MODEL,generate:gemini({apiKey,readUrl,functions,fetch:send})},
+    openai:{model:OPENAI_MODEL,generate:openai({apiKey:openaiApiKey,urls:[source.url],readUrl,functions,fetch:send})}};
   return async(instruction,input,schema)=>{
     const ends=deadline??Date.now()+100000,attempts=[];
     const call=async name=>{
@@ -24,10 +23,7 @@ export function trackerModel({apiKey,openaiApiKey,source,provider,deadline,readU
         if(remaining<=0)throw fail('runtime_bound',{dispatched:false});
         const answer=await config.generate(instruction,input,schema,{signal:AbortSignal.timeout(remaining)});
         attempt.dispatched=true;attempt.diagnostics=answer._diagnostics;
-        if(!['found','none','unreadable'].includes(answer.status)||!Array.isArray(answer.records))throw fail('invalid_output');
-        if(answer.status==='unreadable')throw fail('model_unreadable');
-        if(answer.status==='found'&&!answer.records.length)throw fail('empty_findings');
-        if(answer.records.some(r=>!normalizeFinding(r,source.url))||answer.status==='none'&&answer.records.length)throw fail('invalid_output');
+        if(validate)validate(answer);
         return answer;
       }catch(error){
         attempt.dispatched=error.dispatched!==false;attempt.reason=modelErrorReason(error);

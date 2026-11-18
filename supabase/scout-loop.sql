@@ -23,7 +23,7 @@ begin
  elsif mode='next' then
  if not exists(select 1 from scout.trackers t
   where t.enabled and t.failure_count<3
-    and (t.last_checked_at is null or t.last_successful_check is distinct from t.last_checked_at
+    and (exists(select 1 from scout.source_items si where si.tracker_id=t.id and si.pending) or t.last_checked_at is null or t.last_successful_check is distinct from t.last_checked_at
       or date_trunc('day',t.last_successful_check at time zone 'America/New_York')+t.cadence
         <=date_trunc('day',local_now))
     and (t.retire_on is null or t.retire_on>local_now::date)

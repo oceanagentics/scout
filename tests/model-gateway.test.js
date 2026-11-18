@@ -19,7 +19,7 @@ test('supplied posts work without retrieval metadata; both providers retain opti
         return result([],[]);
       }
       assert.deepEqual(JSON.parse(body.contents[0].parts[0].text),input);
-      return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]});
+      return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:'{"status":"none","records":[]}'}]}}]});
     }});
     const answer=await model(INTAKE_INSTRUCTION,input,RESPONSE_SCHEMA);
     assert.equal(answer.status,'none');assert.equal(calls,1);
@@ -27,9 +27,9 @@ test('supplied posts work without retrieval metadata; both providers retain opti
 });
 const result=(records=[],web=[{type:'web_search_call',status:'completed',action:{type:'open_page',url}}])=>Response.json({
   status:'completed',output:[...web,{type:'message',content:[{type:'output_text',text:JSON.stringify({status:records.length?'found':'none',records})}]}]});
-const envelope=(text='[]',extra={})=>Response.json({candidates:[{finishReason:'STOP',
+const envelope=(text='[]',extra={})=>{try{const parsed=JSON.parse(text);if(Array.isArray(parsed))text=JSON.stringify({status:parsed.length?'found':'none',records:parsed});}catch{}return Response.json({candidates:[{finishReason:'STOP',
   urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
-  content:{parts:[{text}]}}],...extra});
+  content:{parts:[{text}]}}],...extra});};
 
 test('provider calls accept large inputs and outputs without accounting or Scout content caps',async()=>{
   const records=Array.from({length:12},(_,i)=>({description:'Development '+i+' '+ 'x'.repeat(12000)}));
@@ -55,8 +55,8 @@ test('provider calls accept large inputs and outputs without accounting or Scout
 
 test('fallback is one attempt and preserves provider diagnostics',async t=>{
   const cases=[['valid none',()=>envelope(),false],['retrieval error',()=>envelope('[]',{candidates:[{finishReason:'STOP',
-    urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'ERROR'}]},content:{parts:[{text:'[]'}]}}]}),true],
-    ['missing metadata',()=>envelope('[]',{candidates:[{finishReason:'STOP',content:{parts:[{text:'[]'}]}}]}),true],
+    urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'ERROR'}]},content:{parts:[{text:'{"status":"none","records":[]}'}]}}]}),true],
+    ['missing metadata',()=>envelope('[]',{candidates:[{finishReason:'STOP',content:{parts:[{text:'{"status":"none","records":[]}'}]}}]}),true],
     ['invalid JSON',()=>envelope('{'),true],['invalid output',()=>envelope('{}'),true],
     ['empty found',()=>envelope('[null,{}]'),true],['missing candidate',()=>envelope('[]',{candidates:[]}),true],
     ['truncated',()=>envelope('[]',{candidates:[{finishReason:'MAX_TOKENS'}]}),true],
@@ -66,7 +66,7 @@ test('fallback is one attempt and preserves provider diagnostics',async t=>{
     ['safety',()=>envelope('[]',{promptFeedback:{blockReason:'SAFETY'}}),false]];
   for(const [name,response,recover] of cases)await t.test(name,async()=>{
     const calls=[];
-    const model=trackerModel({source:{url,source_kind:'post'},apiKey:'test',openaiApiKey:'test',fetch:async target=>{
+    const model=trackerModel({source:{url,source_kind:'post'},apiKey:'test',openaiApiKey:'test',validate:answer=>{if(!['found','none'].includes(answer.status)||!Array.isArray(answer.records)||answer.records.some(r=>!r?.description))throw Object.assign(new Error('invalid_output'),{reason:'invalid_output'});},fetch:async target=>{
       calls.push(target);return target.includes('googleapis')?response():result();
     }});
     const answer=await model(INTAKE_INSTRUCTION,{url},RESPONSE_SCHEMA).catch(e=>e);

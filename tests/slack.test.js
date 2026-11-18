@@ -15,7 +15,7 @@ async function database(){
  return db;
 }
 async function seed(db){
- return (await db.query("insert into scout.records(type,description,priority,sources) values('announcement','Technical BBNJ ChM standards','high',array['https://example.org/standards']) returning id")).rows[0].id;
+ return (await db.query("insert into scout.records(type,description,priority,sources) values('announcement','Technical BBNJ ChM standards','high',jsonb_build_array(jsonb_build_object('url','https://example.org/standards','role','finding'))) returning id")).rows[0].id;
 }
 test('morning posts high-priority events individually on the New York day, using source dates without a known instant',async()=>{
  const db=await database();try{
@@ -28,7 +28,7 @@ test('morning posts high-priority events individually on the New York day, using
     ['Low event','2026-11-08',null,null,'low'],
     ['Unassessed event','2026-11-08',null,null,null],
     ['Month only','2026-11',null,null,'high']])
-   await db.query("insert into scout.records(type,description,date,starttime,timezone,priority,sources) values('event',$1,$2,$3,$4,$5,array['https://example.org/event'])",[description,date,starttime,timezone,priority]);
+   await db.query("insert into scout.records(type,description,date,starttime,timezone,priority,sources) values('event',$1,$2,$3,$4,$5,jsonb_build_array(jsonb_build_object('url','https://example.org/event','role','finding')))",[description,date,starttime,timezone,priority]);
   const preview=await prepareMessages(db,{kind:'morning',now:new Date('2026-11-08T13:00:00Z')});
   assert.deepEqual(preview.records.map(r=>r.description).sort(),['Date only','Tomorrow in Asia, today in New York','Unknown timezone']);
   assert.deepEqual(preview.payloads.map(p=>p.text).sort(),[
@@ -53,7 +53,7 @@ test('weekly includes all pending high events and seven local days of newly save
     ['Older','announcement','high',null,'2026-10-26T12:59:59Z'],
     ['Normal news','announcement','normal',null,'2026-11-01T12:00:00Z'],
     ['Treaty update','treaty_status','high',null,'2026-11-01T12:00:00Z']])
-   await db.query("insert into scout.records(description,type,priority,date,modified,sources) values($1,$2,$3,$4,array[$5::timestamptz],array['https://example.org/source'])",[description,type,priority,date,created]);
+   await db.query("insert into scout.records(description,type,priority,date,modified,sources) values($1,$2,$3,$4,array[$5::timestamptz],jsonb_build_array(jsonb_build_object('url','https://example.org/source','role','finding')))",[description,type,priority,date,created]);
   const preview=await prepareMessages(db,{kind:'weekly',now});
   assert.deepEqual(preview.records.map(r=>r.description).sort(),['Exactly seven local days','Far future','Partially dated future','Undated','Within seven New York days']);
   assert.deepEqual(preview.payloads.map(p=>p.text).sort(),[
@@ -69,7 +69,7 @@ test('weekly includes all pending high events and seven local days of newly save
 test('hosted sends post one high-priority finding at a time, stop on errors, and make no database writes',async()=>{
  const db=await database();try{
   await seed(db);
-  await db.query("insert into scout.records(description,priority,sources) values('Second high finding','high',array['https://example.org/second']),('Normal finding','normal',array['https://example.org/normal'])");
+  await db.query("insert into scout.records(description,priority,sources) values('Second high finding','high',jsonb_build_array(jsonb_build_object('url','https://example.org/second','role','finding'))),('Normal finding','normal',jsonb_build_array(jsonb_build_object('url','https://example.org/normal','role','finding')))");
   const records=(await db.query('select * from scout.records')).rows;
   const trackers=(await db.query('select * from scout.trackers order by id')).rows;
   const secret='sb_secret_notify_test',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
@@ -131,7 +131,7 @@ test('new findings exclude normal, low and unassessed records and skip empty not
   const empty=await prepareMessages(db,{kind:'morning'});
   assert.equal((await sendMessages(db,empty,()=>assert.fail('Empty digest'))).status,'no_change');
   const ids=[];
-  for(const priority of ['normal','low',null])ids.push((await db.query("insert into scout.records(description,priority,sources) values('Finding',$1,array['https://example.org/source']) returning id",[priority])).rows[0].id);
+  for(const priority of ['normal','low',null])ids.push((await db.query("insert into scout.records(description,priority,sources) values('Finding',$1,jsonb_build_array(jsonb_build_object('url','https://example.org/source','role','finding'))) returning id",[priority])).rows[0].id);
   const preview=await prepareMessages(db,{kind:'findings',ids});assert.equal(preview.records.length,0);
   assert.equal((await sendMessages(db,preview,()=>assert.fail('No high-priority findings'))).status,'no_change');
  }finally{await db.close();}

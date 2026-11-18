@@ -55,14 +55,16 @@ test('local tracker diagnostic captures one model investigation with only a trac
     if(url===source)return new Response('<main>BBNJ data workshop</main>',{headers:{'content-type':'text/html'}});
     assert.equal(url,'https://api.openai.com/v1/responses');generations++;
     const event={description:'BBNJ data workshop',type:'event',priority:'high',organizations:['Organizer'],date:'2026-10-22',starttime:'13:30',timezone:'UTC'};
+    const body=JSON.parse(request.body),output=body.input.find(i=>i.type==='function_call_output');
+    if(!output)return Response.json({status:'completed',output:[{type:'function_call',name:'search_findings',call_id:'search',arguments:JSON.stringify({queries:['Organizer'],urls:[]})}]});
     return Response.json({status:'completed',usage:{input_tokens:400,output_tokens:200,total_tokens:600},
-      output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({status:'found',records:[event]})}]}]});
+      output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({status:'complete',decisions:[{action:'create',id:null,expected_revision:null,fields:{...event,details:null,supporting_urls:[]},reason:null}]})}]}]});
   }});
-  assert.equal(generations,1);assert.equal(result.result.state,'saved');
+  assert.equal(generations,2);assert.equal(result.result.state,'saved');
   assert.equal(result.records.length,1);assert.equal(result.records[0].date,'2026-10-22');assert.equal(result.records[0].starttime,'13:30');
   const entries=await lines(path),requests=entries.filter(e=>e.direction==='request'),responses=entries.filter(e=>e.direction==='response');
-  assert.equal(requests.length,1);assert.equal(responses.length,1);
+  assert.equal(requests.length,2);assert.equal(responses.length,2);
   assert.match(requests[0].body,/json_schema/);
-  assert.match(responses[0].body,/output_text/);
+  assert.match(responses.at(-1).body,/output_text/);
   assert.equal(sql.length,1);assert.ok(sql[0].startsWith('select id,name'));
 });

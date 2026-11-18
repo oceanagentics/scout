@@ -11,7 +11,7 @@ export function calendarEvent(record){
   const start=recordDate(record);
   if(start?.precision!=='day')return null;
   const end=recordEnd(record),allDay=!start.time||end?.precision==='day'&&end.value>start.value&&!end.time;
-  const links=record.sources.filter(sourceLink),registrationLinks=links.filter(url=>/regist/i.test(url));
+  const links=record.sources.map(s=>sourceLink(s.url)).filter(Boolean),registrationLinks=links.filter(url=>/regist/i.test(url));
   return {start,end,allDay,summary:(record.priority==='high'?'⭐ ':'')+(record.priority==='low'?'':'🐧 ')+record.description,
     description:[record.description,record.organizations.join('; '),'Source start: '+dateLabel(start),
       ...(end?['Source end: '+dateLabel(end)]:[]),

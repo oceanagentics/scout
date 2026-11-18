@@ -8,7 +8,7 @@ const user='11111111-1111-4111-8111-111111111111',token='a'.repeat(64);
 const profile={sub:'google-owner',email:'danny@oceanagentics.com',email_verified:true};
 const identity={...profile,iss:'https://accounts.google.com',custom_claims:{hd:'oceanagentics.com'}};
 const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',modified:['2026-10-12T10:00:00Z'],type:'event',priority:'high',
-  description:'Test fixture',organizations:[],sources:['https://example.org/event'],date:'2026-11-17',starttime:'03:00',timezone:'+00:00'};
+  description:'Test fixture',organizations:[],sources:[{url:'https://example.org/event',role:'finding'}],date:'2026-11-17',starttime:'03:00',timezone:'+00:00'};
 
 test('reconciliation requires the backend secret before reading credentials or findings',async()=>{
   const key='sb_secret_calendar_test',env={url:'https://example.supabase.co',secretKeys:{default:key},
@@ -30,7 +30,7 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
   // Vault here is a test double for SQL contracts, not a test of production encryption.
   await db.exec(`create role anon;create role authenticated;create role service_role;create schema scout;create schema auth;create schema vault;
     create table auth.identities(user_id uuid,provider text,provider_id text,identity_data jsonb);
-    create table scout.records(id uuid,modified timestamptz[],type text,priority text,description text,organizations text[],sources text[],date text,starttime text,timezone text,enddate text,endtime text);
+    create table scout.records(id uuid,modified timestamptz[],type text,priority text,description text,organizations text[],sources jsonb,date text,starttime text,timezone text,enddate text,endtime text);
     create table vault.secrets(id uuid default gen_random_uuid(),name text unique,secret text);
     create view vault.decrypted_secrets as select name,secret as decrypted_secret from vault.secrets;
     create function vault.create_secret(value text,label text) returns uuid language sql as $$ insert into vault.secrets(name,secret) values(label,value) returning id $$;
@@ -95,7 +95,7 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
 
     await db.exec(`insert into scout.records(id,modified,type,description,organizations,sources,date,starttime,timezone)
       select gen_random_uuid(),array['2026-11-02T10:00:00Z']::timestamptz[],'event','Calendar event '||n||repeat('a',2000),
-        '{}','{}','2026-11-05',null,null from generate_series(1,284) n`);
+        '{}','[]','2026-11-05',null,null from generate_series(1,284) n`);
     queries.length=0;
     const expanded=await run('feed.ics?token='+token);
     assert.equal(expanded.status,200);
