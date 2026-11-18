@@ -13,7 +13,7 @@ Bluesky collection resumes after its last successfully committed checkpoint so c
 | [website/](website/) | Browser interface, sign-in, records, trackers and calendar controls. Includes the HTML entrypoint, public environment settings, Firebase configuration and generated `dist/`. |
 | [reader/](reader/) | Check tracker URLs, call models, save findings and update tracker state. |
 | [reader/models/](reader/models/) | Model gateway and provider adapters. |
-| [slackbot/](slackbot/) | Post newly saved findings and scheduled digests through the Scout webhook. Explicit repeated requests can send the same findings again. No conversational Slack listener yet. |
+| [slackbot/](slackbot/) | Post newly saved findings and scheduled digests using Scout's bot token; contains the desired Slack app manifest. Explicit repeated requests can send the same findings again. |
 | [calendar/](calendar/) | Private subscription feed and OAuth publishing to the shared Scout Google calendar. |
 | [shared/](shared/) | Pure date and record rules used by multiple features. |
 | [supabase/](supabase/) | Database migrations, hosted entrypoints, access rules and operational SQL. |
@@ -61,15 +61,37 @@ Omit `--tracker` to check the next due enabled tracker. An explicit tracker ID a
 
 ## Slack credentials
 
-Scout's Slack workspace is `TFZ8FRLBV`; findings post to `#scout` (`C0C5PE21KN1`). Keep credentials in the ignored root `.env.local` and load them in memory without printing values.
+Scout's Slack workspace is `TFZ8FRLBV`; findings post to private `#scout` (`C0C5PE21KN1`). The existing token last authenticated as bot `B0C5TDBU5UN`, user `U0C6PNRPX4G`, username `scout3`. Keep this installation as the enduring identity. Its App ID has not yet been verified; do not infer it from a webhook service ID. Keep credentials in the ignored root `.env.local` and load them in memory without printing values.
 
 | Credential | Purpose |
 | --- | --- |
-| `SCOUT_SLACK_BOT_TOKEN` | Scout's Bot User OAuth token for Slack Web API operations, including `chat.update` on Scout-owned messages. The hosted reader/notifier do not use this token. |
-| `SLACK_WEBHOOK_URL` | Local copy of Scout's incoming webhook. The hosted reader/notifier use the Edge Function secret `SCOUT_SLACK_WEBHOOK_URL`. A webhook sends new posts; it is not an OAuth token for editing existing messages. |
-| `SLACK_SIGNING_SECRET` | Verifies inbound Slack requests. Currently unused because Scout has no conversational Slack listener. |
+| `SCOUT_SLACK_BOT_TOKEN` | Same local and hosted secret name. The reader/notifier use `chat.postMessage` as this bot; the same identity can edit/delete its own messages. |
+| `SLACK_SIGNING_SECRET` | Same local and hosted secret name. Verifies raw inbound requests to `scout-slack`, including the timestamp. Must belong to the same app as the bot token. |
 
 For Scout-owned messages, use Scout's API credentials; the connected Slack user account cannot edit another author's posts. Check `auth.test`, the granted scopes and the target message's app identity/channel access before editing. A webhook URL identifier and an OAuth bot ID are different identifiers; their difference alone does not establish that they belong to different apps. For a URL correction, preserve the message text and timestamp and replace only the verified link. Verify the saved message afterward. Report the exact failing API method and sanitized error if blocked; do not open native apps or change membership unless requested.
+
+### Enduring Slack app configuration
+
+[manifest.json](slackbot/manifest.json) is the desired configuration for the existing app, not an export or proof of the live installation. Before applying it, verify the App ID, export the existing manifest and preserve any unrelated settings. `apps.manifest.update` replaces the entire configuration and requires an app configuration token; the bot token cannot manage the app. Never create a replacement app to obtain permissions. Update and reauthorize this same installation once for the complete communication scope bundle, then verify the actual token identity and granted scopes locally and hosted.
+
+| Capability | Bot scopes / settings |
+| --- | --- |
+| Post, edit and delete Scout-owned messages | `chat:write`; normal bot identity, without impersonation. |
+| Read public/private channels and threads | `channels:history`, `groups:history`; `channels:read`, `groups:read` for discovery and access checks. |
+| Enter a public channel when explicitly requested | `channels:join`. Private channels require an invitation. |
+| Read/open direct and group direct conversations with Scout | `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `mpim:write`. |
+| Receive mentions and subsequent replies without another mention | `app_mentions:read`; subscribe to `app_mention`, `message.channels`, `message.groups`, `message.im`, `message.mpim`. |
+| Verify bot/user identity | `users:read`. |
+| Let people message Scout through its app | Enable the App Home Messages tab with read-only disabled. |
+| Receive future calendar button actions | Enable interactivity at the same signed-request URL. |
+
+The stable Events API/interactivity URL is `https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-slack`. Deploy the signed-request endpoint before configuring its URL. It currently verifies URL challenges and acknowledges events/button payloads, discarding their bodies without logs, database work, model calls or replies. Agent answering and actions are deferred; successful event acknowledgement does not establish a working conversation. Future conversation code must preserve prompt acknowledgement, handle Slack retries without duplicate work, ignore its own messages and reconstruct context from Slack without retaining transcripts.
+
+This setup covers conversations Scout participates in, not other people's DMs or private channels it cannot access. Bot edit/delete rights apply only to that bot's posts. Each finding message carries its saved record ID in metadata, so future thread actions can retrieve the record without matching prose. Ordinary conversations and DM replies should need no additional Slack settings when the deferred answering code is implemented.
+
+For cutover, verify bot identity and the signing secret's app, configure the two hosted secrets above, then deploy `scout-slack`, `scout-reader` and `scout-notify`. Verify bot-owned delivery before disabling incoming webhooks in the manifest; then apply the manifest, reauthorize the same app and update both copies of the bot token if Slack issues a new one. No SQL or cron reinstall is needed. Preserve each job's active state. Before enabling inbound delivery, measure event activity against the actual shared Supabase allowance: each event uses one function invocation, zero model calls, zero SQL and zero retained bytes; Slack retries can add invocations. Nonempty outbound batches still use two SQL reads, zero delivery-state writes and one posting request per finding. Validate one bounded, explicitly authorized post/read/edit/read/delete cycle and a received channel reply and DM; verify record metadata and the saved finding URL, including through both hosted callers. Require Slack `ok:true`, not merely HTTP 200. Mocked tests do not establish live permissions or message ownership.
+
+After successful cutover, retire runtime use of the legacy `SLACK_WEBHOOK_URL` / hosted `SCOUT_SLACK_WEBHOOK_URL`; the new code has no webhook fallback. Do not revoke an integration until its app and remaining uses are verified. Switching delivery does not transfer ownership of old webhook messages: the prior HSA edit test returned `cant_update_message`, and those posts remain unchanged. Existing webhook credentials are retained locally pending that review, outside the new configuration.
 
 ## Slack schedules and timezone
 
@@ -78,7 +100,7 @@ Scout uses `America/New_York` for schedules, calendar-day boundaries, tracker re
 - New findings: the hosted reader posts newly created high-priority records after committed collection work. Updates and unchanged findings do not post.
 - Morning: 8 a.m. daily, high-priority exact-day events occurring today in New York. Without a known instant, use the published calendar date. Partial dates are excluded.
 - Weekly: 9 a.m. Monday, pending high-priority events, including undated events, plus high-priority announcements first saved in the preceding seven New York days.
-- Every Slack message contains one high-priority finding: its saved description, priority/type initials and evidenced finding link. Legacy records without an evidenced finding URL omit Read more. Messages send sequentially, spaced at least one second apart; no grouped posts or model calls. Empty notifications are skipped. Delivery stops on a failed or uncertain send and reports the confirmed send count. Delivery is best effort, with no persistent delivery state or automatic retry after uncertain sends.
+- Every notification message contains one high-priority finding: its saved description, priority/type initials and evidenced finding link, plus the record ID in metadata. Legacy records without an evidenced finding URL omit Read more. Messages send sequentially, spaced at least one second apart; no grouped posts or model calls. Empty notifications are skipped. Delivery stops on a failed or uncertain send and reports the confirmed send count. Delivery is best effort, with no persistent delivery state or automatic retry after uncertain sends.
 
 The model's priority rubric is stored in [reader/instructions.js](reader/instructions.js). The high-priority filter, individual message format and delivery rules are enforced in [slackbot/slack.js](slackbot/slack.js), shared by the reader and scheduled notifier.
 
@@ -137,6 +159,7 @@ Replace `scout-calendar` only when deploying a different changed function:
 | `reader/` or its hosted entrypoint | `scout-reader` |
 | `slackbot/slack.js` | `scout-reader` and `scout-notify` |
 | `supabase/functions/scout-notify/index.ts` | `scout-notify` |
+| Slack signed-request entrypoint | `scout-slack` |
 | A shared module | Each function importing that module, directly or indirectly. |
 
 Keep the entrypoint, import map and `verify_jwt` settings in [supabase/config.toml](supabase/config.toml). The functions enforce their own request authentication. Specify the function name rather than deploying unrelated functions or pruning the shared project. `--use-api` performs server-side bundling without Docker; see the [CLI reference](https://supabase.com/docs/reference/cli/supabase-functions-deploy).

@@ -18,3 +18,9 @@ import_map = "./functions/scout-reader/deno.json"
 verify_jwt = false
 entrypoint = "./functions/scout-notify/index.ts"
 import_map = "./functions/scout-reader/deno.json"
+
+# Slack authenticates raw request bodies with its signing secret.
+[functions.scout-slack]
+verify_jwt = false
+entrypoint = "./functions/scout-slack/index.ts"
+import_map = "./functions/scout-reader/deno.json"

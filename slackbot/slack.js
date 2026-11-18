@@ -1,5 +1,3 @@
-import { request } from 'node:https';
-import {Buffer} from 'node:buffer';
 import {eventTiming,sourceLink} from '../shared/records.js';
 import {recordDate,scoutDay} from '../shared/finding-dates.js';
 
@@ -26,7 +24,8 @@ export async function prepareMessages(db,{kind='weekly',ids=[],now=new Date()}={
   const payloads=records.map(r=>{
     const url=(r.sources??[]).filter(s=>s.role==='finding').map(s=>sourceLink(s.url)).find(Boolean);
     const tag=r.priority[0]+(r.type??'finding')[0];
-    return {text:`${escape(r.description)} [${tag}]${url?' · <'+escape(url)+'|Read more>':''}`,parse:'none',unfurl_links:false,unfurl_media:false};
+    return {text:`${escape(r.description)} [${tag}]${url?' · <'+escape(url)+'|Read more>':''}`,parse:'none',unfurl_links:false,unfurl_media:false,
+      metadata:{event_type:'scout_finding',event_payload:{record_id:r.id}}};
   });
   return {records,payloads,prepared_at:now.toISOString()};
 }
@@ -43,33 +42,27 @@ export async function sendMessages(db,preview,post,{now=()=>new Date(),deadline=
     if(+now()>=deadline)return {status:'unknown',communicated};
     if(communicated)await new Promise(resolve=>setTimeout(resolve,1000));
     let status='unknown';
-    try{const response=await post(payload);status=response.status===200&&response.body.trim()==='ok'?'sent':response.status>=400&&response.status<500?'failed':'unknown';}catch{}
+    try{
+      const response=await post(payload);
+      if(response.status>=400&&response.status<500)status='failed';
+      else if(response.status===200){
+        const result=JSON.parse(response.body);
+        if(result.ok===true&&result.channel===CHANNEL&&typeof result.ts==='string'&&/^\d+\.\d+$/.test(result.ts))status='sent';
+        else if(result.ok===false&&!['internal_error','fatal_error','request_timeout','service_unavailable'].includes(result.error))status='failed';
+      }
+    }catch{}
     if(status!=='sent')return {status,communicated};
     communicated++;
   }
   return {status:'sent',communicated};
 }
 
-export function webhookTransport(value,send,{deadline=Infinity}={}) {
-  let url;
-  try { url=new URL(value); } catch { throw new Error('Missing Scout webhook'); }
-  if (url.protocol!=='https:'||url.host!=='hooks.slack.com'||url.username||url.password||url.search||url.hash||
-      !/^\/services\/TFZ8FRLBV\/B0C5TEK4R38\/[A-Za-z0-9]+$/.test(url.pathname)) throw new Error('Webhook does not match the confirmed Scout installation');
-  if(send)return async body=>{
-    const response=await send(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(Math.max(1,Math.min(12000,deadline-Date.now())))});
-    const reader=response.body?.getReader();let content='',bytes=0;
-    try{for(;;){const part=await reader?.read();if(!part||part.done)break;bytes+=part.value.byteLength;
-      if(bytes>4096)throw new Error('Response limit');content+=new TextDecoder().decode(part.value);}}
-    finally{await reader?.cancel().catch(()=>{});}
-    return {status:response.status,body:content};
+export function botTransport(token,send=fetch,{deadline=Infinity}={}) {
+  if(typeof token!=='string'||!token.startsWith('xoxb-'))throw new Error('Missing Scout bot token');
+  return async body=>{
+    const response=await send('https://slack.com/api/chat.postMessage',{method:'POST',
+      headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json; charset=utf-8'},
+      body:JSON.stringify({...body,channel:CHANNEL}),signal:AbortSignal.timeout(Math.max(1,Math.min(12000,deadline-Date.now())))});
+    return {status:response.status,body:await response.text()};
   };
-  return body=>new Promise((resolve,reject)=>{
-    const req=request(url,{method:'POST',headers:{'Content-Type':'application/json'}},res=>{
-      let content='';res.setEncoding('utf8');
-      res.on('data',chunk=>{content+=chunk;if(Buffer.byteLength(content)>4096)req.destroy(new Error('Response limit'));});
-      res.on('error',reject);res.on('end',()=>resolve({status:res.statusCode,body:content}));
-    });
-    const timer=setTimeout(()=>req.destroy(new Error('Delivery timeout')),Math.max(1,Math.min(12000,deadline-Date.now())));
-    req.on('close',()=>clearTimeout(timer));req.on('error',reject);req.end(JSON.stringify(body));
-  });
 }

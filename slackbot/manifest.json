@@ -1,0 +1,57 @@
+{
+  "display_information": {
+    "name": "Scout",
+    "description": "BBNJ findings and conversations with Scout"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Scout",
+      "always_online": false
+    },
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "channels:history",
+        "channels:join",
+        "channels:read",
+        "chat:write",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "mpim:history",
+        "mpim:read",
+        "mpim:write",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-slack"
+    },
+    "event_subscriptions": {
+      "request_url": "https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-slack",
+      "bot_events": [
+        "app_mention",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim"
+      ]
+    },
+    "incoming_webhooks": {
+      "incoming_webhooks_enabled": false
+    },
+    "socket_mode_enabled": false
+  }
+}

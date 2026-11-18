@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
-import {prepareMessages,sendMessages,webhookTransport} from '../slackbot/slack.js';
+import {CHANNEL,prepareMessages,sendMessages,botTransport} from '../slackbot/slack.js';
 import {hostedNotify} from '../supabase/functions/scout-notify/index.ts';
 
 async function database(){
@@ -76,10 +76,13 @@ test('hosted sends post one high-priority finding at a time, stop on errors, and
   const connect=()=>({reserve:async()=>({unsafe:async(q,p=[])=>{
     const result=await db.query(q,p);return Object.assign(result.rows,{count:result.affectedRows??result.rows.length});
   },release(){}}),end:async()=>{}});
-  const ok={status:200,body:'ok'},failed={status:400,body:'invalid_payload'},unknown={status:500,body:'upstream'};
+  const ok={status:200,body:JSON.stringify({ok:true,channel:CHANNEL,ts:'1234567890.123456'})},
+    failed={status:200,body:JSON.stringify({ok:false,error:'not_in_channel'})},unknown={status:500,body:'upstream'};
   let successfulPayloads;
   for(const [outcomes,status,communicated] of [[[ok,ok],'sent',2],[[ok,ok],'sent',2],[[failed],'failed',0],
-    [[ok,failed],'failed',1],[[ok,unknown],'unknown',1],[[ok,new Error('Unknown remote outcome')],'unknown',1]]){
+    [[ok,failed],'failed',1],[[ok,unknown],'unknown',1],[[ok,new Error('Unknown remote outcome')],'unknown',1],
+    [[{status:200,body:JSON.stringify({ok:false,error:'internal_error'})}],'unknown',0],
+    [[{status:200,body:JSON.stringify({ok:true,channel:'OTHER',ts:'1234567890.123456'})}],'unknown',0]]){
     const payloads=[],remaining=[...outcomes];
     const response=await hostedNotify(new Request('https://example.test/notify?kind=findings&ids='+records.map(r=>r.id).join(','),{method:'POST',headers:{apikey:secret}}),{
       env,databaseURL:'unused',connect,post:async payload=>{
@@ -95,6 +98,10 @@ test('hosted sends post one high-priority finding at a time, stop on errors, and
         'Second high finding [hf] · <https://example.org/second|Read more>',
         'Technical BBNJ ChM standards [ha] · <https://example.org/standards|Read more>'
       ]);
+      for(const payload of payloads){
+        const record=records.find(r=>payload.text.startsWith(r.description));
+        assert.deepEqual(payload.metadata,{event_type:'scout_finding',event_payload:{record_id:record.id}});
+      }
       if(successfulPayloads)assert.deepEqual(payloads,successfulPayloads);
       successfulPayloads=payloads;
     }
@@ -116,14 +123,27 @@ test('preview validation preserves PostgreSQL microseconds in older findings',as
   const id=await seed(db);
   await db.query("update scout.records set modified=array['2026-10-01T12:00:00.000001Z'::timestamptz] where id=$1",[id]);
   const preview=await prepareMessages(db,{kind:'findings',ids:[id]});
-  assert.equal((await sendMessages(db,preview,async()=>({status:200,body:'ok'}))).status,'sent');
+  const response={status:200,body:JSON.stringify({ok:true,channel:CHANNEL,ts:'1234567890.123456'})};
+  assert.equal((await sendMessages(db,preview,async()=>response)).status,'sent');
   await db.query("update scout.records set modified=array['2026-10-01T12:00:00.000002Z'::timestamptz] where id=$1",[id]);
   await assert.rejects(sendMessages(db,preview,()=>assert.fail('Changed by one microsecond')),/changed/);
  }finally{await db.close();}
 });
-test('webhooks require the confirmed Scout binding',()=>{
- for(const url of ['https://hooks.slack.com/services/OTHER/B0C5TEK4R38/token','http://hooks.slack.com/services/TFZ8FRLBV/B0C5TEK4R38/token','https://user:secret@hooks.slack.com/services/TFZ8FRLBV/B0C5TEK4R38/token'])assert.throws(()=>webhookTransport(url));
- assert.equal(typeof webhookTransport('https://hooks.slack.com/services/TFZ8FRLBV/B0C5TEK4R38/fixture'),'function');
+test('bot delivery keeps the saved link and record ID, uses the bot identity and reads the full Slack acknowledgement',async()=>{
+ const db=await database();try{
+  const id=await seed(db),preview=await prepareMessages(db,{kind:'findings',ids:[id]});
+  const post=botTransport('xoxb-test',async(url,options)=>{
+   assert.equal(url,'https://slack.com/api/chat.postMessage');
+   assert.equal(options.headers.Authorization,'Bearer xoxb-test');
+   const payload=JSON.parse(options.body);
+   assert.equal(payload.channel,CHANNEL);
+   assert.equal(payload.metadata.event_payload.record_id,id);
+   assert.match(payload.text,/<https:\/\/example.org\/standards\|Read more>/);
+   return Response.json({ok:true,channel:CHANNEL,ts:'1234567890.123456',message:{...payload,extra:'x'.repeat(5000)}});
+  });
+  assert.deepEqual(await sendMessages(db,preview,post),{status:'sent',communicated:1});
+  assert.throws(()=>botTransport(undefined),/bot token/);
+ }finally{await db.close();}
 });
 
 test('new findings exclude normal, low and unassessed records and skip empty notifications',async()=>{
