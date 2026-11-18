@@ -4,14 +4,14 @@
     "description": "BBNJ findings and conversations with Scout"
   },
   "features": {
-    "bot_user": {
-      "display_name": "Scout",
-      "always_online": false
-    },
     "app_home": {
       "home_tab_enabled": false,
       "messages_tab_enabled": true,
       "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "Scout",
+      "always_online": false
     }
   },
   "oauth_config": {
@@ -32,26 +32,28 @@
         "mpim:write",
         "users:read"
       ]
-    }
+    },
+    "pkce_enabled": false
   },
   "settings": {
-    "interactivity": {
-      "is_enabled": true,
-      "request_url": "https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-slack"
-    },
     "event_subscriptions": {
-      "request_url": "https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-slack",
       "bot_events": [
         "app_mention",
         "message.channels",
         "message.groups",
         "message.im",
         "message.mpim"
-      ]
+      ],
+      "request_url": "https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-slack"
     },
-    "incoming_webhooks": {
-      "incoming_webhooks_enabled": false
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-slack"
     },
-    "socket_mode_enabled": false
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "is_mcp_enabled": false,
+    "token_rotation_enabled": false,
+    "app_level_token_rotation_enabled": false
   }
 }
