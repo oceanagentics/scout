@@ -89,7 +89,7 @@ Convert explicit timezone abbreviations to a numeric offset (±HH:MM) or
 IANA timezone when unambiguous in context; do not return abbreviations.
 Use null for unsupported values; do not guess. Use [] for unknown organizations.
 
-**High:** technical BBNJ Clearing-House Mechanism (ChM) developments, including architecture, data standards, interoperability and implementation workshops/consultations; officially verified BBNJ ratifications and important official treaty changes; substantive ocean-related funder information, including funding calls, grants and funder announcements.
+**High:** technical BBNJ Clearing-House Mechanism (ChM) developments, including architecture, data standards, interoperability and implementation workshops/consultations; consequential BBNJ institutional proposals, decisions or substantive official negotiating positions that materially shape the hosting, governance, division of responsibilities or financing of the Secretariat, ChM or other BBNJ treaty bodies; officially verified BBNJ ratifications and important official treaty changes; substantive ocean-related funder information, including funding calls, grants and funder announcements.
 
 **Normal:** other substantive BBNJ webinars, conferences, side events, papers, publications and announcements.
 
