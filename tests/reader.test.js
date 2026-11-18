@@ -58,7 +58,10 @@ test('fingerprints compare prepared content per resource and per caller, after H
  const redirect=await readUrl('https://example.org/redirect',{previousFingerprint:first.fingerprint,fetch:async target=>target.endsWith('/redirect')?
   new Response(null,{status:302,headers:{location:url}}):fetch()});assert.equal(redirect.unchanged,false);
  const httpCache=new Map(),checkpoint='2026-11-16T12:00:00Z';let conditionalReads=0;
- const conditional=async(_url,options)=>{conditionalReads++;return options.headers?new Response(null,{status:304}):fetch();};
+ const conditional=async(_url,options)=>{
+  conditionalReads++;assert.equal(options.headers['User-Agent'],'Scout/0.1');
+  return options.headers['If-Modified-Since']?new Response(null,{status:304}):fetch();
+ };
  const unchanged=await readUrl(url,{cache:httpCache,fetch:conditional,lastSuccessfulCheck:checkpoint,previousFingerprint:first.fingerprint});
  assert.equal(unchanged.unchanged,true);assert.equal(unchanged.fingerprint,first.fingerprint);assert.equal(unchanged.content,undefined);
  const unread=await readUrl(url,{cache:httpCache,fetch:conditional});assert.equal(unread.unchanged,false);assert.ok(unread.content);assert.equal(conditionalReads,2);

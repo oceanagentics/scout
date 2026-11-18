@@ -75,7 +75,7 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
         if(!addresses.length||addresses.some(a=>!publicAddress(a.address)))throw fail('source_invalid');
         if(metrics)metrics.requests++;
         const {response,unchanged}=await checkFreshness(target.href,{lastSuccessfulCheck:target.href===previousRequestURL?lastSuccessfulCheck:null,signal:bounded,
-          fetch:(url,options)=>send(url,{...options,redirect:'manual'})});
+          fetch:(url,options)=>send(url,{...options,headers:{...options.headers,'User-Agent':'Scout/0.1'},redirect:'manual'})});
         if([301,302,303,307,308].includes(response.status)){
           await response.body?.cancel();
           const location=response.headers.get('location');if(!location)throw fail('source_invalid');
