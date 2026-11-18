@@ -33,6 +33,17 @@ Do not repeat failed reads or require an alternative before returning findings.
 
 Use current_date in the input as today's date in America/New_York.
 
+Use oldest_date supplied in the input as the inclusive capture cutoff.
+It is already calculated as one calendar month before current_date,
+using America/New_York. Apply this cutoff to every finding.
+Use the event's scheduled start date, announcement's publication date,
+or treaty action date, as supported by the source. Keep unresolved dates null.
+Exclude a finding only when its date is confirmed before oldest_date.
+For partial dates, exclude only when the latest possible day is before
+oldest_date. Keep findings with unresolved or future dates.
+An event's announcement date does not determine its eligibility.
+Skip an old finding and continue with the other developments.
+
 Use event for gatherings, whether upcoming, ongoing, or past. A gathering
 does not become an announcement when its date passes. Use announcement for
 news and publications, including the distinct publication of a recap or recording.
@@ -99,7 +110,7 @@ details do not lower priority. Use null when relevance is unclear.
 Return a JSON array containing one object per development, with
 description, type, priority, organizations, date, starttime, timezone, enddate,
 endtime and deadline.
-Return [] when the supplied post or page contains no developments.`;
+Return [] when the supplied post or page contains no eligible developments.`;
 export const RESPONSE_SCHEMA={
   type:'array',
   items:{

@@ -12,6 +12,7 @@ import {hostedNotify} from '../supabase/functions/scout-notify/index.ts';
 import {scoutDay} from '../shared/finding-dates.js';
 
 beforeEach(t=>{
+  t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-17T12:00:00Z')});
   t.mock.method(dns,'lookup',async()=>[{address:'93.184.216.34',family:4}]);
   t.mock.method(globalThis,'fetch',async()=>new Response('<main>BBNJ workshop</main>',{headers:{'content-type':'text/html'}}));
 });
@@ -196,6 +197,39 @@ test('tracker URL -> one model investigation -> finding and tracker state; due r
   assert.equal(db.metrics.mutations-firstCost.mutations,2);
   const storage=(await raw.query('select pg_column_size(t) bytes from scout.trackers t')).rows[0];
   t.diagnostic(JSON.stringify({mocked:true,first_and_idle:firstCost,repeat_mutations:2,tracker_row_bytes:storage.bytes}));
+});
+
+test('capture cutoff excludes only confirmed-old dates for every type and completes an all-old check',async t=>{
+  const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let expected,old;
+  const result=await intake(db,{trackerId:tr.id,modelFor:()=>async(prompt,input)=>{
+    assert.match(prompt,/Keep findings with unresolved or future dates/);
+    assert.equal(input.oldest_date,(await raw.query(`select
+      ((last_checked_at at time zone 'America/New_York')::date-interval '1 month')::date::text as cutoff
+      from scout.trackers where id=$1`,[tr.id])).rows[0].cutoff);
+    const cutoff=input.oldest_date,previous=new Date(Date.parse(cutoff+'T00:00:00Z')-86400000).toISOString().slice(0,10);
+    const previousMonth=new Date(Date.parse(cutoff.slice(0,7)+'-01T00:00:00Z')-86400000).toISOString().slice(0,7);
+    const cases=[['Old day',previous,false],['Boundary',cutoff,true],['Unknown',null,true],
+      ['Future','2099-12-01',true],['Partial month',cutoff.slice(0,7),true],['Old month',previousMonth,false],
+      ['Partial year',input.current_date.slice(0,4),true],['Old year',String(Number(cutoff.slice(0,4))-1),false]];
+    const findings=['event','announcement','treaty_status',null].flatMap(type=>cases.map(([label,date,keep])=>({
+      finding:{...event,type,date,deadline:'2099-12-31',description:label+' '+(type??'unclassified')},keep})));
+    expected=findings.filter(f=>f.keep).map(f=>f.finding);old=findings.filter(f=>!f.keep).map(f=>f.finding);
+    return answer(findings.map(f=>f.finding));
+  }});
+  assert.equal(result.state,'saved');assert.equal(result.created,expected.length);
+  const stored=(await raw.query('select description,type,date from scout.records order by description')).rows;
+  assert.deepEqual(stored,expected.map(({description,type,date})=>({description,type,date})).sort((a,b)=>a.description.localeCompare(b.description)));
+  const before={...db.metrics};
+  const allOld=await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer(old),
+    notify:()=>assert.fail('Old findings must not notify'),publishCalendar:()=>assert.fail('Old findings must not publish')});
+  assert.equal(allOld.state,'no_findings');assert.equal(allOld.created,0);assert.equal(allOld.changed,0);
+  assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,expected.length);
+  const state=(await raw.query('select * from scout.trackers')).rows[0];
+  assert.deepEqual(state.last_successful_check,state.last_checked_at);assert.equal(state.last_error,null);assert.equal(state.failure_count,0);
+  assert.equal(db.metrics.mutations-before.mutations,2);
+  const oldCost={statements:db.metrics.statements-before.statements,mutations:db.metrics.mutations-before.mutations};
+  assert.equal((await intake(db,{modelFor:()=>assert.fail('A completed old-only source must not replay')})).state,'idle');
+  t.diagnostic(JSON.stringify({mocked_model:true,real_local_sql:true,all_old:oldCost}));
 });
 
 test('optional ends survive collection, omission preserves them, and unusable ends never block saving',async t=>{
@@ -384,7 +418,7 @@ test('a compatible partial date cannot downgrade a saved day, deadline, clock or
 test('similarly named gatherings on different dates remain separate and repeat without writes',async t=>{
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));
   const title='Towards living in harmony with the ocean from coasts to areas beyond national jurisdiction: Synergies between the BBNJ Agreement and the work under the CBD, a side event at ';
-  const first={...event,description:title+'CBD SBSTTA-26',date:'2024-05-13'},second={...event,description:title+'CBD COP16',date:'2024-10-21'};
+  const first={...event,description:title+'CBD SBSTTA-26',date:'2026-11-13'},second={...event,description:title+'CBD COP16',date:'2026-11-21'};
   await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([first])});
   const original=(await raw.query('select * from scout.records')).rows[0];
   assert.equal((await intake(db,{trackerId:tr.id,modelFor:()=>async()=>answer([second])})).created,1);
@@ -397,7 +431,7 @@ test('similarly named gatherings on different dates remain separate and repeat w
 
 test('multiple developments retain IDs, revised facts update once, and missing dates do not start another model pass',async t=>{
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let calls=0;
-  const records=[event,{...event,description:'Treaty ratification',type:'treaty_status',date:'2026-09-01'},{...event,description:'Implementation report',type:'announcement',date:null}];
+  const records=[event,{...event,description:'Treaty ratification',type:'treaty_status',date:'2026-11-01'},{...event,description:'Implementation report',type:'announcement',date:null}];
   const run=values=>intake(db,{trackerId:tr.id,modelFor:()=>async()=>{calls++;return answer(values);}});
   assert.equal((await run(records)).created,3);
   const before=(await raw.query('select * from scout.records order by description')).rows;
@@ -408,7 +442,7 @@ test('multiple developments retain IDs, revised facts update once, and missing d
   assert.equal(after[0].modified.length,before[0].modified.length+1);assert.equal(after[0].date,'2026-10-22');assert.equal(after[0].starttime,'13:30');assert.equal(after[0].timezone,'UTC');
   assert.equal((await run(revised)).changed,0);
   await raw.exec('set role service_role');
-  assert.equal((await raw.query("select * from scout.findings(p_type=>'treaty_status',p_from=>'2026-09-01',p_to=>'2026-09-01')")).rows.length,1);
+  assert.equal((await raw.query("select * from scout.findings(p_type=>'treaty_status',p_from=>'2026-11-01',p_to=>'2026-11-01')")).rows.length,1);
 });
 
 test('live lease excludes overlapping requests; URL changes and expired leases cannot save findings',async t=>{

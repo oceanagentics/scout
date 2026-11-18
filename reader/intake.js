@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from './instructions.js';
 import {normalizeFinding,saveFindings} from './findings.js';
 import {readSource,readUrl} from './sources.js';
-import {scoutDay} from '../shared/finding-dates.js';
+import {scoutDay,findingInterval} from '../shared/finding-dates.js';
 
 const fail=reason=>Object.assign(new Error(reason),{reason});
 
@@ -19,7 +19,9 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,notif
           or date_trunc('day',last_successful_check at time zone 'America/New_York')+cadence
             <=date_trunc('day',clock_timestamp() at time zone 'America/New_York')) end)
       order by last_checked_at nulls first,id for update skip locked limit 1)
-    returning *`,[trackerId,randomUUID()])).rows[0];
+    returning *,
+      ((last_checked_at at time zone 'America/New_York')::date
+        - interval '1 month')::date::text as oldest_date`,[trackerId,randomUUID()])).rows[0];
   if(!tracker)return {state:'idle',created:0,changed:0};
   const counts={created:0,changed:0,saved:0,ambiguous:0},through=new Date(tracker.last_checked_at).toISOString();
   const deadline=Date.parse(through)+100000;
@@ -38,6 +40,7 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,notif
       for(const item of group){
         const model=modelFor({...tracker,...item},{deadline,readUrl:read});
         const answer=await model(INTAKE_INSTRUCTION,{url:item.url,source_kind:item.source_kind,current_date:scoutDay(new Date(through)),
+          oldest_date:tracker.oldest_date,
           ...(item.content?{content:item.content}:{})},RESPONSE_SCHEMA);
         diagnostics={...answer._diagnostics,source:sourceMetrics};
         if(!['found','none','unreadable'].includes(answer.status)||!Array.isArray(answer.records))throw fail('invalid_output');
@@ -46,7 +49,10 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,notif
         if(Object.keys(invalidScheduling).length)diagnostics.invalid_scheduling=invalidScheduling;
         if(findings.some(f=>!f)||answer.status==='none'&&findings.length)throw fail('invalid_output');
         if(answer.status==='found'&&!findings.length)throw fail('empty_findings');
-        prepared.push({url:item.url,findings});
+        prepared.push({url:item.url,findings:findings.filter(f=>{
+          const [,latest]=findingInterval(f);
+          return latest===null||latest>=tracker.oldest_date;
+        })});
       }
       const finished=end>=items.length;
       const saved=await db.transaction(async tx=>{
