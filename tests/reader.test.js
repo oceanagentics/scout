@@ -6,6 +6,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {database} from '../reader/database.js';
 import {intake} from '../reader/intake.js';
 import {readSource,readUrl} from '../reader/sources.js';
+import {checkFreshness} from '../reader/freshness.js';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../reader/instructions.js';
 import {hostedReader} from '../supabase/functions/scout-reader/index.ts';
 import {hostedNotify} from '../supabase/functions/scout-notify/index.ts';
@@ -15,6 +16,23 @@ beforeEach(t=>{
   t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-17T12:00:00Z')});
   t.mock.method(dns,'lookup',async()=>[{address:'93.184.216.34',family:4}]);
   t.mock.method(globalThis,'fetch',async()=>new Response('<main>BBNJ workshop</main>',{headers:{'content-type':'text/html'}}));
+});
+
+test('HTTP freshness requires prior successful progress and positive unchanged evidence',async()=>{
+  const prior='2026-11-16T12:00:00.123Z',old='Sun, 15 Nov 2026 12:00:00 GMT',newer='Tue, 17 Nov 2026 12:00:00 GMT';
+  for(const [checkpoint,status,modified,unchanged] of [
+    [null,200,old,false],[prior,304,null,true],[prior,200,old,true],[prior,200,newer,false],
+    [prior,200,null,false],[prior,200,'invalid',false],[prior,503,old,false],[null,304,null,false],['invalid',200,old,false]
+  ]){
+    const response=new Response(status===200?'Source content':null,{status,headers:modified?{'last-modified':modified}:{}}),signal=AbortSignal.timeout(1000);
+    const result=await checkFreshness('https://example.org/source',{lastSuccessfulCheck:checkpoint,signal,fetch:async(url,options)=>{
+      assert.equal(url,'https://example.org/source');assert.equal(options.signal,signal);
+      assert.equal(options.headers?.['If-Modified-Since'],checkpoint===prior?'Mon, 16 Nov 2026 12:00:00 GMT':undefined);
+      return response;
+    }});
+    assert.equal(result.response,response);assert.equal(result.unchanged,unchanged);
+    assert.equal(response.bodyUsed,status===200&&unchanged);
+  }
 });
 
 test('web reading preserves schedule rows, relative links, images and published structured data',async()=>{
@@ -37,6 +55,13 @@ test('CBD reads the exact page articles, caches parallel reads, and retains the 
   }};
   const [a,b]=await Promise.all([readUrl(url,options),readUrl(url+'#programme',options)]);
   assert.deepEqual(a,b);assert.equal(requests,1);assert.equal(a.url,url);assert.match(a.content[0].content,/10:00/);
+  const unchanged=await readSource({url,last_successful_check:'2026-11-16T12:00:00Z'},
+    {through:'2026-11-17T12:00:00Z',fetch:async(value,options)=>{
+      assert.equal(new URL(value).pathname,'/api/v2017/articles');
+      assert.equal(options.headers['If-Modified-Since'],'Mon, 16 Nov 2026 12:00:00 GMT');
+      return new Response(null,{status:304});
+    }});
+  assert.deepEqual(unchanged,[]);
 });
 
 test('native-file metadata reads cancel bodies and private redirect targets are rejected',async()=>{
@@ -194,6 +219,38 @@ test('feed checkpoint is backend-owned, starts empty, preserves committed progre
 const env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{default:'sb_publishable_test'},jwks:null};
 const request=query=>new Request('https://example.test/reader'+(query?'?'+query:''),{method:'POST',headers:{apikey:secret}});
 const options=raw=>({env,databaseURL:'unused',apiKey:'test',connect:()=>({reserve:async()=>driver(raw),end:async()=>{}})});
+
+test('web freshness skips repeat model work, checks linked URLs independently, and preserves progress after failure',async t=>{
+  const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let calls=0,mode='initial',requests=0;
+  const run=()=>intake(db,{trackerId:tr.id,sourceFetch:async(url,options)=>{
+    requests++;
+    if(url==='https://example.org/detail'){
+      assert.equal(options.headers?.['If-Modified-Since'],undefined);
+      return new Response('<main>Detail content</main>',{headers:{'content-type':'text/html','last-modified':'Thu, 01 Jan 2026 00:00:00 GMT'}});
+    }
+    assert.equal(options.headers?.['If-Modified-Since'],mode==='initial'?undefined:'Tue, 17 Nov 2026 12:00:00 GMT');
+    if(mode==='304')return new Response(null,{status:304});
+    const modified=mode==='initial'||mode==='old'?'Thu, 01 Jan 2026 00:00:00 GMT':'Wed, 18 Nov 2026 12:00:00 GMT';
+    return new Response('<main>Source content</main>',{headers:{'content-type':'text/html','last-modified':modified}});
+  },modelFor:(_source,{readUrl})=>async()=>{
+    calls++;if(mode==='fail')throw new Error('provider_unavailable');
+    assert.equal((await readUrl('https://example.org/detail')).content,'Detail content');
+    return answer([]);
+  }});
+  assert.equal((await run()).processed,1);assert.equal(calls,1);
+  for(mode of ['304','old']){
+    const before={...db.metrics},sourceRequests=requests;
+    const result=await run();assert.equal(result.state,'no_findings');assert.equal(result.processed,0);assert.equal(calls,1);
+    assert.equal(requests-sourceRequests,1);assert.equal(db.metrics.statements-before.statements,5);assert.equal(db.metrics.mutations-before.mutations,2);
+    const state=(await raw.query('select * from scout.trackers')).rows[0];
+    assert.deepEqual(state.last_successful_check,state.last_checked_at);assert.equal(state.last_error,null);assert.equal(state.failure_count,0);
+  }
+  mode='changed';assert.equal((await run()).processed,1);assert.equal(calls,2);
+  const checkpoint=(await raw.query('select last_successful_check from scout.trackers')).rows[0].last_successful_check;
+  mode='fail';assert.equal((await run()).state,'deferred');assert.equal(calls,3);
+  const state=(await raw.query('select * from scout.trackers')).rows[0];
+  assert.deepEqual(state.last_successful_check,checkpoint);assert.equal(state.last_error,'provider_unavailable');
+});
 
 test('tracker URL -> one model investigation -> finding and tracker state; due repeat writes no finding',async t=>{
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));let calls=0;

@@ -26,13 +26,13 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,notif
   const counts={created:0,changed:0,saved:0,ambiguous:0},through=new Date(tracker.last_checked_at).toISOString();
   const deadline=Date.parse(through)+100000;
   let diagnostics,processed=0;const notifications=[],calendarResults=[],cache=new Map(),sourceMetrics={requests:0,bytes:0};
-  const read=url=>{
+  const read=(url,{lastSuccessfulCheck=null}={})=>{
     const remaining=deadline-Date.now();if(remaining<=0)throw fail('runtime_bound');
-    return readUrl(url,{fetch:sourceFetch,signal:AbortSignal.timeout(remaining),cache,metrics:sourceMetrics});
+    return readUrl(url,{fetch:sourceFetch,signal:AbortSignal.timeout(remaining),cache,metrics:sourceMetrics,lastSuccessfulCheck});
   };
   try{
     const items=await readSource(tracker,{through,fetch:sourceFetch,readUrl:read,signal:AbortSignal.timeout(Math.max(1,deadline-Date.now()))});
-    // An empty feed still commits the successful scan time, without a model call.
+    // An empty feed or unchanged page commits the successful check without a model call.
     for(let start=0;start<items.length||start===0;){
       let end=start+1;
       while(end<items.length&&items[end].at===items[start].at)end++;

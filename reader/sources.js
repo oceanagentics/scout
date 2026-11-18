@@ -2,6 +2,7 @@ import {parse} from 'parse5';
 import dns from 'node:dns/promises';
 import {isIP} from 'node:net';
 import {Buffer} from 'node:buffer';
+import {checkFreshness} from './freshness.js';
 
 const fail=reason=>Object.assign(new Error(reason),{reason});
 
@@ -50,7 +51,7 @@ function readable(html,url){
 }
 
 // Every HTTP operation is bounded, public, and cached only for this invocation.
-export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),metrics}={}){
+export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),metrics,lastSuccessfulCheck=null}={}){
   let url;try{url=new URL(value);url.hash='';}catch{throw fail('source_invalid');}
   if(!['https:','http:'].includes(url.protocol)||url.username||url.password)throw fail('source_invalid');
   if(cache.has(url.href))return cache.get(url.href);
@@ -70,12 +71,14 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
         });
         if(!addresses.length||addresses.some(a=>!publicAddress(a.address)))throw fail('source_invalid');
         if(metrics)metrics.requests++;
-        const response=await send(target.href,{signal:bounded,redirect:'manual'});
+        const {response,unchanged}=await checkFreshness(target.href,{lastSuccessfulCheck,signal:bounded,
+          fetch:(url,options)=>send(url,{...options,redirect:'manual'})});
         if([301,302,303,307,308].includes(response.status)){
           await response.body?.cancel();
           const location=response.headers.get('location');if(!location)throw fail('source_invalid');
           target=new URL(location,target);continue;
         }
+        if(unchanged)return {url:target,unchanged:true};
         if(!response.ok){await response.body?.cancel();throw fail('source_unavailable');}
         return {response,url:target};
       }
@@ -86,7 +89,9 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
     if(article){
       const tags=['conferences',article[1],'parallel-meetings',article[2]??'introduction'];
       const endpoint=new URL('https://www.cbd.int/api/v2017/articles');endpoint.searchParams.set('q',JSON.stringify({adminTags:{$all:tags}}));
-      const {response}=await request(endpoint);let articles;
+      const result=await request(endpoint);
+      if(result.unchanged)return {url:url.href,unchanged:true};
+      const {response}=result;let articles;
       try{articles=JSON.parse(await readText(response));}catch{throw fail('source_invalid');}
       if(!Array.isArray(articles)||!articles.length)throw fail('source_unavailable');
       const content=articles.filter(a=>tags.every(tag=>a.adminTags?.includes(tag))).map(a=>({
@@ -95,7 +100,9 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
       if(!content.length)throw fail('source_unavailable');
       return {url:url.href,media_type:'application/json',content};
     }
-    const result=await request(url),type=(result.response.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
+    const result=await request(url);
+    if(result.unchanged)return {url:result.url.href,unchanged:true};
+    const type=(result.response.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
     const extension=result.url.pathname.match(/\.(pdf|png|jpe?g|webp|gif)$/i)?.[1].toLowerCase();
     const nativeType=type==='application/octet-stream'?{pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',gif:'image/gif'}[extension]:type;
     if(nativeType==='application/pdf'||/^image\/(?:png|jpeg|webp|gif)$/.test(nativeType??'')){
@@ -118,12 +125,13 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
   return pending;
 }
 
-export async function readSource(tracker,{through,fetch:send=fetch,signal,readUrl:read=value=>readUrl(value,{fetch:send,signal})}){
+export async function readSource(tracker,{through,fetch:send=fetch,signal,readUrl:read=(value,options)=>readUrl(value,{fetch:send,signal,...options})}){
   let url;try{url=new URL(tracker.url);}catch{throw fail('source_invalid');}
   const profile=url.hostname==='bsky.app'&&url.pathname.match(/^\/profile\/([^/]+)\/?$/);
   if(profile)url=new URL('https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor='+encodeURIComponent(decodeURIComponent(profile[1])));
   if(url.origin!=='https://public.api.bsky.app'||url.pathname!=='/xrpc/app.bsky.feed.getAuthorFeed'){
-    let content;try{content=await read(url.href);}catch(error){if(signal?.aborted)throw error;content={url:url.href,error:error.reason??'source_unavailable'};}
+    let content;try{content=await read(url.href,{lastSuccessfulCheck:tracker.last_successful_check});}catch(error){if(signal?.aborted)throw error;content={url:url.href,error:error.reason??'source_unavailable'};}
+    if(content.unchanged)return [];
     return [{url:tracker.url,at:through,source_kind:'web',content}];
   }
   url.searchParams.delete('cursor');url.searchParams.set('includePins','false');
@@ -132,7 +140,7 @@ export async function readSource(tracker,{through,fetch:send=fetch,signal,readUr
   if(after!==null&&!Number.isFinite(after))throw fail('source_cutoff_invalid');
   for(;;){
     let response;
-    try{response=await send(url.href,{signal});}catch{throw fail(signal?.aborted?'runtime_bound':'source_unavailable');}
+    try{({response}=await checkFreshness(url.href,{fetch:send,signal}));}catch{throw fail(signal?.aborted?'runtime_bound':'source_unavailable');}
     if(!response.ok)throw fail('source_unavailable');
     let page;try{page=await response.json();}catch{throw fail('source_invalid');}
     if(!Array.isArray(page.feed))throw fail('source_invalid');
