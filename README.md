@@ -4,6 +4,8 @@ Scout collects BBNJ events, announcements and official treaty developments, save
 
 Collection wakes every six minutes and checks one due tracker. Current trackers have a daily cadence: a fully successful check completes that New York calendar day. New findings post to Slack after saving; morning events post daily at 8 a.m. and the weekly high-priority digest posts Mondays at 9 a.m., America/New_York. This guide describes the local code; it does not certify what is currently deployed.
 
+Bluesky collection resumes after its last successfully committed checkpoint so consumed posts are not investigated again. New trackers and changed URLs have no checkpoint; a Bluesky first check consumes all available history oldest first across bounded attempts, with no arbitrary look-back window. Ordinary web checks currently investigate their configured page again; their completion timestamp does not identify already read page items.
+
 ## Files and responsibilities
 
 | Location | Purpose |

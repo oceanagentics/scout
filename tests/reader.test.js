@@ -99,8 +99,23 @@ test('Bluesky paginates to the date, retains complete post context, and reads ol
   assert.deepEqual(sameDate,[]); // Database Date values must retain their milliseconds.
 });
 
-test('a failed newer post resumes after committed dates; an unchanged feed makes no model calls',async t=>{
-  const raw=await setup(t),tr=await feedTracker(raw),db=database(driver(raw));
+test('a feed without a checkpoint reads all available history, excluding pins and posts after the attempt starts',async()=>{
+  const old=post('old','2020-01-01T00:00:00Z'),recent=post('recent','2026-11-01T00:00:00Z');
+  const pin=post('pin','2019-01-01T00:00:00Z');pin.reason={$type:'app.bsky.feed.defs#reasonPin'};
+  const pages=[{feed:[post('future','2026-11-03T00:00:00Z'),recent,pin],cursor:'older'},
+    {feed:[old]}],urls=[];
+  const items=await readSource({url:feedURL,last_successful_check:null},
+    {through:'2026-11-02T00:00:00Z',fetch:async url=>{urls.push(new URL(url));return Response.json(pages.shift());}});
+  assert.deepEqual(items.map(i=>i.content.post.record.text),['old','recent']);
+  assert.equal(urls[1].searchParams.get('cursor'),'older');
+  await assert.rejects(readSource({url:feedURL,last_successful_check:'invalid'},
+    {through:'2026-11-02T00:00:00Z',fetch:()=>assert.fail('An invalid checkpoint must not restart history')}),{reason:'source_cutoff_invalid'});
+});
+
+test('a first feed check resumes after committed dates; an unchanged feed makes no model calls',async t=>{
+  const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));
+  await raw.query('update scout.trackers set url=$2 where id=$1',[tr.id,feedURL]);
+  assert.equal((await raw.query('select last_successful_check from scout.trackers')).rows[0].last_successful_check,null);
   const feed=[post('newer','2026-10-15T12:00:00Z'),post('empty','2026-10-14T12:00:00Z'),post('older','2026-10-13T12:00:00.123Z')];
   let calls=[],broken=true;
   const run=()=>intake(db,{trackerId:tr.id,sourceFetch:async()=>Response.json({feed}),modelFor:source=>async(_p,input)=>{
@@ -144,8 +159,11 @@ test('equal timestamps commit together and SQL or invalid-output failures cannot
 });
 
 test('feed errors preserve the cutoff, and one tracker never consumes another tracker’s posts',async t=>{
-  const raw=await setup(t),first=await feedTracker(raw),second=await feedTracker(raw,feedURL.replace('example.test','another.test')),db=database(driver(raw));
+  const raw=await setup(t),first=await tracker(raw),db=database(driver(raw));
+  await raw.query('update scout.trackers set url=$2 where id=$1',[first.id,feedURL]);
+  const second=await feedTracker(raw,feedURL.replace('example.test','another.test'));
   const initial=(await raw.query('select last_successful_check from scout.trackers where id=$1',[first.id])).rows[0].last_successful_check;
+  assert.equal(initial,null);
   const broken=await intake(db,{trackerId:first.id,sourceFetch:async()=>Response.json({feed:[{post:{}}]}),modelFor:()=>assert.fail('Invalid feed must not reach model')});
   assert.equal(broken.reason,'source_invalid');
   assert.deepEqual((await raw.query('select last_successful_check from scout.trackers where id=$1',[first.id])).rows[0].last_successful_check,initial);
@@ -158,15 +176,17 @@ test('feed errors preserve the cutoff, and one tracker never consumes another tr
   assert.equal(calls,2);
 });
 
-test('feed cutoff is backend-owned, starts three weeks back, and resets with URL changes',async t=>{
+test('feed checkpoint is backend-owned, starts empty, preserves committed progress on migration, and resets with URL changes',async t=>{
   const raw=await setup(t),tr=await tracker(raw);
-  const age=Date.now()-new Date(tr.last_successful_check).getTime();
-  assert.ok(Math.abs(age-21*86400000)<10000);
+  assert.equal(tr.last_successful_check,null);
   await raw.query("update scout.trackers set last_successful_check='2026-01-01',last_checked_at=now() where id=$1",[tr.id]);
+  const committed=(await raw.query('select * from scout.trackers')).rows;
+  await raw.exec(await readFile(new URL('../supabase/migrations/20261118040000_scout_checkpoints.sql',import.meta.url),'utf8'));
+  assert.deepEqual((await raw.query('select * from scout.trackers')).rows,committed);
   await raw.query("update scout.trackers set url='https://example.org/new' where id=$1",[tr.id]);
   const state=(await raw.query('select * from scout.trackers')).rows[0];
   assert.equal(state.last_checked_at,null);assert.equal(state.enabled,false);
-  assert.ok(Math.abs(Date.now()-new Date(state.last_successful_check).getTime()-21*86400000)<10000);
+  assert.equal(state.last_successful_check,null);
   await raw.exec('set role authenticated');
   await raw.query('select last_successful_check from scout.trackers');
   await assert.rejects(raw.exec('update scout.trackers set last_successful_check=now()'),{code:'42501'});

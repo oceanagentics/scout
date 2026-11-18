@@ -128,8 +128,8 @@ export async function readSource(tracker,{through,fetch:send=fetch,signal,readUr
   }
   url.searchParams.delete('cursor');url.searchParams.set('includePins','false');
   if(!url.searchParams.has('limit'))url.searchParams.set('limit','100');
-  const after=new Date(tracker.last_successful_check??NaN).getTime(),until=Date.parse(through),items=[],seen=new Set(),cursors=new Set();
-  if(!Number.isFinite(after))throw fail('source_cutoff_missing');
+  const after=tracker.last_successful_check==null?null:new Date(tracker.last_successful_check).getTime(),until=Date.parse(through),items=[],seen=new Set(),cursors=new Set();
+  if(after!==null&&!Number.isFinite(after))throw fail('source_cutoff_invalid');
   for(;;){
     let response;
     try{response=await send(url.href,{signal});}catch{throw fail(signal?.aborted?'runtime_bound':'source_unavailable');}
@@ -143,7 +143,7 @@ export async function readSource(tracker,{through,fetch:send=fetch,signal,readUr
       const at=repost?Date.parse(entry.reason.indexedAt):Math.min(Date.parse(post?.record?.createdAt),Date.parse(post?.indexedAt));
       const uri=post?.uri?.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/]+)$/);
       if(!Number.isFinite(at)||!uri||typeof post.record?.text!=='string')throw fail('source_invalid');
-      if(at<=after){boundary=true;continue;}
+      if(after!==null&&at<=after){boundary=true;continue;}
       if(at>until)continue;
       const key=post.uri+' '+at;
       if(seen.has(key))continue;
