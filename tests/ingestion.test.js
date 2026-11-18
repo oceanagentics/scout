@@ -127,6 +127,45 @@ test('RSS handles GUIDs, entities and Atom links, while webpage discovery keeps 
  assert.equal(progress.discovery_checked_at,null);assert.equal(progress.discovery_fingerprint,null);
 });
 
+test('UN linked document index updates three existing findings with PDF message links; repeating makes no finding writes',async t=>{
+ const {raw,db,tracker}=await setup(t);
+ const root='https://www.un.org/bbnjagreement/en',index=root+'/COP/documents/first-meeting';
+ const documents=['20261102BBNJCOP1CHMStudyAdvanceUnedited.pdf','20261103BBNJCOP1AnnotatedAgendaModalitiesAdvanceUnedited.pdf','20261102BBNJCOP1SecArrangementsAdvanceUnedited.pdf']
+  .map((file,i)=>({url:'https://www.un.org/bbnjagreement/sites/default/files/2026-11/'+file,description:['United Nations: CHM study','United Nations: COP1 agenda and modalities','United Nations: Secretariat arrangements'][i]}));
+ await raw.query('update scout.trackers set url=$2 where id=$1',[tracker.id,root]);
+ for(const doc of documents)await raw.query("insert into scout.records(description,type,priority,sources) values($1,'announcement','high',$2::jsonb)",
+  [doc.description,JSON.stringify([{url:index,role:'finding'},{url:doc.url,role:'finding'}])]);
+ const ids=(await raw.query('select id from scout.records order by id')).rows.map(r=>r.id);
+ let version=0,discoveries=0,investigations=0;
+ const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>new Response(url===root?`<main>Version ${version}<a href="${index}">COP1 documents</a></main>`:
+  url===index?'<main>'+documents.map(doc=>`<a href="${doc.url}">${doc.description}</a>`).join('')+'</main>':'%PDF',
+  {headers:{'content-type':documents.some(doc=>doc.url===url)?'application/pdf':'text/html'}}),modelFor:(item,options)=>async(_p,_input,schema)=>{
+   if(schema.properties.items){
+    discoveries++;const listing=await options.readUrl(index);
+    assert.ok(documents.every(doc=>listing.content.includes(doc.url)));
+    return {items:documents.map(doc=>({url:doc.url,summary:doc.description}))};
+   }
+   investigations++;assert.notEqual(item.url,index);await options.readUrl(index);
+   const found=await options.functions[0].run({queries:[],urls:[item.url]});assert.equal(found.count,1);
+   return answer([update(found.records[0],{...finding,description:found.records[0].description,type:'announcement',organizations:['United Nations'],supporting_urls:[index,item.url]})]);
+  }});
+ const first=await run();assert.equal(first.created,0);assert.equal(first.changed,3);assert.equal(first.processed,3);
+ const records=(await raw.query('select * from scout.records order by id')).rows;
+ assert.deepEqual(records.map(r=>r.id),ids);
+ for(const record of records){
+  const doc=documents.find(doc=>doc.description===record.description);
+  assert.deepEqual(record.sources,[{url:index,role:'supporting'},{url:doc.url,role:'finding'}]);
+ }
+ const preview=await prepareMessages(db,{kind:'findings',ids});
+ for(const [i,record] of preview.records.entries())assert.ok(preview.payloads[i].text.includes('<'+documents.find(doc=>doc.description===record.description).url+'|Read more>'));
+ const firstCost={...db.metrics};version++;
+ const second=await run();assert.equal(second.created,0);assert.equal(second.changed,0);assert.equal(second.processed,3);
+ assert.deepEqual((await raw.query('select * from scout.records order by id')).rows,records);
+ assert.deepEqual([discoveries,investigations],[2,6]);
+ assert.deepEqual((await raw.query('select url from scout.source_items order by url')).rows.map(r=>r.url),documents.map(doc=>doc.url).sort());
+ t.diagnostic(JSON.stringify({mocked_model:true,first_sql_cost:firstCost,repeat_sql_cost:Object.fromEntries(Object.keys(firstCost).map(k=>[k,db.metrics[k]-firstCost[k]])),finding_writes_on_repeat:0}));
+});
+
 test('three unsuccessful attempts stop automatic retries, explicit retry recovers, and retirement prevents collection',async t=>{
  const {raw,db,tracker}=await setup(t);let calls=0,broken=true;
  const options={sourceFetch:async()=>rss(),modelFor:model(async()=>{calls++;if(broken)throw Object.assign(new Error('provider_unavailable'),{reason:'provider_unavailable'});return answer([]);})};

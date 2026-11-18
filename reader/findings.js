@@ -17,7 +17,7 @@ export function normalizeFinding(raw,url,invalidFields){
     priority:['high','normal','low'].includes(raw.priority)?raw.priority:null,
     organizations:[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).flatMap(o=>{
       const name=text(o);return name?[[name.toLowerCase(),name]]:[];
-    })).values()],deadline:date(raw.deadline),date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[{url,role:'finding'},...(raw.supporting_urls??[]).filter(sourceLink).map(url=>({url,role:'supporting'}))],details:typeof raw.details==='string'&&Buffer.byteLength(raw.details,'utf8')<=4096?raw.details.trim()||null:null};
+    })).values()],deadline:date(raw.deadline),date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[{url,role:'finding'},...(raw.supporting_urls??[]).filter(s=>sourceLink(s)&&sourceLink(s)!==sourceLink(url)).map(url=>({url,role:'supporting'}))],details:typeof raw.details==='string'&&Buffer.byteLength(raw.details,'utf8')<=4096?raw.details.trim()||null:null};
   const end=recordEnd(finding);finding.enddate=end?.value??null;finding.endtime=end?.time??null;
   if(invalidFields&&raw.details!=null&&finding.details===null)invalidFields.details=(invalidFields.details??0)+1;
   if(invalidFields)for(const key of ['date','deadline','starttime','timezone','enddate','endtime']){
@@ -53,7 +53,7 @@ export function mergeFinding(f,target){
   if(target?.enddate&&values.enddate!==target.enddate&&!f.endtime)values.endtime=null;
   const end=recordEnd(values);values.enddate=end?.value??null;values.endtime=end?.time??null;
   const sources=new Map((target?.sources??[]).map(s=>[sourceLink(s.url)??s.url,s]));
-  for(const s of f.sources){const key=sourceLink(s.url),old=sources.get(key);if(key)sources.set(key,{url:key,role:old?.role==='finding'||s.role==='finding'?'finding':s.role});}
+  for(const s of f.sources){const key=sourceLink(s.url);if(key)sources.set(key,{url:key,role:s.role});}
   values.sources=[...sources.values()];
   return values;
 }
