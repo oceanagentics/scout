@@ -59,6 +59,18 @@ npm run notify -- --send --kind=weekly
 
 Omit `--tracker` to check the next due enabled tracker. An explicit tracker ID also retries a tracker that stopped after three unsuccessful attempts. URLs come from the tracker row. Both commands require `SCOUT_BACKEND_KEY`. Local model diagnostics also make real model calls; use [diagnostics/README.md](diagnostics/README.md) for their separate behavior and capture exception.
 
+## Slack credentials
+
+Scout's Slack workspace is `TFZ8FRLBV`; findings post to `#scout` (`C0C5PE21KN1`). Keep credentials in the ignored root `.env.local` and load them in memory without printing values.
+
+| Credential | Purpose |
+| --- | --- |
+| `SCOUT_SLACK_BOT_TOKEN` | Scout's Bot User OAuth token for Slack Web API operations, including `chat.update` on Scout-owned messages. The hosted reader/notifier do not use this token. |
+| `SLACK_WEBHOOK_URL` | Local copy of Scout's incoming webhook. The hosted reader/notifier use the Edge Function secret `SCOUT_SLACK_WEBHOOK_URL`. A webhook sends new posts; it is not an OAuth token for editing existing messages. |
+| `SLACK_SIGNING_SECRET` | Verifies inbound Slack requests. Currently unused because Scout has no conversational Slack listener. |
+
+For Scout-owned messages, use Scout's API credentials; the connected Slack user account cannot edit another author's posts. Check `auth.test`, the granted scopes and the target message's app identity/channel access before editing. A webhook URL identifier and an OAuth bot ID are different identifiers; their difference alone does not establish that they belong to different apps. For a URL correction, preserve the message text and timestamp and replace only the verified link. Verify the saved message afterward. Report the exact failing API method and sanitized error if blocked; do not open native apps or change membership unless requested.
+
 ## Slack schedules and timezone
 
 Scout uses `America/New_York` for schedules, calendar-day boundaries, tracker retirement, model “today” and operational time display. Stored timestamps remain UTC; source dates and timezones remain as published.
