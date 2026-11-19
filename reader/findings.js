@@ -32,16 +32,6 @@ export function mergeFinding(f,target){
   for(const key of fields){
     if(values[key]==null||Array.isArray(values[key])&&!values[key].length)values[key]=target?.[key]??values[key];
   }
-  for(const key of ['date','enddate']){
-    if(target?.[key]&&values[key]&&values[key].length<target[key].length){
-      values[key]=target[key];
-      if(key==='date'){
-        values.starttime=target.starttime;values.timezone=target.timezone;
-        if(f.endtime&&f.timezone&&f.timezone!==values.timezone){values.enddate=target.enddate;values.endtime=target.endtime;}
-      }
-      if(key==='enddate')values.endtime=target.endtime;
-    }
-  }
   if(target?.timezone&&target.timezone!==values.timezone&&target.endtime&&!f.endtime){
     const saved=recordEnd(target),reinterpreted=recordEnd({...target,timezone:values.timezone});
     if(!saved?.utc||saved.utc!==reinterpreted?.utc){
@@ -115,7 +105,6 @@ export async function applyDecisions(tx,entries){
   if(target)used.add(target.id);
   const f=normalizeFinding(d.fields,item.url,investigation.invalid_fields);
   if(!f)throw fail('invalid_output');
-  if(target&&f.date&&target.date&&!f.date.startsWith(target.date)&&!target.date.startsWith(f.date)){counts.ambiguous++;continue;}
   const identity=createKey(f);
   if(!target)f.sources=createSources.get(identity);
   const values=mergeFinding(f,target);

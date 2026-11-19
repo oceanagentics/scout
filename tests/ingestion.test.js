@@ -171,13 +171,44 @@ test('read-only search crosses type/date and includes details; stale update or c
  assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,2);
 });
 
-test('details preserve exact saved text without new facts, retain multibyte text, and ends retain compatible saved precision',()=>{
+test('details preserve exact saved text without new facts, retain multibyte text, and missing dates retain saved scheduling facts',()=>{
  const old={...normalizeFinding({...finding,details:'Established facts.',date:'2099-12-10',starttime:'09:00',timezone:'UTC',enddate:'2099-12-12',endtime:'17:00'},publication)};
- const merged=mergeFinding(normalizeFinding({...finding,details:null,date:'2099-12',starttime:null,timezone:null,enddate:null,endtime:null},publication),old);
+ const merged=mergeFinding(normalizeFinding({...finding,details:null,date:null,starttime:null,timezone:null,enddate:null,endtime:null},publication),old);
  assert.equal(merged.details,old.details);assert.equal(merged.date,'2099-12-10');assert.equal(merged.starttime,'09:00');assert.equal(merged.enddate,'2099-12-12');
  assert.equal(normalizeFinding({...finding,details:'海'.repeat(1366)},publication).details,'海'.repeat(1366));
  assert.equal(normalizeFinding({...finding,details:'x'.repeat(4096)},publication).details.length,4096);
  assert.equal(mergeFinding(normalizeFinding({...finding,details:'海'.repeat(1366)},publication),old).details,'海'.repeat(1366));
+});
+
+test('rescheduled dates and less precise corrections save their source before consumption; identical repeats make no finding write',async t=>{
+ const {raw,db,tracker}=await setup(t);
+ await raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]);
+ const original=(await raw.query("insert into scout.records(description,details,type,priority,organizations,date,starttime,timezone,enddate,endtime,sources) values($1,$2,$3,$4,$5,$6,'09:00','UTC',$7,'17:00',$8::jsonb) returning *",
+  [finding.description,finding.details,finding.type,finding.priority,finding.organizations,finding.date,'2099-12-12',JSON.stringify([{url:publication,role:'finding'}])])).rows[0];
+ let version=0,modelCalls=0,fields={...finding,date:'2100-01-08',starttime:'10:00',enddate:'2100-01-09',endtime:'18:00',timezone:'UTC'};
+ const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async()=>new Response('<main>Rescheduled HSA workshop version '+version+'</main>',{headers:{'content-type':'text/html'}}),modelFor:model(async({search})=>{
+  modelCalls++;const found=await search({queries:['HSA'],urls:[]});
+  return answer([update(found.records[0],fields)]);
+ })});
+ const first=await run();
+ assert.equal(first.state,'saved');assert.equal(first.changed,1);assert.equal(first.created,0);assert.equal(first.ambiguous,0);assert.equal(first.processed,1);
+ const exact=(await raw.query('select * from scout.records where id=$1',[original.id])).rows[0];
+ assert.equal(exact.date,fields.date);assert.equal(exact.starttime,fields.starttime);assert.equal(exact.enddate,fields.enddate);assert.equal(exact.endtime,fields.endtime);
+ assert.deepEqual(exact.sources,[{url:publication,role:'finding'},{url:feedURL,role:'finding'}]);
+ assert.deepEqual(exact.modified.slice(0,-1),original.modified);
+ assert.equal((await raw.query('select pending from scout.source_items where tracker_id=$1',[tracker.id])).rows[0].pending,false);
+ fields={...finding,date:'2100-02',enddate:'2100-03'};version++;
+ const second=await run();
+ assert.equal(second.changed,1);assert.equal(second.created,0);assert.equal(second.ambiguous,0);assert.equal(second.processed,1);
+ const partial=(await raw.query('select * from scout.records where id=$1',[original.id])).rows[0];
+ assert.equal(partial.date,'2100-02');assert.equal(partial.enddate,'2100-03');assert.equal(partial.endtime,null);
+ assert.deepEqual(partial.sources,exact.sources);assert.deepEqual(partial.modified.slice(0,-1),exact.modified);
+ const cost={...db.metrics};version++;
+ const repeat=await run();
+ assert.equal(repeat.changed,0);assert.equal(repeat.saved,1);assert.equal(repeat.processed,1);assert.equal(modelCalls,3);
+ assert.deepEqual((await raw.query('select * from scout.records')).rows,[partial]);
+ assert.equal((await raw.query('select pending from scout.source_items where tracker_id=$1',[tracker.id])).rows[0].pending,false);
+ t.diagnostic(JSON.stringify({mocked_model:true,real_local_sql:true,identical_finding_writes:0,repeat_cost:Object.fromEntries(Object.keys(cost).map(k=>[k,db.metrics[k]-cost[k]]))}));
 });
 
 test('text limits preserve existing descriptions, clip Unicode before saving and avoid identical repeat writes',async t=>{
