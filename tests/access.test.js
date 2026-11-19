@@ -48,12 +48,24 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
     assert.equal(nodes['scout-views'].hidden, false);
     assert.equal(new URL(window.location.href).searchParams.get('record'), record);
     assert.equal(storage.has('scout-record'), false);
+    nodes.workspace.textContent = 'Opened source and unsaved ranking notes';
+    for (const event of ['SIGNED_IN', 'TOKEN_REFRESHED']) {
+      authChanged(event, session); await tick();
+      assert.equal(renders, 1);
+      assert.equal(closeCount, 0);
+      assert.equal(nodes.workspace.textContent, 'Opened source and unsaved ranking notes');
+    }
+    role = null; authChanged('SIGNED_IN', session); await tick();
+    assert.equal(nodes.workspace.hidden, true);
+    assert.equal(nodes.workspace.textContent, '');
+    role = 'reader'; authChanged('SIGNED_IN', session); await tick();
+    assert.equal(renders, 2);
     let resolveAccess;
     client.rpc = () => new Promise(resolve => { resolveAccess = resolve; });
     authChanged('TOKEN_REFRESHED', session);
     authChanged('SIGNED_OUT', null);
     resolveAccess({ data: 'reader' }); await tick();
-    assert.equal(renders, 1); // Late access responses cannot restore signed-out data.
+    assert.equal(renders, 2); // Late access responses cannot restore signed-out data.
     client.rpc = async () => ({ data: 'reader' });
     authChanged('SIGNED_IN', session); await tick();
     let navigationPrevented = false;
@@ -63,10 +75,10 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
     assert.equal(nodes['scout-views'].hidden, true);
     assert.equal(nodes.workspace.textContent, '');
     authChanged('TOKEN_REFRESHED', session); await tick();
-    assert.equal(renders, 2);
+    assert.equal(renders, 3);
     finishSignOut(); await logout;
     assert.equal(storage.size, 0);
     assert.equal(redirected, '/');
-    assert.equal(closeCount, 2);
+    assert.equal(closeCount, 3);
   } finally { globalThis.window = previousWindow; }
 });

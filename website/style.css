@@ -135,8 +135,8 @@ article.review-card { display: grid; flex: 0 1 auto; min-height: 0; grid-templat
 .review-description-body { flex: 0 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 #review-description { margin: 0; font-size: 1rem; line-height: 1.5; letter-spacing: normal; font-weight: 500; white-space: pre-line; overflow-wrap: anywhere; }
 .review-source-meta { display: flex; flex: none; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
-.review-links { flex: 1; min-width: 200px; max-height: 7em; overflow: auto; font-size: .875rem; overflow-wrap: anywhere; }
-.review-links a { display: flex; align-items: center; min-height: 44px; margin: 0; padding: 10px 12px; border: 1px solid #1d5fbf; border-radius: 6px; background: #1d5fbf; color: #fff; font-weight: 600; text-decoration: none; }
+.review-links { flex: 0 1 auto; min-width: 0; max-width: 100%; max-height: 7em; overflow: auto; font-size: .875rem; overflow-wrap: anywhere; }
+.review-links a { display: flex; align-items: center; width: fit-content; max-width: 100%; min-height: 44px; margin: 0; padding: 10px 12px; border: 1px solid #1d5fbf; border-radius: 6px; background: #1d5fbf; color: #fff; font-weight: 600; text-decoration: none; }
 .review-links a:hover { background: #164d9e; }
 .review-links a[data-opened="true"] { background: #ebf2fc; color: #1d5fbf; }
 #review-form { max-width: none; min-width: 0; border-left: 1px solid #e0e8f2; padding-left: 24px; }

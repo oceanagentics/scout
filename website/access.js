@@ -5,12 +5,18 @@ import { loadReview, submitReview } from './review.js';
 export function mountAccess(client, root, mount = mountDashboard) {
   const status = root.querySelector('#status'), form = root.querySelector('#sign-in');
   const signOut = root.querySelector('#sign-out'), workspace = root.querySelector('#workspace'), views = root.querySelector('#scout-views');
-  let generation = 0, signingOut = false, closeDashboard, closeCalendar;
+  let generation = 0, signingOut = false, closeDashboard, closeCalendar, mountedUser;
 
   async function showSession(session) {
     if (signingOut) session = null;
     const current = ++generation;
-    closeDashboard?.(); closeDashboard = null;
+    let access;
+    if (session && closeDashboard && mountedUser === session.user.id) {
+      access = await client.rpc('access_role');
+      if (current !== generation) return;
+      if (!access.error && ['reader', 'admin'].includes(access.data)) return;
+    }
+    closeDashboard?.(); closeDashboard = null; mountedUser = null;
     closeCalendar?.(); closeCalendar = null;
     workspace.replaceChildren(); workspace.hidden = true;
     views.hidden = true;
@@ -22,7 +28,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
       return;
     }
     status.textContent = 'Checking Scout access…';
-    const access = await client.rpc('access_role');
+    access ??= await client.rpc('access_role');
     if (current !== generation) return;
     if (access.error) {
       status.textContent = 'Scout access could not be checked. Please try again later.';
@@ -43,6 +49,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
     closeDashboard = mount(workspace, options => loadScout(client,options), views, {
       load:()=>loadReview(client),submit:(record,priority,notes)=>submitReview(client,record,priority,notes),
     });
+    mountedUser = session.user.id;
     views.hidden = false;
     closeCalendar = mountCalendar(client, root.querySelector('#calendar-tools'));
   }
