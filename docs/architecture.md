@@ -2,6 +2,14 @@
 
 Scout saves BBNJ events, announcements and treaty developments in flat findings shared by the website, Slack and calendar. Collection wakes every six minutes and checks one due tracker. The company timezone is America/New_York; stored instants remain UTC and published dates retain their precision. Deployment instructions are in [README](../README.md#supabase-deployment).
 
+## Volunteer review
+
+The website opens on Review for verified Ocean Agentics accounts. [review.js](../website/review.js) shows one unreviewed finding at a time, its description, source links and model ranking, with a required High/Normal/Low assessment and optional notes. [dashboard.js](../website/dashboard.js) owns navigation to Review, Records and Trackers; direct record links still open Records. Records and tracker inventory load only when those views are first opened.
+
+`scout.review_queue()` returns the next finding and the signed-in reviewer's count. `scout.submit_review(uuid,timestamptz,text,text)` verifies the exact displayed revision, saves feedback and returns the next card and committed count in the same transaction. Lost-response retries and concurrent submissions cannot create a second review for the same reviewer/finding. A changed or deleted finding requires reloading before submission. Findings already reviewed are not reassigned when edited.
+
+`scout.finding_reviews` stores one row per reviewer/finding: model priority at submission, reviewer priority, notes and submission time. Feedback never overwrites model findings or changes collection, Slack or calendars. Reviewers can read their own feedback; Scout admins can read all feedback. Writes go through the authenticated RPC; neither anonymous nor unverified accounts can access the queue or submit. There are no model calls, scheduled work or separate score counters. Personal counts come from saved reviews. A small count animation follows confirmed saves; each crossed multiple of 12 opens a full-screen celebration, with a static version for reduced-motion preferences.
+
 ## Shared item ingestion
 
 ```mermaid

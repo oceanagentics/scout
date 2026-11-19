@@ -1,6 +1,7 @@
 import { TYPES, stamp, eventLabel,fieldLabel } from './records.js';
 import { sourceLink,eventTiming,orderRecords } from '../shared/records.js';
 import {findingInterval,scoutDay} from '../shared/finding-dates.js';
+import {mountReview} from './review.js';
 
 const RECORD_FIELDS = [
   'description', 'type', 'priority', 'organizations', 'deadline', 'date',
@@ -40,10 +41,10 @@ function link(text, url) {
   return element;
 }
 
-export function mountDashboard(root, load, views) {
+export function mountDashboard(root, load, views, reviews) {
   // Static markup only; every source-supplied value is rendered with textContent.
-  root.innerHTML = `<p id="load-status" role="status"></p>
-    <section id="findings" aria-label="Records"><div class="findings-toolbar"><form id="filters" class="filters">
+  root.innerHTML = `<section id="review" aria-label="Review findings"></section><p id="load-status" role="status" hidden></p>
+    <section id="findings" aria-label="Records" hidden><div class="findings-toolbar"><form id="filters" class="filters">
       <label class="search">Search records<input name="search" type="search" placeholder="Description, organization, topic…"></label>
       <label>Record type<select name="type"><option value="">All</option><option value="announcement">Announcements</option><option value="event">Events</option><option value="treaty_status">Treaty changes</option></select></label>
       <label>Priority<select name="priority"><option value="">All priorities</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option><option value="unassessed">Not yet assessed</option></select></label>
@@ -57,7 +58,8 @@ export function mountDashboard(root, load, views) {
       <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>`;
   const status = root.querySelector('#load-status');
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
-  let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table', after=null,request=0,filterTimer;
+  let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table', after=null,request=0,filterTimer,started=false;
+  const closeReview=mountReview(root.querySelector('#review'),reviews.load,reviews.submit);
   const sourceDialog = node('dialog', null, 'source-dialog'), sourceContent = node('div');
   sourceDialog.setAttribute('aria-labelledby', 'source-heading');
   const sourceHeading = node('h2', 'Sources'); sourceHeading.id = 'source-heading';
@@ -79,7 +81,7 @@ export function mountDashboard(root, load, views) {
     count.textContent = `${records.length} records on this page${data.next?' · More available':''}`;
     root.querySelector('#first-page').disabled=!after;root.querySelector('#next-page').disabled=!data.next;
     if (selected) {
-      const all = node('a', 'Show all records'); all.href = '/'; count.append(' · ', all);
+      const all = node('a', 'Show all records'); all.href = '/#findings'; count.append(' · ', all);
     }
     if (!records.length) { recordList.append(node('p', data.records.length ? 'No records match your search.' : 'No records yet. Collected records will appear here with their sources.', 'empty')); return; }
     let body = recordList;
@@ -182,7 +184,7 @@ export function mountDashboard(root, load, views) {
     } finally { if (active&&sequence===request) root.removeAttribute('aria-busy'); }
   }
   for (const link of views.querySelectorAll('[data-view]')) {
-    if (link.dataset.view==='findings') link.setAttribute('aria-current','page');
+    if (link.dataset.view==='review') link.setAttribute('aria-current','page');
     else link.removeAttribute('aria-current');
   }
   const navigate = event => {
@@ -195,6 +197,8 @@ export function mountDashboard(root, load, views) {
       else other.removeAttribute('aria-current');
       root.querySelector(`#${other.dataset.view}`).hidden = !selected;
     }
+    if(link.dataset.view!=='review'&&!started){started=true;void reload();}
+    status.hidden=link.dataset.view==='review'||!status.textContent;
   };
   views.addEventListener('click', navigate);
   for (const button of root.querySelectorAll('[data-layout]')) button.addEventListener('click', () => {
@@ -224,6 +228,8 @@ export function mountDashboard(root, load, views) {
   };
   const timer = setInterval(tick, 30000);
   document.addEventListener('visibilitychange', tick);
-  root.hidden = false; void reload();
-  return () => { active = false; views.removeEventListener('click', navigate);clearTimeout(filterTimer);if (sourceDialog.open) sourceDialog.close();clearInterval(timer); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
+  root.hidden = false;
+  const initialView=new URLSearchParams(location.search).has('record')?'findings':location.hash.slice(1);
+  if(['findings','trackers'].includes(initialView))views.querySelector(`[data-view="${initialView}"]`).click();
+  return () => { active = false;closeReview(); views.removeEventListener('click', navigate);clearTimeout(filterTimer);if (sourceDialog.open) sourceDialog.close();clearInterval(timer); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
 }

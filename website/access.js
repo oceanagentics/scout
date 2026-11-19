@@ -1,5 +1,6 @@
 import { loadScout, mountDashboard } from './dashboard.js';
 import { mountCalendar } from './calendar.js';
+import { loadReview, submitReview } from './review.js';
 
 export function mountAccess(client, root, mount = mountDashboard) {
   const status = root.querySelector('#status'), form = root.querySelector('#sign-in');
@@ -39,7 +40,9 @@ export function mountAccess(client, root, mount = mountDashboard) {
       window.history.replaceState(null, '', url);
     }
     window.sessionStorage.removeItem('scout-record');
-    closeDashboard = mount(workspace, options => loadScout(client,options), views);
+    closeDashboard = mount(workspace, options => loadScout(client,options), views, {
+      load:()=>loadReview(client),submit:(record,priority,notes)=>submitReview(client,record,priority,notes),
+    });
     views.hidden = false;
     closeCalendar = mountCalendar(client, root.querySelector('#calendar-tools'));
   }
