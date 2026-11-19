@@ -1,11 +1,11 @@
-import { loadScout, mountDashboard, saveTrackerCollector } from './dashboard.js';
+import { loadScout, mountDashboard } from './dashboard.js';
 import { mountCalendar } from './calendar.js';
 import { loadReview, submitReview } from './review.js';
 
 export function mountAccess(client, root, mount = mountDashboard) {
   const status = root.querySelector('#status'), form = root.querySelector('#sign-in');
   const signOut = root.querySelector('#sign-out'), workspace = root.querySelector('#workspace'), views = root.querySelector('#scout-views');
-  let generation = 0, signingOut = false, closeDashboard, closeCalendar, mountedUser, mountedRole;
+  let generation = 0, signingOut = false, closeDashboard, closeCalendar, mountedUser;
 
   async function showSession(session) {
     if (signingOut) session = null;
@@ -14,9 +14,9 @@ export function mountAccess(client, root, mount = mountDashboard) {
     if (session && closeDashboard && mountedUser === session.user.id) {
       access = await client.rpc('access_role');
       if (current !== generation) return;
-      if (!access.error && access.data === mountedRole) return;
+      if (!access.error && ['reader', 'admin'].includes(access.data)) return;
     }
-    closeDashboard?.(); closeDashboard = null; mountedUser = null; mountedRole = null;
+    closeDashboard?.(); closeDashboard = null; mountedUser = null;
     closeCalendar?.(); closeCalendar = null;
     workspace.replaceChildren(); workspace.hidden = true;
     views.hidden = true;
@@ -48,9 +48,8 @@ export function mountAccess(client, root, mount = mountDashboard) {
     window.sessionStorage.removeItem('scout-record');
     closeDashboard = mount(workspace, options => loadScout(client,options), views, {
       load:()=>loadReview(client),submit:(record,priority,notes)=>submitReview(client,record,priority,notes),
-    },access.data==='admin'?(id,collector)=>saveTrackerCollector(client,id,collector):null);
+    });
     mountedUser = session.user.id;
-    mountedRole = access.data;
     views.hidden = false;
     closeCalendar = mountCalendar(client, root.querySelector('#calendar-tools'));
   }

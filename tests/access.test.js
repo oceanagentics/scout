@@ -22,8 +22,7 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
   const tick = () => new Promise(setImmediate);
   const session = { user: { id: 'test', user_metadata: { hd: 'oceanagentics.com', role: 'admin' } } };
   try {
-    mountAccess(client, { querySelector: selector => nodes[selector.slice(1)] }, (root,_load,_views,_reviews,saveCollector) => {
-      assert.equal(typeof saveCollector,role==='admin'?'function':'object');
+    mountAccess(client, { querySelector: selector => nodes[selector.slice(1)] }, root => {
       renders++; root.hidden = false; root.textContent = 'private findings'; return () => { closeCount++; };
     });
     authChanged('INITIAL_SESSION', null);
@@ -71,7 +70,7 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
     role='admin';authChanged('SIGNED_IN',session);await tick();
     assert.equal(renders,3);
     role='reader';authChanged('TOKEN_REFRESHED',session);await tick();
-    assert.equal(renders,4);
+    assert.equal(renders,3);
     authChanged('SIGNED_IN', session); await tick();
     let navigationPrevented = false;
     const logout = nodes['sign-out'].events.click({ preventDefault() { navigationPrevented = true; } }); await tick();
@@ -80,10 +79,10 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
     assert.equal(nodes['scout-views'].hidden, true);
     assert.equal(nodes.workspace.textContent, '');
     authChanged('TOKEN_REFRESHED', session); await tick();
-    assert.equal(renders, 4);
+    assert.equal(renders, 3);
     finishSignOut(); await logout;
     assert.equal(storage.size, 0);
     assert.equal(redirected, '/');
-    assert.equal(closeCount, 4);
+    assert.equal(closeCount, 3);
   } finally { globalThis.window = previousWindow; }
 });
