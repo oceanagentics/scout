@@ -32,7 +32,7 @@ export function mountReview(root,load,submit) {
         <button type="button" data-priority="normal" aria-pressed="false">Normal</button>
         <button type="button" data-priority="low" aria-pressed="false">Low</button></div>
         <label for="review-notes">Your notes</label>
-        <textarea id="review-notes" name="notes" rows="2" placeholder="why this ranking" required></textarea>
+        <textarea id="review-notes" name="notes" rows="2" placeholder="Explain your ranking and note any incorrect source URLs." required></textarea>
         <div class="review-submit" role="group" aria-label="Save review" tabindex="0" aria-describedby="review-save-hint"><button type="submit" disabled aria-describedby="review-save-hint">Save & next finding</button>
           <span id="review-save-hint" role="tooltip">To save, open a source link, choose a ranking and add a note.</span></div>
       </fieldset></form></article>
