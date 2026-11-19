@@ -4,7 +4,7 @@ import {sourceLink} from '../shared/records.js';
 import {normalizeDate,dateInterval,recordEnd} from '../shared/finding-dates.js';
 
 const text=v=>typeof v==='string'?v.toWellFormed().replace(/\s+/g,' ').trim():null;
-const fields=['description','type','priority','organizations','deadline','date','starttime','timezone','enddate','endtime','sources','details'];
+const fields=['description','type','priority','organizations','date','starttime','timezone','enddate','endtime','sources','details'];
 
 export function normalizeFinding(raw,url,invalidFields){
   const description=text(raw?.description);
@@ -13,14 +13,14 @@ export function normalizeFinding(raw,url,invalidFields){
   const starttime=/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(raw.starttime??'')?raw.starttime:null;
   let timezone=text(raw.timezone)||null;
   if(timezone)try{normalizeDate({value:'2026-01-01',precision:'day',time:'12:00',zone:timezone});}catch{timezone=null;}
-  const finding={description,type:['event','announcement','treaty_status'].includes(raw.type)?raw.type:null,
+  const finding={description,type:['event','announcement'].includes(raw.type)?raw.type:null,
     priority:['high','normal','low'].includes(raw.priority)?raw.priority:null,
     organizations:[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).flatMap(o=>{
       const name=text(o);return name?[[name.toLowerCase(),name]]:[];
-    })).values()],deadline:date(raw.deadline),date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[{url,role:'finding'},...(raw.supporting_urls??[]).filter(s=>sourceLink(s)&&sourceLink(s)!==sourceLink(url)).map(url=>({url,role:'supporting'}))],details:typeof raw.details==='string'&&Buffer.byteLength(raw.details,'utf8')<=4096?raw.details.trim()||null:null};
+    })).values()],date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[{url,role:'finding'},...(raw.supporting_urls??[]).filter(s=>sourceLink(s)&&sourceLink(s)!==sourceLink(url)).map(url=>({url,role:'supporting'}))],details:typeof raw.details==='string'&&Buffer.byteLength(raw.details,'utf8')<=4096?raw.details.trim()||null:null};
   const end=recordEnd(finding);finding.enddate=end?.value??null;finding.endtime=end?.time??null;
   if(invalidFields&&raw.details!=null&&finding.details===null)invalidFields.details=(invalidFields.details??0)+1;
-  if(invalidFields)for(const key of ['date','deadline','starttime','timezone','enddate','endtime']){
+  if(invalidFields)for(const key of ['date','starttime','timezone','enddate','endtime']){
     if(raw[key]!=null&&finding[key]===null)invalidFields[key]=(invalidFields[key]??0)+1;
   }
   return finding;
@@ -33,7 +33,7 @@ export function mergeFinding(f,target){
   for(const key of fields){
     if(values[key]==null||Array.isArray(values[key])&&!values[key].length)values[key]=target?.[key]??values[key];
   }
-  for(const key of ['date','deadline','enddate']){
+  for(const key of ['date','enddate']){
     if(target?.[key]&&values[key]&&values[key].length<target[key].length){
       values[key]=target[key];
       if(key==='date'){
@@ -116,7 +116,7 @@ export async function applyDecisions(tx,entries){
   if(target)used.add(target.id);
   const f=normalizeFinding(d.fields,item.url,investigation.invalid_fields);
   if(!f)throw fail('invalid_output');
-  if(target&&['date','deadline'].some(k=>f[k]&&target[k]&&!f[k].startsWith(target[k])&&!target[k].startsWith(f[k]))){counts.ambiguous++;continue;}
+  if(target&&f.date&&target.date&&!f.date.startsWith(target.date)&&!target.date.startsWith(f.date)){counts.ambiguous++;continue;}
   const identity=createKey(f);
   if(!target)f.sources=createSources.get(identity);
   const values=mergeFinding(f,target);

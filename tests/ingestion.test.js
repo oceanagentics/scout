@@ -12,7 +12,7 @@ import {trackerModel} from '../reader/models/gateway.js';
 
 beforeEach(t=>t.mock.method(dns,'lookup',async()=>[{address:'93.184.216.34',family:4}]));
 const publication='https://example.org/articles/chm',feedURL='https://example.org/feed/';
-const finding={description:'HSA: Clearing-House Mechanism technical webinar',details:'A technical demonstration of information-sharing tools.',type:'event',priority:'high',organizations:['HSA'],date:'2099-12-10',deadline:null,starttime:null,timezone:null,enddate:null,endtime:null,supporting_urls:[]};
+const finding={description:'HSA: Clearing-House Mechanism technical webinar',details:'A technical demonstration of information-sharing tools.',type:'event',priority:'high',organizations:['HSA'],date:'2099-12-10',starttime:null,timezone:null,enddate:null,endtime:null,supporting_urls:[]};
 const create=fields=>({action:'create',id:null,expected_revision:null,fields,reason:null});
 const update=(r,fields)=>({action:'update',id:r.id,expected_revision:r.revision,fields,reason:null});
 const answer=decisions=>({status:'complete',decisions});
@@ -177,6 +177,56 @@ test('details preserve exact saved text without new facts, remain bounded by UTF
  assert.equal(normalizeFinding({...finding,details:'海'.repeat(1366)},publication).details,null);
  assert.equal(normalizeFinding({...finding,details:'x'.repeat(4096)},publication).details.length,4096);
  assert.equal(mergeFinding(normalizeFinding({...finding,details:'海'.repeat(1366)},publication),old).details,old.details);
+});
+
+test('field removal preserves facts, reviews and progress, and rolls back if a deadline cannot fit',async t=>{
+ const name='20261119190000_scout_finding_contract.sql',{raw,tracker}=await setup(t,{before:name});
+ const sql=await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8');
+ const treaty=(await raw.query("insert into scout.records(description,type,date,deadline,details,sources) values('Official ratification','treaty_status','2026-11-15','2026-12','Established facts.',$1::jsonb) returning id",
+  [JSON.stringify([{url:publication,role:'finding'}])])).rows[0].id;
+ const overflow=(await raw.query("insert into scout.records(description,type,date,deadline,details) values('Application call','announcement','2026-11-16','2026-12-01',$1) returning id",['海'.repeat(1365)])).rows[0].id;
+ await raw.exec("insert into scout.records(description,type) values('Unaffected finding','event')");
+ const reviewer='00000000-0000-0000-0000-000000000001';
+ await raw.query('insert into auth.users(id) values($1)',[reviewer]);
+ await raw.query("insert into scout.finding_reviews(reviewer_id,record_id,priority,notes) values($1,$2,'high','Consequential treaty development')",[reviewer,treaty]);
+ await raw.query("insert into scout.source_items(tracker_id,item_key,url,pending) values($1,'committed',$2,false)",[tracker.id,publication]);
+ const before=(await raw.query('select *,modified::text[] as modified from scout.records order by id')).rows;
+ const reviews=(await raw.query('select * from scout.finding_reviews')).rows;
+ const progress=(await raw.query('select * from scout.source_items')).rows;
+ await assert.rejects(raw.exec(sql),{code:'23514'});
+ await raw.exec('rollback');
+ assert.deepEqual((await raw.query('select *,modified::text[] as modified from scout.records order by id')).rows,before);
+ await raw.query('update scout.records set details=null where id=$1',[overflow]);
+ const started=performance.now();await raw.exec(sql);
+ t.diagnostic(JSON.stringify({in_memory_database:true,migration_ms:Math.round(performance.now()-started),converted_rows:2,model_calls:0}));
+ const records=(await raw.query('select *,modified::text[] as modified from scout.records order by id')).rows;
+ for(const record of records){
+  const old=before.find(r=>r.id===record.id);
+  assert.equal(Object.hasOwn(record,'deadline'),false);
+  assert.equal(record.date,old.date);assert.deepEqual(record.sources,old.sources);
+  if(record.id===treaty||record.id===overflow){
+   assert.deepEqual(record.modified.slice(0,-1),old.modified);
+   assert.equal(record.modified.length,old.modified.length+1);
+  }else{
+   const {deadline,...unchanged}=old;assert.deepEqual(record,unchanged);
+  }
+ }
+ assert.equal(records.find(r=>r.id===treaty).type,'announcement');
+ assert.equal(records.find(r=>r.id===treaty).details,'Established facts. Submission deadline: 2026-12.');
+ assert.equal(records.find(r=>r.id===overflow).details,'Submission deadline: 2026-12-01.');
+ assert.deepEqual((await raw.query('select * from scout.finding_reviews')).rows,reviews);
+ assert.deepEqual((await raw.query('select * from scout.source_items')).rows,progress);
+ assert.deepEqual((await raw.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],tracker);
+ assert.equal((await raw.query("select count(*)::int n from pg_proc where pronamespace='scout'::regnamespace and proname='findings'")).rows[0].n,1);
+ assert.equal((await raw.query("select to_regclass('scout.records_deadlines') name")).rows[0].name,null);
+ await assert.rejects(raw.query("insert into scout.records(description,type) values('Obsolete type','treaty_status')"),{code:'23514'});
+ await raw.exec('set role anon');
+ await assert.rejects(raw.query('select * from scout.findings()'),{code:'42501'});
+ await raw.exec('reset role;set role authenticated');
+ assert.deepEqual((await raw.query('select * from scout.findings()')).rows,[]);
+ await raw.exec('reset role;set role service_role');
+ assert.equal((await raw.query("select * from scout.findings(p_search=>'Submission deadline',p_from=>'2026-11-15',p_to=>'2026-11-15')")).rows[0].id,treaty);
+ await raw.exec('reset role');
 });
 
 test('migration preserves IDs, timestamps and source URLs; reset clears only operational item state and browser cannot read it',async t=>{

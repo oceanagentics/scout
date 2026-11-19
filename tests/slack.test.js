@@ -52,14 +52,15 @@ test('weekly includes all pending high events and seven local days of newly save
     ['Exactly seven local days','announcement','high',null,'2026-10-26T13:00:00Z'],
     ['Older','announcement','high',null,'2026-10-26T12:59:59Z'],
     ['Normal news','announcement','normal',null,'2026-11-01T12:00:00Z'],
-    ['Treaty update','treaty_status','high',null,'2026-11-01T12:00:00Z']])
+    ['Treaty update','announcement','high',null,'2026-11-01T12:00:00Z']])
    await db.query("insert into scout.records(description,type,priority,date,modified,sources) values($1,$2,$3,$4,array[$5::timestamptz],jsonb_build_array(jsonb_build_object('url','https://example.org/source','role','finding')))",[description,type,priority,date,created]);
   const preview=await prepareMessages(db,{kind:'weekly',now});
-  assert.deepEqual(preview.records.map(r=>r.description).sort(),['Exactly seven local days','Far future','Partially dated future','Undated','Within seven New York days']);
+  assert.deepEqual(preview.records.map(r=>r.description).sort(),['Exactly seven local days','Far future','Partially dated future','Treaty update','Undated','Within seven New York days']);
   assert.deepEqual(preview.payloads.map(p=>p.text).sort(),[
    'Exactly seven local days [ha] · <https://example.org/source|Read more>',
    'Far future [he] · <https://example.org/source|Read more>',
    'Partially dated future [he] · <https://example.org/source|Read more>',
+   'Treaty update [ha] · <https://example.org/source|Read more>',
    'Undated [he] · <https://example.org/source|Read more>',
    'Within seven New York days [ha] · <https://example.org/source|Read more>'
   ]);

@@ -1,5 +1,5 @@
 import {recordDate,recordEnd,dateLabel,scoutDay,SCOUT_TIMEZONE} from '../shared/finding-dates.js';
-export const TYPES = { event: 'Event', announcement: 'Announcement', treaty_status: 'Treaty change' };
+export const TYPES = { event: 'Event', announcement: 'Announcement' };
 export const PRIORITIES = { high:'High', normal:'Normal', low:'Low' };
 export function fieldLabel(record, field) {
   if (field==='priority') return PRIORITIES[record.priority]??'Not yet assessed';
@@ -16,7 +16,7 @@ export function stamp(value) {
 }
 
 export function eventLabel(record) {
-  const prefix={event:'Starts',announcement:'Published',treaty_status:'Action date'}[record.type]??'Date';
+  const prefix={event:'Starts',announcement:'Published'}[record.type]??'Date';
   const end=recordEnd(record);
   return `${prefix} · ${dateLabel(recordDate(record))}`+(end?' → '+dateLabel(end):'');
 }

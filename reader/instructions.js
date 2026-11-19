@@ -33,8 +33,8 @@ Use current_date in the input as today's date in America/New_York.
 Use oldest_date supplied in the input as the inclusive capture cutoff.
 It is already calculated as one calendar month before current_date,
 using America/New_York. Apply this cutoff to every finding.
-Use the event's scheduled start date, announcement's publication date,
-or treaty action date, as supported by the source. Keep unresolved dates null.
+Use the event's scheduled start date or announcement's publication date,
+as supported by the source. Keep unresolved dates null.
 Exclude a finding only when its date is confirmed before oldest_date.
 For partial dates, exclude only when the latest possible day is before
 oldest_date. Keep findings with unresolved or future dates.
@@ -46,30 +46,22 @@ For undated or republished announcements, look for the original and open likely 
 Use event for gatherings, whether upcoming, ongoing, or past. A gathering
 does not become an announcement when its date passes. Use announcement for
 news and publications, including the distinct publication of a recap or recording.
-Use treaty_status for official treaty developments.
+Use announcement for official treaty developments.
 Missing or unclear dates must not prevent returning a useful development.
 
 For each development, provide:
 
 - description: A short, specific description naming the development.
-- type: event, announcement, or treaty_status.
+- type: event or announcement.
 - priority: high, normal, or low, using the rubric below.
 - organizations: Associated organization names, most directly associated
   first. List each organization once; do not include individual people.
-- deadline: The date submissions are required by.
-- date: The event's start date, announcement's publication date, or treaty
-  action date, according to the development's type.
+- date: The event's start date or announcement's publication date,
+  according to the development's type.
 - starttime: The time associated with that date, when supported.
 - timezone: The timezone associated with that time, when supported.
 - enddate: The event's inclusive final date, when supported.
 - endtime: The event's final clock time in the same timezone, when supported.
-
-For calls for expressions of interest, applications, proposals or comments,
-actively look for the submission deadline, including on announcements.
-Check relevant linked briefs, PDFs and submission forms when accessible.
-Use the deadline for responding to that call, not the page’s publication
-date or a related event date. If no deadline is supported, use null and
-still return the development.
 
 For every development, look carefully for its date, time, and timezone,
 including dates in the past. For events, use the schedule for that specific
@@ -90,7 +82,7 @@ reads or searches solely to fill missing ends, or repeat an investigation for th
 Interpret UTC timestamps and local times using an evidenced timezone. Resolve
 contradictory schedules with independent official material when available;
 otherwise leave the unresolved value null and return the other supported facts.
-Use YYYY-MM-DD for date, deadline and enddate, or YYYY-MM / YYYY for partial dates.
+Use YYYY-MM-DD for date and enddate, or YYYY-MM / YYYY for partial dates.
 Preserve the published precision: January 2027 is 2027-01, not 2027-01-01.
 Use HH:MM for starttime and endtime, and UTC, a numeric offset, or an IANA timezone.
 Convert explicit timezone abbreviations to a numeric offset (±HH:MM) or
@@ -149,10 +141,10 @@ Use null for unsupported optional facts. Return no arbitrary SQL or tracker/prog
 const finding={
  type:'object',properties:{
   description:{type:'string'},details:{type:['string','null']},
-  type:{type:['string','null'],enum:['event','announcement','treaty_status',null]},
+  type:{type:['string','null'],enum:['event','announcement',null]},
   priority:{type:['string','null'],enum:['high','normal','low',null]},
   organizations:{type:'array',items:{type:'string'}},
-  ...Object.fromEntries(['date','deadline','starttime','timezone','enddate','endtime'].map(k=>[k,{type:['string','null']}])),
+  ...Object.fromEntries(['date','starttime','timezone','enddate','endtime'].map(k=>[k,{type:['string','null']}])),
   supporting_urls:{type:'array',items:{type:'string'}}
  },required:['description','organizations','supporting_urls'],additionalProperties:false
 };

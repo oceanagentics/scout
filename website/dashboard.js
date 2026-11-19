@@ -4,7 +4,7 @@ import {findingInterval,scoutDay} from '../shared/finding-dates.js';
 import {mountReview} from './review.js';
 
 const RECORD_FIELDS = [
-  'description', 'type', 'priority', 'organizations', 'deadline', 'date',
+  'description', 'type', 'priority', 'organizations', 'date',
   'starttime', 'timezone', 'enddate', 'endtime', 'sources', 'modified', 'id',
 ];
 const TRACKER_FIELDS = [
@@ -15,7 +15,7 @@ const TRACKER_FIELDS = [
 ];
 
 export async function loadScout(client,{filters={},after=null}={}) {
-  const params=Object.fromEntries(['type','priority','from','to','organization','search','meaning','order'].map(key=>['p_'+key,filters[key]||null]));
+  const params=Object.fromEntries(['type','priority','from','to','organization','search','order'].map(key=>['p_'+key,filters[key]||null]));
   const [page,inventory]=await Promise.all([
     client.rpc('findings',{...params,p_after:after,p_limit:50,p_id:filters.record||null}),
     client.from('trackers').select(TRACKER_FIELDS.map(([field])=>field).join(','))
@@ -46,10 +46,9 @@ export function mountDashboard(root, load, views, reviews) {
   root.innerHTML = `<section id="review" aria-label="Review findings"></section><p id="load-status" role="status" hidden></p>
     <section id="findings" aria-label="Records" hidden><div class="findings-toolbar"><form id="filters" class="filters">
       <label class="search">Search records<input name="search" type="search" placeholder="Description, organization, topic…"></label>
-      <label>Record type<select name="type"><option value="">All</option><option value="announcement">Announcements</option><option value="event">Events</option><option value="treaty_status">Treaty changes</option></select></label>
+      <label>Record type<select name="type"><option value="">All</option><option value="announcement">Announcements</option><option value="event">Events</option></select></label>
       <label>Priority<select name="priority"><option value="">All priorities</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option><option value="unassessed">Not yet assessed</option></select></label>
       <label>From<input name="from" type="date"></label><label>Through<input name="to" type="date"></label>
-      <label>Date meaning<select name="meaning"><option value="date">date</option><option value="deadline">deadline</option></select></label>
       </form><div class="view-switch" role="group" aria-label="Records layout">
         <button type="button" data-layout="table" aria-label="Table view" title="Table view" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M10 9v11"/></svg></button>
         <button type="button" data-layout="cards" aria-label="Card view" title="Card view" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
@@ -138,7 +137,6 @@ export function mountDashboard(root, load, views, reviews) {
       } else {
         article.append(node('p', TYPES[record.type] || 'Unknown type', 'eyebrow'), node('h3', record.description), node('p', fieldLabel(record,'organizations'), 'organization'));
         article.append(node('p',eventLabel(record),'event-date'));
-        if(record.deadline)article.append(node('p',`Deadline · ${record.deadline}`,'event-date'));
         if(record.type==='event')article.append(node('p',eventTiming(record),'badge'));
         article.append(node('p',fieldLabel(record,'priority')));
       }

@@ -64,7 +64,7 @@ New trackers have no checkpoint. Changing a URL clears its source state and disa
 
 The model is instructed to include a responsible organization name alone alongside specific topic queries and broaden unsuccessful searches. Creating a finding requires a duplicate search; empty results are valid and the backend does not require a particular query wording. Matching is a model decision after retrieval; there is no separate matcher model call or description/80-percent-word/sole-source heuristic fallback.
 
-The result has complete/unreadable status and explicit create, update or skip decisions. Updates require a searched candidate ID and exact revision, with full proposed fields even when facts are unchanged. The backend builds sources from the trusted item URL plus actually read supporting URLs, saves a new item URL through the normal update path and makes no finding write when the merged record is identical. Ambiguous identity is an explicit reasoned skip. Conflicting established dates/deadlines skip that finding; unrelated findings and item progress can still commit.
+The result has complete/unreadable status and explicit create, update or skip decisions. Updates require a searched candidate ID and exact revision, with full proposed fields even when facts are unchanged. The backend builds sources from the trusted item URL plus actually read supporting URLs, saves a new item URL through the normal update path and makes no finding write when the merged record is identical. Ambiguous identity is an explicit reasoned skip. Conflicting established dates skip that finding; unrelated findings and item progress can still commit.
 
 [reader/findings.js](../reader/findings.js) normalizes supported fields and applies explicit decisions under the existing transaction advisory lock. It repeats actual candidate searches immediately before writing and rejects a changed search set or revision, including a competing create. Identical merged findings make no record writes. New facts preserve compatible precise dates, clocks, ends, optional fields, saved details and source URLs. A saved change appends one modified timestamp. The only in-group create coalescing is exact normalized field equality; it retains every item's source URL.
 
@@ -75,17 +75,19 @@ The result has complete/unreadable status and explicit create, update or skip de
 | id | UUID |
 | description | Short organization-led label |
 | details | Nullable scalar text, at most 4,096 UTF-8 bytes; incremental facts, no model traffic or proof trail |
-| type | event, announcement, treaty_status, or null |
+| type | event, announcement, or null |
 | priority | high, normal, low, or null |
 | organizations | Organization name strings |
-| deadline, date, enddate | YYYY-MM-DD, YYYY-MM, YYYY, or null |
+| date, enddate | YYYY-MM-DD, YYYY-MM, YYYY, or null |
 | starttime, endtime, timezone | Published scalar strings or null |
 | sources | JSON array of objects with url and role: finding, supporting or unclassified |
 | modified | Creation and saved-change UTC timestamps |
 
 The one-time source conversion preserves every old URL as unclassified, along with IDs and timestamps; it does not fabricate a primary link. Merge sources by normalized URL, applying the incoming explicit role so a read supporting page can correct an earlier finding label. The current item URL always remains a finding source. Several publications can support one finding and an article can produce several findings. Slack Read more chooses the first evidenced finding URL; legacy records without one retain their description/tag and omit Read more. The website labels source roles and exposes details; calendar descriptions retain all URLs.
 
-The existing one-calendar-month capture cutoff applies to normalized facts of every type. Unknown/future dates remain eligible; partial dates are excluded only if their latest possible day is before the cutoff. Malformed optional dates, ends or details are dropped with numeric field counts without losing useful fields. Compatible precise saved facts are retained. Existing findings are not deleted by this capture rule. The findings RPC includes details in text search and retains its workspace access, filters and pagination.
+Treaty developments are announcements. The field-removal migration preserves their IDs, saved dates, sources and review feedback, and moves saved submission deadlines into searchable details without widening its byte limit. Converted records retain prior modified timestamps and append one saved-change timestamp. A details overflow aborts the migration rather than losing a fact.
+
+The existing one-calendar-month capture cutoff applies to normalized facts of every type. Unknown/future dates remain eligible; partial dates are excluded only if their latest possible day is before the cutoff. Malformed optional dates, ends or details are dropped with numeric field counts without losing useful fields. Compatible precise saved facts are retained. Existing findings are not deleted by this capture rule. The findings RPC includes details in text search, filters dates using date alone, and retains its workspace access and pagination.
 
 ## Models, deadlines and cost
 
