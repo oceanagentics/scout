@@ -13,8 +13,8 @@ import {trackerModel} from '../reader/models/gateway.js';
 beforeEach(t=>t.mock.method(dns,'lookup',async()=>[{address:'93.184.216.34',family:4}]));
 const publication='https://example.org/articles/chm',feedURL='https://example.org/feed/';
 const finding={description:'HSA: Clearing-House Mechanism technical webinar',details:'A technical demonstration of information-sharing tools.',type:'event',priority:'high',organizations:['HSA'],date:'2099-12-10',starttime:null,timezone:null,enddate:null,endtime:null,supporting_urls:[]};
-const create=fields=>({action:'create',id:null,expected_revision:null,fields,reason:null});
-const update=(r,fields)=>({action:'update',id:r.id,expected_revision:r.revision,fields,reason:null});
+const create=fields=>({action:'create',id:null,fields,reason:null});
+const update=(r,fields)=>({action:'update',id:r.id,fields,reason:null});
 const answer=decisions=>({status:'complete',decisions});
 const response=output=>Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(output)}]}]});
 const rss=(entries=[['a',publication,'CHM webinar']])=>new Response('<rss version="2.0"><channel>'+entries.map(([id,url,title])=>`<item><guid>${id}</guid><link>${url}</link><title>${title}</title><description>Summary ${title}</description></item>`).join('')+'</channel></rss>',{headers:{'content-type':'application/rss+xml'}});
@@ -94,6 +94,7 @@ test('RSS -> real provider-tool mechanics -> duplicate update -> specific Slack 
   const output=body.input.find(i=>i.type==='function_call_output');
   if(!output){searches++;assert.ok(body.tools.some(f=>f.name==='search_findings'));return Response.json({status:'completed',output:[{type:'function_call',name:'search_findings',call_id:'lookup',arguments:JSON.stringify({queries:['HSA CHM'],urls:[]})}]});}
   const candidates=JSON.parse(output.output);assert.equal(candidates.records.length,1);
+  for(const key of ['revision','modified','pending'])assert.equal(Object.hasOwn(candidates.records[0],key),false);
   return response(answer([update(candidates.records[0],finding)]));
  }})});
  const first=await run();assert.equal(first.changed,1);assert.equal(first.created,0);assert.equal(searches,1);
@@ -143,11 +144,11 @@ test('timeout retains pending URL, earlier committed item survives, and resume n
  assert.ok((await raw.query('select * from scout.source_items')).rows.every(r=>!r.pending));
 });
 
-test('irrelevant and identity-skip items consume progress without finding writes; failed saves do not consume',async t=>{
+test('irrelevant and reasoned-skip items consume progress without finding writes; failed saves do not consume',async t=>{
  const {raw,db,tracker}=await setup(t);let mode='irrelevant';
  const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async()=>rss([['a',publication,mode]]),modelFor:model(async({search})=>{
   if(mode==='irrelevant')return answer([]);
-  if(mode==='skip')return answer([{action:'skip',id:null,expected_revision:null,fields:null,reason:'identity_unresolved'}]);
+  if(mode==='skip')return answer([{action:'skip',id:null,fields:null,reason:'The development is confirmed old.'}]);
   await search({queries:['HSA'],urls:[]});return answer([create({...finding,description:'Reject'})]);
  })});
  assert.equal((await run()).processed,1);mode='skip';assert.equal((await run()).ambiguous,1);
@@ -170,13 +171,31 @@ test('read-only search crosses type/date and includes details; stale update or c
  assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,2);
 });
 
-test('details preserve exact saved text without new facts, remain bounded by UTF-8 bytes, and ends retain compatible saved precision',()=>{
+test('details preserve exact saved text without new facts, retain multibyte text, and ends retain compatible saved precision',()=>{
  const old={...normalizeFinding({...finding,details:'Established facts.',date:'2099-12-10',starttime:'09:00',timezone:'UTC',enddate:'2099-12-12',endtime:'17:00'},publication)};
  const merged=mergeFinding(normalizeFinding({...finding,details:null,date:'2099-12',starttime:null,timezone:null,enddate:null,endtime:null},publication),old);
  assert.equal(merged.details,old.details);assert.equal(merged.date,'2099-12-10');assert.equal(merged.starttime,'09:00');assert.equal(merged.enddate,'2099-12-12');
- assert.equal(normalizeFinding({...finding,details:'海'.repeat(1366)},publication).details,null);
+ assert.equal(normalizeFinding({...finding,details:'海'.repeat(1366)},publication).details,'海'.repeat(1366));
  assert.equal(normalizeFinding({...finding,details:'x'.repeat(4096)},publication).details.length,4096);
- assert.equal(mergeFinding(normalizeFinding({...finding,details:'海'.repeat(1366)},publication),old).details,old.details);
+ assert.equal(mergeFinding(normalizeFinding({...finding,details:'海'.repeat(1366)},publication),old).details,'海'.repeat(1366));
+});
+
+test('text limits preserve existing descriptions, clip Unicode before saving and avoid identical repeat writes',async t=>{
+ const name='20261119230000_scout_text_limits.sql',{raw,db}=await setup(t,{before:name});
+ const legacy=(await raw.query('insert into scout.records(description,details) values($1,$2) returning *,modified::text[] as modified',
+  ['海'.repeat(281),'Established facts.'])).rows[0];
+ await raw.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
+ assert.deepEqual((await raw.query('select *,modified::text[] as modified from scout.records where id=$1',[legacy.id])).rows[0],legacy);
+ for(const [description,details] of [['x'.repeat(281),null],['Short label','🐟'.repeat(4097)]])
+  await assert.rejects(raw.query('insert into scout.records(description,details) values($1,$2)',[description,details]),{code:'23514'});
+ const incoming={...finding,description:'🐟'.repeat(281),details:'🐟'.repeat(4097)},item={url:publication},args={queries:['HSA'],urls:[publication]};
+ const first=await searchFindings(db,args);
+ assert.equal((await db.transaction(tx=>applyDecisions(tx,[{item,investigation:{decisions:[create(incoming)],lookups:[{args,records:first.records}],invalid_fields:{}}}]))).created,1);
+ const saved=(await searchFindings(db,args)).records[0];
+ assert.equal(saved.description,'🐟'.repeat(280));assert.equal(saved.details,'🐟'.repeat(4096));
+ const repeated=await db.transaction(tx=>applyDecisions(tx,[{item,investigation:{decisions:[update(saved,incoming)],lookups:[{args,records:[saved]}],invalid_fields:{}}}]));
+ assert.equal(repeated.saved,1);assert.equal(repeated.changed,0);
+ assert.deepEqual((await searchFindings(db,args)).records[0],saved);
 });
 
 test('field removal preserves facts, reviews and progress, and rolls back if a deadline cannot fit',async t=>{
@@ -391,7 +410,7 @@ test('old web and RSS publication hints permit new and changed content; confirme
    return new Response(`<main><time datetime="2000-01-01">Published January 1, 2000</time>`+(url===feedURL?`<a href="${publication}">Webinar ${version}</a>`:`Updated webinar ${version}`)+'</main>',{headers:{'content-type':'text/html'}});
   },modelFor:(_item,options)=>async(_p,input,schema)=>{
    if(schema.properties.items)return {items:[{url:publication,summary:'Published January 1, 2000; updated webinar'}]};
-   investigations++;assert.equal(input.oldest_date,'2026-10-17');
+   investigations++;assert.equal(input.current_date,'2026-11-17');assert.equal(Object.hasOwn(input,'oldest_date'),false);
    const found=await options.functions[0].run({queries:['HSA'],urls:[]}),fields={...finding,details:'Revision '+version};
    return answer([found.count?update(found.records[0],fields):create(fields),create({...finding,description:'Old report',type:'announcement',date:'2000-01-01'})]);
   }});

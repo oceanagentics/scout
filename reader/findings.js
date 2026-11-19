@@ -1,4 +1,3 @@
-import {Buffer} from 'node:buffer';
 import {randomUUID} from 'node:crypto';
 import {sourceLink} from '../shared/records.js';
 import {normalizeDate,dateInterval,recordEnd} from '../shared/finding-dates.js';
@@ -7,7 +6,7 @@ const text=v=>typeof v==='string'?v.toWellFormed().replace(/\s+/g,' ').trim():nu
 const fields=['description','type','priority','organizations','date','starttime','timezone','enddate','endtime','sources','details'];
 
 export function normalizeFinding(raw,url,invalidFields){
-  const description=text(raw?.description);
+  const description=[...(text(raw?.description)??'')].slice(0,280).join('').trim();
   if(!description)return null;
   const date=value=>dateInterval({value,precision:{4:'year',7:'month',10:'day'}[value?.length]})?value:null;
   const starttime=/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(raw.starttime??'')?raw.starttime:null;
@@ -17,7 +16,7 @@ export function normalizeFinding(raw,url,invalidFields){
     priority:['high','normal','low'].includes(raw.priority)?raw.priority:null,
     organizations:[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).flatMap(o=>{
       const name=text(o);return name?[[name.toLowerCase(),name]]:[];
-    })).values()],date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[{url,role:'finding'},...(raw.supporting_urls??[]).filter(s=>sourceLink(s)&&sourceLink(s)!==sourceLink(url)).map(url=>({url,role:'supporting'}))],details:typeof raw.details==='string'&&Buffer.byteLength(raw.details,'utf8')<=4096?raw.details.trim()||null:null};
+    })).values()],date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[{url,role:'finding'},...(raw.supporting_urls??[]).filter(s=>sourceLink(s)&&sourceLink(s)!==sourceLink(url)).map(url=>({url,role:'supporting'}))],details:typeof raw.details==='string'?[...raw.details.toWellFormed().trim()].slice(0,4096).join('').trim()||null:null};
   const end=recordEnd(finding);finding.enddate=end?.value??null;finding.endtime=end?.time??null;
   if(invalidFields&&raw.details!=null&&finding.details===null)invalidFields.details=(invalidFields.details??0)+1;
   if(invalidFields)for(const key of ['date','starttime','timezone','enddate','endtime']){
@@ -112,7 +111,7 @@ export async function applyDecisions(tx,entries){
   if(d.action==='skip'){counts.ambiguous++;continue;}
   if(d.action==='create'&&!investigation.lookups.length)throw fail('invalid_output');
   const target=d.action==='create'?null:working.get(d.id)??candidates.get(d.id);
-  if(d.action!=='create'&&(!target||target.revision!==d.expected_revision||used.has(d.id)))throw fail('stale_record');
+  if(d.action!=='create'&&(!target||used.has(d.id)))throw fail('stale_record');
   if(target)used.add(target.id);
   const f=normalizeFinding(d.fields,item.url,investigation.invalid_fields);
   if(!f)throw fail('invalid_output');

@@ -58,7 +58,7 @@ test('local tracker diagnostic captures one model investigation with only a trac
     const body=JSON.parse(request.body),output=body.input.find(i=>i.type==='function_call_output');
     if(!output)return Response.json({status:'completed',output:[{type:'function_call',name:'search_findings',call_id:'search',arguments:JSON.stringify({queries:['Organizer'],urls:[]})}]});
     return Response.json({status:'completed',usage:{input_tokens:400,output_tokens:200,total_tokens:600},
-      output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({status:'complete',decisions:[{action:'create',id:null,expected_revision:null,fields:{...event,details:null,supporting_urls:[]},reason:null}]})}]}]});
+      output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({status:'complete',decisions:[{action:'create',id:null,fields:{...event,details:null,supporting_urls:[]},reason:null}]})}]}]});
   }});
   assert.equal(generations,2);assert.equal(result.result.state,'saved');
   assert.equal(result.records.length,1);assert.equal(result.records[0].date,'2026-10-22');assert.equal(result.records[0].starttime,'13:30');
