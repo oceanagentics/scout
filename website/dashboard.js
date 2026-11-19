@@ -61,18 +61,17 @@ export function mountDashboard(root, load, views, reviews) {
       <div class="calendar-actions"><a class="calendar-add" href="https://calendar.google.com/calendar/u/0?cid=Y19jNGViYTU2OTdkM2EzZTMzYzQ1OTBkYWE3YzIwYzg3OTFkN2Q2MDhiNzg3ZmY5NTliZjMxMTdmM2E3ZDAyZGY1QGdyb3VwLmNhbGVuZGFyLmdvb2dsZS5jb20" target="_blank" rel="noopener noreferrer">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 10h18M8 15h8M12 11v8"/></svg>Add to Google Calendar</a>
         <span class="hint">Use your Ocean Agentics account on a computer.</span></div>
+      <p class="hint">When Google Calendar opens, choose <strong>Add</strong> if prompted. You don't need to paste the link into <strong>From URL</strong>.</p>
       <ol class="calendar-steps">
-        <li><div class="calendar-illustration" role="img" aria-label="Example Google account menu showing an Ocean Agentics email address">
-          <span class="calendar-example">Google account · example</span><span class="calendar-avatar" aria-hidden="true">OA</span><span>you@oceanagentics.com</span></div>
-          <h2>1. Check your account</h2><p>Click the blue button. In Google Calendar, check the account icon at the top right and choose your Ocean Agentics account.</p></li>
-        <li><div class="calendar-illustration" role="img" aria-label="Example Add calendar dialog for Scout with an Add button">
-          <span class="calendar-example">Google Calendar · example</span><span class="calendar-dialog-title">Add calendar</span><span>Scout</span><span class="calendar-example-add" aria-hidden="true">Add</span></div>
-          <h2>2. Add Scout</h2><p>Choose <strong>Add</strong> if Google asks. You don't need to copy the link or paste it into <strong>From URL</strong>.</p></li>
-        <li><div class="calendar-illustration" role="img" aria-label="Example calendar list with the Scout checkbox checked">
-          <span class="calendar-example">Calendar list · example</span><span class="calendar-dialog-title">Other calendars</span><span class="calendar-example-selected"><span aria-hidden="true">✓</span> Scout</span></div>
-          <h2>3. Show the events</h2><p>Find <strong>Scout</strong> in the calendar list on the left and tick its box. If you own the calendar, it appears under <strong>My calendars</strong>.</p></li>
+        <li><div class="calendar-shot"><figure class="calendar-screenshot calendar-account-shot">
+          <img src="/calendar/google-account.jpg" width="176" height="100" loading="lazy" alt="Google Calendar's top-right toolbar, with the account icon circled in red."></figure></div>
+          <h2>1. Check your account</h2><p>In Google Calendar, click the circled account icon at the top right. Choose your Ocean Agentics account. Your icon may have a different photo or initial.</p></li>
+        <li><div class="calendar-shot"><figure class="calendar-screenshot calendar-scout-shot">
+          <img src="/calendar/google-scout-checkbox.jpg" width="244" height="128" loading="lazy" alt="Google Calendar's left sidebar, with the Scout checkbox circled in red."></figure></div>
+          <h2>2. Show the events</h2><p>Scroll the calendar list on the left and tick the circled box beside <strong>Scout</strong>. Look under <strong>Other calendars</strong>, or <strong>My calendars</strong> if you own it.</p></li>
       </ol>
       <div class="calendar-help"><h2>Already have Scout?</h2><p>If Google says the calendar already exists, you're set. <a href="https://calendar.google.com/calendar/" target="_blank" rel="noopener noreferrer">Open Google Calendar</a> and tick <strong>Scout</strong> in the list.</p>
+        <img class="calendar-message" src="/calendar/google-already-added.jpg" width="379" height="48" loading="lazy" alt="Google Calendar notification: This calendar already exists in your calendar list.">
         <p>If adding still fails, check your Ocean Agentics account first, then ask Danny if you need access.</p></div>
       <p class="hint">On your phone, open Google Calendar with the same account and turn on Scout in the menu. <a href="https://support.google.com/calendar/answer/37100" target="_blank" rel="noopener noreferrer">Google's calendar instructions</a></p>
     </section>`;
