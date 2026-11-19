@@ -29,7 +29,7 @@ export async function discoverBluesky(tracker,{through,fetch:send=fetch,signal})
       const key=post.uri+' '+at;
       if(seen.has(key))continue;
       seen.add(key);
-      items.push({key:post.uri,url:'https://bsky.app/profile/'+uri[1]+'/post/'+uri[2],at:new Date(at).toISOString(),published_at:new Date(published).toISOString(),source_kind:'post',content:entry});
+      items.push({key:post.uri,url:'https://bsky.app/profile/'+uri[1]+'/post/'+uri[2],at:new Date(at).toISOString(),published_at:new Date(published).toISOString(),source_kind:'post',content:{post,...(entry.reason?{reason:entry.reason}:{})}});
     }
     if(boundary||!page.cursor)break;
     if(typeof page.cursor!=='string'||cursors.has(page.cursor))throw fail('source_cursor_repeated');

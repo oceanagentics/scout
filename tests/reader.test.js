@@ -127,17 +127,19 @@ const feedTracker=async(raw,url=feedURL)=>{
   return tr;
 };
 
-test('Bluesky paginates to the date, retains complete post context, and reads oldest first',async()=>{
+test('Bluesky preserves the current post and attachments without parent/root bodies, and reads oldest first',async()=>{
   const a=post('a','2026-10-13T12:00:00.123Z'),b=post('b','2026-10-14T12:00:00Z'),c=post('c','2026-10-01T12:00:00Z');
   c.reason={$type:'app.bsky.feed.defs#reasonRepost',indexedAt:'2026-10-15T12:00:00Z'};
   a.post.embed={images:[{alt:'Event on October 20',fullsize:'https://example.org/full.png'}]};
-  a.reply={parent:{record:{text:'Parent context'}}};
+  a.reply={parent:{record:{text:'Parent context'}},root:{record:{text:'Root context'}}};
+  a.post.record.reply={parent:{uri:'at://did:plc:example/app.bsky.feed.post/parent'},root:{uri:'at://did:plc:example/app.bsky.feed.post/root'}};
   const pages=[{feed:[c,b],cursor:'page2'},{feed:[],cursor:'page3'},
     {feed:[b,a,post('boundary','2026-10-12T00:00:00Z')],cursor:'do-not-fetch'}],urls=[];
   const items=await readSource({url:'https://bsky.app/profile/example.test',last_successful_check:new Date('2026-10-12T00:00:00Z'),oldest_date:'2026-10-02'},
     {through:'2026-11-02T00:00:00Z',fetch:async url=>{urls.push(new URL(url));return Response.json(pages.shift());}});
   assert.deepEqual(items.map(i=>i.content.post.record.text),['a','b','c']);
-  assert.deepEqual(items[0].content,a);assert.equal(items[2].at,c.reason.indexedAt.replace('Z','.000Z'));
+  assert.deepEqual(items[0].content,{post:a.post});assert.deepEqual(items[2].content,{post:c.post,reason:c.reason});
+  assert.equal(items[2].at,c.reason.indexedAt.replace('Z','.000Z'));
   assert.equal(items[2].published_at,'2026-10-01T12:00:00.000Z');
   assert.equal(urls[0].searchParams.get('actor'),'example.test');assert.equal(urls[2].searchParams.get('cursor'),'page3');
   assert.equal(urls.length,3);

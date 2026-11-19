@@ -192,6 +192,40 @@ test('tied native posts see proposed facts before commit and retain both specifi
  assert.deepEqual(records[0].sources.map(s=>s.url).sort(),['https://bsky.app/profile/did:plc:example/post/a','https://bsky.app/profile/did:plc:example/post/b']);
 });
 
+test('Bluesky parent announcements keep their own URLs when the following replies are consumed',async t=>{
+ const {raw,db,tracker}=await setup(t),did='did:plc:sy46sp7hq6g5rtgagijggqeg';
+ await raw.query('update scout.trackers set url=$2 where id=$1',[tracker.id,'https://bsky.app/profile/'+did]);
+ const cases=[
+  {key:'3myuxaiw4i22l',phrase:'NBSAP Accelerator Action Account',organization:'UNDP',description:'UNDP announces the NBSAP Accelerator Action Account and IKI-UNDP Nature Pledge Flagship Fund.'},
+  {key:'3myxd26zhn22p',phrase:'16 landscapes in 15 countries',organization:'Earth Negotiations Bulletin',description:'Earth Negotiations Bulletin reports that LLF supports 16 landscapes in 15 countries and has disbursed over USD 60 million.'}
+ ];
+ const posts=[
+  [cases[0].key,cases[0].description],['3myuxdj4p4s2l','BIOFIN discusses the Yerevan Biodiversity Finance Challenge.'],
+  [cases[1].key,cases[1].description],['3myxd64ej5k2p','Barry Gold discusses a less fragmented conservation finance landscape.']
+ ].map(([key,text],i)=>{const at=new Date(Date.now()-60000+i*1000).toISOString();return {post:{uri:'at://'+did+'/app.bsky.feed.post/'+key,indexedAt:at,record:{text,createdAt:at}}};});
+ posts[1].reply={parent:posts[0].post,root:posts[0].post};posts[3].reply={parent:posts[2].post,root:posts[2].post};
+ let calls=0;
+ const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async()=>Response.json({feed:posts}),modelFor:model(async({input,search})=>{
+  calls++;const decisions=[];
+  // Reproduce the observed model behavior: use any announcement supplied in context.
+  for(const source of cases.filter(c=>JSON.stringify(input.content).includes(c.phrase))){
+   const found=await search({queries:[source.organization],urls:[]});
+   const fields={...finding,description:source.description,type:'announcement',organizations:[source.organization],date:null,details:null};
+   decisions.push(found.count?update(found.records[0],fields):create(fields));
+  }
+  return answer(decisions);
+ })});
+ const first=await run();assert.equal(first.created,2);assert.equal(first.changed,0);assert.equal(first.processed,4);assert.equal(calls,4);
+ const records=(await raw.query('select * from scout.records order by id')).rows;
+ for(const source of cases)assert.deepEqual(records.find(r=>r.description===source.description).sources,[{url:'https://bsky.app/profile/'+did+'/post/'+source.key,role:'finding'}]);
+ const preview=await prepareMessages(db,{kind:'findings',ids:records.map(r=>r.id)});
+ assert.equal(preview.payloads.length,2);
+ for(const source of cases)assert.ok(preview.payloads.some(p=>p.text.includes('<https://bsky.app/profile/'+did+'/post/'+source.key+'|Read more>')));
+ const cost={...db.metrics};const repeat=await run();assert.equal(repeat.processed,0);assert.equal(calls,4);
+ assert.deepEqual((await raw.query('select * from scout.records order by id')).rows,records);
+ t.diagnostic(JSON.stringify({mocked_model:true,sql_cost:cost,repeat_model_calls:0}));
+});
+
 test('expired original posts, including recent reposts, make zero model calls and no per-post SQL writes',async t=>{
  t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-17T12:00:00Z')});
  const {raw,db,tracker}=await setup(t),feed='https://bsky.app/profile/example.test';
