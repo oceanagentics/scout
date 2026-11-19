@@ -91,3 +91,48 @@ test('browser review calls preserve the exact finding revision and propagate sav
   await assert.rejects(submitReview(client,record,'low','My notes'),error=>error===failure);
   assert.deepEqual(calls,[{name:'review_queue',params:undefined},{name:'submit_review',params:{p_record_id:record.id,p_modified:record.modified,p_priority:'low',p_notes:'My notes'}}]);
 });
+
+test('Slack postings preserve existing reviews, accept missed findings and remain distinct from volunteer feedback',async()=>{
+  const db=new PGlite(),reviewer='00000000-0000-0000-0000-000000000001',other='00000000-0000-0000-0000-000000000002';
+  const migration='20261120000000_scout_slack_reviews.sql';
+  try {
+    await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
+      create schema auth;create schema vault;create table vault.secrets(name text,secret text);
+      create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');
+      create table auth.identities(user_id uuid,provider text,identity_data jsonb);
+      create function auth.uid() returns uuid language sql stable as
+       $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
+      insert into auth.users(id) values('${reviewer}'),('${other}');
+      insert into auth.identities select id,'google','{"iss":"https://accounts.google.com","email_verified":true,"custom_claims":{"hd":"oceanagentics.com"}}' from auth.users;`);
+    for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort())
+      if(name!==migration)await db.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
+    const record=(await db.query("insert into scout.records(description,priority) values('Existing finding','normal') returning *")).rows[0];
+    await db.query("insert into scout.finding_reviews(reviewer_id,record_id,model_priority,priority,notes) values($1,$2,'normal','low','Limited usefulness')",[reviewer,record.id]);
+    const before=(await db.query('select * from scout.finding_reviews')).rows[0];
+    await db.exec(await readFile(new URL('../supabase/migrations/'+migration,import.meta.url),'utf8'));
+    const preserved=(await db.query('select reviewer_id,record_id,model_priority,priority,notes,reviewed_at from scout.finding_reviews')).rows[0];
+    assert.deepEqual(preserved,before);
+    const insert=`insert into scout.finding_reviews(origin,source_url,description,slack_url,slack_author_id,slack_author_name,slack_posted_at,model_priority,priority,notes)
+      values('slack','https://example.org/webinar','Ocean governance webinar','https://oceanagentics.slack.com/archives/GENERAL/p1795124576142469','AARON','Aaron','2026-11-19T21:42:56Z','normal','high','Aaron shared this for the team to attend.')
+      on conflict(slack_url,source_url) do nothing returning id`;
+    assert.equal((await db.query(insert)).rows.length,1);
+    assert.equal((await db.query(insert)).rows.length,0);
+    await assert.rejects(db.query("insert into scout.finding_reviews(origin,priority,notes) values('slack','high','Missing source and author')"),{code:'23514'});
+    await db.exec('set role anon');
+    await assert.rejects(db.query("select * from scout.finding_reviews where origin='slack'"),{code:'42501'});
+    await db.exec('reset role;set role authenticated');
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)",[reviewer]);
+    assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.reviewed_count,1);
+    await db.query("select set_config('request.jwt.claim.sub',$1,false)",[other]);
+    const rows=(await db.query('select * from scout.finding_reviews')).rows;
+    assert.equal(rows.length,1);assert.equal(rows[0].origin,'slack');
+    assert.equal(rows[0].reviewer_id,null);assert.equal(rows[0].record_id,null);
+    assert.equal(rows[0].model_priority,'normal');assert.equal(rows[0].priority,'high');
+    assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.reviewed_count,0);
+    await assert.rejects(db.query(insert),{code:'42501'});
+    await db.query("select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000003',false)");
+    assert.deepEqual((await db.query('select * from scout.finding_reviews')).rows,[]);
+    await db.exec('reset role');
+    assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+  } finally {await db.close();}
+});

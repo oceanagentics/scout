@@ -80,7 +80,7 @@ export function mountDashboard(root, load, views, reviews) {
   const status = root.querySelector('#load-status');
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
   let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table', after=null,request=0,filterTimer,started=false;
-  const closeReview=mountReview(root.querySelector('#review'),reviews.load,reviews.submit);
+  const closeReview=mountReview(root.querySelector('#review'),reviews.load,reviews.submit,reviews.slack);
   const sourceDialog = node('dialog', null, 'source-dialog'), sourceContent = node('div');
   sourceDialog.setAttribute('aria-labelledby', 'source-heading');
   const sourceHeading = node('h2', 'Sources'); sourceHeading.id = 'source-heading';

@@ -131,6 +131,12 @@ body:has(#review:not([hidden])) main { display: flex; flex-direction: column; he
 body:has(#review:not([hidden])) footer { display: none; }
 body:has(#review:not([hidden])) #workspace { flex: 1; min-height: 0; margin-top: 8px; }
 #review { display: flex; flex-direction: column; gap: 10px; height: 100%; max-width: 960px; margin: 0 auto; }
+.review-panel { display: flex; flex: 1; flex-direction: column; gap: 10px; min-height: 0; }
+.review-sections button { width: auto; height: auto; min-height: 40px; padding: 8px 12px; }
+#slack-panel .hint, #slack-status, #slack-postings p { margin: 0; }
+#slack-panel .table-scroll { min-height: 0; overflow: auto; }
+#slack-postings td { white-space: normal; min-width: 100px; }
+#slack-postings td:first-child, #slack-postings td:last-child { min-width: 250px; }
 .review-heading { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 12px; }
 .review-heading h1 { font-size: 1.125rem; letter-spacing: -.025em; margin: 0; }
 .review-score { position: relative; display: grid; grid-template-columns: auto 128px; align-items: center; column-gap: 12px; row-gap: 4px; }

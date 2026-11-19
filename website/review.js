@@ -1,4 +1,4 @@
-import { PRIORITIES, TYPES } from './records.js';
+import { PRIORITIES, TYPES, stamp } from './records.js';
 import { sourceLink } from '../shared/records.js';
 
 export async function loadReview(client) {
@@ -15,9 +15,20 @@ export async function submitReview(client,record,priority,notes) {
   return data;
 }
 
-export function mountReview(root,load,submit) {
+export async function loadSlackPostings(client,{offset=0}={}) {
+  const {data,error}=await client.from('finding_reviews')
+    .select('id,description,source_url,slack_url,slack_author_name,slack_posted_at,model_priority,priority,notes')
+    .eq('origin','slack').order('slack_posted_at',{ascending:false}).order('id',{ascending:false}).range(offset,offset+49);
+  if(error)throw error;
+  return data;
+}
+
+export function mountReview(root,load,submit,loadPostings) {
   // Static markup only; finding text and URLs are assigned through DOM properties.
-  root.innerHTML=`<div class="review-heading"><h1>Review findings</h1>
+  root.innerHTML=`<div class="review-sections view-switch" role="group" aria-label="Review sections">
+    <button type="button" id="show-reviewer" aria-pressed="true">Reviewer ratings</button>
+    <button type="button" id="show-slack" aria-pressed="false">Slack postings</button></div>
+    <div id="reviewer-panel" class="review-panel"><div class="review-heading"><h1>Review findings</h1>
     <div class="review-score" aria-label="Your review progress">
       <p><strong id="review-total">0</strong> <span>ranked</span></p>
       <span id="review-plus" aria-hidden="true">+1</span><div class="review-steps" aria-hidden="true">${'<i></i>'.repeat(12)}</div>
@@ -36,7 +47,16 @@ export function mountReview(root,load,submit) {
         <div class="review-submit" role="group" aria-label="Save review" tabindex="0" aria-describedby="review-save-hint"><button type="submit" disabled aria-describedby="review-save-hint">Save & next finding</button>
           <span id="review-save-hint" role="tooltip">To save, open a source link, choose a ranking and add a note.</span></div>
       </fieldset></form></article>
-    <div id="review-empty" class="review-empty" hidden><span aria-hidden="true">✦</span><h2>You’re all caught up.</h2><p>Thanks for lending your perspective. Come back when there are new findings to review.</p></div>
+    <div id="review-empty" class="review-empty" hidden><span aria-hidden="true">✦</span><h2>You’re all caught up.</h2><p>Thanks for lending your perspective. Come back when there are new findings to review.</p></div></div>
+    <section id="slack-panel" class="review-panel" aria-labelledby="slack-heading" hidden>
+      <div class="review-heading"><h1 id="slack-heading">Slack postings</h1></div>
+      <p class="hint">Links shared by the team carry more weight when refining Scout’s rankings than reviewer ratings alone. Expected is the priority indicated by the posting and team direction.</p>
+      <p id="slack-status" role="status"></p>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Slack postings"><table class="data-table"><thead><tr>
+        <th scope="col">Finding</th><th scope="col">Posted by</th><th scope="col">Posted (New York)</th><th scope="col">Model</th><th scope="col">Expected</th><th scope="col">Context</th>
+      </tr></thead><tbody id="slack-postings"></tbody></table></div>
+      <div class="actions"><button type="button" class="secondary" id="slack-previous">Previous</button><button type="button" class="secondary" id="slack-next">Next</button><button type="button" class="secondary" id="slack-reload">Reload</button></div>
+    </section>
     <dialog class="review-milestone" aria-labelledby="milestone-heading"><div class="milestone-burst" aria-hidden="true">${'<i></i>'.repeat(12)}</div>
       <div class="milestone-content"><p class="eyebrow">That’s a milestone</p><div class="milestone-star" aria-hidden="true">✦</div>
       <h2 id="milestone-heading"></h2><p>A dozen more human perspectives.<br>Thanks for making Scout sharper.</p><button type="button" autofocus>Keep going</button></div></dialog>`;
@@ -45,7 +65,39 @@ export function mountReview(root,load,submit) {
   const retry=root.querySelector('#review-retry'),milestone=root.querySelector('.review-milestone');
   const choices=form.querySelectorAll('[data-priority]'),notes=form.querySelector('#review-notes'),save=form.querySelector('[type="submit"]');
   const links=root.querySelector('#review-links'),saveHelp=root.querySelector('.review-submit');
+  const reviewerPanel=root.querySelector('#reviewer-panel'),slackPanel=root.querySelector('#slack-panel');
+  const showReviewer=root.querySelector('#show-reviewer'),showSlack=root.querySelector('#show-slack');
+  const slackStatus=root.querySelector('#slack-status'),slackRows=root.querySelector('#slack-postings');
+  const slackPrevious=root.querySelector('#slack-previous'),slackNext=root.querySelector('#slack-next'),slackReload=root.querySelector('#slack-reload');
   let state,active=true,busy=false,sourceOpened=false;
+  let slackOffset=0,slackBusy=false;
+
+  async function showSlackPostings(offset=0) {
+    if(slackBusy)return;
+    reviewerPanel.hidden=true;slackPanel.hidden=false;
+    showReviewer.setAttribute('aria-pressed','false');showSlack.setAttribute('aria-pressed','true');
+    slackBusy=true;slackPrevious.disabled=true;slackNext.disabled=true;slackReload.disabled=true;
+    slackStatus.textContent='Loading Slack postings…';
+    try {
+      const rows=await loadPostings({offset});if(!active)return;
+      slackOffset=offset;slackRows.replaceChildren();
+      for(const row of rows) {
+        const tr=document.createElement('tr');
+        const finding=document.createElement('td'),source=document.createElement('a');
+        source.href=sourceLink(row.source_url);source.textContent=row.description;source.target='_blank';source.rel='noopener noreferrer';finding.append(source);tr.append(finding);
+        for(const value of [row.slack_author_name,stamp(row.slack_posted_at),PRIORITIES[row.model_priority]??'Not assessed',PRIORITIES[row.priority]]) {
+          const td=document.createElement('td');td.textContent=value;tr.append(td);
+        }
+        const context=document.createElement('td'),note=document.createElement('p'),post=document.createElement('a');
+        note.textContent=row.notes;post.textContent='Open Slack post';post.href=sourceLink(row.slack_url);post.target='_blank';post.rel='noopener noreferrer';
+        context.append(note,post);tr.append(context);slackRows.append(tr);
+      }
+      slackStatus.textContent=rows.length?`${rows.length} postings on this page`:'No Slack postings on this page.';
+      slackPrevious.disabled=offset===0;slackNext.disabled=rows.length<50;
+    } catch {
+      if(active){slackRows.replaceChildren();slackStatus.textContent='Could not load Slack postings. Please reload.';}
+    } finally {if(active){slackBusy=false;slackReload.disabled=false;}}
+  }
 
   function updateSave() {
     save.disabled=!state?.record||!sourceOpened||!notes.value.trim()||!form.querySelector('[data-priority][aria-pressed="true"]');
@@ -133,6 +185,14 @@ export function mountReview(root,load,submit) {
     } finally {if(active){busy=false;fieldset.disabled=false;}}
   });
   retry.addEventListener('click',refresh);
+  showSlack.addEventListener('click',()=>showSlackPostings());
+  showReviewer.addEventListener('click',()=>{
+    reviewerPanel.hidden=false;slackPanel.hidden=true;
+    showReviewer.setAttribute('aria-pressed','true');showSlack.setAttribute('aria-pressed','false');
+  });
+  slackPrevious.addEventListener('click',()=>showSlackPostings(Math.max(0,slackOffset-50)));
+  slackNext.addEventListener('click',()=>showSlackPostings(slackOffset+50));
+  slackReload.addEventListener('click',()=>showSlackPostings(slackOffset));
   milestone.querySelector('button').addEventListener('click',()=>milestone.close());
   milestone.addEventListener('close',()=>{if(active&&!root.hidden)root.querySelector(state?.record?'#review-description':'#review-empty').focus();});
   root.querySelector('#review-empty').tabIndex=-1;
