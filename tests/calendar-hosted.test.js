@@ -78,6 +78,12 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
     await db.exec("update scout.records set enddate='2026-11-17',endtime='04:15'");
     const withEnd=await (await run('feed.ics?token='+token)).text();
     assert.match(withEnd,/DTSTART:20261117T030000Z\r\nDTEND:20261117T041500Z/);
+    for(const priority of ['normal','low',null]){
+      await db.query('update scout.records set priority=$1',[priority]);
+      const filtered=await run('feed.ics?token='+token,null,{'if-none-match':feed.headers.get('etag')});
+      assert.equal(filtered.status,200);assert.doesNotMatch(await filtered.text(),/BEGIN:VEVENT/);
+    }
+    await db.query("update scout.records set priority='high'");
     const subscription=await (await run('feed-link')).json();assert.ok(subscription.url.endsWith('?token='+token));
     assert.equal(subscription.expires_at,undefined);
 
@@ -93,8 +99,8 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
     assert.equal(queries.some(sql=>sql.includes('calendar_trial')),false);
     assert.equal((await db.query('select count(*)::int n from scout.records')).rows[0].n,1);
 
-    await db.exec(`insert into scout.records(id,modified,type,description,organizations,sources,date,starttime,timezone)
-      select gen_random_uuid(),array['2026-11-02T10:00:00Z']::timestamptz[],'event','Calendar event '||n||repeat('a',2000),
+    await db.exec(`insert into scout.records(id,modified,type,priority,description,organizations,sources,date,starttime,timezone)
+      select gen_random_uuid(),array['2026-11-02T10:00:00Z']::timestamptz[],'event','high','Calendar event '||n||repeat('a',2000),
         '{}','[]','2026-11-05',null,null from generate_series(1,284) n`);
     queries.length=0;
     const expanded=await run('feed.ics?token='+token);
@@ -102,7 +108,7 @@ test('hosted calendar with real SQL: subscription survives removal of personal-c
     const body=await expanded.text();
     assert.ok(Buffer.byteLength(body)>524288);
     assert.equal((body.match(/BEGIN:VEVENT/g)??[]).length,285);
-    assert.match(body,/SUMMARY:🐧 Calendar event 284/);
+    assert.match(body,/SUMMARY:⭐ 🐧 Calendar event 284/);
     assert.equal(queries.length,2);
   }finally{await db.close();}
 });

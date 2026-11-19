@@ -4,7 +4,7 @@ import {calendarFeed} from '../calendar/feed.js';
 import {googleEvent,syncCalendar} from '../calendar/google.js';
 
 const id='89a76621-0fac-447f-9429-62e1e8f985d1';
-const record={id,modified:['2026-10-12T10:00:00Z'],type:'event',priority:'low',description:'A & B <demo>',
+const record={id,modified:['2026-10-12T10:00:00Z'],type:'event',priority:'high',description:'A & B <demo>',
   organizations:['HUB Ocean'],sources:[{url:'https://example.org/event',role:'finding'}],date:'2026-10-22',starttime:'15:30',timezone:'+02:00'};
 test('feed has stable identity/revisions, UTC dates, safe text and byte-correct folding',()=>{
   const unsafe={...record,description:'🌊'.repeat(30)+'one,two;three\\four\r\nfive'};
@@ -13,8 +13,8 @@ test('feed has stable identity/revisions, UTC dates, safe text and byte-correct 
   for(const line of feed.split('\r\n'))assert.ok(Buffer.byteLength(line)<=75);
   assert.match(unfolded,/UID:89a76621-0fac-447f-9429-62e1e8f985d1@scout.oceanagentics.com/);
   assert.match(unfolded,/DTSTART:20261022T133000Z/);assert.doesNotMatch(unfolded,/DTEND|DURATION/);
-  assert.match(unfolded,/DTSTAMP:20261012T100000Z/);assert.ok(unfolded.includes('SEQUENCE:'+(Math.floor(Date.parse(record.modified[0])/1000)+2)));
-  assert.match(unfolded,/\r\nSUMMARY:🌊/);
+  assert.match(unfolded,/DTSTAMP:20261012T100000Z/);assert.ok(unfolded.includes('SEQUENCE:'+(Math.floor(Date.parse(record.modified[0])/1000)+3)));
+  assert.match(unfolded,/\r\nSUMMARY:⭐ 🐧 🌊/);
   assert.ok(unfolded.includes('one\\,two\\;three\\\\four\\nfive'));
 });
 
@@ -25,7 +25,15 @@ test('feed includes dated past events and excludes undated records',()=>{
   assert.equal((feed.match(/BEGIN:VEVENT/g)??[]).length,2);
   assert.match(feed,/DTSTART;VALUE=DATE:20010901/);assert.match(feed,/DTEND;VALUE=DATE:20010902/);
   const dateEntry=feed.split('BEGIN:VEVENT')[2];
-  assert.ok(dateEntry.includes('SEQUENCE:'+(Math.floor(Date.parse(record.modified[0])/1000)+1)));
+  assert.ok(dateEntry.includes('SEQUENCE:'+(Math.floor(Date.parse(record.modified[0])/1000)+2)));
+});
+
+test('feed and Google calendar include only high-priority events',()=>{
+  const excluded=['normal','low',null,undefined].map(priority=>({...record,priority}));
+  const feed=calendarFeed([record,...excluded]);
+  assert.equal((feed.match(/BEGIN:VEVENT/g)??[]).length,1);
+  assert.ok(googleEvent(record));
+  for(const event of excluded)assert.equal(googleEvent(event),null);
 });
 
 test('feed uses stored timezones, preserves clocks without a timezone and skips partial dates',()=>{
@@ -118,7 +126,10 @@ test('reconciliation creates, updates and removes managed entries, then repeats 
   writes.length=0;
   assert.deepEqual(await syncCalendar(db,{fetch:send}),{status:'ok',created:0,updated:0,removed:0,unchanged:2,google_requests:2});
   assert.deepEqual(writes,[]);assert.equal(queries.length,4);
-  records=[{...second,type:'announcement'}];
+  records=[record,{...second,priority:'normal'}];
   const removal=await syncCalendar(db,{ids:[second.id],fetch:send});assert.equal(removal.removed,1);
   assert.equal(events.has(googleEvent(second).id),false);assert.ok(events.has(old.id));
+  records=[{...record,priority:'low'}];
+  const reconciliation=await syncCalendar(db,{fetch:send});assert.equal(reconciliation.removed,1);
+  assert.equal(events.has(old.id),false);assert.ok(events.has('manual'));
 });

@@ -7,12 +7,12 @@ const stamp=value=>new Date(value).toISOString().replaceAll('-','').replaceAll('
 
 export function calendarEvent(record){
   if(!uuid.test(record.id))throw new Error('Invalid Scout record ID');
-  if(record.type!=='event')return null;
+  if(record.type!=='event'||record.priority!=='high')return null;
   const start=recordDate(record);
   if(start?.precision!=='day')return null;
   const end=recordEnd(record),allDay=!start.time||end?.precision==='day'&&end.value>start.value&&!end.time;
   const links=record.sources.map(s=>sourceLink(s.url)).filter(Boolean),registrationLinks=links.filter(url=>/regist/i.test(url));
-  return {start,end,allDay,summary:(record.priority==='high'?'⭐ ':'')+(record.priority==='low'?'':'🐧 ')+record.description,
+  return {start,end,allDay,summary:'⭐ 🐧 '+record.description,
     description:[record.description,record.organizations.join('; '),'Source start: '+dateLabel(start),
       ...(end?['Source end: '+dateLabel(end)]:[]),
       ...links.map(url=>(registrationLinks.includes(url)?'Registration link: ':'Source: ')+url),
@@ -30,7 +30,7 @@ export function calendarFeed(records){
     lines.push('BEGIN:VEVENT','UID:'+record.id+'@scout.oceanagentics.com',
       'DTSTAMP:'+stamp(record.modified.at(-1)),'LAST-MODIFIED:'+stamp(record.modified.at(-1)),
       // Advance existing subscription entries when supported end fields become visible.
-      'SEQUENCE:'+(Math.floor(Date.parse(record.modified.at(-1))/1000)+(start.time?1:0)+(record.priority==='high'?2:record.priority==='low'?1:0)+(end?4:0)),
+      'SEQUENCE:'+(Math.floor(Date.parse(record.modified.at(-1))/1000)+(start.time?1:0)+2+(end?4:0)),
       'SUMMARY:'+text(summary),
       'DESCRIPTION:'+text(description),'LOCATION:','TRANSP:TRANSPARENT','STATUS:CONFIRMED');
     if(!allDay){
