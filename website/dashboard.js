@@ -63,12 +63,15 @@ export function mountDashboard(root, load, views, reviews) {
         <span class="hint">Use your Ocean Agentics account on a computer.</span></div>
       <p class="hint">When Google Calendar opens, choose <strong>Add</strong> if prompted. You don't need to paste the link into <strong>From URL</strong>.</p>
       <ol class="calendar-steps">
-        <li><div class="calendar-shot"><figure class="calendar-screenshot calendar-account-shot">
-          <img src="/calendar/google-account.jpg" width="176" height="100" loading="lazy" alt="Google Calendar's top-right toolbar, with the account icon circled in red."></figure></div>
-          <h2>1. Check your account</h2><p>In Google Calendar, click the circled account icon at the top right. Choose your Ocean Agentics account. Your icon may have a different photo or initial.</p></li>
-        <li><div class="calendar-shot"><figure class="calendar-screenshot calendar-scout-shot">
-          <img src="/calendar/google-scout-checkbox.jpg" width="244" height="128" loading="lazy" alt="Google Calendar's left sidebar, with the Scout checkbox circled in red."></figure></div>
-          <h2>2. Show the events</h2><p>Scroll the calendar list on the left and tick the circled box beside <strong>Scout</strong>. Look under <strong>Other calendars</strong>, or <strong>My calendars</strong> if you own it.</p></li>
+        <li><h2>1. Check your account</h2><p>Use the account icon at the far right of Google Calendar's header. Choose your Ocean Agentics account. Your icon may have a different photo or initial.</p>
+          <figure class="calendar-screenshot calendar-header-shot"><img src="/calendar/google-calendar-header.jpg" width="1280" height="64" loading="lazy" alt="The full Google Calendar header, from its logo on the left to the circled account icon at the far right."></figure>
+          <div class="calendar-detail"><p class="hint">Account icon, close up:</p><figure class="calendar-screenshot calendar-account-shot">
+            <img src="/calendar/google-account.jpg" width="176" height="100" loading="lazy" alt="Close-up of the account icon circled in red."></figure></div></li>
+        <li><h2>2. Show the events</h2><p>In the left sidebar, scroll below the small month calendar. Click <strong>Other calendars</strong> to expand the list, or <strong>My calendars</strong> if you own Scout. Then tick the box beside <strong>Scout</strong>.</p>
+          <div class="calendar-location"><figure class="calendar-screenshot calendar-sidebar-shot">
+            <img src="/calendar/google-calendar-sidebar.jpg" width="256" height="635" loading="lazy" alt="Google Calendar's full left navigation column, with My calendars and Other calendars outlined near the bottom."></figure>
+            <div class="calendar-detail"><p class="hint">Expand the list, then look for this checkbox:</p><figure class="calendar-screenshot calendar-scout-shot">
+              <img src="/calendar/google-scout-checkbox.jpg" width="244" height="128" loading="lazy" alt="Close-up of the Scout checkbox circled in red."></figure></div></div></li>
       </ol>
       <div class="calendar-help"><h2>Already have Scout?</h2><p>If Google says the calendar already exists, you're set. <a href="https://calendar.google.com/calendar/" target="_blank" rel="noopener noreferrer">Open Google Calendar</a> and tick <strong>Scout</strong> in the list.</p>
         <img class="calendar-message" src="/calendar/google-already-added.jpg" width="379" height="48" loading="lazy" alt="Google Calendar notification: This calendar already exists in your calendar list.">
