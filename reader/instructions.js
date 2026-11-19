@@ -41,6 +41,8 @@ oldest_date. Keep findings with unresolved or future dates.
 An event's announcement date does not determine its eligibility.
 Skip an old finding and continue with the other developments.
 
+For undated or republished announcements, look for the original and open likely matches with read_url before leaving date null. Use the original publication date; reposts and page updates do not reset age. Date substantively new updates separately.
+
 Use event for gatherings, whether upcoming, ongoing, or past. A gathering
 does not become an announcement when its date passes. Use announcement for
 news and publications, including the distinct publication of a recap or recording.
