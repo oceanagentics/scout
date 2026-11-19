@@ -34,7 +34,7 @@ export function googleEvent(record){
     timing={start:{date:start.value},end:{date:new Date(Date.parse(through+'T00:00:00Z')+86400000).toISOString().slice(0,10)}};
     if(start.time&&!allDay)description+='\n\nCalendar date entry; the published clock cannot be resolved to a unique instant.';
   }
-  return {id:eventId(record.id),summary:'⭐ 🐧 '+record.description,description,...timing,status:'confirmed',
+  return {id:eventId(record.id),summary:record.description,description,...timing,status:'confirmed',
     transparency:'transparent',reminders:{useDefault:false},extendedProperties:{private:{scout:'1',
       scout_modified:new Date(record.modified.at(-1)).toISOString()}}};
 }
@@ -98,7 +98,9 @@ export async function syncCalendar(db,{ids=null,deadline=Date.now()+110000,fetch
     const allEvents=new Map(),highEvents=new Map();
     for(const record of records){
       const event=googleEvent(record);if(!event)continue;
-      allEvents.set(event.id,event);if(record.priority==='high')highEvents.set(event.id,event);
+      const penguins='🐧'.repeat({high:3,normal:2,low:1}[record.priority]??0);
+      allEvents.set(event.id,{...event,summary:(penguins?penguins+' ':'')+event.summary});
+      if(record.priority==='high')highEvents.set(event.id,{...event,summary:'🐧 '+event.summary});
     }
     for(const [calendar,existing] of calendars){
       const desired=calendar===sharedCalendar?highEvents:allEvents,current=new Map(existing.map(event=>[event.id,event]));

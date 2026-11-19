@@ -20,7 +20,7 @@ test('Google events include all priorities with exact dates',()=>{
 test('Google entries retain stable IDs, titles, source clocks and timezones',()=>{
   const event=googleEvent(record);
   assert.equal(event.id,'scout89a766210fac447f942962e1e8f985d1');
-  assert.equal(event.summary,'⭐ 🐧 A & B <demo>');assert.equal(event.transparency,'transparent');
+  assert.equal(event.summary,'A & B <demo>');assert.equal(event.transparency,'transparent');
   assert.deepEqual(event.extendedProperties.private,{scout:'1',scout_modified:'2026-10-12T10:00:00.000Z'});
   assert.match(event.description,/Source start: 2026-10-22 · 15:30 \+02:00/);
   const eastern=googleEvent({...record,date:'2026-11-04',starttime:'10:00',timezone:'-05:00'});
@@ -101,13 +101,17 @@ test('reconciliation creates, updates and removes managed entries, then repeats 
   };
   assert.deepEqual(await syncCalendar(db,{fetch:send}),{status:'ok',created:3,updated:1,removed:1,unchanged:0,google_requests:9});
   assert.deepEqual(writes,[[sharedCalendar,'PUT'],[sharedCalendar,'POST'],[sharedCalendar,'DELETE'],[reviewCalendar,'POST'],[reviewCalendar,'POST']]);assert.ok(events.has('manual'));
+  assert.equal(events.get(old.id).summary,'🐧 '+record.description);
+  assert.equal(reviewEvents.get(old.id).summary,'🐧🐧🐧 '+record.description);
   writes.length=0;
   assert.deepEqual(await syncCalendar(db,{fetch:send}),{status:'ok',created:0,updated:0,removed:0,unchanged:4,google_requests:3});
   assert.deepEqual(writes,[]);assert.equal(queries.length,4);
   records=[record,{...second,priority:'normal'}];
   const removal=await syncCalendar(db,{ids:[second.id],fetch:send});assert.equal(removal.removed,1);
   assert.equal(events.has(googleEvent(second).id),false);assert.ok(events.has(old.id));assert.ok(reviewEvents.has(googleEvent(second).id));
+  assert.equal(reviewEvents.get(googleEvent(second).id).summary,'🐧🐧 '+second.description);
   records=[{...record,priority:'low'}];
   const reconciliation=await syncCalendar(db,{fetch:send});assert.equal(reconciliation.removed,2);
   assert.equal(events.has(old.id),false);assert.ok(events.has('manual'));assert.deepEqual([...reviewEvents.keys()],[old.id]);
+  assert.equal(reviewEvents.get(old.id).summary,'🐧 '+record.description);
 });
