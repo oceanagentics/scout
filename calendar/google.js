@@ -1,5 +1,7 @@
-import {calendarEvent} from './feed.js';
+import {recordDate,recordEnd,dateLabel} from '../shared/finding-dates.js';
+import {sourceLink} from '../shared/records.js';
 
+const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const calendar='c_c4eba5697d3a3e33c4590daa7c20c8791d7d608b787ff959bf3117f3a7d02df5@group.calendar.google.com';
 const scope='https://www.googleapis.com/auth/calendar.events.owned';
 const base='https://www.googleapis.com/calendar/v3/calendars/'+encodeURIComponent(calendar)+'/events';
@@ -12,10 +14,17 @@ const content=event=>JSON.stringify([event.summary??'',event.description??'',tim
   event.extendedProperties?.private?.scout_modified]);
 
 export function googleEvent(record){
-  const event=calendarEvent(record);
-  if(!event)return null;
-  const {start,end,allDay}=event;
-  let timing,description=event.description;
+  if(!uuid.test(record.id))throw new Error('Invalid Scout record ID');
+  if(record.type!=='event'||record.priority!=='high')return null;
+  const start=recordDate(record);
+  if(start?.precision!=='day')return null;
+  const end=recordEnd(record),allDay=!start.time||end?.precision==='day'&&end.value>start.value&&!end.time;
+  const links=record.sources.map(s=>sourceLink(s.url)).filter(Boolean),registrationLinks=links.filter(url=>/regist/i.test(url));
+  let timing,description=[record.description,record.organizations.join('; '),'Source start: '+dateLabel(start),
+    ...(end?['Source end: '+dateLabel(end)]:[]),
+    ...links.map(url=>(registrationLinks.includes(url)?'Registration link: ':'Source: ')+url),
+    registrationLinks.length?'Registration is required.':'Informational event from Scout; registration may be required.',
+    'Scout record: https://bbnj-scout.web.app/?record='+record.id].filter(Boolean).join('\n\n');
   if(start.utc&&!allDay){
     timing={start:{dateTime:start.utc},end:{dateTime:end?.utc??new Date(Date.parse(start.utc)+30*60000).toISOString()}};
     if(!end?.utc)description+='\n\nEnd time unknown; displayed end is a 30-minute placeholder.';
@@ -24,7 +33,7 @@ export function googleEvent(record){
     timing={start:{date:start.value},end:{date:new Date(Date.parse(through+'T00:00:00Z')+86400000).toISOString().slice(0,10)}};
     if(start.time&&!allDay)description+='\n\nCalendar date entry; the published clock cannot be resolved to a unique instant.';
   }
-  return {id:eventId(record.id),summary:event.summary,description,...timing,status:'confirmed',
+  return {id:eventId(record.id),summary:'⭐ 🐧 '+record.description,description,...timing,status:'confirmed',
     transparency:'transparent',reminders:{useDefault:false},extendedProperties:{private:{scout:'1',
       scout_modified:new Date(record.modified.at(-1)).toISOString()}}};
 }
