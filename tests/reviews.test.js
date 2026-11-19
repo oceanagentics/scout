@@ -104,12 +104,14 @@ test('Slack postings preserve existing reviews, accept missed findings and remai
        $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
       insert into auth.users(id) values('${reviewer}'),('${other}');
       insert into auth.identities select id,'google','{"iss":"https://accounts.google.com","email_verified":true,"custom_claims":{"hd":"oceanagentics.com"}}' from auth.users;`);
-    for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort())
-      if(name!==migration)await db.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
+    const migrations=(await readdir(new URL('../supabase/migrations/',import.meta.url))).sort();
+    for(const name of migrations.filter(name=>name<migration))
+      await db.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
     const record=(await db.query("insert into scout.records(description,priority) values('Existing finding','normal') returning *")).rows[0];
     await db.query("insert into scout.finding_reviews(reviewer_id,record_id,model_priority,priority,notes) values($1,$2,'normal','low','Limited usefulness')",[reviewer,record.id]);
     const before=(await db.query('select * from scout.finding_reviews')).rows[0];
-    await db.exec(await readFile(new URL('../supabase/migrations/'+migration,import.meta.url),'utf8'));
+    for(const name of migrations.filter(name=>name>=migration))
+      await db.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
     const preserved=(await db.query('select reviewer_id,record_id,model_priority,priority,notes,reviewed_at from scout.finding_reviews')).rows[0];
     assert.deepEqual(preserved,before);
     const insert=`insert into scout.finding_reviews(origin,source_url,description,slack_url,slack_author_id,slack_author_name,slack_posted_at,model_priority,priority,notes)
@@ -124,12 +126,17 @@ test('Slack postings preserve existing reviews, accept missed findings and remai
     await db.query("select set_config('request.jwt.claim.sub',$1,false)",[reviewer]);
     assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.reviewed_count,1);
     await db.query("select set_config('request.jwt.claim.sub',$1,false)",[other]);
-    const rows=(await db.query('select * from scout.finding_reviews')).rows;
+    assert.deepEqual((await db.query('select * from scout.finding_reviews')).rows,[]);
+    assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.reviewed_count,0);
+    await assert.rejects(db.query(insert),{code:'42501'});
+    await db.exec('reset role');
+    await db.query('update auth.users set raw_app_meta_data=$1 where id=$2',[{scout:{admin:true}},other]);
+    await db.exec('set role authenticated');
+    const rows=(await db.query("select * from scout.finding_reviews where origin='slack'")).rows;
     assert.equal(rows.length,1);assert.equal(rows[0].origin,'slack');
     assert.equal(rows[0].reviewer_id,null);assert.equal(rows[0].record_id,null);
     assert.equal(rows[0].model_priority,'normal');assert.equal(rows[0].priority,'high');
     assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.reviewed_count,0);
-    await assert.rejects(db.query(insert),{code:'42501'});
     await db.query("select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000003',false)");
     assert.deepEqual((await db.query('select * from scout.finding_reviews')).rows,[]);
     await db.exec('reset role');

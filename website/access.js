@@ -1,5 +1,5 @@
 import { loadScout, mountDashboard } from './dashboard.js';
-import { loadReview, submitReview, loadSlackPostings } from './review.js';
+import { loadReview, submitReview } from './review.js';
 
 export function mountAccess(client, root, mount = mountDashboard) {
   const status = root.querySelector('#status'), form = root.querySelector('#sign-in');
@@ -45,7 +45,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
     }
     window.sessionStorage.removeItem('scout-record');
     closeDashboard = mount(workspace, options => loadScout(client,options), views, {
-      load:()=>loadReview(client),submit:(record,priority,notes)=>submitReview(client,record,priority,notes),slack:options=>loadSlackPostings(client,options),
+      load:()=>loadReview(client),submit:(record,priority,notes)=>submitReview(client,record,priority,notes),
     });
     mountedUser = session.user.id;
     views.hidden = false;
