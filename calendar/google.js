@@ -2,9 +2,10 @@ import {recordDate,recordEnd,dateLabel} from '../shared/finding-dates.js';
 import {sourceLink} from '../shared/records.js';
 
 const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
-const calendar='c_c4eba5697d3a3e33c4590daa7c20c8791d7d608b787ff959bf3117f3a7d02df5@group.calendar.google.com';
+const sharedCalendar='c_c4eba5697d3a3e33c4590daa7c20c8791d7d608b787ff959bf3117f3a7d02df5@group.calendar.google.com';
+const reviewCalendar='c_d6d8bace0ef22918c156fc9878f310a210a4feb47a7f078744a99cceef293633@group.calendar.google.com';
 const scope='https://www.googleapis.com/auth/calendar.events.owned';
-const base='https://www.googleapis.com/calendar/v3/calendars/'+encodeURIComponent(calendar)+'/events';
+const base='https://www.googleapis.com/calendar/v3/calendars/';
 const fail=(message,status=502)=>Object.assign(new Error(message),{status});
 const eventId=id=>'scout'+id.replaceAll('-','');
 const managed=event=>event.extendedProperties?.private?.scout==='1';
@@ -15,7 +16,7 @@ const content=event=>JSON.stringify([event.summary??'',event.description??'',tim
 
 export function googleEvent(record){
   if(!uuid.test(record.id))throw new Error('Invalid Scout record ID');
-  if(record.type!=='event'||record.priority!=='high')return null;
+  if(record.type!=='event')return null;
   const start=recordDate(record);
   if(start?.precision!=='day')return null;
   const end=recordEnd(record),allDay=!start.time||end?.precision==='day'&&end.value>start.value&&!end.time;
@@ -60,19 +61,19 @@ async function openCalendar(credential,{deadline,fetch:send},metrics){
   const options=(method,body,etag)=>({method,headers:{Authorization:'Bearer '+token.access_token,
     ...(body?{'Content-Type':'application/json'}:{}),...(etag?{'If-Match':etag}:{})},...(body?{body:JSON.stringify(body)}:{})});
   return {
-    get:id=>request(base+'/'+id,options('GET'),true),
-    async list(){
+    get:(calendar,id)=>request(base+encodeURIComponent(calendar)+'/events/'+id,options('GET'),true),
+    async list(calendar){
       const events=[];let pageToken;
       do{
         const query=new URLSearchParams({privateExtendedProperty:'scout=1',showDeleted:'true',maxResults:'2500',...(pageToken?{pageToken}:{})});
-        const page=await request(base+'?'+query,options('GET'));
+        const page=await request(base+encodeURIComponent(calendar)+'/events?'+query,options('GET'));
         events.push(...page.items??[]);pageToken=page.nextPageToken;
       }while(pageToken);
       return events;
     },
-    write:(event,current)=>request(base+(current?'/'+event.id:'')+'?sendUpdates=none',
+    write:(calendar,event,current)=>request(base+encodeURIComponent(calendar)+'/events'+(current?'/'+event.id:'')+'?sendUpdates=none',
       options(current?'PUT':'POST',current?{...current,...event}:event,current?.etag)),
-    remove:event=>request(base+'/'+event.id+'?sendUpdates=none',options('DELETE',undefined,event.etag)),
+    remove:(calendar,event)=>request(base+encodeURIComponent(calendar)+'/events/'+event.id+'?sendUpdates=none',options('DELETE',undefined,event.etag)),
   };
 }
 
@@ -82,27 +83,36 @@ export async function syncCalendar(db,{ids=null,deadline=Date.now()+110000,fetch
     const row=(await db.query("select decrypted_secret from vault.decrypted_secrets where name='scout_calendar_google'")).rows[0];
     const google=await openCalendar(row?JSON.parse(row.decrypted_secret):null,{deadline,fetch:send},metrics);
     // Read Google before the source snapshot, so newly saved records cannot become apparent orphans.
-    let existing;
-    if(ids){
-      existing=[];
-      for(const id of ids){const event=await google.get(eventId(id));if(event)existing.push(event);}
-    }else existing=await google.list();
+    const calendars=new Map();
+    for(const calendar of [sharedCalendar,reviewCalendar]){
+      let existing;
+      if(ids){
+        existing=[];
+        for(const id of ids){const event=await google.get(calendar,eventId(id));if(event)existing.push(event);}
+      }else existing=await google.list(calendar);
+      calendars.set(calendar,existing);
+    }
     const records=(await db.query(`select id,modified,type,priority,description,organizations,date,starttime,timezone,enddate,endtime,sources
       from scout.records ${ids?'where id=any($1::uuid[])':"where type='event'"} order by id`,ids?[ids]:[])).rows;
     // Complete mapping before any writes, including removals.
-    const desired=new Map();
-    for(const record of records){const event=googleEvent(record);if(event)desired.set(event.id,event);}
-    const current=new Map(existing.map(event=>[event.id,event]));
-    for(const [id,event] of desired){
-      const previous=current.get(id);
-      if(previous&&!managed(previous))throw fail('Refusing to overwrite an unmanaged Google event.',409);
-      if(previous&&(Date.parse(previous.extendedProperties.private.scout_modified)>
-        Date.parse(event.extendedProperties.private.scout_modified)||content(previous)===content(event))){counts.unchanged++;continue;}
-      await google.write(event,previous);counts[previous?'updated':'created']++;
+    const allEvents=new Map(),highEvents=new Map();
+    for(const record of records){
+      const event=googleEvent(record);if(!event)continue;
+      allEvents.set(event.id,event);if(record.priority==='high')highEvents.set(event.id,event);
     }
-    for(const event of existing){
-      if(!managed(event)||event.status==='cancelled'||desired.has(event.id))continue;
-      await google.remove(event);counts.removed++;
+    for(const [calendar,existing] of calendars){
+      const desired=calendar===sharedCalendar?highEvents:allEvents,current=new Map(existing.map(event=>[event.id,event]));
+      for(const [id,event] of desired){
+        const previous=current.get(id);
+        if(previous&&!managed(previous))throw fail('Refusing to overwrite an unmanaged Google event.',409);
+        if(previous&&(Date.parse(previous.extendedProperties.private.scout_modified)>
+          Date.parse(event.extendedProperties.private.scout_modified)||content(previous)===content(event))){counts.unchanged++;continue;}
+        await google.write(calendar,event,previous);counts[previous?'updated':'created']++;
+      }
+      for(const event of existing){
+        if(!managed(event)||event.status==='cancelled'||desired.has(event.id))continue;
+        await google.remove(calendar,event);counts.removed++;
+      }
     }
     return {status:'ok',...counts,...metrics};
   }catch(error){return {status:'failed',...counts,...metrics,error:error.status?error.message:'Calendar synchronization interrupted.'};}

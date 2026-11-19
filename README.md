@@ -16,7 +16,7 @@ Web trackers have an explicit Page or Index setting. Tracker configuration is ma
 | [reader/](reader/) | Check tracker URLs, call models, save findings and update tracker state. |
 | [reader/models/](reader/models/) | Model gateway and provider adapters. |
 | [slackbot/](slackbot/) | Post newly saved findings and scheduled digests using Scout's bot token; contains the desired Slack app manifest. Explicit repeated requests can send the same findings again. |
-| [calendar/](calendar/) | OAuth publishing and reconciliation for the shared Scout Google calendar. |
+| [calendar/](calendar/) | OAuth publishing and reconciliation for the shared High-only Scout calendar and Danny's private all-priority Scout Everything review calendar. |
 | [shared/](shared/) | Pure date and record rules used by multiple features. |
 | [supabase/](supabase/) | Database migrations, hosted entrypoints, access rules and operational SQL. |
 | [diagnostics/](diagnostics/) | Local model troubleshooting; see its [instructions](diagnostics/README.md). |
@@ -131,7 +131,7 @@ Manual notification requests require `kind=morning`, `kind=weekly`, or `kind=fin
 
 ## Supabase deployment
 
-Scout's Supabase project is **`vhlfumeyhkeospnemukq`**. `scout-calendar` is the Supabase Edge Function reconciling the shared Scout Google calendar. Deploying it replaces its running code on Supabase.
+Scout's Supabase project is **`vhlfumeyhkeospnemukq`**. `scout-calendar` is the Supabase Edge Function reconciling both Scout Google calendars. Deploying it replaces its running code on Supabase.
 
 Function deployment uploads files from the current checkout. Make sure it contains the intended reviewed change. Pushing to Git, deploying the Firebase website and updating database rows are separate operations; this checkout has no automatic Supabase deployment workflow. Eligible new or edited findings publish to Google Calendar without a code deployment.
 
@@ -218,9 +218,9 @@ Follow any additional local imports introduced by the change. The [Supabase API 
 
 Confirm the returned deployment status/version, then read it back through `GET https://api.supabase.com/v1/projects/vhlfumeyhkeospnemukq/functions/scout-calendar` using Management API authentication. Metadata confirms which deployment is active; also verify the requested behavior.
 
-For calendar changes, verify that `feed-link` and `feed.ics` return HTTP 404. Reconcile and read back the shared Google calendar, checking that its active Scout-managed entries match only high-priority saved events with exact dates. Keep Google event IDs unchanged. Verify that the feed token, feed-secret SQL function and obsolete trial table are absent while the Google credential remains. For website changes, deploy Firebase separately and verify the released assets too.
+For calendar changes, verify that `feed-link` and `feed.ics` return HTTP 404. Reconcile and read back both Google calendars: the shared Scout calendar must contain only High events, while Danny's private Scout Everything calendar must contain all saved events, including Normal, Low and unassessed events. Both require exact start dates and include past events. Keep Google event IDs unchanged and leave unmanaged entries untouched. Verify that the feed token, feed-secret SQL function and obsolete trial table are absent while the Google credential remains. For website changes, deploy Firebase separately and verify the released assets too.
 
-Google publishing uses the encrypted Vault secret `scout_calendar_google` containing `client_id`, `client_secret`, `user_id` and `refresh_token`. The backend-only `POST scout-calendar/reconcile` accepts an empty body and the existing backend `apikey`. It returns confirmed create/update/remove/unchanged counts, Google request counts and SQL costs. Run it after deploying the shared publishing code; a repeat should make no event writes. The daily job reconciles at 4 a.m. New York time. Preserve each existing job's prior active state, including after installing `supabase/scout-loop.sql`.
+Google publishing uses the encrypted Vault secret `scout_calendar_google` containing `client_id`, `client_secret`, `user_id` and `refresh_token`. The shared Scout calendar is `c_c4eba5697d3a3e33c4590daa7c20c8791d7d608b787ff959bf3117f3a7d02df5@group.calendar.google.com`; Danny's private Scout Everything calendar is `c_d6d8bace0ef22918c156fc9878f310a210a4feb47a7f078744a99cceef293633@group.calendar.google.com`. The backend-only `POST scout-calendar/reconcile` accepts an empty body and the existing backend `apikey`. It returns confirmed create/update/remove/unchanged counts across both calendars, Google request counts and SQL costs. Run it after deploying the shared publishing code; a repeat should make no event writes. An unchanged full reconciliation uses one OAuth refresh, two Google list requests and two SQL reads, with no SQL writes or model calls. The daily job reconciles at 4 a.m. New York time. Preserve each existing job's prior active state, including after installing `supabase/scout-loop.sql`.
 
 A function deployment does not apply database migrations. For a requested schema change, inspect remote migration history and apply only the reviewed pending Scout migrations, coordinating the affected consumers. If the release requires a temporary pause, restore each job's prior active state after verification as required by [AGENTS.md](AGENTS.md). Do not invoke the reader, send Slack messages, or run historical cutover SQL merely to verify deployment. Report what was checked locally, what was verified live, and any remaining blocker.
 

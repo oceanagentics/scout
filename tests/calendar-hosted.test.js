@@ -41,11 +41,15 @@ test('removed feed routes and invalid reconciliation requests never open a datab
   assert.equal(connects,0);
 });
 
-test('real SQL reconciliation removes non-high events and feed removal preserves Google credentials and findings',async()=>{
+test('real SQL reconciliation publishes all priorities to review and keeps the shared calendar high-only',async()=>{
   const db=new PGlite(),queries=[],credential={client_id:'client',client_secret:'secret',refresh_token:'refresh'};
   const records=[record,...['normal','low',null].map((priority,index)=>({...record,
     id:(index+1).toString().repeat(8)+'-1111-4111-8111-111111111111',priority}))];
   const events=new Map(records.map(r=>{const event={...googleEvent({...r,priority:'high'}),etag:r.id};return [event.id,event];}));
+  const reviewEvents=new Map(),calendars=new Map([
+    ['c_c4eba5697d3a3e33c4590daa7c20c8791d7d608b787ff959bf3117f3a7d02df5@group.calendar.google.com',events],
+    ['c_d6d8bace0ef22918c156fc9878f310a210a4feb47a7f078744a99cceef293633@group.calendar.google.com',reviewEvents]
+  ]);
   try{
     // Vault is a SQL fixture; Google HTTP is mocked. No live permissions are established here.
     await db.exec(`create role anon;create role authenticated;create role service_role;create schema scout;create schema vault;
@@ -73,21 +77,25 @@ test('real SQL reconciliation removes non-high events and feed removal preserves
       },release(){}}),end:async()=>{}}),
       fetch:async(url,options)=>{
         if(url.includes('oauth2'))return Response.json({access_token:'access',scope:'https://www.googleapis.com/auth/calendar.events.owned'});
-        if(options.method==='GET')return Response.json({items:[...events.values()]});
-        assert.equal(options.method,'DELETE');
-        const id=new URL(url).pathname.split('/').at(-1);
-        assert.equal(options.headers['If-Match'],events.get(id).etag);events.delete(id);
-        return new Response(null,{status:204});
+        const path=new URL(url).pathname.split('/'),calendarEvents=calendars.get(decodeURIComponent(path[4]));assert.ok(calendarEvents);
+        if(options.method==='GET')return Response.json({items:[...calendarEvents.values()]});
+        if(options.method==='DELETE'){
+          const id=path.at(-1);assert.equal(options.headers['If-Match'],calendarEvents.get(id).etag);calendarEvents.delete(id);
+          return new Response(null,{status:204});
+        }
+        assert.equal(options.method,'POST');const event=JSON.parse(options.body);
+        calendarEvents.set(event.id,{...event,etag:event.id});return Response.json(calendarEvents.get(event.id));
       }};
-    for(const removed of [3,0]){
+    for(const [created,removed,unchanged] of [[4,3,1],[0,0,5]]){
       const response=await hostedCalendar(new Request('https://example.org/scout-calendar/reconcile',{
         method:'POST',headers:{apikey:key}}),config);
       assert.equal(response.status,200);
       const result=await response.json();
-      assert.equal(result.status,'ok');assert.equal(result.created,0);assert.equal(result.updated,0);
-      assert.equal(result.removed,removed);assert.equal(result.unchanged,1);assert.equal(result.google_requests,2+removed);
+      assert.equal(result.status,'ok');assert.equal(result.created,created);assert.equal(result.updated,0);
+      assert.equal(result.removed,removed);assert.equal(result.unchanged,unchanged);assert.equal(result.google_requests,3+created+removed);
       assert.equal(result.cost.statements,2);assert.equal(result.cost.mutations,0);
     }
     assert.deepEqual([...events.keys()],[googleEvent(record).id]);assert.equal(queries.length,4);
+    assert.deepEqual([...reviewEvents.keys()].sort(),records.map(r=>googleEvent(r).id).sort());
   }finally{await db.close();}
 });
