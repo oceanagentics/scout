@@ -1,6 +1,6 @@
 # Scout
 
-Scout collects BBNJ events, announcements and official treaty developments, saves useful findings with source URLs, and makes them available through a private website, Slack and calendar tools. The website opens on volunteer review: one finding at a time with its model ranking, an independent volunteer ranking and optional notes. Reviewers use their existing Ocean Agentics Google accounts; saved feedback drives their personal count and a celebration every 12 reviews. Records and Trackers remain in the navigation.
+Scout collects BBNJ events, announcements and official treaty developments, saves useful findings with source URLs, and makes them available through a private website, Slack and calendar tools. The website opens on volunteer review: one finding at a time with its model ranking, an independent volunteer ranking and required notes explaining the ranking. Reviewers use their existing Ocean Agentics Google accounts; saved feedback drives their personal count and a celebration every 12 reviews. Records and Trackers remain in the navigation.
 
 Collection wakes every six minutes and checks one due tracker. Current trackers have a daily cadence: a fully successful check completes that New York calendar day. New findings post to Slack after saving; morning events post daily at 8 a.m. and the weekly high-priority digest posts Mondays at 9 a.m., America/New_York. This guide describes the local code; it does not certify what is currently deployed.
 

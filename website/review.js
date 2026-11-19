@@ -17,25 +17,23 @@ export async function submitReview(client,record,priority,notes) {
 
 export function mountReview(root,load,submit) {
   // Static markup only; finding text and URLs are assigned through DOM properties.
-  root.innerHTML=`<div class="review-heading"><div><p class="eyebrow">The human perspective</p>
-    <h1>A little judgment.<br>A better Scout.</h1><p class="review-intro">Help us spot what matters. Review one finding at a time.</p></div>
-    <div class="review-score" aria-label="Your review progress"><span class="eyebrow">Your contribution</span>
-      <p><strong id="review-total">0</strong> <span>findings ranked</span></p>
+  root.innerHTML=`<div class="review-heading"><h1>Review findings</h1>
+    <div class="review-score" aria-label="Your review progress">
+      <p><strong id="review-total">0</strong> <span>ranked</span></p>
       <span id="review-plus" aria-hidden="true">+1</span><div class="review-steps" aria-hidden="true">${'<i></i>'.repeat(12)}</div>
-      <p id="review-progress">12 to your first milestone</p></div></div>
-    <p id="review-status" role="status">Loading your next finding…</p><button id="review-retry" type="button" class="secondary" hidden>Reload finding</button>
+      <p id="review-progress">12 to milestone</p></div></div>
+    <div class="review-feedback"><p id="review-status" role="status">Loading your next finding…</p><button id="review-retry" type="button" class="secondary" hidden>Reload finding</button></div>
     <article class="review-card" id="review-card" aria-labelledby="review-description" hidden>
-      <div class="review-card-top"><span id="review-type" class="eyebrow"></span><span class="model-ranking">Model ranking <strong id="review-model"></strong></span></div>
-      <h2 id="review-description" tabindex="-1"></h2><div id="review-links" class="review-links"></div>
-      <form id="review-form"><fieldset><legend>Your assessed ranking</legend><p class="hint">How much attention does this finding deserve?</p>
-        <div class="review-choices"><label><input type="radio" name="priority" value="high" required><span><b>High</b><small>Make it a priority</small></span></label>
-        <label><input type="radio" name="priority" value="normal" required><span><b>Normal</b><small>Worth knowing</small></span></label>
-        <label><input type="radio" name="priority" value="low" required><span><b>Low</b><small>Less relevant</small></span></label></div>
-        <details class="review-rubric"><summary>What do the rankings mean?</summary><p><b>High:</b> technical BBNJ Clearing-House developments, consequential treaty institutions or official positions, verified ratifications, or substantive ocean funding news.</p>
-        <p><b>Normal:</b> other substantive BBNJ events, papers and announcements.</p><p><b>Low:</b> general advocacy, repeated commentary, promotion or incidental mentions.</p><p>Missing dates or scheduling details do not lower priority.</p></details>
-        <label for="review-notes">Your notes <span class="optional">(optional)</span></label>
-        <textarea id="review-notes" name="notes" rows="3" placeholder="What stood out? What did Scout miss?"></textarea>
-        <div class="review-submit"><span class="hint">Your perspective helps Scout improve.</span><button type="submit">Save & next finding</button></div>
+      <div class="review-card-top"><span id="review-type" class="eyebrow"></span></div>
+      <div class="review-content"><div class="review-description-body" tabindex="0" role="region" aria-label="Finding description"><h2 id="review-description" tabindex="-1"></h2></div>
+        <div class="review-source-meta"><span class="model-ranking">Model <strong id="review-model"></strong></span><div id="review-links" class="review-links"></div></div></div>
+      <form id="review-form"><fieldset><legend>Your ranking</legend>
+        <div class="review-choices" role="group" aria-label="Your ranking"><button type="button" data-priority="high" aria-pressed="false">High</button>
+        <button type="button" data-priority="normal" aria-pressed="false">Normal</button>
+        <button type="button" data-priority="low" aria-pressed="false">Low</button></div>
+        <label for="review-notes">Your notes</label>
+        <textarea id="review-notes" name="notes" rows="2" placeholder="why this ranking" required></textarea>
+        <div class="review-submit"><button type="submit" disabled>Save & next finding</button></div>
       </fieldset></form></article>
     <div id="review-empty" class="review-empty" hidden><span aria-hidden="true">✦</span><h2>You’re all caught up.</h2><p>Thanks for lending your perspective. Come back when there are new findings to review.</p></div>
     <dialog class="review-milestone" aria-labelledby="milestone-heading"><div class="milestone-burst" aria-hidden="true">${'<i></i>'.repeat(12)}</div>
@@ -44,25 +42,29 @@ export function mountReview(root,load,submit) {
   const form=root.querySelector('#review-form'),fieldset=form.querySelector('fieldset');
   const status=root.querySelector('#review-status'),card=root.querySelector('#review-card');
   const retry=root.querySelector('#review-retry'),milestone=root.querySelector('.review-milestone');
+  const choices=form.querySelectorAll('[data-priority]'),notes=form.querySelector('#review-notes'),save=form.querySelector('[type="submit"]');
   let state,active=true,busy=false;
 
   function render(next) {
     state=next;
     root.querySelector('#review-total').textContent=String(state.reviewed_count);
     const progress=state.reviewed_count%12;
-    root.querySelector('#review-progress').textContent=state.reviewed_count===0?'12 to your first milestone':`${12-progress} to your next milestone`;
+    root.querySelector('#review-progress').textContent=`${12-progress} to milestone`;
     root.querySelectorAll('.review-steps i').forEach((step,index)=>step.classList.toggle('complete',index<progress));
     card.hidden=!state.record;
     root.querySelector('#review-empty').hidden=Boolean(state.record);
     form.reset();
+    for(const button of choices)button.setAttribute('aria-pressed','false');
+    save.disabled=true;notes.setCustomValidity('');
     if(!state.record)return;
+    root.querySelector('.review-description-body').scrollTop=0;
     root.querySelector('#review-description').textContent=state.record.description;
     root.querySelector('#review-type').textContent=TYPES[state.record.type]??'Finding';
     root.querySelector('#review-model').textContent=PRIORITIES[state.record.priority]??'Not yet assessed';
     const links=root.querySelector('#review-links');links.replaceChildren();
     for(const source of state.record.sources) {
       const href=sourceLink(source.url);if(!href)continue;
-      const link=document.createElement('a');link.href=href;link.textContent=source.url;
+      const link=document.createElement('a');link.href=href;link.textContent='Source · '+new URL(href).hostname;
       link.target='_blank';link.rel='noopener noreferrer';links.append(link);
     }
     if(!links.childElementCount)links.textContent='No source link available.';
@@ -71,7 +73,7 @@ export function mountReview(root,load,submit) {
   function celebrate(previous,total) {
     if(total<=previous)return;
     if(!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      root.querySelector('#review-total').animate([{transform:'scale(1)'},{transform:'scale(1.25)',color:'#bc572b'},{transform:'scale(1)'}],{duration:600});
+      root.querySelector('#review-total').animate([{transform:'scale(1)'},{transform:'scale(1.25)',color:'#1d5fbf'},{transform:'scale(1)'}],{duration:600});
       root.querySelector('#review-plus').animate([{opacity:0,transform:'translateY(8px) scale(.5)'},{opacity:1,offset:.25,transform:'translateY(-8px) scale(1.2)'},{opacity:0,transform:'translateY(-42px) scale(1)'}],{duration:1000});
     }
     if(Math.floor(total/12)>Math.floor(previous/12)) {
@@ -92,13 +94,21 @@ export function mountReview(root,load,submit) {
     } finally {if(active){busy=false;retry.disabled=false;fieldset.disabled=false;}}
   }
 
+  for(const button of choices)button.addEventListener('click',()=>{
+    for(const other of choices)other.setAttribute('aria-pressed',String(other===button));
+    save.disabled=false;
+  });
+  notes.addEventListener('input',()=>notes.setCustomValidity(''));
   form.addEventListener('submit',async event=>{
     event.preventDefault();
-    if(busy||!state?.record||!form.reportValidity())return;
-    const values=new FormData(form),previous=state.reviewed_count;
+    if(busy||!state?.record)return;
+    const priority=form.querySelector('[data-priority][aria-pressed="true"]')?.dataset.priority;
+    notes.setCustomValidity(notes.value.trim()?'':'Explain why you chose this ranking.');
+    if(!priority||!form.reportValidity())return;
+    const previous=state.reviewed_count;
     busy=true;fieldset.disabled=true;retry.hidden=true;status.hidden=false;status.textContent='Saving your review…';
     try {
-      const next=await submit(state.record,values.get('priority'),values.get('notes'));if(!active)return;
+      const next=await submit(state.record,priority,notes.value);if(!active)return;
       render(next);status.textContent='Review saved. Thank you!';celebrate(previous,next.reviewed_count);
       if(!milestone.open)(next.record?root.querySelector('#review-description'):root.querySelector('#review-empty')).focus();
     } catch(error) {
