@@ -256,7 +256,7 @@ test('rescheduled dates and less precise corrections save their source before co
  t.diagnostic(JSON.stringify({mocked_model:true,real_local_sql:true,identical_finding_writes:0,repeat_cost:Object.fromEntries(Object.keys(cost).map(k=>[k,db.metrics[k]-cost[k]]))}));
 });
 
-test('text limits preserve existing descriptions, clip Unicode before saving and avoid identical repeat writes',async t=>{
+test('text limits clip Unicode, avoid identical repeat writes and validate existing descriptions',async t=>{
  const name='20261119230000_scout_text_limits.sql',{raw,db}=await setup(t,{before:name});
  const legacy=(await raw.query('insert into scout.records(description,details) values($1,$2) returning *,modified::text[] as modified',
   ['海'.repeat(281),'Established facts.'])).rows[0];
@@ -271,6 +271,12 @@ test('text limits preserve existing descriptions, clip Unicode before saving and
  assert.equal(saved.description,'🐟'.repeat(280));assert.equal(saved.details,'🐟'.repeat(4096));
  const repeated=await db.transaction(tx=>applyDecisions(tx,[{item,investigation:{decisions:[update(saved,incoming)],lookups:[{args,records:[saved]}],invalid_fields:{}}}]));
  assert.equal(repeated.saved,1);assert.equal(repeated.changed,0);
+ assert.deepEqual((await searchFindings(db,args)).records[0],saved);
+ await raw.exec(await readFile(new URL('../supabase/migrations/20261119234000_scout_validate_description_limit.sql',import.meta.url),'utf8'));
+ const clipped=(await raw.query('select *,modified::text[] as modified from scout.records where id=$1',[legacy.id])).rows[0];
+ assert.equal(clipped.description,'海'.repeat(280));assert.equal(clipped.details,legacy.details);
+ assert.deepEqual(clipped.modified.slice(0,-1),legacy.modified);
+ assert.equal((await raw.query("select convalidated from pg_constraint where conrelid='scout.records'::regclass and conname='records_description_length'")).rows[0].convalidated,true);
  assert.deepEqual((await searchFindings(db,args)).records[0],saved);
 });
 

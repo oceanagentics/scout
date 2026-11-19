@@ -77,7 +77,7 @@ The investigation instructions provide OA's mission, research and original-date 
 | Column | Value |
 | --- | --- |
 | id | UUID |
-| description | Short organization-led description, at most 280 Unicode characters for new/updated findings |
+| description | Short organization-led description, at most 280 Unicode characters |
 | details | Nullable scalar text, at most 4,096 Unicode characters; searchable identifying facts, no model traffic or proof trail |
 | type | event, announcement, or null |
 | priority | high, normal, low, or null |
@@ -89,9 +89,9 @@ The investigation instructions provide OA's mission, research and original-date 
 
 The one-time source conversion preserves every old URL as unclassified, along with IDs and timestamps; it does not fabricate a primary link. Merge sources by normalized URL, applying the incoming explicit role so a read supporting page can correct an earlier finding label. The current item URL always remains a finding source. Several publications can support one finding and an article can produce several findings. Slack Read more chooses the first evidenced finding URL; legacy records without one retain their description and omit Read more. The website labels source roles and exposes details; calendar descriptions retain all URLs.
 
-Treaty developments are announcements. The field-removal migration preserves their IDs, saved dates, sources and review feedback, and moves saved submission deadlines into searchable details without widening its byte limit. Converted records retain prior modified timestamps and append one saved-change timestamp. A details overflow aborts the migration rather than losing a fact.
+Treaty developments are announcements. The field-removal migration preserves their IDs, saved dates, sources and review feedback, and moves saved submission deadlines into searchable details within the details limit. Converted records retain prior modified timestamps and append one saved-change timestamp. A details overflow aborts the migration rather than losing a fact.
 
-Field meanings appear once in the investigation prompt; the lean response schema defines structure, nullability, enums and character ceilings. The normalizer clips generated descriptions and details by Unicode characters before comparisons and writes. Database character checks enforce the same ceilings; the description check is NOT VALID to preserve existing longer descriptions without rewriting them, while enforcing the ceiling on inserts and updates. Details can occupy up to 16 KiB of UTF-8 text. Clipping adds no model calls or per-item SQL and may discard trailing qualifiers, so identifying details come first.
+Field meanings appear once in the investigation prompt; the lean response schema defines structure, nullability, enums and character ceilings. The normalizer clips generated descriptions and details by Unicode characters before comparisons and writes. Database character checks enforce the same ceilings. Existing overlong descriptions are clipped to 280 characters and the description check is fully validated. Details can occupy up to 16 KiB of UTF-8 text. Clipping adds no model calls or per-item SQL and may discard trailing qualifiers, so identifying details come first.
 
 The prompt expresses recency as 30 days; the existing one-calendar-month backend cutoff remains unchanged and applies to normalized facts of every type. Unknown/future dates remain eligible; partial dates are excluded only if their latest possible day is before the cutoff. Malformed optional dates, ends or non-text details are dropped with numeric field counts without losing useful fields. Missing optional facts retain saved values; supplied dates retain their incoming precision. Existing findings are not deleted by this capture rule. The findings RPC includes details in text search, filters dates using date alone, and retains its workspace access and pagination.
 
