@@ -13,12 +13,11 @@ export async function investigate(db,item,{modelFor,deadline,readUrl,oldestDate,
   if(answer.status!=='complete'||!Array.isArray(answer.decisions))throw fail('invalid_output');
   const candidates=[...lookups.flatMap(l=>l.records),...proposed];
   for(const d of answer.decisions){
-   if(!['create','update','no_change','skip'].includes(d?.action))throw fail('invalid_output');
+   if(!['create','update','skip'].includes(d?.action))throw fail('invalid_output');
    if(d.action==='skip'&&!(typeof d.reason==='string'&&d.reason.trim()))throw fail('invalid_output');
    if(['create','update'].includes(d.action)&&(!Array.isArray(d.fields?.organizations)||!Array.isArray(d.fields.supporting_urls)||!normalizeFinding(d.fields,item.url)))throw fail('invalid_output');
    const target=candidates.find(r=>r.id===d.id&&r.revision===d.expected_revision);
-   if(['update','no_change'].includes(d.action)&&(!lookups.length||!target))throw fail('invalid_output');
-   if(d.action==='no_change'&&!target.sources.some(s=>s.role==='finding'&&s.url===item.url))throw fail('invalid_output');
+   if(d.action==='update'&&(!lookups.length||!target))throw fail('invalid_output');
    if(d.action==='create'&&!lookups.length)throw fail('invalid_output');
   }
  };

@@ -114,10 +114,6 @@ export async function applyDecisions(tx,entries){
   const target=d.action==='create'?null:working.get(d.id)??candidates.get(d.id);
   if(d.action!=='create'&&(!target||target.revision!==d.expected_revision||used.has(d.id)))throw fail('stale_record');
   if(target)used.add(target.id);
-  if(d.action==='no_change'){
-   if(!target.sources.some(s=>s.role==='finding'&&s.url===item.url))throw fail('invalid_output');
-   counts.saved++;continue;
-  }
   const f=normalizeFinding(d.fields,item.url,investigation.invalid_fields);
   if(!f)throw fail('invalid_output');
   if(target&&['date','deadline'].some(k=>f[k]&&target[k]&&!f[k].startsWith(target[k])&&!target[k].startsWith(f[k]))){counts.ambiguous++;continue;}

@@ -134,15 +134,15 @@ Never accumulate per-source copies, quoted evidence, or a history inside details
 
 Return {status:"complete",decisions:[...]}, or unreadable only when no usable material was read.
 An irrelevant/confirmed-old item has an empty decisions array. Each decision has action:
-create, update, no_change, or skip; id and expected_revision are the exact searched candidate
-ID and revision for updates/no_change, otherwise null. fields is the full proposed finding for
+create, update, or skip; id and expected_revision are the exact searched candidate
+ID and revision for updates, otherwise null. fields is the full proposed finding for
 create/update, otherwise null. reason briefly explains a skip, otherwise null.
-Updates/no_change may reference only candidates actually returned by search_findings.
+Updates may reference only candidates actually returned by search_findings.
 A pending candidate is an earlier proposal in this same atomic source group; it has a
 backend-assigned ID and may have revision null. Reuse that ID and enrich its proposed facts
 instead of creating another copy. Copy its returned revision, including null, exactly.
-A new item URL must be saved as a source even when facts are unchanged: return update, not
-no_change, when the candidate lacks the current item URL with role finding.
+Return update for a matched finding even when its facts are unchanged. The backend saves
+the current item URL as a finding source and makes no finding write when nothing changed.
 For supporting_urls, include only relevant supporting URLs actually read in this investigation.
 Never create merely because your first search was empty. Never merge distinct developments.
 Use null for unsupported optional facts. Return no arbitrary SQL or tracker/progress changes.`;
@@ -158,7 +158,7 @@ const finding={
 };
 export const RESPONSE_SCHEMA={type:'object',properties:{
  status:{type:'string',enum:['complete','unreadable']},decisions:{type:'array',items:{type:'object',properties:{
-  action:{type:'string',enum:['create','update','no_change','skip']},id:{type:['string','null']},expected_revision:{type:['string','null']},
+  action:{type:'string',enum:['create','update','skip']},id:{type:['string','null']},expected_revision:{type:['string','null']},
   fields:{anyOf:[finding,{type:'null'}]},reason:{type:['string','null']}
  },required:['action','id','expected_revision','fields','reason'],additionalProperties:false}}
 },required:['status','decisions'],additionalProperties:false};

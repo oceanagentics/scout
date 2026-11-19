@@ -96,13 +96,12 @@ The model assesses the supplied summary, investigates as needed, retrieves exist
 | Decision | Required data and behavior |
 | --- | --- |
 | create | New finding fields, after searching for existing records. |
-| update | Candidate ID, expected revision and proposed field changes. Only candidates actually returned during this investigation are eligible. |
-| no_change | Candidate ID and expected revision. Make no finding-row mutation. |
-| skip | Explicit reason such as identity_unresolved. Do not translate uncertainty into a new record or a no-change claim. |
+| update | Candidate ID, expected revision and full proposed fields, even when facts are unchanged. Only candidates actually returned during this investigation are eligible. |
+| skip | Explicit reason such as identity_unresolved. Do not translate uncertainty into a new record or an assumed match. |
 
 An irrelevant item returns a valid empty decision list. It is successfully consumed. Explicitly skipped findings permit other findings and source progress to commit, including when all findings are skipped. This preserves the current collection policy; it creates no review queue. Invalid decision contracts, provider failures and stale reads instead defer the item without consuming it.
 
-A new evidenced item URL requires a source-only update even when the finding's facts are unchanged. No-change is valid only when the required item URL/role is already represented; validation must not secretly turn a no-change decision into a finding write.
+A matched finding always uses update. The backend saves a new evidenced item URL even when the finding's facts are unchanged, and makes no finding-row mutation when the merged fields and sources are identical.
 
 Keep tolerant handling of malformed optional scheduling fields and the existing finding-age rule. Apply that rule to the development’s date, not automatically to the feed entry’s publication date. Missing optional fields do not erase established facts.
 
@@ -127,7 +126,7 @@ For a completed item, use one short database transaction:
 
 1. Verify the tracker lease, unchanged tracker URL and expected pending item version.
 2. Acquire the existing finding transaction advisory lock.
-3. Before applying decisions, repeat the actual candidate searches and compare candidate IDs and revisions, independent of ordering. Verify revisions for update and no-change decisions.
+3. Before applying decisions, repeat the actual candidate searches and compare candidate IDs and revisions, independent of ordering. Verify revisions for update decisions.
 4. If observations changed, roll back and defer for fresh investigation through the finite retry path.
 5. Validate and apply decisions, retaining existing optional-field merge rules and making no writes for identical findings.
 6. Commit consumed-item progress in the same transaction.
@@ -151,7 +150,7 @@ Proposed table: scout.source_items, backend-only, keyed by tracker ID and item k
 | observed_version | Latest evidenced list-item revision; nullable. |
 | consumed_version | Revision successfully investigated; nullable. |
 | pending | Current work flag, needed because an unversioned rediscovery cannot prove unchanged content. |
-| consumed_at | Successful processing of this source item, including irrelevant and no-change results. |
+| consumed_at | Successful processing of this source item, including irrelevant items and unchanged findings. |
 | request_url, request_checked_at | Optional evidence for the actual primary item resource read and successfully processed. Both stay null when only a feed summary was consumed. |
 
 Add discovery_request_url and discovery_checked_at to the tracker. These record successful listing discovery, rather than pretending pending articles have been processed. They are separate from the tracker’s full collection completion and from article HTTP freshness.

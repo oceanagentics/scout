@@ -52,6 +52,30 @@ test('RSS -> real provider-tool mechanics -> duplicate update -> specific Slack 
  t.diagnostic(JSON.stringify({mocked_model:true,first_sql_cost:db.metrics,duplicate_searches:searches}));
 });
 
+test('matched updates retain new source URLs and unchanged facts; identical updates consume progress without finding writes',async t=>{
+ const {raw,db,tracker}=await setup(t);
+ const id=(await raw.query('insert into scout.records(description,details,type,priority,organizations,date,sources) values($1,$2,$3,$4,$5,$6,$7::jsonb) returning id',
+  [finding.description,finding.details,finding.type,finding.priority,finding.organizations,finding.date,JSON.stringify([{url:feedURL,role:'unclassified'}])])).rows[0].id;
+ const original=(await raw.query('select * from scout.records where id=$1',[id])).rows[0];
+ let version=0,requests=0,searches=0;
+ const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>url===feedURL?rss([['a',publication,'CHM webinar revision '+version]]):new Response('<main>Article revision '+version+'</main>',{headers:{'content-type':'text/html'}}),modelFor:(source,options)=>trackerModel({source,...options,openaiApiKey:'fixture',fetch:async(_url,request)=>{
+  requests++;const body=JSON.parse(request.body),output=body.input.find(i=>i.type==='function_call_output');
+  if(!output){searches++;return Response.json({status:'completed',output:[{type:'function_call',name:'search_findings',call_id:'lookup',arguments:JSON.stringify({queries:['HSA'],urls:[]})}]});}
+  const candidates=JSON.parse(output.output);assert.equal(candidates.records.length,1);
+  return response(answer([update(candidates.records[0],finding)]));
+ }})});
+ const first=await run();assert.equal(first.state,'saved');assert.equal(first.created,0);assert.equal(first.changed,1);assert.equal(first.processed,1);
+ const record=(await raw.query('select * from scout.records where id=$1',[id])).rows[0];
+ assert.deepEqual(record,{...original,sources:[...original.sources,{url:publication,role:'finding'}],modified:record.modified});
+ assert.deepEqual(record.modified.slice(0,-1),original.modified);
+ const firstCost={...db.metrics};version++;
+ const second=await run();assert.equal(second.state,'saved');assert.equal(second.created,0);assert.equal(second.changed,0);assert.equal(second.saved,1);assert.equal(second.processed,1);
+ assert.equal(searches,2);assert.equal(requests,4);
+ assert.deepEqual((await raw.query('select * from scout.records where id=$1',[id])).rows[0],record);
+ assert.equal((await raw.query('select pending from scout.source_items')).rows[0].pending,false);
+ t.diagnostic(JSON.stringify({mocked_model:true,first_sql_cost:firstCost,identical_update_sql_cost:Object.fromEntries(Object.keys(firstCost).map(k=>[k,db.metrics[k]-firstCost[k]])),identical_finding_writes:0}));
+});
+
 test('timeout retains pending URL, earlier committed item survives, and resume never reinvestigates it',async t=>{
  const {raw,db,tracker}=await setup(t);const seen=[];let fail=true;
  const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>url===feedURL?rss([['a',publication,'A'],['b',publication+'-b','B']]):new Response('<main>B article</main>',{headers:{'content-type':'text/html'}}),modelFor:model(async({item,search})=>{
