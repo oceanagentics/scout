@@ -111,7 +111,7 @@ async function setup(t,{before=false}={}){
   return raw;
 }
 const driver=raw=>({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;},release(){}});
-const tracker=async raw=>(await raw.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Tracker','https://example.org/list?raw=%2B','web','1 day',true) returning *")).rows[0];
+const tracker=async raw=>(await raw.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Tracker','https://example.org/list?raw=%2B','web_page','1 day',true) returning *")).rows[0];
 const due=raw=>raw.exec("update scout.trackers set last_checked_at=clock_timestamp()-cadence-interval '1 second'");
 const event={description:'BBNJ implementation workshop',type:'event',priority:'high',organizations:['Ocean Institute'],date:'2026-10',starttime:null,timezone:null};
 const answer=(records=[event])=>({status:'complete',decisions:records.map(fields=>({action:'create',id:null,expected_revision:null,fields:{...fields,organizations:fields.organizations??[],supporting_urls:[]},reason:null}))});

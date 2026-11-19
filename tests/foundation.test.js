@@ -74,7 +74,7 @@ test('final schema protects findings, operational state and tracker management i
     }
     assert.deepEqual((await db.query('select raw_app_meta_data from auth.users where id=$1', [admin])).rows[0].raw_app_meta_data,
       { other: 'keep', scout: { preference: 'keep', admin: true } });
-    const tracker = (await db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Source','https://example.org','web','1 day',true) returning id")).rows[0].id;
+    const tracker = (await db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Source','https://example.org','web_index','1 day',true) returning id")).rows[0].id;
     const record = (await db.query("insert into scout.records(type,description) values('announcement','Private finding') returning id")).rows[0].id;
     await db.query("update scout.records set sources=$2::jsonb,enddate='2026-11-17',endtime='14:30' where id=$1", [record,JSON.stringify([{url:'https://example.org/source',role:'finding'}])]);
     await assert.rejects(db.query("update scout.records set endtime='25:00' where id=$1", [record]), { code: '23514' });
@@ -95,10 +95,11 @@ test('final schema protects findings, operational state and tracker management i
       await assert.rejects(db.query("update auth.users set raw_app_meta_data='{}'"), { code: '42501' });
       for (const enabled of [true,false]) {
         await assert.rejects(db.query('update scout.trackers set enabled=$1', [enabled]), { code: '42501' });
-        await assert.rejects(db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Forged','https://example.org/new','web','1 day',$1)", [enabled]), { code: '42501' });
+        await assert.rejects(db.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Forged','https://example.org/new','web_index','1 day',$1)", [enabled]), { code: '42501' });
       }
       assert.equal((await db.query("update scout.trackers set cadence='2 days' returning id")).rows.length, role === 'admin' ? 1 : 0);
-      if (role !== 'admin') await assert.rejects(db.query("insert into scout.trackers(name,url,collector,cadence) values('Forged','https://example.org/new','web','1 day')"), { code: '42501' });
+      assert.equal((await db.query("update scout.trackers set collector='web_page' returning id")).rows.length, role === 'admin' ? 1 : 0);
+      if (role !== 'admin') await assert.rejects(db.query("insert into scout.trackers(name,url,collector,cadence) values('Forged','https://example.org/new','web_index','1 day')"), { code: '42501' });
     }
     const finding = (await db.query('select * from scout.findings()')).rows[0];
     assert.deepEqual(finding.sources, [{url:'https://example.org/source',role:'finding'}]);
@@ -106,7 +107,7 @@ test('final schema protects findings, operational state and tracker management i
     assert.equal(finding.endtime, '14:30');
     await db.query("update scout.trackers set url='https://example.org/edited' where id=$1", [tracker]);
     assert.equal((await db.query('select enabled from scout.trackers where id=$1', [tracker])).rows[0].enabled, false);
-    const inserted = (await db.query("insert into scout.trackers(name,url,collector,cadence) values('Unproven','https://example.org/new','web','1 day') returning enabled")).rows[0];
+    const inserted = (await db.query("insert into scout.trackers(name,url,collector,cadence) values('Unproven','https://example.org/new','web_index','1 day') returning enabled")).rows[0];
     assert.equal(inserted.enabled, false);
     await db.exec('reset role; set role service_role');
     await db.query('update scout.trackers set enabled=true where id=$1', [tracker]);

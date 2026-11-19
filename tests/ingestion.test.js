@@ -22,14 +22,68 @@ async function setup(t,{before=false}={}){
  const raw=new PGlite();t.after(()=>raw.close());
  await raw.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;create schema vault;create table vault.secrets(name text,secret text);create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');create table auth.identities(user_id uuid,provider text,identity_data jsonb);create function auth.uid() returns uuid language sql as $$select null::uuid$$;`);
  for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort()){
-  if(before&&name==='20261118180000_scout_shared_ingestion.sql')break;
+  if(before&&name===(before===true?'20261118180000_scout_shared_ingestion.sql':before))break;
   await raw.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
  }
  const db=database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);return Object.assign(r.rows,{count:r.affectedRows??r.rows.length});}});
- const tracker=(await raw.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('HSA', $1,'web','1 day',true) returning *",[feedURL])).rows[0];
+ const tracker=(await raw.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('HSA', $1,'web_index','1 day',true) returning *",[feedURL])).rows[0];
  return {raw,db,tracker};
 }
 const model=decide=>(item,{functions,readUrl})=>async(_instructions,input)=>decide({item,input,readUrl,search:args=>functions[0].run(args)});
+
+test('Page investigates the complete source, follows evidence links and skips unchanged repeats without discovery',async t=>{
+ const {raw,db,tracker}=await setup(t);
+ await raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]);
+ const agenda='https://example.org/agenda';let calls=0;
+ const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>new Response(url===agenda?'<main>Workshop agenda: technical demonstration</main>':'<main>BBNJ implementation workshop on 10 December 2099. <a href="/agenda">Agenda</a></main>',{headers:{'content-type':'text/html'}}),modelFor:(item,{functions,readUrl})=>async(_instructions,input,schema)=>{
+  calls++;assert.ok(!schema.properties.items);assert.equal(item.url,feedURL);assert.match(JSON.stringify(input),/BBNJ implementation workshop/);
+  assert.match(JSON.stringify(await readUrl(agenda)),/technical demonstration/);
+  await functions[0].run({queries:['HSA'],urls:[]});
+  return answer([create({...finding,supporting_urls:[agenda]})]);
+ }});
+ const first=await run();assert.equal(first.state,'saved');assert.equal(first.created,1);assert.equal(calls,1);
+ const record=(await raw.query('select * from scout.records')).rows[0];
+ assert.deepEqual(record.sources,[{url:feedURL,role:'finding'},{url:agenda,role:'supporting'}]);
+ assert.deepEqual((await raw.query('select item_key,pending from scout.source_items')).rows,[{item_key:feedURL,pending:false}]);
+ const preview=await prepareMessages(db,{kind:'findings',ids:[record.id]});assert.ok(preview.payloads[0].text.includes('<'+feedURL+'|Read more>'));
+ const cost={...db.metrics},repeat=await run();assert.equal(repeat.processed,0);assert.equal(calls,1);
+ assert.deepEqual((await raw.query('select * from scout.records')).rows[0],record);
+ t.diagnostic(JSON.stringify({mocked_model:true,page_sql_cost:cost,unchanged_sql_cost:Object.fromEntries(Object.keys(cost).map(k=>[k,db.metrics[k]-cost[k]]))}));
+});
+
+test('Index investigates linked publications without turning itself into a finding item',async t=>{
+ const {raw,db,tracker}=await setup(t);let discoveries=0,investigations=0;
+ const result=await intake(db,{trackerId:tracker.id,sourceFetch:async url=>new Response(url===publication?'<main>CHM technical webinar</main>':'<main><a href="'+publication+'">CHM webinar</a></main>',{headers:{'content-type':'text/html'}}),modelFor:(item,{functions})=>async(_instructions,_input,schema)=>{
+  if(schema.properties.items){discoveries++;return {items:[{url:feedURL,summary:'Index'},{url:publication,summary:'CHM webinar'}]};}
+  investigations++;assert.equal(item.url,publication);await functions[0].run({queries:['HSA'],urls:[]});return answer([create(finding)]);
+ }});
+ assert.equal(result.state,'saved');assert.equal(discoveries,1);assert.equal(investigations,1);
+ assert.deepEqual((await raw.query('select item_key from scout.source_items')).rows,[{item_key:publication}]);
+ assert.deepEqual((await raw.query('select sources from scout.records')).rows[0].sources,[{url:publication,role:'finding'}]);
+});
+
+test('tracker modes preserve index progress, reset changed modes and replace Bloomberg without deleting findings',async t=>{
+ const name='20261119180000_scout_tracker_modes.sql', {raw,tracker}=await setup(t,{before:name});
+ await raw.query("update scout.trackers set collector='web',last_checked_at=now(),last_successful_check=now(),discovery_request_url=url,discovery_checked_at=now(),discovery_fingerprint='keep' where id=$1",[tracker.id]);
+ await raw.query("insert into scout.source_items(tracker_id,item_key,url,pending) values($1,'keep',$2,false)",[tracker.id,publication]);
+ const original=(await raw.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0];
+ const un='fa465a3b-c9d3-4810-9efb-cd6ab9dcc49c',bloomberg='b95f96b1-1252-43f5-93ea-e17cc8704b49';
+ await raw.query("insert into scout.trackers(id,name,url,collector,cadence,enabled) values($1,'UN','https://treaties.un.org/status','web','1 day',true),($2,'Bloomberg','https://www.bloomberg.org/environment/protecting-the-oceans/','web','1 day',true)",[un,bloomberg]);
+ await raw.query("update scout.trackers set last_checked_at=now(),last_successful_check=now(),lease_id=gen_random_uuid(),lease_until=now()+interval '1 minute',discovery_request_url=url,discovery_checked_at=now(),discovery_fingerprint='obsolete' where id=$1",[un]);
+ await raw.query("insert into scout.source_items(tracker_id,item_key,url,pending) select id,'obsolete',url,true from scout.trackers where id in ($1,$2)",[un,bloomberg]);
+ await raw.exec("insert into scout.records(description) values('Keep useful finding')");
+ await raw.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
+ assert.deepEqual((await raw.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0],{...original,collector:'web_index'});
+ assert.equal((await raw.query('select item_key from scout.source_items where tracker_id=$1',[tracker.id])).rows[0].item_key,'keep');
+ const page=(await raw.query('select * from scout.trackers where id=$1',[un])).rows[0];assert.equal(page.collector,'web_page');assert.equal(page.enabled,true);
+ for(const key of ['last_checked_at','last_successful_check','lease_id','lease_until','discovery_request_url','discovery_checked_at','discovery_fingerprint'])assert.equal(page[key],null);
+ assert.equal((await raw.query('select count(*)::int n from scout.source_items where tracker_id in ($1,$2)',[un,bloomberg])).rows[0].n,0);
+ const press=(await raw.query('select * from scout.trackers where id=$1',[bloomberg])).rows[0];assert.equal(press.url,'https://www.bloomberg.org/press/');assert.equal(press.collector,'web_index');assert.equal(press.enabled,true);assert.equal(press.last_successful_check,null);
+ const blog=(await raw.query("select * from scout.trackers where url='https://www.bloomberg.org/blog/'")).rows[0];assert.equal(blog.collector,'web_index');assert.equal(blog.enabled,true);assert.equal(blog.last_successful_check,null);
+ await raw.query("update scout.trackers set enabled=false,collector='web_page' where id=$1",[tracker.id]);assert.equal((await raw.query('select enabled from scout.trackers where id=$1',[tracker.id])).rows[0].enabled,false);
+ assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,1);
+ await assert.rejects(raw.query("update scout.trackers set collector='web' where id=$1",[tracker.id]),{code:'23514'});
+});
 
 test('RSS -> real provider-tool mechanics -> duplicate update -> specific Slack finding URL; stable repeat makes zero model calls',async t=>{
  const {raw,db,tracker}=await setup(t);
@@ -377,7 +431,7 @@ test('inconclusive article freshness still investigates available feed material 
 
 test('CBD discovery and item investigation reuse the API response while retaining the public finding URL',async t=>{
  const {raw,db,tracker}=await setup(t),publicURL='https://www.cbd.int/conferences/2026/parallel-meetings/ocean';let reads=0;
- await raw.query('update scout.trackers set url=$2 where id=$1',[tracker.id,publicURL]);
+ await raw.query("update scout.trackers set url=$2,collector='web_page' where id=$1",[tracker.id,publicURL]);
  const result=await intake(db,{trackerId:tracker.id,sourceFetch:async url=>{reads++;assert.equal(new URL(url).pathname,'/api/v2017/articles');return Response.json([{title:{en:'CHM webinar'},content:{en:'<p>Technical information-sharing webinar</p>'}}]);},modelFor:(_item,options)=>async(_p,input,schema)=>{
   if(schema.properties.items)return {items:[{url:publicURL,summary:'CHM webinar'}]};
   assert.equal(input.content.content[0].title,'CHM webinar');assert.match(input.content.content[0].content,/Technical information-sharing/);

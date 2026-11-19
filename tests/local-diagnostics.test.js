@@ -48,7 +48,7 @@ test('local tracker diagnostic captures one model investigation with only a trac
   let generations=0;const sql=[];
   const ledger={query:async(q,p)=>{
     sql.push(q);
-    if(q.startsWith('select id,name'))return {rows:[{id:tracker,name:'Diagnostic tracker',url:source,collector:'web',cadence:'6 hours'}]};
+    if(q.startsWith('select id,name'))return {rows:[{id:tracker,name:'Diagnostic tracker',url:source,collector:'web_page',cadence:'6 hours'}]};
     assert.fail('Unexpected shared SQL: '+q);
   }};
   const result=await diagnoseTracker({tracker,output:path,env:{SCOUT_OPENAI_API_KEY:'openai-key'},ledger,fetch:async(url,request)=>{

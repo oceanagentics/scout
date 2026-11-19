@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {eventLabel,trackerState,fieldLabel,stamp} from '../website/records.js';
 import {eventTiming,recordDates,sourceLink,orderRecords} from '../shared/records.js';
-import {loadScout} from '../website/dashboard.js';
+import {loadScout,saveTrackerCollector} from '../website/dashboard.js';
 import {scoutDay} from '../shared/finding-dates.js';
 
 test('flat reader displays local date/time and organization strings',()=>{
@@ -37,6 +37,14 @@ test('reader sends filters and stable cursor to bounded server queries and surfa
   assert.equal(calls[0].args.p_limit,50);assert.equal(calls[0].args.p_organization,'Ocean Institute');assert.equal(calls[0].args.p_meaning,'deadline');
   await loadScout(client,{after:result.next});assert.deepEqual(calls[1].args.p_after,result.next);
   assert.ok(calls.every(c=>c.name==='findings'));fail=true;await assert.rejects(loadScout(client),/Unavailable/);
+});
+
+test('tracker mode saves require an acknowledged row and surface rejected writes',async()=>{
+ const calls=[];let error;
+ const query={update(value){calls.push(value);return this;},eq(field,id){calls.push([field,id]);return this;},select(fields){assert.equal(fields,'id');return this;},async single(){return {error};}};
+ const client={from(table){assert.equal(table,'trackers');return query;}};
+ await saveTrackerCollector(client,'tracker-id','web_page');assert.deepEqual(calls,[{collector:'web_page'},['id','tracker-id']]);
+ error=new Error('No row updated');await assert.rejects(saveTrackerCollector(client,'tracker-id','web_index'),/No row updated/);
 });
 
 test('Scout calendar days and operational timestamps use New York across DST',()=>{

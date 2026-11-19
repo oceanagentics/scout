@@ -9,6 +9,7 @@ export async function discoverSource(tracker,options){
  const source=await options.readUrl(requestURL,{lastSuccessfulCheck:tracker.discovery_checked_at,previousRequestURL:tracker.discovery_request_url,previousFingerprint:tracker.discovery_fingerprint});
  if(source.unchanged)return {native:false,unchanged:true,items:[],source};
  const prepared=cbdRequest(tracker.url)?prepareCBD(source,tracker.url):source;
+ if(tracker.collector==='web_page')return {native:false,items:[{key:tracker.url,url:tracker.url,version:null,source_kind:'web',content:prepared}],source};
  const rss=prepared.media_type?.includes('xml')&&/<(?:rss|feed)\b/.test(prepared.content??'');
  const discovered=rss?{items:rssItems(prepared)}:await webItems(prepared,tracker.url,options);
  return {native:false,...discovered,source};

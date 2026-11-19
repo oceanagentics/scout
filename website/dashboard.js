@@ -8,7 +8,7 @@ const RECORD_FIELDS = [
   'starttime', 'timezone', 'enddate', 'endtime', 'sources', 'modified', 'id',
 ];
 const TRACKER_FIELDS = [
-  ['name','Name'], ['url','URL'], ['coverage','Coverage'], ['cadence','Cadence'], ['enabled','Enabled'],
+  ['name','Name'], ['url','URL'], ['collector','Read as'], ['coverage','Coverage'], ['cadence','Cadence'], ['enabled','Enabled'],
   ['retire_on','Retire on (New York)'],
   ['last_checked_at','Last attempted (New York)'], ['last_successful_check','Consumed through (New York)'],
   ['failure_count','Consecutive attempts without success'], ['last_error','Last error'], ['id','ID'],
@@ -27,6 +27,11 @@ export async function loadScout(client,{filters={},after=null}={}) {
   return {records,trackers:inventory.data,next:records.length===50?{rank:filters.order==='date'?0:({high:0,normal:1,low:2}[last.priority]??3),day:findingInterval(last)[0],id:last.id}:null};
 }
 
+export async function saveTrackerCollector(client,trackerId,collector) {
+  const {error}=await client.from('trackers').update({collector}).eq('id',trackerId).select('id').single();
+  if(error)throw error;
+}
+
 const node = (tag, text, className) => {
   const element = document.createElement(tag);
   if (text != null) element.textContent = text;
@@ -41,7 +46,7 @@ function link(text, url) {
   return element;
 }
 
-export function mountDashboard(root, load, views, reviews) {
+export function mountDashboard(root, load, views, reviews, saveCollector) {
   // Static markup only; every source-supplied value is rendered with textContent.
   root.innerHTML = `<section id="review" aria-label="Review findings"></section><p id="load-status" role="status" hidden></p>
     <section id="findings" aria-label="Records" hidden><div class="findings-toolbar"><form id="filters" class="filters">
@@ -154,7 +159,28 @@ export function mountDashboard(root, load, views, reviews) {
       const row = node('tr');
       for (const [field] of TRACKER_FIELDS) {
         const value = tracker[field], cell = node('td', null, `field-${field}`);
-        if (field === 'url' && value) cell.append(link(value, value));
+        if(field==='collector') {
+          if(value==='bluesky_feed')cell.textContent='Bluesky feed';
+          else if(!saveCollector)cell.textContent=value==='web_page'?'Page':'Index';
+          else {
+            const select=node('select');select.setAttribute('aria-label','Read '+tracker.name+' as');
+            for(const [mode,label] of [['web_page','Page'],['web_index','Index']]){
+              const option=node('option',label);option.value=mode;select.append(option);
+            }
+            select.value=value;
+            select.addEventListener('change',async()=>{
+              const chosen=select.value;select.disabled=true;
+              try {
+                await saveCollector(tracker.id,chosen);
+                if(active)await reload();
+              }catch {
+                if(active){select.value=value;status.hidden=false;status.textContent='Could not save the tracker setting. Please try again.';}
+              }finally{if(active)select.disabled=false;}
+            });
+            cell.append(select);
+          }
+        }
+        else if (field === 'url' && value) cell.append(link(value, value));
         else cell.textContent = value == null || value === '' ? '—' : typeof value === 'boolean' ? value ? 'Yes' : 'No'
           : field.endsWith('_at')||field==='last_successful_check' ? stamp(value) : value;
         if (cell.textContent.length > 240 && ['coverage', 'last_error'].includes(field)) {
