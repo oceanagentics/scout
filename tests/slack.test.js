@@ -32,9 +32,9 @@ test('morning posts high-priority events individually on the New York day, using
   const preview=await prepareMessages(db,{kind:'morning',now:new Date('2026-11-08T13:00:00Z')});
   assert.deepEqual(preview.records.map(r=>r.description).sort(),['Date only','Tomorrow in Asia, today in New York','Unknown timezone']);
   assert.deepEqual(preview.payloads.map(p=>p.text).sort(),[
-   'Date only [he] · <https://example.org/event|Read more>',
-   'Tomorrow in Asia, today in New York [he] · <https://example.org/event|Read more>',
-   'Unknown timezone [he] · <https://example.org/event|Read more>'
+   'Date only · <https://example.org/event|Read more>',
+   'Tomorrow in Asia, today in New York · <https://example.org/event|Read more>',
+   'Unknown timezone · <https://example.org/event|Read more>'
   ]);
  }finally{await db.close();}
 });
@@ -57,12 +57,12 @@ test('weekly includes all pending high events and seven local days of newly save
   const preview=await prepareMessages(db,{kind:'weekly',now});
   assert.deepEqual(preview.records.map(r=>r.description).sort(),['Exactly seven local days','Far future','Partially dated future','Treaty update','Undated','Within seven New York days']);
   assert.deepEqual(preview.payloads.map(p=>p.text).sort(),[
-   'Exactly seven local days [ha] · <https://example.org/source|Read more>',
-   'Far future [he] · <https://example.org/source|Read more>',
-   'Partially dated future [he] · <https://example.org/source|Read more>',
-   'Treaty update [ha] · <https://example.org/source|Read more>',
-   'Undated [he] · <https://example.org/source|Read more>',
-   'Within seven New York days [ha] · <https://example.org/source|Read more>'
+   'Exactly seven local days · <https://example.org/source|Read more>',
+   'Far future · <https://example.org/source|Read more>',
+   'Partially dated future · <https://example.org/source|Read more>',
+   'Treaty update · <https://example.org/source|Read more>',
+   'Undated · <https://example.org/source|Read more>',
+   'Within seven New York days · <https://example.org/source|Read more>'
   ]);
  }finally{await db.close();}
 });
@@ -96,8 +96,8 @@ test('hosted sends post one high-priority finding at a time, stop on errors, and
     assert.equal(payloads.length,outcomes.length);
     if(status==='sent'){
       assert.deepEqual(payloads.map(p=>p.text).sort(),[
-        'Second high finding [hf] · <https://example.org/second|Read more>',
-        'Technical BBNJ ChM standards [ha] · <https://example.org/standards|Read more>'
+        'Second high finding · <https://example.org/second|Read more>',
+        'Technical BBNJ ChM standards · <https://example.org/standards|Read more>'
       ]);
       for(const payload of payloads){
         const record=records.find(r=>payload.text.startsWith(r.description));

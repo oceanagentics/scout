@@ -23,8 +23,7 @@ export async function prepareMessages(db,{kind='weekly',ids=[],now=new Date()}={
   });
   const payloads=records.map(r=>{
     const url=(r.sources??[]).filter(s=>s.role==='finding').map(s=>sourceLink(s.url)).find(Boolean);
-    const tag=r.priority[0]+(r.type??'finding')[0];
-    return {text:`${escape(r.description)} [${tag}]${url?' · <'+escape(url)+'|Read more>':''}`,parse:'none',unfurl_links:false,unfurl_media:false,
+    return {text:`${escape(r.description)}${url?' · <'+escape(url)+'|Read more>':''}`,parse:'none',unfurl_links:false,unfurl_media:false,
       metadata:{event_type:'scout_finding',event_payload:{record_id:r.id}}};
   });
   return {records,payloads,prepared_at:now.toISOString()};
