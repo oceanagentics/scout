@@ -177,6 +177,7 @@ test('three unsuccessful attempts stop automatic retries, explicit retry recover
 });
 
 test('tied native posts see proposed facts before commit and retain both specific post URLs',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-17T12:00:00Z')});
  const {raw,db,tracker}=await setup(t);
  const feed='https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=example.test';
  await raw.query('update scout.trackers set url=$2 where id=$1',[tracker.id,feed]);
@@ -189,6 +190,54 @@ test('tied native posts see proposed facts before commit and retain both specifi
  assert.equal(calls,2);assert.equal(result.created,1);assert.equal(result.changed,1);assert.equal(result.processed,2);
  const records=(await raw.query('select * from scout.records')).rows;assert.equal(records.length,1);assert.equal(records[0].details,'Fact A. Fact B.');
  assert.deepEqual(records[0].sources.map(s=>s.url).sort(),['https://bsky.app/profile/did:plc:example/post/a','https://bsky.app/profile/did:plc:example/post/b']);
+});
+
+test('expired original posts, including recent reposts, make zero model calls and no per-post SQL writes',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-17T12:00:00Z')});
+ const {raw,db,tracker}=await setup(t),feed='https://bsky.app/profile/example.test';
+ await raw.query('update scout.trackers set url=$2 where id=$1',[tracker.id,feed]);
+ const costs=[];
+ for(const count of [1,40]){
+  // Re-run from a stale checkpoint fixture so the shared ingestion gate sees each recent repost.
+  await raw.query("update scout.trackers set last_successful_check='2024-01-01' where id=$1",[tracker.id]);
+  const expired=Array.from({length:count},(_,i)=>({post:{uri:'at://did:plc:example/app.bsky.feed.post/old'+i,indexedAt:'2026-10-17T03:59:59.999Z',record:{text:'Expired original',createdAt:'2026-10-17T03:59:59.999Z'}},
+   reason:{$type:'app.bsky.feed.defs#reasonRepost',indexedAt:'2026-11-17T10:00:00Z'}}));
+  const before={...db.metrics};
+  const result=await intake(db,{trackerId:tracker.id,sourceFetch:async()=>Response.json({feed:expired}),modelFor:()=>assert.fail('Expired originals must never reach a model')});
+  assert.equal(result.state,'no_findings');assert.equal(result.processed,0);
+  const cost={statements:db.metrics.statements-before.statements,mutations:db.metrics.mutations-before.mutations};costs.push(cost);
+  assert.equal(cost.mutations,2);
+  const state=(await raw.query('select last_successful_check,last_checked_at from scout.trackers where id=$1',[tracker.id])).rows[0];
+  assert.deepEqual(state.last_successful_check,state.last_checked_at);
+ }
+ assert.deepEqual(costs[0],costs[1]);
+ assert.equal((await raw.query('select count(*)::int n from scout.source_items')).rows[0].n,0);
+ assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,0);
+ t.diagnostic(JSON.stringify({mocked_feed:true,real_local_sql:true,expired_posts:[1,40],sql_cost_per_check:costs[0],model_calls:0,retained_post_rows:0}));
+ await raw.query('update scout.trackers set last_successful_check=null where id=$1',[tracker.id]);
+ const boundary={post:{uri:'at://did:plc:example/app.bsky.feed.post/boundary',indexedAt:'2026-10-17T04:00:00Z',record:{text:'Cutoff day',createdAt:'2026-10-17T04:00:00Z'}}};let calls=0;
+ const included=await intake(db,{trackerId:tracker.id,sourceFetch:async()=>Response.json({feed:[boundary]}),modelFor:()=>async()=>{calls++;return answer([]);}});
+ assert.equal(included.processed,1);assert.equal(calls,1);
+});
+
+test('old web and RSS publication hints permit new and changed content; confirmed old findings remain unsaved',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-17T12:00:00Z')});
+ for(const kind of ['web','rss']){
+  const {raw,db,tracker}=await setup(t);let version=0,investigations=0;
+  const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>{
+   if(url===feedURL&&kind==='rss')return new Response(`<rss version="2.0"><channel><item><guid>stable</guid><link>${publication}</link><title>Webinar ${version}</title><pubDate>Sat, 01 Jan 2000 12:00:00 GMT</pubDate></item></channel></rss>`,{headers:{'content-type':'application/rss+xml'}});
+   return new Response(`<main><time datetime="2000-01-01">Published January 1, 2000</time>`+(url===feedURL?`<a href="${publication}">Webinar ${version}</a>`:`Updated webinar ${version}`)+'</main>',{headers:{'content-type':'text/html'}});
+  },modelFor:(_item,options)=>async(_p,input,schema)=>{
+   if(schema.properties.items)return {items:[{url:publication,summary:'Published January 1, 2000; updated webinar'}]};
+   investigations++;assert.equal(input.oldest_date,'2026-10-17');
+   const found=await options.functions[0].run({queries:['HSA'],urls:[]}),fields={...finding,details:'Revision '+version};
+   return answer([found.count?update(found.records[0],fields):create(fields),create({...finding,description:'Old report',type:'announcement',date:'2000-01-01'})]);
+  }});
+  assert.equal((await run()).created,1);version++;assert.equal((await run()).changed,1);
+  const records=(await raw.query('select description,details from scout.records')).rows;
+  assert.deepEqual(records,[{description:finding.description,details:'Revision 1'}]);assert.equal(investigations,2);
+  assert.equal((await run()).processed,0);assert.equal(investigations,2);
+ }
 });
 
 test('web freshness gates discovery and article investigation separately, while pending articles resume',async t=>{

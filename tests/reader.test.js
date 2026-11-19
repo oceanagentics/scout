@@ -134,35 +134,43 @@ test('Bluesky paginates to the date, retains complete post context, and reads ol
   a.reply={parent:{record:{text:'Parent context'}}};
   const pages=[{feed:[c,b],cursor:'page2'},{feed:[],cursor:'page3'},
     {feed:[b,a,post('boundary','2026-10-12T00:00:00Z')],cursor:'do-not-fetch'}],urls=[];
-  const items=await readSource({url:'https://bsky.app/profile/example.test',last_successful_check:new Date('2026-10-12T00:00:00Z')},
+  const items=await readSource({url:'https://bsky.app/profile/example.test',last_successful_check:new Date('2026-10-12T00:00:00Z'),oldest_date:'2026-10-02'},
     {through:'2026-11-02T00:00:00Z',fetch:async url=>{urls.push(new URL(url));return Response.json(pages.shift());}});
   assert.deepEqual(items.map(i=>i.content.post.record.text),['a','b','c']);
   assert.deepEqual(items[0].content,a);assert.equal(items[2].at,c.reason.indexedAt.replace('Z','.000Z'));
+  assert.equal(items[2].published_at,'2026-10-01T12:00:00.000Z');
   assert.equal(urls[0].searchParams.get('actor'),'example.test');assert.equal(urls[2].searchParams.get('cursor'),'page3');
   assert.equal(urls.length,3);
-  const sameDate=await readSource({url:feedURL,last_successful_check:new Date(a.post.indexedAt)},
+  const sameDate=await readSource({url:feedURL,last_successful_check:new Date(a.post.indexedAt),oldest_date:'2026-10-02'},
     {through:'2026-11-02T00:00:00Z',fetch:async()=>Response.json({feed:[a]})});
   assert.deepEqual(sameDate,[]); // Database Date values must retain their milliseconds.
 });
 
-test('a feed without a checkpoint reads all available history, excluding pins and posts after the attempt starts',async()=>{
-  const old=post('old','2020-01-01T00:00:00Z'),recent=post('recent','2026-11-01T00:00:00Z');
+test('first and stale-checkpoint feeds stop at the age boundary in Scout time, excluding pins and future posts',async()=>{
+  const old=post('old','2026-10-02T03:59:59.999Z'),boundary=post('boundary','2026-10-02T04:00:00Z'),recent=post('recent','2026-11-01T00:00:00Z');
   const pin=post('pin','2019-01-01T00:00:00Z');pin.reason={$type:'app.bsky.feed.defs#reasonPin'};
-  const pages=[{feed:[post('future','2026-11-03T00:00:00Z'),recent,pin],cursor:'older'},
-    {feed:[old]}],urls=[];
-  const items=await readSource({url:feedURL,last_successful_check:null},
-    {through:'2026-11-02T00:00:00Z',fetch:async url=>{urls.push(new URL(url));return Response.json(pages.shift());}});
-  assert.deepEqual(items.map(i=>i.content.post.record.text),['old','recent']);
-  assert.equal(urls[1].searchParams.get('cursor'),'older');
-  await assert.rejects(readSource({url:feedURL,last_successful_check:'invalid'},
-    {through:'2026-11-02T00:00:00Z',fetch:()=>assert.fail('An invalid checkpoint must not restart history')}),{reason:'source_cutoff_invalid'});
+  for(const checkpoint of [null,'2024-01-01T00:00:00Z']){
+    const pages=[{feed:[post('future','2026-11-03T00:00:00Z'),recent,pin],cursor:'older'},
+      {feed:[boundary,old],cursor:'do-not-fetch'}],urls=[];
+    const items=await readSource({url:feedURL,last_successful_check:checkpoint,oldest_date:'2026-10-02'},
+      {through:'2026-11-02T00:00:00Z',fetch:async url=>{urls.push(new URL(url));assert.ok(pages.length);return Response.json(pages.shift());}});
+    assert.deepEqual(items.map(i=>i.content.post.record.text),['boundary','recent']);
+    assert.equal(urls[1].searchParams.get('cursor'),'older');assert.equal(urls.length,2);
+  }
+  for(const cutoff of [{last_successful_check:'invalid',oldest_date:'2026-10-02'},{last_successful_check:null},{last_successful_check:null,oldest_date:'invalid'}]){
+    await assert.rejects(readSource({url:feedURL,...cutoff},
+      {through:'2026-11-02T00:00:00Z',fetch:()=>assert.fail('An invalid cutoff must not restart history')}),{reason:'source_cutoff_invalid'});
+  }
+  const invalidRepost=post('invalid','invalid');invalidRepost.reason={$type:'app.bsky.feed.defs#reasonRepost',indexedAt:recent.post.indexedAt};
+  await assert.rejects(readSource({url:feedURL,last_successful_check:null,oldest_date:'2026-10-02'},
+    {through:'2026-11-02T00:00:00Z',fetch:async()=>Response.json({feed:[invalidRepost]})}),{reason:'source_invalid'});
 });
 
 test('a first feed check resumes after committed dates; an unchanged feed makes no model calls',async t=>{
   const raw=await setup(t),tr=await tracker(raw),db=database(driver(raw));
   await raw.query('update scout.trackers set url=$2 where id=$1',[tr.id,feedURL]);
   assert.equal((await raw.query('select last_successful_check from scout.trackers')).rows[0].last_successful_check,null);
-  const feed=[post('newer','2026-10-15T12:00:00Z'),post('empty','2026-10-14T12:00:00Z'),post('older','2026-10-13T12:00:00.123Z')];
+  const feed=[post('newer','2026-10-25T12:00:00Z'),post('empty','2026-10-24T12:00:00Z'),post('older','2026-10-23T12:00:00.123Z')];
   let calls=[],broken=true;
   const run=()=>intake(db,{trackerId:tr.id,sourceFetch:async()=>Response.json({feed}),modelFor:(source,{functions})=>async(_p,input)=>{
     assert.equal(source.url,input.url);assert.deepEqual(input.content,feed.find(f=>f.post.record.text===input.content.post.record.text));
@@ -173,7 +181,7 @@ test('a first feed check resumes after committed dates; an unchanged feed makes 
   }});
   const first=await run();assert.equal(first.processed,2);assert.equal(first.created,1);assert.equal(first.state,'deferred');
   const state=(await raw.query('select * from scout.trackers')).rows[0];
-  assert.equal(new Date(state.last_successful_check).toISOString(),'2026-10-14T12:00:00.000Z');
+  assert.equal(new Date(state.last_successful_check).toISOString(),'2026-10-24T12:00:00.000Z');
   broken=false;calls=[];
   const resumed=await run();assert.deepEqual(calls,['newer']);assert.equal(resumed.processed,1);assert.equal(resumed.created,1);
   const records=(await raw.query('select sources from scout.records')).rows;
@@ -186,7 +194,7 @@ test('a first feed check resumes after committed dates; an unchanged feed makes 
 
 test('equal timestamps commit together and SQL or invalid-output failures cannot consume a post',async t=>{
   const raw=await setup(t),tr=await feedTracker(raw),db=database(driver(raw));
-  const feed=[post('second','2026-10-13T12:00:00Z'),post('first','2026-10-13T12:00:00Z')];
+  const feed=[post('second','2026-10-23T12:00:00Z'),post('first','2026-10-23T12:00:00Z')];
   const initial=(await raw.query('select last_successful_check from scout.trackers')).rows[0].last_successful_check;
   const run=modelFor=>intake(db,{trackerId:tr.id,sourceFetch:async()=>Response.json({feed}),modelFor:(source,options)=>async(...args)=>{const result=await modelFor(source,options)(...args);if(result.decisions?.some(d=>d.action==='create'))await options.functions[0].run({queries:['Ocean Institute'],urls:[]});return result;}});
   let n=0;
@@ -216,7 +224,7 @@ test('feed errors preserve the cutoff, and one tracker never consumes another tr
   assert.deepEqual((await raw.query('select last_successful_check from scout.trackers where id=$1',[first.id])).rows[0].last_successful_check,initial);
   let calls=0;
   for(const tr of [first,second]){
-    const result=await intake(db,{trackerId:tr.id,sourceFetch:async()=>Response.json({feed:[post('item','2026-10-15T00:00:00Z')]}),
+    const result=await intake(db,{trackerId:tr.id,sourceFetch:async()=>Response.json({feed:[post('item','2026-10-25T00:00:00Z')]}),
       modelFor:()=>async()=>{calls++;return answer([]);}});
     assert.equal(result.processed,1);
   }
