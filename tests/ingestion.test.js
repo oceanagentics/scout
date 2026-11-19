@@ -131,17 +131,51 @@ test('matched updates retain new source URLs and unchanged facts; identical upda
  t.diagnostic(JSON.stringify({mocked_model:true,first_sql_cost:firstCost,identical_update_sql_cost:Object.fromEntries(Object.keys(firstCost).map(k=>[k,db.metrics[k]-firstCost[k]])),identical_finding_writes:0}));
 });
 
-test('timeout retains pending URL, earlier committed item survives, and resume never reinvestigates it',async t=>{
- const {raw,db,tracker}=await setup(t);const seen=[];let fail=true;
- const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>url===feedURL?rss([['a',publication,'A'],['b',publication+'-b','B']]):new Response('<main>B article</main>',{headers:{'content-type':'text/html'}}),modelFor:model(async({item,search})=>{
-  seen.push(item.url);if(item.url.endsWith('-b')&&fail)throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});
+test('attempted timeout commits a skip, unattempted items stay pending, and resume moves forward',async t=>{
+ const {raw,db,tracker}=await setup(t);const seen=[];
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>url===feedURL?rss([['a',publication,'A'],['b',publication+'-b','B'],['c',publication+'-c','C']]):new Response('<main>Article</main>',{headers:{'content-type':'text/html'}}),modelFor:model(async({item,search})=>{
+  seen.push(item.url);if(item.url.endsWith('-b')){t.mock.timers.tick(100001);throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});}
   await search({queries:['HSA'],urls:[]});return answer([create({...finding,description:item.url})]);
  })});
- const first=await run();assert.equal(first.processed,1);assert.equal(first.state,'deferred');
- assert.deepEqual((await raw.query('select pending from scout.source_items order by item_key')).rows.map(r=>r.pending),[false,true]);
- fail=false;seen.length=0;const second=await run();assert.equal(second.processed,1);assert.deepEqual(seen,[publication+'-b']);
+ const first=await run();assert.equal(first.processed,2);assert.equal(first.skipped,1);assert.equal(first.state,'deferred');
+ assert.deepEqual((await raw.query('select pending,last_error from scout.source_items order by item_key')).rows,[{pending:false,last_error:null},{pending:false,last_error:'runtime_bound'},{pending:true,last_error:null}]);
+ assert.equal((await raw.query("select request_checked_at from scout.source_items where item_key='b'")).rows[0].request_checked_at,null);
+ t.mock.timers.reset();seen.length=0;const second=await run();assert.equal(second.processed,1);assert.deepEqual(seen,[publication+'-c']);
  assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,2);
  assert.ok((await raw.query('select * from scout.source_items')).rows.every(r=>!r.pending));
+});
+
+test('an unavailable pending link is reported and consumed without a model call, preserving its last successful read while the next item saves',async t=>{
+ const {raw,db,tracker}=await setup(t),bad=publication+'-bad';const seen=[];
+ await raw.query("insert into scout.source_items(tracker_id,item_key,url,request_url,request_checked_at,request_fingerprint) values($1,'a',$2,$2,now()-interval '1 day','prior'),($1,'b',$3,null,null,null)",[tracker.id,bad,publication]);
+ const prior=(await raw.query("select * from scout.source_items where item_key='a'")).rows[0],before={...db.metrics};
+ const result=await intake(db,{trackerId:tracker.id,sourceFetch:async url=>{if(url===bad)throw new Error('Unavailable');return new Response('<main>CHM webinar</main>',{headers:{'content-type':'text/html'}});},modelFor:model(async({item,search})=>{
+  seen.push(item.url);await search({queries:['HSA'],urls:[]});return answer([create(finding)]);
+ })});
+ assert.equal(result.state,'saved');assert.equal(result.created,1);assert.equal(result.processed,2);assert.equal(result.skipped,1);assert.deepEqual(seen,[publication]);
+ assert.ok(result.diagnostics.some(d=>d.url===bad&&d.reason==='source_unavailable'));
+ const skipped=(await raw.query("select * from scout.source_items where item_key='a'")).rows[0];
+ assert.equal(skipped.pending,false);assert.equal(skipped.last_error,'source_unavailable');assert.ok(skipped.consumed_at);
+ for(const key of ['request_url','request_checked_at','request_fingerprint'])assert.deepEqual(skipped[key],prior[key]);
+ const parent=(await raw.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0];assert.equal(parent.failure_count,0);assert.equal(parent.last_error,null);assert.deepEqual(parent.last_successful_check,parent.last_checked_at);
+ t.diagnostic(JSON.stringify({mocked_model:true,unavailable_link_model_calls:0,unavailable_then_success_sql:Object.fromEntries(Object.keys(before).map(k=>[k,db.metrics[k]-before[k]])),warning_column_bytes:(await raw.query("select pg_column_size(last_error) n from scout.source_items where item_key='a'")).rows[0].n}));
+});
+
+test('unreadable and incomplete items do not block later work, and successful rediscovery clears their warnings',async t=>{
+ const {raw,db,tracker}=await setup(t);let broken=false,version=0;const seen=[];
+ const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>url===feedURL?rss([['a',publication+'-a','A'+version],['b',publication+'-b','B'+version],['c',publication+'-c','C'+version]]):new Response('<main>Article '+version+'</main>',{headers:{'content-type':'text/html'}}),modelFor:model(async({item})=>{
+  seen.push(item.url);if(broken&&!item.url.endsWith('-c'))throw Object.assign(new Error('item failure'),{reason:item.url.endsWith('-a')?'model_unreadable':'output_incomplete'});return answer([]);
+ })});
+ assert.equal((await run()).processed,3);
+ const prior=(await raw.query('select request_checked_at,request_fingerprint from scout.source_items order by item_key')).rows;
+ version++;broken=true;seen.length=0;const skipped=await run();assert.equal(skipped.state,'no_findings');assert.equal(skipped.processed,3);assert.equal(skipped.skipped,2);assert.equal(seen.length,3);
+ const rows=(await raw.query('select * from scout.source_items order by item_key')).rows;
+ assert.deepEqual(rows.map(r=>r.last_error),['model_unreadable','output_incomplete',null]);assert.ok(rows.every(r=>!r.pending));
+ for(let i=0;i<2;i++){assert.deepEqual(rows[i].request_checked_at,prior[i].request_checked_at);assert.equal(rows[i].request_fingerprint,prior[i].request_fingerprint);}
+ seen.length=0;assert.equal((await run()).processed,0);assert.equal(seen.length,0);
+ version++;broken=false;assert.equal((await run()).processed,3);
+ assert.ok((await raw.query('select * from scout.source_items')).rows.every(r=>!r.pending&&r.last_error===null&&r.request_fingerprint!==prior[0].request_fingerprint));
 });
 
 test('irrelevant and reasoned-skip items consume progress without finding writes; failed saves do not consume',async t=>{
@@ -461,7 +495,7 @@ test('web freshness gates discovery and article investigation separately, while 
   return new Response(index?`<main><a href="/articles/chm">CHM news ${indexReads}</a></main>`:`<main>Technical CHM webinar ${articleReads}</main>`,{headers:{'content-type':'text/html'}});
  },modelFor:(_item,options)=>async(_p,_input,schema)=>{
   if(schema.properties.items){discoveries++;return {items:[{url:publication,summary:'CHM news'}]};}
-  investigations++;if(broken)throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});
+  investigations++;if(broken)throw Object.assign(new Error('provider_unavailable'),{reason:'provider_unavailable'});
   return answer([]);
  }});
  assert.equal((await run()).processed,1);assert.deepEqual([discoveries,investigations,indexReads,articleReads],[1,1,1,1]);
@@ -481,7 +515,7 @@ test('content fingerprints skip unchanged indexes and articles and advance only 
  },modelFor:(_item,options)=>async(_p,_input,schema)=>{
   if(schema.properties.items){discoveries++;return {items:[{url:publication,summary:'CHM news'}]};}
   investigations++;
-  if(failure==='model')throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});
+  if(failure==='model')throw Object.assign(new Error('provider_unavailable'),{reason:'provider_unavailable'});
   if(failure==='save'){await options.functions[0].run({queries:['HSA'],urls:[]});return answer([create({...finding,description:'Reject'})]);}
   return answer([]);
  }});
@@ -526,7 +560,7 @@ test('inconclusive article freshness still investigates available feed material 
   calls++;assert.equal(item.url,publication);assert.equal(input.content.content.title,'CHM webinar');return answer([]);
  })});
  assert.equal(calls,1);assert.equal(result.processed,1);assert.equal(result.state,'no_findings');
- const item=(await raw.query('select * from scout.source_items')).rows[0];assert.equal(item.pending,false);assert.equal(item.request_checked_at,null);
+ const item=(await raw.query('select * from scout.source_items')).rows[0];assert.equal(item.pending,false);assert.equal(item.request_checked_at,null);assert.equal(item.last_error,'source_unavailable');assert.equal(result.skipped,0);
 });
 
 test('CBD discovery and item investigation reuse the API response while retaining the public finding URL',async t=>{

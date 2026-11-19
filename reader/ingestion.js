@@ -6,7 +6,7 @@ import {cbdRequest,prepareCBD} from './sources/cbd.js';
 import {scoutDay} from '../shared/finding-dates.js';
 export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,deadline,through}){
  const commitDeadline=Date.parse(through)+110000;
- const result={created:0,changed:0,saved:0,ambiguous:0,processed:0,createdIds:[],calendarIds:[],diagnostics:[]};
+ const result={created:0,changed:0,saved:0,ambiguous:0,processed:0,skipped:0,createdIds:[],calendarIds:[],diagnostics:[]};
  const add=counts=>{for(const key of ['created','changed','saved','ambiguous'])result[key]+=counts[key];result.createdIds.push(...counts.createdIds);result.calendarIds.push(...counts.calendarIds);};
  try{
  let pending=isBluesky(tracker.url)?[]:await pendingItems(db,tracker),discovery,available=new Map();
@@ -36,31 +36,42 @@ export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,dead
    add(counts);result.processed+=end-start;start=end;
   }
  }else for(const row of pending){
+  if(Date.now()>=deadline)throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});
   let item=available.get(row.item_key);
   const request=cbdRequest(row.url)??row.url;
-  let content=item?.content?.request_url===request?item.content:null;
-  if(!content)try{
-   content=await readUrl(request,{lastSuccessfulCheck:row.request_checked_at,previousRequestURL:row.request_url,previousFingerprint:row.request_fingerprint});
-   if(!content.unchanged&&cbdRequest(row.url))content=prepareCBD(content,row.url);
+  let content=item?.content?.request_url===request?item.content:null,investigation,lastError=null,errorDiagnostics;
+  try{
+   if(!content)try{
+    content=await readUrl(request,{lastSuccessfulCheck:row.request_checked_at,previousRequestURL:row.request_url,previousFingerprint:row.request_fingerprint});
+    if(!content.unchanged&&cbdRequest(row.url))content=prepareCBD(content,row.url);
+   }catch(error){
+    const supplied=item?.content?.content;
+    if(!['source_unavailable','source_invalid'].includes(error.reason)||!(typeof supplied==='string'?supplied.trim():supplied&&Object.values(supplied).some(value=>typeof value==='string'&&value.trim())))throw error;
+    content=item.content;lastError=error.reason;
+   }
+   if(!content.unchanged){
+    item={...item,key:row.item_key,url:row.url,version:row.observed_version,source_kind:'web',content};
+    investigation=await investigate(db,item,{modelFor,deadline,readUrl,oldestDate:tracker.oldest_date,through});
+   }
+  }catch(error){
+   if(!['source_unavailable','source_invalid','runtime_bound','model_unreadable','output_incomplete','invalid_output','invalid_json','output_truncated','url_retrieval_failed','retrieval_metadata_missing'].includes(error.reason))throw error;
+   lastError=error.reason;errorDiagnostics=error.diagnostics;content=null;
   }
-  catch(error){
-   if(error.reason!=='source_unavailable')throw error;
-   content=item?.content??{url:row.url,error:'source_unavailable'};
+  if(!investigation){
+   await db.transaction(async tx=>{await verifyLease(tx,tracker);await consumeItem(tx,tracker,row,content,lastError);},{deadline:commitDeadline});
+   result.processed++;
+   if(lastError){result.skipped++;result.diagnostics.push({...errorDiagnostics,url:row.url,reason:lastError});}
+   continue;
   }
-  if(content.unchanged){
-   await db.transaction(async tx=>{await verifyLease(tx,tracker);await consumeItem(tx,tracker,row,content);},{deadline:commitDeadline});
-   result.processed++;continue;
-  }
-  item={...item,key:row.item_key,url:row.url,version:row.observed_version,source_kind:'web',content};
-  const investigation=await investigate(db,item,{modelFor,deadline,readUrl,oldestDate:tracker.oldest_date,through});
   result.diagnostics.push({...investigation.diagnostics,invalid_fields:investigation.invalid_fields});
   const counts=await db.transaction(async tx=>{
    await verifyLease(tx,tracker);
    const counts=await applyDecisions(tx,[{item,investigation}]);
    const resource=investigation.resource??(item.content?.request_url?item.content:null);
-   await consumeItem(tx,tracker,row,resource);return counts;
+   await consumeItem(tx,tracker,row,resource,lastError);return counts;
   },{deadline:commitDeadline});
   add(counts);result.processed++;
+  if(lastError)result.diagnostics.push({url:row.url,reason:lastError});
  }
  if(discovery?.excluded)throw Object.assign(new Error('invalid_output'),{reason:'invalid_output'});
  await completeSource(db,tracker,through,commitDeadline);
