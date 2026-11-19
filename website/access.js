@@ -1,11 +1,10 @@
 import { loadScout, mountDashboard } from './dashboard.js';
-import { mountCalendar } from './calendar.js';
 import { loadReview, submitReview } from './review.js';
 
 export function mountAccess(client, root, mount = mountDashboard) {
   const status = root.querySelector('#status'), form = root.querySelector('#sign-in');
   const signOut = root.querySelector('#sign-out'), workspace = root.querySelector('#workspace'), views = root.querySelector('#scout-views');
-  let generation = 0, signingOut = false, closeDashboard, closeCalendar, mountedUser;
+  let generation = 0, signingOut = false, closeDashboard, mountedUser;
 
   async function showSession(session) {
     if (signingOut) session = null;
@@ -17,7 +16,6 @@ export function mountAccess(client, root, mount = mountDashboard) {
       if (!access.error && ['reader', 'admin'].includes(access.data)) return;
     }
     closeDashboard?.(); closeDashboard = null; mountedUser = null;
-    closeCalendar?.(); closeCalendar = null;
     workspace.replaceChildren(); workspace.hidden = true;
     views.hidden = true;
     form.hidden = Boolean(session);
@@ -51,7 +49,6 @@ export function mountAccess(client, root, mount = mountDashboard) {
     });
     mountedUser = session.user.id;
     views.hidden = false;
-    closeCalendar = mountCalendar(client, root.querySelector('#calendar-tools'));
   }
 
   client.auth.onAuthStateChange((_event, session) => { void showSession(session); });

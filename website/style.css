@@ -36,8 +36,9 @@ article a { display: block; margin-top: 8px; }
 .filters .search { flex: 1 1 220px; }
 .view-switch { display: flex; gap: 4px; }
 .view-switch button { display: grid; place-items: center; width: 44px; height: 44px; padding: 10px; border: 1px solid #1d5fbf; }
-.view-switch svg, #calendar-feed svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; }
-#calendar-feed { display: inline-flex; align-items: center; gap: 8px; }
+.view-switch svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+#calendar { max-width: 760px; }
+#calendar li { margin: 12px 0; line-height: 1.6; }
 .hint, .meta, #load-status, #record-count, #tracker-count { color: #536d89; font-size: .85rem; line-height: 1.55; }
 .meta { margin: 8px 0; }
 .record-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
@@ -107,7 +108,7 @@ body:has(#review:not([hidden])) .page-nav { flex: none; min-height: 48px; paddin
 body:has(#review:not([hidden])) .scout-brand { margin-right: 12px; font-size: 1.125rem; }
 body:has(#review:not([hidden])) #scout-views { gap: 8px; }
 body:has(#review:not([hidden])) .page-nav a { font-size: .875rem; }
-body:has(#review:not([hidden])) :is(#calendar-tools,footer) { display: none; }
+body:has(#review:not([hidden])) footer { display: none; }
 body:has(#review:not([hidden])) #workspace { flex: 1; min-height: 0; margin-top: 8px; }
 #review { display: flex; flex-direction: column; gap: 10px; height: 100%; max-width: 960px; margin: 0 auto; }
 .review-heading { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 12px; }
@@ -149,9 +150,11 @@ article.review-card { display: grid; flex: 0 1 auto; min-height: 0; grid-templat
 #review-form label[for="review-notes"] { margin: 12px 0 6px; font-size: .875rem; }
 #review-notes { display: block; width: 100%; resize: none; height: 88px; padding: 10px; border: 1px solid #b5c7df; border-radius: 6px; font: inherit; color: inherit; background: #fbfcff; }
 #review-notes::placeholder { color: #657b96; }
-.review-submit { margin-top: 12px; }
+.review-submit { position: relative; margin-top: 12px; }
 .review-submit button { width: 100%; min-height: 44px; border-radius: 6px; font-weight: 600; padding: 10px 16px; }
-.review-submit button:disabled { cursor: default; }
+.review-submit button:disabled { cursor: default; pointer-events: none; }
+#review-save-hint { position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; z-index: 3; padding: 10px 12px; border-radius: 6px; background: #193552; color: #fff; font-size: .85rem; line-height: 1.4; visibility: hidden; }
+fieldset:not(:disabled) .review-submit:has(button:disabled):is(:hover,:focus-visible) #review-save-hint { visibility: visible; }
 .review-empty { display: grid; flex: 1; align-content: center; padding: 16px; text-align: center; background: #fff; border: 1px solid #cfdbec; border-radius: 12px; }
 .review-empty>span { font-size: 2.5rem; color: #3075d6; }
 .review-empty h2 { font-size: 1.25rem; }

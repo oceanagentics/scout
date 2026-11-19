@@ -33,7 +33,8 @@ export function mountReview(root,load,submit) {
         <button type="button" data-priority="low" aria-pressed="false">Low</button></div>
         <label for="review-notes">Your notes</label>
         <textarea id="review-notes" name="notes" rows="2" placeholder="why this ranking" required></textarea>
-        <div class="review-submit"><button type="submit" disabled>Save & next finding</button></div>
+        <div class="review-submit" role="group" aria-label="Save review" tabindex="0" aria-describedby="review-save-hint"><button type="submit" disabled aria-describedby="review-save-hint">Save & next finding</button>
+          <span id="review-save-hint" role="tooltip">To save, open a source link, choose a ranking and add a note.</span></div>
       </fieldset></form></article>
     <div id="review-empty" class="review-empty" hidden><span aria-hidden="true">✦</span><h2>You’re all caught up.</h2><p>Thanks for lending your perspective. Come back when there are new findings to review.</p></div>
     <dialog class="review-milestone" aria-labelledby="milestone-heading"><div class="milestone-burst" aria-hidden="true">${'<i></i>'.repeat(12)}</div>
@@ -43,11 +44,12 @@ export function mountReview(root,load,submit) {
   const status=root.querySelector('#review-status'),card=root.querySelector('#review-card');
   const retry=root.querySelector('#review-retry'),milestone=root.querySelector('.review-milestone');
   const choices=form.querySelectorAll('[data-priority]'),notes=form.querySelector('#review-notes'),save=form.querySelector('[type="submit"]');
-  const links=root.querySelector('#review-links');
+  const links=root.querySelector('#review-links'),saveHelp=root.querySelector('.review-submit');
   let state,active=true,busy=false,sourceOpened=false;
 
   function updateSave() {
     save.disabled=!state?.record||!sourceOpened||!notes.value.trim()||!form.querySelector('[data-priority][aria-pressed="true"]');
+    saveHelp.tabIndex=save.disabled?0:-1;
   }
 
   function render(next) {

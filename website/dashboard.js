@@ -55,7 +55,17 @@ export function mountDashboard(root, load, views, reviews) {
         <button type="button" data-layout="cards" aria-label="Card view" title="Card view" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
       </div></div><p id="record-count" role="status"></p><div id="record-list" tabindex="0" role="region" aria-label="Records results"></div><button type="button" id="first-page" class="secondary">First page</button><button type="button" id="next-page" class="secondary">Next page</button></section>
     <section id="trackers" aria-label="Trackers" hidden>
-      <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>`;
+      <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>
+    <section id="calendar" aria-label="Calendar" hidden>
+      <h1>Scout Calendar</h1><p>Follow Scout events in your Ocean Agentics Google Calendar.</p>
+      <p><a href="https://calendar.google.com/calendar/u/0?cid=Y19jNGViYTU2OTdkM2EzZTMzYzQ1OTBkYWE3YzIwYzg3OTFkN2Q2MDhiNzg3ZmY5NTliZjMxMTdmM2E3ZDAyZGY1QGdyb3VwLmNhbGVuZGFyLmdvb2dsZS5jb20=" target="_blank" rel="noopener noreferrer">Add Scout to Google Calendar</a></p>
+      <ol><li>Open the link above in a computer browser and sign in with your Ocean Agentics account.</li>
+        <li>When Google Calendar asks, choose <strong>Add</strong>.</li>
+        <li>Find <strong>Scout</strong> under <strong>Other calendars</strong> and check its box to show the events.</li></ol>
+      <p>The calendar stays connected, so future Scout events appear automatically. In the Google Calendar mobile app, use the same account and turn on Scout in the calendar list.</p>
+      <p class="hint">If Google says you don't have access, check that you're using your Ocean Agentics account. If access is still unavailable, ask Danny to share the Scout calendar with you.</p>
+      <p><a href="https://support.google.com/calendar/answer/37100" target="_blank" rel="noopener noreferrer">Google's instructions for adding a shared calendar</a></p>
+    </section>`;
   const status = root.querySelector('#load-status');
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
   let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table', after=null,request=0,filterTimer,started=false;
@@ -198,8 +208,8 @@ export function mountDashboard(root, load, views, reviews) {
       else other.removeAttribute('aria-current');
       root.querySelector(`#${other.dataset.view}`).hidden = !selected;
     }
-    if(link.dataset.view!=='review'&&!started){started=true;void reload();}
-    status.hidden=link.dataset.view==='review'||!status.textContent;
+    if(['findings','trackers'].includes(link.dataset.view)&&!started){started=true;void reload();}
+    status.hidden=!['findings','trackers'].includes(link.dataset.view)||!status.textContent;
   };
   views.addEventListener('click', navigate);
   for (const button of root.querySelectorAll('[data-layout]')) button.addEventListener('click', () => {
@@ -231,6 +241,6 @@ export function mountDashboard(root, load, views, reviews) {
   document.addEventListener('visibilitychange', tick);
   root.hidden = false;
   const initialView=new URLSearchParams(location.search).has('record')?'findings':location.hash.slice(1);
-  if(['findings','trackers'].includes(initialView))views.querySelector(`[data-view="${initialView}"]`).click();
+  if(['findings','trackers','calendar'].includes(initialView))views.querySelector(`[data-view="${initialView}"]`).click();
   return () => { active = false;closeReview(); views.removeEventListener('click', navigate);clearTimeout(filterTimer);if (sourceDialog.open) sourceDialog.close();clearInterval(timer); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
 }
