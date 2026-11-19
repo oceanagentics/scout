@@ -332,14 +332,14 @@ test('content fingerprints skip unchanged indexes and articles and advance only 
  assert.equal((await raw.query('select count(*)::int n from scout.source_items')).rows[0].n,0);
 });
 
-test('a create based only on empty narrow searches is rejected before progress commits',async t=>{
+test('an empty duplicate search permits a new finding and commits progress',async t=>{
  const {raw,db,tracker}=await setup(t);
  const result=await intake(db,{trackerId:tracker.id,sourceFetch:async()=>rss(),modelFor:model(async({search})=>{
   await search({queries:['HSA unusual title phrase'],urls:[]});return answer([create(finding)]);
  })});
- assert.equal(result.state,'deferred');assert.equal(result.reason,'invalid_output');assert.equal(result.processed,0);
- assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,0);
- assert.equal((await raw.query('select pending from scout.source_items')).rows[0].pending,true);
+ assert.equal(result.state,'saved');assert.equal(result.created,1);assert.equal(result.processed,1);
+ assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,1);
+ assert.equal((await raw.query('select pending from scout.source_items')).rows[0].pending,false);
 });
 
 test('inconclusive article freshness still investigates available feed material without acknowledging the failed read',async t=>{

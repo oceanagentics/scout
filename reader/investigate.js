@@ -20,10 +20,6 @@ export async function investigate(db,item,{modelFor,deadline,readUrl,oldestDate,
    if(['update','no_change'].includes(d.action)&&(!lookups.length||!target))throw fail('invalid_output');
    if(d.action==='no_change'&&!target.sources.some(s=>s.role==='finding'&&s.url===item.url))throw fail('invalid_output');
    if(d.action==='create'&&!lookups.length)throw fail('invalid_output');
-   if(d.action==='create'&&!lookups.some(l=>l.records.length)&&d.fields.organizations.length){
-    const clean=s=>s.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
-    if(!lookups.some(l=>l.args.queries.some(q=>d.fields.organizations.some(o=>clean(o)===clean(q)))))throw fail('invalid_output');
-   }
   }
  };
  const answer=await modelFor(item,{deadline,readUrl:read,functions,validate})(INTAKE_INSTRUCTION,{url:item.url,source_kind:item.source_kind,
