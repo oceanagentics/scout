@@ -61,14 +61,33 @@ Omit `--tracker` to check the next due enabled tracker. An explicit tracker ID a
 
 ## Slack credentials
 
-Scout's existing Slack app is `A0C5P53NAPM` in workspace `TFZ8FRLBV`; findings post to private `#scout` (`C0C5PE21KN1`). The verified bot is `B0C5TDBU5UN`, user `U0C6PNRPX4G`, with display name Scout and internal username `scout3`. Keep this app and installation as the enduring identity. Keep credentials in the ignored root `.env.local` and load them in memory without printing values.
+Scout uses one Slack app, `A0C5P53NAPM`, in workspace `TFZ8FRLBV`. Its bot is `B0C5TDBU5UN`, user `U0C6PNRPX4G`, displayed as Scout. Findings post to private `#scout` (`C0C5PE21KN1`). Keep this app, bot and installation as the enduring identity; identify them by these IDs rather than a display name or username. Keep credentials in the ignored root `.env.local` and load them in memory without printing values.
 
 | Credential | Purpose |
 | --- | --- |
 | `SCOUT_SLACK_BOT_TOKEN` | Same local and hosted secret name. The reader/notifier use `chat.postMessage` as this bot; the same identity can edit/delete its own messages. |
 | `SLACK_SIGNING_SECRET` | Same local and hosted secret name. Verifies raw inbound requests to `scout-slack`, including the timestamp. Must belong to the same app as the bot token. |
 
-For Scout-owned messages, use Scout's API credentials; the connected Slack user account cannot edit another author's posts. Check `auth.test`, the granted scopes and the target message's app identity/channel access before editing. A webhook URL identifier and an OAuth bot ID are different identifiers; their difference alone does not establish that they belong to different apps. For a URL correction, preserve the message text and timestamp and replace only the verified link. Verify the saved message afterward. Report the exact failing API method and sanitized error if blocked; do not open native apps or change membership unless requested.
+All Scout posts, maintenance replies and future agent replies must use this bot token with the Slack Web API. The reader and notifier share `botTransport` in [slackbot/slack.js](slackbot/slack.js). There is no webhook transport or fallback. Do not create another app/bot, add an incoming webhook, or override message authorship to obtain posting or editing access. The signing secret authenticates inbound requests; it is not a posting credential.
+
+### Posting, reading and maintaining messages
+
+Use `Authorization: Bearer <SCOUT_SLACK_BOT_TOKEN>` for every call. Use GET query parameters for reads and JSON POST bodies for message writes. These are API operations, not commands to send to Scout in Slack.
+
+| Operation | Slack method and required identifiers |
+| --- | --- |
+| Post | `chat.postMessage`: `channel`, `text`; keep the returned `channel` and `ts` for subsequent operations. |
+| Reply in a thread | `chat.postMessage`: `channel`, `thread_ts` set to the original message's `ts`, and `text`. Leave `reply_broadcast` false. |
+| Read channel/DM messages | `conversations.history`: the conversation's `channel` ID; follow pagination. |
+| Read a thread | `conversations.replies`: `channel`, `ts` of the parent; follow pagination. |
+| Edit a bot-owned message | `chat.update`: `channel`, `ts` of that message and its revised content. |
+| Delete a bot-owned message | `chat.delete`: `channel`, `ts` of that message. Deletion is irreversible and requires explicit authorization. |
+
+Before maintenance, check `auth.test` against the workspace, bot and user IDs above, then read the target message and verify its author. Use `bots.info` when its App ID is absent from the message. Read/confirm channel access; do not change membership unless requested. A DM uses its `D…` conversation ID. The connected Slack user account is a separate author and cannot edit Scout's messages.
+
+For a URL correction, preserve the original text, timestamp and unrelated content; update the matching links in both text and existing blocks/attachments. Do not use the legacy `as_user` argument or username/icon overrides. Read the saved message afterward and require `ok: true` in the API response, not merely HTTP 200. If a write times out or its outcome is uncertain, inspect the conversation before repeating it. Report the exact method and sanitized Slack error when blocked.
+
+Remaining historical webhook posts belong to a different posting identity, even though they came from the same app. This bot cannot edit them. Use a bot thread reply for an authorized correction, or the workspace owner's account for an explicitly authorized deletion. Removing webhook authorizations does not transfer ownership of those old posts.
 
 ### Enduring Slack app configuration
 
@@ -91,7 +110,7 @@ This setup covers conversations Scout participates in, not other people's DMs or
 
 The deployed reader and notifier use the bot token; `scout-slack` receives signed HTTP events, replacing the unused Socket Mode configuration. Releases must preserve each job's active state; these functions need no SQL or cron reinstall. Measure event activity against the actual shared Supabase allowance before adding work: each receipt uses one function invocation, zero model calls, zero SQL and zero retained message-body bytes; Slack retries add invocations. Nonempty outbound batches use two SQL reads, zero delivery-state writes and one posting request per finding. For an authorized live check, prove post/read/edit/read/delete in `#scout` and a DM, verify record metadata and the saved finding URL, and verify delivery of unmentioned replies. Require Slack `ok:true`, not merely HTTP 200. Mocked tests do not establish live permissions or ownership. If a local backend key is absent, the scheduler's existing credential is in Vault as `scout_loop_backend_key`; use it only in memory for authorized backend invocations, without printing it.
 
-Runtime use of `SLACK_WEBHOOK_URL` / hosted `SCOUT_SLACK_WEBHOOK_URL` is retired. The manifest does not request incoming webhooks, although the existing token retains its earlier `incoming-webhook` grant. Three historical webhook authorizations (`B0C5TEK4R38`, `B0C5XBQ5ZDX`, `B0CGUBCMBHT`) belong to this same app; `bots.info` reports no user ID for them. Old posts authored by `B0C5TEK4R38` still reject `chat.update` from the current bot with `cant_update_message`, despite the verified App ID and granted scopes. The inspected configuration exposes no matching Web API editing credential. Those posts remain unchanged; do not claim this cutover transfers their ownership. Keep the original authorizations and local webhook credential intact while recovery remains unresolved.
+Incoming webhooks are disabled and their three historical authorizations have been removed. Only the bot installation remains authorized. Remove obsolete webhook secrets locally and hosted; do not restore them. The two Slack credentials listed above are the only ones Scout needs. Keep the signed Events API/interactivity receiver enabled: removing outbound incoming webhooks does not remove inbound channel/DM event delivery.
 
 ## Slack schedules and timezone
 
