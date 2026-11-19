@@ -2,13 +2,15 @@ import {eventTiming,sourceLink} from '../shared/records.js';
 import {recordDate,scoutDay} from '../shared/finding-dates.js';
 
 export const CHANNEL='C0C5PE21KN1';
+export const DM_CHANNEL='D0C5XA5RT41';
 const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('|','%7C');
 
 export async function readRecords(db,{kind,ids=[],now=new Date()}){
   if(kind==='findings'&&!ids.length)return [];
   const where=kind==='findings'?'r.id=any($1::uuid[])':kind==='morning'?"r.type='event' and length(r.date)=10":
     "r.type='event' or (r.type='announcement' and r.modified[1]>=((($1::timestamptz at time zone 'America/New_York')-interval '7 days') at time zone 'America/New_York') and r.modified[1]<$1::timestamptz)";
-  return (await db.query(`select r.*,r.modified::text[] as modified from scout.records r where r.priority='high' and (${where}) order by r.date nulls last,r.id`,
+  const priority=kind==='findings'?"r.priority in ('high','normal','low')":"r.priority='high'";
+  return (await db.query(`select r.*,r.modified::text[] as modified from scout.records r where ${priority} and (${where}) order by r.date nulls last,r.id`,
     kind==='findings'?[ids]:kind==='weekly'?[now.toISOString()]:[])).rows;
 }
 
@@ -23,7 +25,7 @@ export async function prepareMessages(db,{kind='weekly',ids=[],now=new Date()}={
   });
   const payloads=records.map(r=>{
     const url=(r.sources??[]).filter(s=>s.role==='finding').map(s=>sourceLink(s.url)).find(Boolean);
-    return {text:`${escape(r.description)}${url?' · <'+escape(url)+'|Read more>':''}`,parse:'none',unfurl_links:false,unfurl_media:false,
+    return {channel:r.priority==='high'?CHANNEL:DM_CHANNEL,text:`${escape(r.description)}${url?' · <'+escape(url)+'|Read more>':''}`,parse:'none',unfurl_links:false,unfurl_media:false,
       metadata:{event_type:'scout_finding',event_payload:{record_id:r.id}}};
   });
   return {records,payloads,prepared_at:now.toISOString()};
@@ -46,7 +48,7 @@ export async function sendMessages(db,preview,post,{now=()=>new Date(),deadline=
       if(response.status>=400&&response.status<500)status='failed';
       else if(response.status===200){
         const result=JSON.parse(response.body);
-        if(result.ok===true&&result.channel===CHANNEL&&typeof result.ts==='string'&&/^\d+\.\d+$/.test(result.ts))status='sent';
+        if(result.ok===true&&result.channel===payload.channel&&typeof result.ts==='string'&&/^\d+\.\d+$/.test(result.ts))status='sent';
         else if(result.ok===false&&!['internal_error','fatal_error','request_timeout','service_unavailable'].includes(result.error))status='failed';
       }
     }catch{}
@@ -61,7 +63,7 @@ export function botTransport(token,send=fetch,{deadline=Infinity}={}) {
   return async body=>{
     const response=await send('https://slack.com/api/chat.postMessage',{method:'POST',
       headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json; charset=utf-8'},
-      body:JSON.stringify({...body,channel:CHANNEL}),signal:AbortSignal.timeout(Math.max(1,Math.min(12000,deadline-Date.now())))});
+      body:JSON.stringify(body),signal:AbortSignal.timeout(Math.max(1,Math.min(12000,deadline-Date.now())))});
     return {status:response.status,body:await response.text()};
   };
 }

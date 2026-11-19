@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
-import {CHANNEL,prepareMessages,sendMessages,botTransport} from '../slackbot/slack.js';
+import {CHANNEL,DM_CHANNEL,prepareMessages,sendMessages,botTransport} from '../slackbot/slack.js';
 import {hostedNotify} from '../supabase/functions/scout-notify/index.ts';
 
 async function database(){
@@ -31,6 +31,7 @@ test('morning posts high-priority events individually on the New York day, using
    await db.query("insert into scout.records(type,description,date,starttime,timezone,priority,sources) values('event',$1,$2,$3,$4,$5,jsonb_build_array(jsonb_build_object('url','https://example.org/event','role','finding')))",[description,date,starttime,timezone,priority]);
   const preview=await prepareMessages(db,{kind:'morning',now:new Date('2026-11-08T13:00:00Z')});
   assert.deepEqual(preview.records.map(r=>r.description).sort(),['Date only','Tomorrow in Asia, today in New York','Unknown timezone']);
+  assert.ok(preview.payloads.every(p=>p.channel===CHANNEL));
   assert.deepEqual(preview.payloads.map(p=>p.text).sort(),[
    'Date only · <https://example.org/event|Read more>',
    'Tomorrow in Asia, today in New York · <https://example.org/event|Read more>',
@@ -56,6 +57,7 @@ test('weekly includes all pending high events and seven local days of newly save
    await db.query("insert into scout.records(description,type,priority,date,modified,sources) values($1,$2,$3,$4,array[$5::timestamptz],jsonb_build_array(jsonb_build_object('url','https://example.org/source','role','finding')))",[description,type,priority,date,created]);
   const preview=await prepareMessages(db,{kind:'weekly',now});
   assert.deepEqual(preview.records.map(r=>r.description).sort(),['Exactly seven local days','Far future','Partially dated future','Treaty update','Undated','Within seven New York days']);
+  assert.ok(preview.payloads.every(p=>p.channel===CHANNEL));
   assert.deepEqual(preview.payloads.map(p=>p.text).sort(),[
    'Exactly seven local days · <https://example.org/source|Read more>',
    'Far future · <https://example.org/source|Read more>',
@@ -70,7 +72,7 @@ test('weekly includes all pending high events and seven local days of newly save
 test('hosted sends post one high-priority finding at a time, stop on errors, and make no database writes',async()=>{
  const db=await database();try{
   await seed(db);
-  await db.query("insert into scout.records(description,priority,sources) values('Second high finding','high',jsonb_build_array(jsonb_build_object('url','https://example.org/second','role','finding'))),('Normal finding','normal',jsonb_build_array(jsonb_build_object('url','https://example.org/normal','role','finding')))");
+  await db.query("insert into scout.records(description,priority,sources) values('Second high finding','high',jsonb_build_array(jsonb_build_object('url','https://example.org/second','role','finding'))),('Unassessed finding',null,jsonb_build_array(jsonb_build_object('url','https://example.org/unassessed','role','finding')))");
   const records=(await db.query('select * from scout.records')).rows;
   const trackers=(await db.query('select * from scout.trackers order by id')).rows;
   const secret='sb_secret_notify_test',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
@@ -147,13 +149,26 @@ test('bot delivery keeps the saved link and record ID, uses the bot identity and
  }finally{await db.close();}
 });
 
-test('new findings exclude normal, low and unassessed records and skip empty notifications',async()=>{
+test('new findings send high to the channel and normal/low to Danny, excluding unassessed records',async()=>{
  const db=await database();try{
   const empty=await prepareMessages(db,{kind:'morning'});
   assert.equal((await sendMessages(db,empty,()=>assert.fail('Empty digest'))).status,'no_change');
   const ids=[];
-  for(const priority of ['normal','low',null])ids.push((await db.query("insert into scout.records(description,priority,sources) values('Finding',$1,jsonb_build_array(jsonb_build_object('url','https://example.org/source','role','finding'))) returning id",[priority])).rows[0].id);
-  const preview=await prepareMessages(db,{kind:'findings',ids});assert.equal(preview.records.length,0);
-  assert.equal((await sendMessages(db,preview,()=>assert.fail('No high-priority findings'))).status,'no_change');
+  for(const priority of ['high','normal','low',null])ids.push((await db.query("insert into scout.records(description,priority,sources) values($1,$2,jsonb_build_array(jsonb_build_object('url','https://example.org/source','role','finding'))) returning id",[(priority??'Unassessed')+' finding',priority])).rows[0].id);
+  const preview=await prepareMessages(db,{kind:'findings',ids}),sent=[];
+  const post=botTransport('xoxb-test',async(_url,options)=>{
+   const payload=JSON.parse(options.body);sent.push(payload);
+   return Response.json({ok:true,channel:payload.channel,ts:'1234567890.123456'});
+  });
+  assert.deepEqual(await sendMessages(db,preview,post),{status:'sent',communicated:3});
+  assert.deepEqual(sent.map(p=>[p.text,p.channel]).sort(),[
+   ['high finding · <https://example.org/source|Read more>',CHANNEL],
+   ['low finding · <https://example.org/source|Read more>',DM_CHANNEL],
+   ['normal finding · <https://example.org/source|Read more>',DM_CHANNEL]
+  ]);
+  const direct=await prepareMessages(db,{kind:'findings',ids:[ids[2]]});
+  assert.deepEqual(await sendMessages(db,direct,async()=>({status:200,body:JSON.stringify({ok:true,channel:CHANNEL,ts:'1234567890.123456'})})),{status:'unknown',communicated:0});
+  const unassessed=await prepareMessages(db,{kind:'findings',ids:[ids[3]]});
+  assert.equal((await sendMessages(db,unassessed,()=>assert.fail('No assessed findings'))).status,'no_change');
  }finally{await db.close();}
 });

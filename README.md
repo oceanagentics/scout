@@ -63,7 +63,7 @@ Omit `--tracker` to check the next due enabled tracker. An explicit tracker ID a
 
 ## Slack credentials
 
-Scout uses one Slack app, `A0C5P53NAPM`, in workspace `TFZ8FRLBV`. Its bot is `B0C5TDBU5UN`, user `U0C6PNRPX4G`, displayed as Scout. Findings post to private `#scout` (`C0C5PE21KN1`). Keep this app, bot and installation as the enduring identity; identify them by these IDs rather than a display name or username. Keep credentials in the ignored root `.env.local` and load them in memory without printing values.
+Scout uses one Slack app, `A0C5P53NAPM`, in workspace `TFZ8FRLBV`. Its bot is `B0C5TDBU5UN`, user `U0C6PNRPX4G`, displayed as Scout. High-priority findings post to private `#scout` (`C0C5PE21KN1`). Newly saved Normal/Low findings go immediately to Danny Vallentyne (`U0AQY6J9SG7`) in Scout's existing DM (`D0C5XA5RT41`). Keep this app, bot and installation as the enduring identity; identify them by these IDs rather than a display name or username. Keep credentials in the ignored root `.env.local` and load them in memory without printing values.
 
 | Credential | Purpose |
 | --- | --- |
@@ -118,12 +118,12 @@ Incoming webhooks are disabled and their three historical authorizations have be
 
 Scout uses `America/New_York` for schedules, calendar-day boundaries, tracker retirement, model “today” and operational time display. Stored timestamps remain UTC; source dates and timezones remain as published.
 
-- New findings: the hosted reader posts newly created high-priority records after committed collection work. Updates and unchanged findings do not post.
+- New findings: after committed collection work, the hosted reader posts newly created High findings to `#scout` and DMs newly created Normal/Low findings to Danny. Updates, unchanged findings and unassessed records do not post.
 - Morning: 8 a.m. daily, high-priority exact-day events occurring today in New York. Without a known instant, use the published calendar date. Partial dates are excluded.
 - Weekly: 9 a.m. Monday, pending high-priority events, including undated events, plus high-priority announcements first saved in the preceding seven New York days.
-- Every notification message contains one high-priority finding: its saved description and evidenced finding link, plus the record ID in metadata. Legacy records without an evidenced finding URL omit Read more. Messages send sequentially, spaced at least one second apart; no grouped posts or model calls. Empty notifications are skipped. Delivery stops on a failed or uncertain send and reports the confirmed send count. Delivery is best effort, with no persistent delivery state or automatic retry after uncertain sends.
+- Every notification message contains one finding: its saved description and evidenced finding link, plus the record ID in metadata. Legacy records without an evidenced finding URL omit Read more. Messages send sequentially, spaced at least one second apart; no grouped posts or model calls. Empty notifications are skipped. Delivery stops on a failed or uncertain send and reports the confirmed send count. Delivery is best effort, with no persistent delivery state or automatic retry after uncertain sends.
 
-The model's priority rubric is stored in [reader/instructions.js](reader/instructions.js). The high-priority filter, individual message format and delivery rules are enforced in [slackbot/slack.js](slackbot/slack.js), shared by the reader and scheduled notifier.
+The model's priority rubric is stored in [reader/instructions.js](reader/instructions.js). Priority selection, destinations, individual message format and delivery rules are enforced in [slackbot/slack.js](slackbot/slack.js), shared by the reader and scheduled notifier.
 
 [scout-loop.sql](supabase/scout-loop.sql) installs three paused jobs and replaces the obsolete notification jobs. Supabase cron uses GMT: digest jobs wake at both possible UTC hours and dispatch only at the matching New York hour, including daylight saving. The shared loop bounds these jobs’ completed cron history to one day. After deploying and verifying the reader and notifier, restore each job's prior active state as required by [AGENTS.md](AGENTS.md). On initial setup or an explicitly requested restart, enable `scout-collection`, `scout-morning` and `scout-weekly`.
 
