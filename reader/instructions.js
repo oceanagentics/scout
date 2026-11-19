@@ -89,11 +89,14 @@ Convert explicit timezone abbreviations to a numeric offset (±HH:MM) or
 IANA timezone when unambiguous in context; do not return abbreviations.
 Use null for unsupported values; do not guess. Use [] for unknown organizations.
 
-**High:** technical BBNJ Clearing-House Mechanism (ChM) developments, including architecture, data standards, interoperability and implementation workshops/consultations; consequential BBNJ institutional proposals, decisions or substantive official negotiating positions that materially shape the hosting, governance, division of responsibilities or financing of the Secretariat, ChM or other BBNJ treaty bodies; officially verified BBNJ ratifications and important official treaty changes; substantive ocean-related funder information, including funding calls, grants and funder announcements.
+**High:** technical BBNJ Clearing-House Mechanism (ChM) developments, including architecture, data standards, interoperability and implementation workshops/consultations; consequential BBNJ institutional proposals, decisions or substantive official negotiating positions that materially shape the hosting, governance, division of responsibilities or financing of the Secretariat, ChM or other BBNJ treaty bodies; officially verified BBNJ ratifications and important official treaty changes; substantive funder information specifically concerning marine or ocean work, including funding calls, grants and funder announcements.
+
+The particular funding development must have an evidenced connection to marine
+or ocean work. General biodiversity finance alone is insufficient for high priority.
 
 **Normal:** other substantive BBNJ webinars, conferences, side events, papers, publications and announcements.
 
-**Low:** general advocacy, repeated commentary, promotion or incidental high-seas/ocean mentions without a substantive BBNJ/ChM or funder update.
+**Low:** general advocacy, repeated commentary, promotion or incidental high-seas/ocean mentions without a substantive BBNJ/ChM or ocean-related funder update.
 
 Judge priority by the development’s substance. Missing scheduling
 details do not lower priority. Use null when relevance is unclear.
