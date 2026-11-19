@@ -26,7 +26,7 @@ export function mountReview(root,load,submit) {
     <article class="review-card" id="review-card" aria-labelledby="review-description" hidden>
       <div class="review-card-top"><span id="review-type" class="eyebrow"></span></div>
       <div class="review-content"><div class="review-description-body" tabindex="0" role="region" aria-label="Finding description"><h2 id="review-description" tabindex="-1"></h2></div>
-        <div class="review-source-meta"><span class="model-ranking">Model <strong id="review-model"></strong></span><div id="review-links" class="review-links"></div></div></div>
+        <div class="review-source-meta"><div id="review-links" class="review-links"></div><span class="model-ranking">Model <strong id="review-model"></strong></span></div></div>
       <form id="review-form"><fieldset><legend>Your ranking</legend>
         <div class="review-choices" role="group" aria-label="Your ranking"><button type="button" data-priority="high" aria-pressed="false">High</button>
         <button type="button" data-priority="normal" aria-pressed="false">Normal</button>
@@ -43,7 +43,12 @@ export function mountReview(root,load,submit) {
   const status=root.querySelector('#review-status'),card=root.querySelector('#review-card');
   const retry=root.querySelector('#review-retry'),milestone=root.querySelector('.review-milestone');
   const choices=form.querySelectorAll('[data-priority]'),notes=form.querySelector('#review-notes'),save=form.querySelector('[type="submit"]');
-  let state,active=true,busy=false;
+  const links=root.querySelector('#review-links');
+  let state,active=true,busy=false,sourceOpened=false;
+
+  function updateSave() {
+    save.disabled=!state?.record||!sourceOpened||!notes.value.trim()||!form.querySelector('[data-priority][aria-pressed="true"]');
+  }
 
   function render(next) {
     state=next;
@@ -55,16 +60,17 @@ export function mountReview(root,load,submit) {
     root.querySelector('#review-empty').hidden=Boolean(state.record);
     form.reset();
     for(const button of choices)button.setAttribute('aria-pressed','false');
-    save.disabled=true;notes.setCustomValidity('');
+    sourceOpened=false;notes.setCustomValidity('');updateSave();
     if(!state.record)return;
     root.querySelector('.review-description-body').scrollTop=0;
     root.querySelector('#review-description').textContent=state.record.description;
     root.querySelector('#review-type').textContent=TYPES[state.record.type]??'Finding';
     root.querySelector('#review-model').textContent=PRIORITIES[state.record.priority]??'Not yet assessed';
-    const links=root.querySelector('#review-links');links.replaceChildren();
+    links.replaceChildren();
     for(const source of state.record.sources) {
       const href=sourceLink(source.url);if(!href)continue;
-      const link=document.createElement('a');link.href=href;link.textContent='Source · '+new URL(href).hostname;
+      const link=document.createElement('a');link.href=href;link.textContent='Open source · '+new URL(href).hostname;
+      link.dataset.opened='false';
       link.target='_blank';link.rel='noopener noreferrer';links.append(link);
     }
     if(!links.childElementCount)links.textContent='No source link available.';
@@ -96,15 +102,22 @@ export function mountReview(root,load,submit) {
 
   for(const button of choices)button.addEventListener('click',()=>{
     for(const other of choices)other.setAttribute('aria-pressed',String(other===button));
-    save.disabled=false;
+    updateSave();
   });
-  notes.addEventListener('input',()=>notes.setCustomValidity(''));
+  notes.addEventListener('input',()=>{notes.setCustomValidity('');updateSave();});
+  for(const type of ['click','auxclick'])links.addEventListener(type,event=>{
+    if(event.type==='auxclick'&&event.button!==1)return;
+    const link=event.target.closest('a');if(!link)return;
+    link.dataset.opened='true';link.textContent='✓ Source opened · '+new URL(link.href).hostname;
+    sourceOpened=true;updateSave();
+  });
   form.addEventListener('submit',async event=>{
     event.preventDefault();
     if(busy||!state?.record)return;
+    updateSave();
     const priority=form.querySelector('[data-priority][aria-pressed="true"]')?.dataset.priority;
     notes.setCustomValidity(notes.value.trim()?'':'Explain why you chose this ranking.');
-    if(!priority||!form.reportValidity())return;
+    if(save.disabled||!form.reportValidity())return;
     const previous=state.reviewed_count;
     busy=true;fieldset.disabled=true;retry.hidden=true;status.hidden=false;status.textContent='Saving your review…';
     try {
