@@ -57,15 +57,18 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
   // A cached body can serve different checkpoints; a 304 cannot.
   let pending=cache.get(url.href);
   if(pending&&(await pending).unchanged)pending=null;
+  const diagnostics={url:url.href,stage:'validate',http_status:null};
   pending??=(async()=>{
     const checked_at=new Date().toISOString();
     const bounded=AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(15000)]),visited=new Set();
     const request=async target=>{
       for(;;){
+        diagnostics.stage='validate';
         bounded.throwIfAborted();
         if(visited.has(target.href))throw fail('source_invalid');
         visited.add(target.href);
         if(!['https:','http:'].includes(target.protocol)||target.username||target.password)throw fail('source_invalid');
+        diagnostics.url=target.href;diagnostics.http_status=null;diagnostics.stage='dns';
         const host=target.hostname.replace(/^\[|\]$/g,'');
         const addresses=isIP(host)?[{address:host}]:await new Promise((resolve,reject)=>{
           const abort=()=>reject(fail(signal?.aborted?'runtime_bound':'source_unavailable'));
@@ -74,8 +77,10 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
         });
         if(!addresses.length||addresses.some(a=>!publicAddress(a.address)))throw fail('source_invalid');
         if(metrics)metrics.requests++;
+        diagnostics.stage='fetch';
         const {response,unchanged}=await checkFreshness(target.href,{lastSuccessfulCheck:target.href===previousRequestURL?lastSuccessfulCheck:null,signal:bounded,
           fetch:(url,options)=>send(url,{...options,headers:{...options.headers,'User-Agent':'Scout/0.1'},redirect:'manual'})});
+        diagnostics.stage='response';diagnostics.http_status=response.status;
         if([301,302,303,307,308].includes(response.status)){
           await response.body?.cancel();
           const location=response.headers.get('location');if(!location)throw fail('source_invalid');
@@ -86,7 +91,7 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
         return {response,url:target};
       }
     };
-    const readText=async response=>{const body=await response.text();if(metrics)metrics.bytes+=Buffer.byteLength(body);return body;};
+    const readText=async response=>{diagnostics.stage='body';const body=await response.text();if(metrics)metrics.bytes+=Buffer.byteLength(body);return body;};
     const result=await request(url);
     if(result.unchanged)return {url:result.url.href,request_url:result.url.href,checked_at,unchanged:true};
     const type=(result.response.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
@@ -96,7 +101,7 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
       await result.response.body?.cancel();
       return {url:result.url.href,request_url:result.url.href,checked_at,media_type:nativeType};
     }
-    const body=await readText(result.response);let content;
+    const body=await readText(result.response);diagnostics.stage='prepare';let content;
     if(type==='application/json'||type.endsWith('+json')){try{content=JSON.parse(body);}catch{throw fail('source_invalid');}}
     else if(type.includes('html')||/^\s*(?:<!doctype html|<html)/i.test(body)){
       if(/<ng-view\b[^>]*>\s*<\/ng-view>/i.test(body))throw fail('source_unavailable');
@@ -107,7 +112,12 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
     if(!content||typeof content==='string'&&!content.trim())throw fail('source_unavailable');
     return {url:result.url.href,request_url:result.url.href,checked_at,media_type:type,content};
   })().then(result=>{if(!cache.has(result.url))cache.set(result.url,Promise.resolve(result));return result;})
-    .catch(error=>{throw fail(signal?.aborted?'runtime_bound':error.reason??'source_unavailable');});
+    .catch(error=>{throw Object.assign(fail(signal?.aborted?'runtime_bound':error.reason??'source_unavailable'),{diagnostics:{...diagnostics,
+      error_name:String(error.name??'Error').slice(0,80),
+      error_code:String(error.cause?.code??error.code??'').replace(/[^a-z0-9_]/gi,'').slice(0,80)||null,
+      error_message:[error.message,error.cause?.message].filter(value=>typeof value==='string').join(': ')
+        .replace(/\bsk-[a-z0-9_.*-]+/gi,'[REDACTED]').replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,512)
+    }});});
   cache.set(url.href,pending);
   const source=await pending,prior=source.request_url===previousRequestURL?previousFingerprint:null;
   if(source.unchanged)return {...source,fingerprint:prior};

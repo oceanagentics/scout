@@ -31,6 +31,17 @@ async function setup(t,{before=false}={}){
 }
 const model=decide=>(item,{functions,readUrl})=>async(_instructions,input)=>decide({item,input,readUrl,search:args=>functions[0].run(args)});
 
+test('root fetch failure returns HTTP diagnostics without discovery, model calls or acknowledged progress',async t=>{
+ const {raw,db,tracker}=await setup(t);
+ const result=await intake(db,{trackerId:tracker.id,sourceFetch:async()=>new Response('Do not return this body',{status:403}),modelFor:()=>assert.fail('Root retrieval failed before discovery')});
+ assert.equal(result.state,'deferred');assert.equal(result.reason,'source_unavailable');assert.equal(result.processed,0);
+ assert.deepEqual(result.diagnostics,[{url:feedURL,stage:'response',http_status:403,error_name:'Error',error_code:null,error_message:'source_unavailable',reason:'source_unavailable'}]);
+ assert.equal(result.source.bytes,0);assert.equal(result.source.requests,1);assert.equal((await raw.query('select count(*)::int n from scout.source_items')).rows[0].n,0);
+ const state=(await raw.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0];
+ assert.equal(state.failure_count,1);assert.equal(state.last_error,'source_unavailable');assert.equal(state.last_successful_check,null);assert.equal(state.discovery_checked_at,null);
+ t.diagnostic(JSON.stringify({mocked_http:true,model_calls:0,cost:db.metrics}));
+});
+
 test('Page investigates the complete source, follows evidence links and skips unchanged repeats without discovery',async t=>{
  const {raw,db,tracker}=await setup(t);
  await raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]);
@@ -561,6 +572,7 @@ test('inconclusive article freshness still investigates available feed material 
  })});
  assert.equal(calls,1);assert.equal(result.processed,1);assert.equal(result.state,'no_findings');
  const item=(await raw.query('select * from scout.source_items')).rows[0];assert.equal(item.pending,false);assert.equal(item.request_checked_at,null);assert.equal(item.last_error,'source_unavailable');assert.equal(result.skipped,0);
+ assert.ok(result.diagnostics.some(d=>d.url===publication&&d.stage==='fetch'&&d.http_status===null&&d.error_message==='Unavailable'));
 });
 
 test('CBD discovery and item investigation reuse the API response while retaining the public finding URL',async t=>{

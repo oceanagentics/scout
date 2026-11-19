@@ -48,6 +48,34 @@ test('web reading preserves schedule rows, relative links, images and published 
   assert.match(page.content,/2026-10-24T09:30:00\+04:00/);assert.doesNotMatch(page.content,/Unrelated navigation|privateCode/);
 });
 
+test('failed HTTP reads retain the redirected URL and status without reading the rejected body',async()=>{
+ let cancelled=false;
+ await assert.rejects(readUrl('https://example.org/list',{fetch:async url=>url.endsWith('/list')?
+  new Response(null,{status:302,headers:{location:'/blocked'}}):new Response(new ReadableStream({cancel(){cancelled=true;}}),{status:403})}),error=>{
+  assert.equal(error.reason,'source_unavailable');
+  assert.deepEqual(error.diagnostics,{url:'https://example.org/blocked',stage:'response',http_status:403,error_name:'Error',error_code:null,error_message:'source_unavailable'});return true;
+ });
+ assert.equal(cancelled,true);
+});
+
+test('transport and body-read failures retain distinct bounded diagnostics and existing timeout reasons',async()=>{
+ const cause=Object.assign(new Error('certificate expired\n'+ 'sk-test_secret_123 '+ 'x'.repeat(600)),{code:'CERT_HAS_EXPIRED'});
+ await assert.rejects(readUrl('https://example.org/list',{fetch:async()=>{throw new TypeError('fetch failed',{cause});}}),error=>{
+  assert.equal(error.reason,'source_unavailable');assert.equal(error.diagnostics.stage,'fetch');assert.equal(error.diagnostics.http_status,null);
+  assert.equal(error.diagnostics.error_name,'TypeError');assert.equal(error.diagnostics.error_code,'CERT_HAS_EXPIRED');
+  assert.match(error.diagnostics.error_message,/fetch failed: certificate expired \[REDACTED\]/);
+  assert.equal(error.diagnostics.error_message.length,512);assert.doesNotMatch(error.diagnostics.error_message,/sk-test_secret_123|\n/);return true;
+ });
+ await assert.rejects(readUrl('https://example.org/list',{fetch:async()=>new Response(new ReadableStream({start(controller){controller.error(new TypeError('connection closed'));}}))}),error=>{
+  assert.equal(error.reason,'source_unavailable');assert.equal(error.diagnostics.stage,'body');assert.equal(error.diagnostics.http_status,200);
+  assert.equal(error.diagnostics.error_message,'connection closed');return true;
+ });
+ const controller=new AbortController();
+ await assert.rejects(readUrl('https://example.org/list',{signal:controller.signal,fetch:async()=>{controller.abort();throw controller.signal.reason;}}),error=>{
+  assert.equal(error.reason,'runtime_bound');assert.equal(error.diagnostics.stage,'fetch');assert.equal(error.diagnostics.error_name,'AbortError');return true;
+ });
+});
+
 test('fingerprints compare prepared content per resource and per caller, after HTTP checks',async()=>{
  const url='https://example.org/article?q=one',cache=new Map();let reads=0;
  const fetch=async()=>{reads++;return new Response('<main>Published article</main>',{headers:{'content-type':'text/html'}});};

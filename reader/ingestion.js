@@ -47,7 +47,7 @@ export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,dead
    }catch(error){
     const supplied=item?.content?.content;
     if(!['source_unavailable','source_invalid'].includes(error.reason)||!(typeof supplied==='string'?supplied.trim():supplied&&Object.values(supplied).some(value=>typeof value==='string'&&value.trim())))throw error;
-    content=item.content;lastError=error.reason;
+    content=item.content;lastError=error.reason;errorDiagnostics=error.diagnostics;
    }
    if(!content.unchanged){
     item={...item,key:row.item_key,url:row.url,version:row.observed_version,source_kind:'web',content};
@@ -71,10 +71,13 @@ export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,dead
    await consumeItem(tx,tracker,row,resource,lastError);return counts;
   },{deadline:commitDeadline});
   add(counts);result.processed++;
-  if(lastError)result.diagnostics.push({url:row.url,reason:lastError});
+  if(lastError)result.diagnostics.push({...errorDiagnostics,url:row.url,reason:lastError});
  }
  if(discovery?.excluded)throw Object.assign(new Error('invalid_output'),{reason:'invalid_output'});
  await completeSource(db,tracker,through,commitDeadline);
  return {...result,state:result.saved?'saved':'no_findings'};
- }catch(error){return {...result,state:'deferred',reason:error.reason??'reader_failed'};}
+ }catch(error){
+  if(error.diagnostics)result.diagnostics.push({...error.diagnostics,reason:error.reason??'reader_failed'});
+  return {...result,state:'deferred',reason:error.reason??'reader_failed'};
+ }
 }
