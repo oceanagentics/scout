@@ -7,7 +7,7 @@
         "id": "2576cca8-2285-4bfe-b898-746328c57355",
         "description": "Why enforcement isn't enough: A new framework for improving compliance in Marine Protected Areas",
         "type": "event",
-        "priority": "normal",
+        "score": 60,
         "organizations": [
           "OCTO",
           "James Cook University",
@@ -32,7 +32,7 @@
         "id": "25959dcb-864d-4dbc-926e-c1414f78d2fc",
         "description": "OCTO webinar presenting an adaptive management framework for improving compliance in marine protected areas.",
         "type": "event",
-        "priority": "normal",
+        "score": 60,
         "organizations": [
           "OCTO",
           "James Cook University",
@@ -55,7 +55,7 @@
         "id": "ba43e11f-4a0d-46bf-bcb6-be7c8855acaa",
         "description": "Watching the ocean before the heat arrives: Coordinated marine heatwave monitoring for the 2026-27 El Niño",
         "type": "event",
-        "priority": "normal",
+        "score": 60,
         "organizations": ["OCTO", "University of Victoria"],
         "date": "2026-12-03",
         "deadline": null,
@@ -73,7 +73,7 @@
         "id": "5ead1ac8-d00b-4f17-8219-216e0720e480",
         "description": "OCTO and the Pew Fellows Program in Marine Conservation webinar on coordinated monitoring of marine heatwaves ahead of the 2026–27 El Niño.",
         "type": "event",
-        "priority": "normal",
+        "score": 60,
         "organizations": [
           "The Pew Fellows Program in Marine Conservation",
           "OCTO",

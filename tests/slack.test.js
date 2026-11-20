@@ -20,16 +20,16 @@ async function database({before=false}={}){
  return db;
 }
 async function seed(db){
- return (await db.query("insert into scout.records(type,description,priority,sources) values('announcement','Technical BBNJ ChM standards','high',jsonb_build_array(jsonb_build_object('url','https://example.org/standards','role','finding'))) returning id")).rows[0].id;
+ return (await db.query("insert into scout.records(type,description,score,sources) values('announcement','Technical BBNJ ChM standards',85,jsonb_build_array(jsonb_build_object('url','https://example.org/standards','role','finding'))) returning id")).rows[0].id;
 }
 
 test('migration preserves existing findings as unconfirmed, starts new findings pending and rejects malformed receipts',async()=>{
  const db=await database({before:true});try{
-  const id=await seed(db),before=(await db.query('select * from scout.records where id=$1',[id])).rows[0];
+  const id=(await db.query("insert into scout.records(description,priority) values('Technical BBNJ ChM standards','high') returning id")).rows[0].id,before=(await db.query('select * from scout.records where id=$1',[id])).rows[0];
   await db.exec(await readFile(new URL('../supabase/migrations/'+migration,import.meta.url),'utf8'));
   const {slack_channel_post,...after}=(await db.query('select * from scout.records where id=$1',[id])).rows[0];
   assert.deepEqual(after,before);assert.deepEqual(slack_channel_post,{state:'uncertain'});
-  const fresh=await seed(db);assert.equal((await db.query('select slack_channel_post from scout.records where id=$1',[fresh])).rows[0].slack_channel_post,null);
+  const fresh=(await db.query("insert into scout.records(description,priority) values('Technical BBNJ ChM standards','high') returning id")).rows[0].id;assert.equal((await db.query('select slack_channel_post from scout.records where id=$1',[fresh])).rows[0].slack_channel_post,null);
   for(const invalid of [{},{state:'posted'},{state:'posted',ts:123},{state:'posted',ts:'not-a-message'},
     {state:'posted',ts:'123.456',body:'No message bodies'},{state:'uncertain',ts:'123.456'},[]])
    await assert.rejects(db.query('update scout.records set slack_channel_post=$2::jsonb where id=$1',[fresh,JSON.stringify(invalid)]),{code:'23514'});
@@ -38,14 +38,15 @@ test('migration preserves existing findings as unconfirmed, starts new findings 
 
 test('daily selection includes all pending and uncertain High findings without a date restriction or dev DMs',async()=>{
  const db=await database();try{
-  for(const [description,type,priority,date,receipt]of [
-   ['Undated','event','high',null,null],['Past event','event','high','2020-01-01',null],
-   ['Announcement','announcement','high',null,null],['Uncertain','event','high',null,{state:'uncertain'}],
-   ['Already posted','event','high',null,{state:'posted',ts:'123.456'}],['Excluded','announcement','high',null,{state:'do_not_post'}],
-   ['Dev normal','event','normal',null,null],['Dev low','announcement','low',null,null],['Unassessed','event',null,null,null]])
-   await db.query('insert into scout.records(description,type,priority,date,slack_channel_post) values($1,$2,$3,$4,$5::jsonb)',[description,type,priority,date,receipt?JSON.stringify(receipt):null]);
+  for(const [description,type,score,date,receipt]of [
+   ['Undated','event',85,null,null],['Past event','event',85,'2020-01-01',null],
+   ['At threshold','announcement',75,null,null],['Below threshold','announcement',74,null,null],
+   ['Announcement','announcement',85,null,null],['Uncertain','event',85,null,{state:'uncertain'}],
+   ['Already posted','event',85,null,{state:'posted',ts:'123.456'}],['Excluded','announcement',85,null,{state:'do_not_post'}],
+   ['Dev normal','event',60,null,null],['Dev low','announcement',25,null,null],['Unassessed','event',null,null,null]])
+   await db.query('insert into scout.records(description,type,score,date,slack_channel_post) values($1,$2,$3,$4,$5::jsonb)',[description,type,score,date,receipt?JSON.stringify(receipt):null]);
   const preview=await prepareMessages(db,{kind:'unposted'});
-  assert.deepEqual(preview.records.map(r=>r.description).sort(),['Announcement','Past event','Uncertain','Undated']);
+  assert.deepEqual(preview.records.map(r=>r.description).sort(),['Announcement','At threshold','Past event','Uncertain','Undated']);
   assert.ok(preview.payloads.every(p=>p.channel===CHANNEL));
   await assert.rejects(prepareMessages(db,{kind:'weekly'}),/Unknown notification/);
  }finally{await db.close();}
@@ -118,7 +119,7 @@ test('an exclusion applied after preview validation prevents the pending channel
 
 test('hosted delivery retains rejection reasons, permits safe retry and stops batches on uncertain sends',async()=>{
  const db=await database();try{
-  await seed(db);await db.query("insert into scout.records(description,priority) values('Second finding','high')");
+  await seed(db);await db.query("insert into scout.records(description,score) values('Second finding',85)");
   const records=(await db.query('select * from scout.records order by id')).rows,trackers=(await db.query('select * from scout.trackers order by id')).rows;
   const secret='sb_secret_notify_test',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
   const connect=()=>({reserve:async()=>({unsafe:async(q,p=[])=>{const r=await db.query(q,p);return Object.assign(r.rows,{count:r.affectedRows??r.rows.length});},release(){}}),end:async()=>{}});
@@ -190,7 +191,7 @@ test('receipt-write failure after an acknowledgement stays uncertain instead of 
 test('daily catch-up posts pending High findings once, repairs existing posts and leaves dev DMs untouched',async t=>{
  const db=await database();try{
   const known=await seed(db);await seed(db);await seed(db);
-  const dev=(await db.query("insert into scout.records(description,priority) values('Dev review only','normal') returning id")).rows[0].id;
+  const dev=(await db.query("insert into scout.records(description,score) values('Dev review only',60) returning id")).rows[0].id;
   const secret='sb_secret_notify_test',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
   const connect=()=>({reserve:async()=>({unsafe:async(q,p=[])=>{const r=await db.query(q,p);return Object.assign(r.rows,{count:r.affectedRows??r.rows.length});},release(){}}),end:async()=>{}});
   let reads=0,posts=0;
@@ -204,7 +205,7 @@ test('daily catch-up posts pending High findings once, repairs existing posts an
   const repeat=await run(),second=await repeat.json();assert.equal(repeat.status,200);assert.equal(second.communicated,0);assert.equal(second.cost.statements,1);assert.equal(second.cost.mutations,0);
   assert.equal(reads,1);assert.equal(posts,2);
   assert.equal((await db.query('select slack_channel_post from scout.records where id=$1',[dev])).rows[0].slack_channel_post,null);
-  const bytes=(await db.query("select pg_column_size(slack_channel_post) as bytes from scout.records where priority='high'")).rows.map(r=>r.bytes);
+  const bytes=(await db.query("select pg_column_size(slack_channel_post) as bytes from scout.records where score=85")).rows.map(r=>r.bytes);
   t.diagnostic(JSON.stringify({mocked_slack:true,model_calls:0,history_reads:reads,first_cost:first.cost,idle_cost:second.cost,receipt_bytes:bytes}));
  }finally{await db.close();}
 });
@@ -238,11 +239,11 @@ test('preview validation preserves microseconds and deadlines leave unattempted 
 test('bot delivery keeps saved format and metadata, routes dev DMs and validates actual destinations',async()=>{
  const db=await database();try{
   assert.equal((await sendMessages(db,await prepareMessages(db),()=>assert.fail('Empty notification'))).status,'no_change');
-  const ids=[];for(const priority of ['high','normal','low',null])ids.push((await db.query("insert into scout.records(description,priority,sources) values($1,$2,jsonb_build_array(jsonb_build_object('url','https://example.org/source','role','finding'))) returning id",[(priority??'Unassessed')+' finding',priority])).rows[0].id);
+  const ids=[];for(const score of [85,60,25,null])ids.push((await db.query("insert into scout.records(description,score,sources) values($1,$2,jsonb_build_array(jsonb_build_object('url','https://example.org/source','role','finding'))) returning id",[(score??'Unassessed')+' finding',score])).rows[0].id);
   const preview=await prepareMessages(db,{kind:'findings',ids}),sent=[];
   const post=botTransport('xoxb-test',async(url,options)=>{assert.equal(url,'https://slack.com/api/chat.postMessage');assert.equal(options.headers.Authorization,'Bearer xoxb-test');const payload=JSON.parse(options.body);sent.push(payload);return Response.json({ok:true,channel:payload.channel,ts:'1234567890.123456',message:{extra:'x'.repeat(5000)}});});
   assert.equal((await sendMessages(db,preview,post)).communicated,3);
-  assert.deepEqual(sent.map(p=>[p.text,p.channel]).sort(),[['high finding · <https://example.org/source|Read more>',CHANNEL],['low finding · <https://example.org/source|Read more>',DM_CHANNEL],['normal finding · <https://example.org/source|Read more>',DM_CHANNEL]]);
+  assert.deepEqual(sent.map(p=>[p.text,p.channel]).sort(),[['25 finding · <https://example.org/source|Read more>',DM_CHANNEL],['60 finding · <https://example.org/source|Read more>',DM_CHANNEL],['85 finding · <https://example.org/source|Read more>',CHANNEL]]);
   for(const payload of sent)assert.ok(ids.includes(payload.metadata.event_payload.record_id));
   const direct=await prepareMessages(db,{kind:'findings',ids:[ids[2]]});assert.equal((await sendMessages(db,direct,async()=>ack(CHANNEL))).status,'unknown');
   assert.equal((await db.query('select slack_channel_post from scout.records where id=$1',[ids[2]])).rows[0].slack_channel_post,null);

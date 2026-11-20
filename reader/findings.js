@@ -3,7 +3,7 @@ import {sourceLink} from '../shared/records.js';
 import {normalizeDate,dateInterval,recordEnd} from '../shared/finding-dates.js';
 
 const text=v=>typeof v==='string'?v.toWellFormed().replace(/\s+/g,' ').trim():null;
-const fields=['description','type','priority','organizations','date','starttime','timezone','enddate','endtime','sources','details'];
+const fields=['description','type','score','organizations','date','starttime','timezone','enddate','endtime','sources','details'];
 
 export function normalizeFinding(raw,url,invalidFields){
   const description=[...(text(raw?.description)??'')].slice(0,280).join('').trim();
@@ -13,7 +13,7 @@ export function normalizeFinding(raw,url,invalidFields){
   let timezone=text(raw.timezone)||null;
   if(timezone)try{normalizeDate({value:'2026-01-01',precision:'day',time:'12:00',zone:timezone});}catch{timezone=null;}
   const finding={description,type:['event','announcement'].includes(raw.type)?raw.type:null,
-    priority:['high','normal','low'].includes(raw.priority)?raw.priority:null,
+    score:Number.isInteger(raw.score)&&raw.score>=0&&raw.score<=100?raw.score:null,
     organizations:[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).flatMap(o=>{
       const name=text(o);return name?[[name.toLowerCase(),name]]:[];
     })).values()],date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[{url,role:'finding'},...(raw.supporting_urls??[]).filter(s=>sourceLink(s)&&sourceLink(s)!==sourceLink(url)).map(url=>({url,role:'supporting'}))],details:typeof raw.details==='string'?[...raw.details.toWellFormed().trim()].slice(0,4096).join('').trim()||null:null};
@@ -44,6 +44,7 @@ export function mergeFinding(f,target){
   const sources=new Map((target?.sources??[]).map(s=>[sourceLink(s.url)??s.url,s]));
   for(const s of f.sources){const key=sourceLink(s.url);if(key)sources.set(key,{url:key,role:s.role});}
   values.sources=[...sources.values()];
+  if(target?.score!=null&&!fields.some(key=>!['score','sources'].includes(key)&&JSON.stringify(values[key])!==JSON.stringify(target[key])))values.score=target.score;
   return values;
 }
 export async function searchFindings(db,{queries,urls}){

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite website --host 127.0.0.1 --port 5173 --strictPort",
     "build": "vite build website",
+    "build:rankings": "node scripts/build-rankings.js",
     "preview": "vite preview website --host 127.0.0.1",
     "test": "node --test",
     "notify": "node slackbot/run.js",

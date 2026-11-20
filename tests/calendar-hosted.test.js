@@ -5,7 +5,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {hostedCalendar} from '../calendar/hosted.js';
 import {googleEvent} from '../calendar/google.js';
 
-const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',modified:['2026-10-12T10:00:00Z'],type:'event',priority:'high',
+const record={id:'89a76621-0fac-447f-9429-62e1e8f985d1',modified:['2026-10-12T10:00:00Z'],type:'event',score:85,
   description:'Test fixture',organizations:[],sources:[{url:'https://example.org/event',role:'finding'}],date:'2026-11-17',starttime:'03:00',timezone:'+00:00'};
 
 test('reconciliation requires the backend secret before reading credentials or findings',async()=>{
@@ -43,8 +43,8 @@ test('removed feed routes and invalid reconciliation requests never open a datab
 
 test('real SQL reconciliation repairs calendar-specific penguin titles and keeps the shared calendar high-only',async()=>{
   const db=new PGlite(),queries=[],credential={client_id:'client',client_secret:'secret',refresh_token:'refresh'};
-  const records=[record,...['normal','low',null].map((priority,index)=>({...record,
-    id:(index+1).toString().repeat(8)+'-1111-4111-8111-111111111111',priority}))];
+  const records=[record,...[60,25,null].map((score,index)=>({...record,
+    id:(index+1).toString().repeat(8)+'-1111-4111-8111-111111111111',score}))];
   const events=new Map(records.map(r=>{const event={...googleEvent(r),summary:'⭐ 🐧 '+r.description,etag:r.id};return [event.id,event];}));
   const reviewEvents=new Map(events),calendars=new Map([
     ['c_c4eba5697d3a3e33c4590daa7c20c8791d7d608b787ff959bf3117f3a7d02df5@group.calendar.google.com',events],
@@ -53,7 +53,7 @@ test('real SQL reconciliation repairs calendar-specific penguin titles and keeps
   try{
     // Vault is a SQL fixture; Google HTTP is mocked. No live permissions are established here.
     await db.exec(`create role anon;create role authenticated;create role service_role;create schema scout;create schema vault;
-      create table scout.records(id uuid,modified timestamptz[],type text,priority text,description text,organizations text[],sources jsonb,date text,starttime text,timezone text,enddate text,endtime text);
+      create table scout.records(id uuid,modified timestamptz[],type text,score smallint,description text,organizations text[],sources jsonb,date text,starttime text,timezone text,enddate text,endtime text);
       create table vault.secrets(id uuid default gen_random_uuid(),name text unique,secret text);
       create view vault.decrypted_secrets as select name,secret as decrypted_secret from vault.secrets;
       create function vault.create_secret(value text,label text) returns uuid language sql as $$ insert into vault.secrets(name,secret) values(label,value) returning id $$;
@@ -62,7 +62,7 @@ test('real SQL reconciliation repairs calendar-specific penguin titles and keeps
       await db.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
     for(const [name,secret] of [['scout_calendar_google',JSON.stringify(credential)],['scout_calendar_feed','a'.repeat(64)],['unrelated','keep']])
       await db.query('insert into vault.secrets(name,secret) values($1,$2)',[name,secret]);
-    for(const r of records)await db.query('insert into scout.records(id,modified,type,priority,description,organizations,sources,date,starttime,timezone) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',Object.values(r));
+    for(const r of records)await db.query('insert into scout.records(id,modified,type,score,description,organizations,sources,date,starttime,timezone) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',Object.values(r));
     const before=(await db.query('select * from scout.records order by id')).rows;
     await db.exec(await readFile(new URL('../supabase/migrations/20261119210000_scout_remove_calendar_feed.sql',import.meta.url),'utf8'));
     assert.deepEqual((await db.query('select name,secret from vault.secrets order by name')).rows,
@@ -99,7 +99,7 @@ test('real SQL reconciliation repairs calendar-specific penguin titles and keeps
     assert.deepEqual([...events.keys()],[googleEvent(record).id]);assert.equal(queries.length,4);
     assert.deepEqual([...reviewEvents.keys()].sort(),records.map(r=>googleEvent(r).id).sort());
     assert.equal(events.get(googleEvent(record).id).summary,'🐧 Test fixture');
-    for(const [index,prefix] of ['🐧🐧🐧 ','🐧🐧 ','🐧 ',''].entries())
+    for(const [index,prefix] of ['85/100 ','60/100 ','25/100 ',''].entries())
       assert.equal(reviewEvents.get(googleEvent(records[index]).id).summary,prefix+'Test fixture');
     assert.deepEqual((await db.query('select * from scout.records order by id')).rows,before);
   }finally{await db.close();}

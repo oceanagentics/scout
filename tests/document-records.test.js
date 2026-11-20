@@ -5,10 +5,10 @@ import {normalizeFinding} from '../reader/findings.js';
 test('model fields stay flat, partial dates survive and organization names remain strings',()=>{
  const f=normalizeFinding({type:'announcement',description:'Brief',date:'2026-03',starttime:'12:00'},'https://example.org/a');
  assert.equal(f.date,'2026-03');assert.equal(f.starttime,'12:00');assert.equal(f.timezone,null);
- const event=normalizeFinding({type:'event',description:'Meeting',priority:'normal',organizations:['Ocean Institute','Ocean Institute','Partner'],date:'2026-04-02'},'https://example.org/a');
+ const event=normalizeFinding({type:'event',description:'Meeting',score:60,organizations:['Ocean Institute','Ocean Institute','Partner'],date:'2026-04-02'},'https://example.org/a');
  assert.deepEqual(event.organizations,['Ocean Institute','Partner']);assert.equal(event.type,'event');
- assert.equal(event.priority,'normal');assert.deepEqual(event.sources,[{url:'https://example.org/a',role:'finding'}]);
- assert.deepEqual(Object.keys(event).sort(),['description','type','priority','organizations','date','starttime','timezone','enddate','endtime','sources','details'].sort());
+ assert.equal(event.score,60);assert.deepEqual(event.sources,[{url:'https://example.org/a',role:'finding'}]);
+ assert.deepEqual(Object.keys(event).sort(),['description','type','score','organizations','date','starttime','timezone','enddate','endtime','sources','details'].sort());
 });
 test('invalid dates, clocks and zones remain null without losing the useful description',()=>{
  const f=normalizeFinding({type:'event',description:'Meeting',date:'2026-04-02',starttime:'13:30',timezone:'invalid'},'https://example.org/a');

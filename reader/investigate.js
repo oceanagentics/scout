@@ -16,13 +16,14 @@ export async function investigate(db,item,{modelFor,deadline,readUrl,oldestDate,
    if(!['create','update','skip'].includes(d?.action))throw fail('invalid_output');
    if(d.action==='skip'&&!(typeof d.reason==='string'&&d.reason.trim()))throw fail('invalid_output');
    if(['create','update'].includes(d.action)&&(!Array.isArray(d.fields?.organizations)||!Array.isArray(d.fields.supporting_urls)||!normalizeFinding(d.fields,item.url)))throw fail('invalid_output');
+   if(['create','update'].includes(d.action)&&d.fields.score!==null&&(!Number.isInteger(d.fields.score)||d.fields.score<0||d.fields.score>100))throw fail('invalid_output');
    const target=candidates.find(r=>r.id===d.id);
    if(d.action==='update'&&(!lookups.length||!target))throw fail('invalid_output');
    if(d.action==='create'&&!lookups.length)throw fail('invalid_output');
   }
  };
  const answer=await modelFor(item,{deadline,readUrl:read,functions,validate})(INTAKE_INSTRUCTION,{url:item.url,source_kind:item.source_kind,
-  current_date:scoutDay(new Date(through)),content:item.content},RESPONSE_SCHEMA);
+  current_date:scoutDay(new Date(through)),oldest_date:oldestDate,content:item.content},RESPONSE_SCHEMA);
  validate(answer);
  const decisions=answer.decisions.filter(d=>{
   if(!['create','update'].includes(d.action))return true;

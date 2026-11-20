@@ -1,5 +1,5 @@
 import {recordDate,recordEnd,dateLabel} from '../shared/finding-dates.js';
-import {sourceLink} from '../shared/records.js';
+import {sourceLink,PUBLICATION_SCORE} from '../shared/records.js';
 
 const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const sharedCalendar='c_c4eba5697d3a3e33c4590daa7c20c8791d7d608b787ff959bf3117f3a7d02df5@group.calendar.google.com';
@@ -92,15 +92,14 @@ export async function syncCalendar(db,{ids=null,deadline=Date.now()+110000,fetch
       }else existing=await google.list(calendar);
       calendars.set(calendar,existing);
     }
-    const records=(await db.query(`select id,modified,type,priority,description,organizations,date,starttime,timezone,enddate,endtime,sources
+    const records=(await db.query(`select id,modified,type,score,description,organizations,date,starttime,timezone,enddate,endtime,sources
       from scout.records ${ids?'where id=any($1::uuid[])':"where type='event'"} order by id`,ids?[ids]:[])).rows;
     // Complete mapping before any writes, including removals.
     const allEvents=new Map(),highEvents=new Map();
     for(const record of records){
       const event=googleEvent(record);if(!event)continue;
-      const penguins='🐧'.repeat({high:3,normal:2,low:1}[record.priority]??0);
-      allEvents.set(event.id,{...event,summary:(penguins?penguins+' ':'')+event.summary});
-      if(record.priority==='high')highEvents.set(event.id,{...event,summary:'🐧 '+event.summary});
+      allEvents.set(event.id,{...event,summary:(record.score==null?'':record.score+'/100 ')+event.summary});
+      if(record.score>=PUBLICATION_SCORE)highEvents.set(event.id,{...event,summary:'🐧 '+event.summary});
     }
     for(const [calendar,existing] of calendars){
       const desired=calendar===sharedCalendar?highEvents:allEvents,current=new Map(existing.map(event=>[event.id,event]));

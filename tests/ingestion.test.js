@@ -12,7 +12,7 @@ import {trackerModel} from '../reader/models/gateway.js';
 
 beforeEach(t=>t.mock.method(dns,'lookup',async()=>[{address:'93.184.216.34',family:4}]));
 const publication='https://example.org/articles/chm',feedURL='https://example.org/feed/';
-const finding={description:'HSA: Clearing-House Mechanism technical webinar',details:'A technical demonstration of information-sharing tools.',type:'event',priority:'high',organizations:['HSA'],date:'2099-12-10',starttime:null,timezone:null,enddate:null,endtime:null,supporting_urls:[]};
+const finding={description:'HSA: Clearing-House Mechanism technical webinar',details:'A technical demonstration of information-sharing tools.',type:'event',score:85,organizations:['HSA'],date:'2099-12-10',starttime:null,timezone:null,enddate:null,endtime:null,supporting_urls:[]};
 const create=fields=>({action:'create',id:null,fields,reason:null});
 const update=(r,fields)=>({action:'update',id:r.id,fields,reason:null});
 const answer=decisions=>({status:'complete',decisions});
@@ -110,7 +110,7 @@ test('tracker modes preserve index progress, reset changed modes and replace Blo
 
 test('RSS -> real provider-tool mechanics -> duplicate update -> specific Slack finding URL; stable repeat makes zero model calls',async t=>{
  const {raw,db,tracker}=await setup(t);
- const id=(await raw.query("insert into scout.records(description,type,priority,sources) values('HSA technical CHM webinar','event','high',$1::jsonb) returning id",[JSON.stringify([{url:feedURL,role:'unclassified'}])])).rows[0].id;
+ const id=(await raw.query("insert into scout.records(description,type,score,sources) values('HSA technical CHM webinar','event',85,$1::jsonb) returning id",[JSON.stringify([{url:feedURL,role:'unclassified'}])])).rows[0].id;
  let requests=0,searches=0;
  const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async()=>rss(),modelFor:(source,options)=>trackerModel({source,...options,openaiApiKey:'fixture',fetch:async(_url,request)=>{
   requests++;const body=JSON.parse(request.body);assert.equal(body.store,false);
@@ -132,8 +132,8 @@ test('RSS -> real provider-tool mechanics -> duplicate update -> specific Slack 
 
 test('matched updates retain new source URLs and unchanged facts; identical updates consume progress without finding writes',async t=>{
  const {raw,db,tracker}=await setup(t);
- const id=(await raw.query('insert into scout.records(description,details,type,priority,organizations,date,sources) values($1,$2,$3,$4,$5,$6,$7::jsonb) returning id',
-  [finding.description,finding.details,finding.type,finding.priority,finding.organizations,finding.date,JSON.stringify([{url:feedURL,role:'unclassified'}])])).rows[0].id;
+ const id=(await raw.query('insert into scout.records(description,details,type,score,organizations,date,sources) values($1,$2,$3,$4,$5,$6,$7::jsonb) returning id',
+  [finding.description,finding.details,finding.type,finding.score,finding.organizations,finding.date,JSON.stringify([{url:feedURL,role:'unclassified'}])])).rows[0].id;
  const original=(await raw.query('select * from scout.records where id=$1',[id])).rows[0];
  let version=0,requests=0,searches=0;
  const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>url===feedURL?rss([['a',publication,'CHM webinar revision '+version]]):new Response('<main>Article revision '+version+'</main>',{headers:{'content-type':'text/html'}}),modelFor:(source,options)=>trackerModel({source,...options,openaiApiKey:'fixture',fetch:async(_url,request)=>{
@@ -263,11 +263,19 @@ test('details preserve exact saved text without new facts, retain multibyte text
  assert.equal(mergeFinding(normalizeFinding({...finding,details:'海'.repeat(1366)},publication),old).details,'海'.repeat(1366));
 });
 
+test('unchanged facts preserve the saved score while substantive corrections accept a new score',()=>{
+ const old=normalizeFinding({...finding,score:92},publication);
+ assert.equal(mergeFinding(normalizeFinding({...finding,score:20},'https://example.org/another-source'),old).score,92);
+ assert.equal(mergeFinding(normalizeFinding({...finding,score:20,details:'Corrected implementation facts.'},publication),old).score,20);
+ assert.equal(mergeFinding(normalizeFinding({...finding,score:20},publication),{...old,score:0}).score,0);
+ assert.equal(mergeFinding(normalizeFinding({...finding,score:20},publication),{...old,score:null}).score,20);
+});
+
 test('rescheduled dates and less precise corrections save their source before consumption; identical repeats make no finding write',async t=>{
  const {raw,db,tracker}=await setup(t);
  await raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]);
- const original=(await raw.query("insert into scout.records(description,details,type,priority,organizations,date,starttime,timezone,enddate,endtime,sources) values($1,$2,$3,$4,$5,$6,'09:00','UTC',$7,'17:00',$8::jsonb) returning *",
-  [finding.description,finding.details,finding.type,finding.priority,finding.organizations,finding.date,'2099-12-12',JSON.stringify([{url:publication,role:'finding'}])])).rows[0];
+ const original=(await raw.query("insert into scout.records(description,details,type,score,organizations,date,starttime,timezone,enddate,endtime,sources) values($1,$2,$3,$4,$5,$6,'09:00','UTC',$7,'17:00',$8::jsonb) returning *",
+  [finding.description,finding.details,finding.type,finding.score,finding.organizations,finding.date,'2099-12-12',JSON.stringify([{url:publication,role:'finding'}])])).rows[0];
  let version=0,modelCalls=0,fields={...finding,date:'2100-01-08',starttime:'10:00',enddate:'2100-01-09',endtime:'18:00',timezone:'UTC'};
  const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async()=>new Response('<main>Rescheduled HSA workshop version '+version+'</main>',{headers:{'content-type':'text/html'}}),modelFor:model(async({search})=>{
   modelCalls++;const found=await search({queries:['HSA'],urls:[]});
@@ -302,6 +310,8 @@ test('text limits clip Unicode, avoid identical repeat writes and validate exist
  assert.deepEqual((await raw.query('select *,modified::text[] as modified from scout.records where id=$1',[legacy.id])).rows[0],legacy);
  for(const [description,details] of [['x'.repeat(281),null],['Short label','🐟'.repeat(4097)]])
   await assert.rejects(raw.query('insert into scout.records(description,details) values($1,$2)',[description,details]),{code:'23514'});
+ await raw.exec(await readFile(new URL('../supabase/migrations/20261119234000_scout_validate_description_limit.sql',import.meta.url),'utf8'));
+ await raw.exec(await readFile(new URL('../supabase/migrations/20261120220000_scout_numeric_ranking.sql',import.meta.url),'utf8'));
  const incoming={...finding,description:'🐟'.repeat(281),details:'🐟'.repeat(4097)},item={url:publication},args={queries:['HSA'],urls:[publication]};
  const first=await searchFindings(db,args);
  assert.equal((await db.transaction(tx=>applyDecisions(tx,[{item,investigation:{decisions:[create(incoming)],lookups:[{args,records:first.records}],invalid_fields:{}}}]))).created,1);
@@ -400,7 +410,7 @@ test('UN linked document index updates three existing findings with PDF message 
  const documents=['20261102BBNJCOP1CHMStudyAdvanceUnedited.pdf','20261103BBNJCOP1AnnotatedAgendaModalitiesAdvanceUnedited.pdf','20261102BBNJCOP1SecArrangementsAdvanceUnedited.pdf']
   .map((file,i)=>({url:'https://www.un.org/bbnjagreement/sites/default/files/2026-11/'+file,description:['United Nations: CHM study','United Nations: COP1 agenda and modalities','United Nations: Secretariat arrangements'][i]}));
  await raw.query('update scout.trackers set url=$2 where id=$1',[tracker.id,root]);
- for(const doc of documents)await raw.query("insert into scout.records(description,type,priority,sources) values($1,'announcement','high',$2::jsonb)",
+ for(const doc of documents)await raw.query("insert into scout.records(description,type,score,sources) values($1,'announcement',85,$2::jsonb)",
   [doc.description,JSON.stringify([{url:index,role:'finding'},{url:doc.url,role:'finding'}])]);
  const ids=(await raw.query('select id from scout.records order by id')).rows.map(r=>r.id);
  let version=0,discoveries=0,investigations=0;
@@ -530,7 +540,7 @@ test('old web and RSS publication hints permit new and changed content; confirme
    return new Response(`<main><time datetime="2000-01-01">Published January 1, 2000</time>`+(url===feedURL?`<a href="${publication}">Webinar ${version}</a>`:`Updated webinar ${version}`)+'</main>',{headers:{'content-type':'text/html'}});
   },modelFor:(_item,options)=>async(_p,input,schema)=>{
    if(schema.properties.items)return {items:[{url:publication,summary:'Published January 1, 2000; updated webinar'}]};
-   investigations++;assert.equal(input.current_date,'2026-11-17');assert.equal(Object.hasOwn(input,'oldest_date'),false);
+   investigations++;assert.equal(input.current_date,'2026-11-17');assert.equal(input.oldest_date,'2026-10-17');
    const found=await options.functions[0].run({queries:['HSA'],urls:[]}),fields={...finding,details:'Revision '+version};
    return answer([found.count?update(found.records[0],fields):create(fields),create({...finding,description:'Old report',type:'announcement',date:'2000-01-01'})]);
   }});

@@ -4,7 +4,7 @@ import {findingInterval,scoutDay} from '../shared/finding-dates.js';
 import {mountReview} from './review.js';
 
 const RECORD_FIELDS = [
-  'description', 'type', 'priority', 'organizations', 'date',
+  'description', 'type', 'score', 'organizations', 'date',
   'starttime', 'timezone', 'enddate', 'endtime', 'sources', 'modified', 'id',
 ];
 const TRACKER_FIELDS = [
@@ -15,7 +15,9 @@ const TRACKER_FIELDS = [
 ];
 
 export async function loadScout(client,{filters={},after=null}={}) {
-  const params=Object.fromEntries(['type','priority','from','to','organization','search','order'].map(key=>['p_'+key,filters[key]||null]));
+  const params=Object.fromEntries(['type','from','to','organization','search','order'].map(key=>['p_'+key,filters[key]||null]));
+  params.p_unassessed=filters.unassessed==='true';
+  params.p_min_score=params.p_unassessed||filters.min_score==null||filters.min_score===''?null:Number(filters.min_score);
   const [page,inventory]=await Promise.all([
     client.rpc('findings',{...params,p_after:after,p_limit:50,p_id:filters.record||null}),
     client.from('trackers').select(TRACKER_FIELDS.map(([field])=>field).join(','))
@@ -24,7 +26,7 @@ export async function loadScout(client,{filters={},after=null}={}) {
   if(page.error||inventory.error)throw page.error??inventory.error;
   const records=page.data;
   const last=records.at(-1);
-  return {records,trackers:inventory.data,next:records.length===50?{rank:filters.order==='date'?0:({high:0,normal:1,low:2}[last.priority]??3),day:findingInterval(last)[0],id:last.id}:null};
+  return {records,trackers:inventory.data,next:records.length===50?{rank:filters.order==='date'?0:last.score==null?1:-last.score,day:findingInterval(last)[0],id:last.id}:null};
 }
 
 export async function loadJobs(client) {
@@ -53,7 +55,8 @@ export function mountDashboard(root, load, views, reviews, jobs) {
     <section id="findings" aria-label="Records" hidden><div class="findings-toolbar"><form id="filters" class="filters">
       <label class="search">Search records<input name="search" type="search" placeholder="Description, organization, topic…"></label>
       <label>Record type<select name="type"><option value="">All</option><option value="announcement">Announcements</option><option value="event">Events</option></select></label>
-      <label>Priority<select name="priority"><option value="">All priorities</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option><option value="unassessed">Not yet assessed</option></select></label>
+      <label>Minimum score<input name="min_score" type="number" min="0" max="100" step="1" placeholder="0–100"></label>
+      <label>Assessment<select name="unassessed"><option value="">All findings</option><option value="true">Not yet assessed</option></select></label>
       <label>From<input name="from" type="date"></label><label>Through<input name="to" type="date"></label>
       </form><div class="view-switch" role="group" aria-label="Records layout">
         <button type="button" data-layout="table" aria-label="Table view" title="Table view" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M10 9v11"/></svg></button>
@@ -134,7 +137,7 @@ export function mountDashboard(root, load, views, reviews, jobs) {
       const table = node('table', null, 'data-table');
       table.append(node('caption', 'Record fields and sources', 'visually-hidden'));
       const head = node('thead'), row = node('tr');
-      const sort = sorts.records??{ field: 'priority', direction: 'ascending' };
+      const sort = sorts.records??{ field: 'score', direction: 'descending' };
       for (const field of RECORD_FIELDS) {
         const heading = node('th'); heading.scope = 'col'; row.append(heading);
         const button = node('button', field); button.type = 'button'; button.dataset.sort = field; heading.append(button);
@@ -149,7 +152,8 @@ export function mountDashboard(root, load, views, reviews, jobs) {
       if (tableView) {
         for (const field of RECORD_FIELDS) {
           const value = record[field], cell = node('td', null, `field-${field}`);
-          if (value !== null && typeof value === 'object') {
+          if(field==='score')cell.textContent=fieldLabel(record,field);
+          else if (value !== null && typeof value === 'object') {
             const text = node('pre', JSON.stringify(value, null, 2), 'field-value'); text.tabIndex = 0; cell.append(text);
           }
           else cell.textContent = String(value);
@@ -162,7 +166,7 @@ export function mountDashboard(root, load, views, reviews, jobs) {
         article.append(node('p', TYPES[record.type] || 'Unknown type', 'eyebrow'), node('h3', record.description), node('p', fieldLabel(record,'organizations'), 'organization'));
         article.append(node('p',eventLabel(record),'event-date'));
         if(record.type==='event')article.append(node('p',eventTiming(record),'badge'));
-        article.append(node('p',fieldLabel(record,'priority')));
+        article.append(node('p',fieldLabel(record,'score')));
       }
       const sourcesButton = node('button', tableView ? 'View sources' : 'Sources & record details', 'secondary'); sourcesButton.type = 'button';
       sourcesButton.addEventListener('click', () => {
@@ -287,14 +291,15 @@ export function mountDashboard(root, load, views, reviews, jobs) {
       const button = event.target.closest('button[data-sort]');
       if (!button) return;
       const field = button.dataset.sort;
-      const previous = sorts[group]??{ field: 'priority', direction: 'ascending' };
+      const previous = sorts[group]??{ field: 'score', direction: 'descending' };
       sorts[group] = { field, direction: previous.field===field&&previous.direction==='ascending'?'descending':'ascending' };
       render();
       root.querySelector(`${section} button[data-sort="${field}"]`)?.focus({ preventScroll: true });
     });
   }
   filters.addEventListener('input', () => {
-    after=null;clearTimeout(filterTimer);filterTimer=setTimeout(reload,250);
+    filters.elements.min_score.disabled=filters.elements.unassessed.value==='true';
+    after=null;clearTimeout(filterTimer);if(filters.checkValidity())filterTimer=setTimeout(reload,250);
   });
   filters.addEventListener('submit', event => event.preventDefault());
   root.querySelector('#first-page').addEventListener('click',()=>{after=null;void reload();});

@@ -1,8 +1,7 @@
 import {recordDate,recordEnd,dateLabel,scoutDay,SCOUT_TIMEZONE} from '../shared/finding-dates.js';
 export const TYPES = { event: 'Event', announcement: 'Announcement' };
-export const PRIORITIES = { high:'High', normal:'Normal', low:'Low' };
 export function fieldLabel(record, field) {
-  if (field==='priority') return PRIORITIES[record.priority]??'Not yet assessed';
+  if (field==='score') return record.score==null?'Not yet assessed':record.score+'/100';
   if(field==='organizations')return record.organizations.join('; ')||'Unknown';
   const value=record[field];
   return value==null?'Unknown':String(value);

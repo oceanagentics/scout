@@ -11,6 +11,8 @@ import {discoverSource} from '../reader/sources/index.js';
 import {cbdRequest,prepareCBD} from '../reader/sources/cbd.js';
 import {checkFreshness} from '../reader/freshness.js';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../reader/instructions.js';
+import {RANKING_INSTRUCTION} from '../shared/rankings.generated.js';
+import {investigate} from '../reader/investigate.js';
 import {hostedReader} from '../supabase/functions/scout-reader/index.ts';
 import {hostedNotify} from '../supabase/functions/scout-notify/index.ts';
 import {scoutDay} from '../shared/finding-dates.js';
@@ -19,6 +21,24 @@ beforeEach(t=>{
   t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-17T12:00:00Z')});
   t.mock.method(dns,'lookup',async()=>[{address:'93.184.216.34',family:4}]);
   t.mock.method(globalThis,'fetch',async()=>new Response('<main>BBNJ workshop</main>',{headers:{'content-type':'text/html'}}));
+});
+
+test('embedded ranking policy matches the editable Markdown and appears once',async()=>{
+  assert.equal(RANKING_INSTRUCTION,await readFile(new URL('../shared/rankings.md',import.meta.url),'utf8'));
+  assert.equal(INTAKE_INSTRUCTION.split(RANKING_INSTRUCTION).length,2);
+});
+
+test('investigation passes the collection cutoff and accepts only whole scores from zero through one hundred or null',async()=>{
+  for(const score of [0,100,null,-1,101,75.5,'85',undefined]){
+    const run=()=>investigate({query:async()=>({rows:[]})},{url:'https://example.org/finding',source_kind:'web',content:'Evidence'},
+      {oldestDate:'2026-10-17',through:'2026-11-17T12:00:00Z',modelFor:(_item,{functions})=>async(_instruction,input)=>{
+        assert.equal(input.oldest_date,'2026-10-17');
+        await functions[0].run({queries:['Ocean Institute'],urls:[]});
+        return {status:'complete',decisions:[{action:'create',id:null,reason:null,fields:{description:'A finding',score,organizations:[],supporting_urls:[]}}]};
+      }});
+    if(score===null||Number.isInteger(score)&&score>=0&&score<=100)assert.equal((await run()).decisions[0].fields.score,score);
+    else await assert.rejects(run(),{reason:'invalid_output'});
+  }
 });
 
 test('HTTP freshness requires prior successful progress and positive unchanged evidence',async()=>{
@@ -141,7 +161,7 @@ async function setup(t,{before=false}={}){
 const driver=raw=>({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;},release(){}});
 const tracker=async raw=>(await raw.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('Tracker','https://example.org/list?raw=%2B','web_page','1 day',true) returning *")).rows[0];
 const due=raw=>raw.exec("update scout.trackers set last_checked_at=clock_timestamp()-cadence-interval '1 second'");
-const event={description:'BBNJ implementation workshop',type:'event',priority:'high',organizations:['Ocean Institute'],date:'2026-10',starttime:null,timezone:null};
+const event={description:'BBNJ implementation workshop',type:'event',score:85,organizations:['Ocean Institute'],date:'2026-10',starttime:null,timezone:null};
 const answer=(records=[event])=>({status:'complete',decisions:records.map(fields=>({action:'create',id:null,fields:{...fields,organizations:fields.organizations??[],supporting_urls:[]},reason:null}))});
 const secret='sb_secret_reader_test';
 

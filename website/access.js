@@ -45,7 +45,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
     }
     window.sessionStorage.removeItem('scout-record');
     closeDashboard = mount(workspace, options => loadScout(client,options), views, {
-      load:()=>loadReview(client),submit:(record,priority,notes)=>submitReview(client,record,priority,notes),
+      load:()=>loadReview(client),submit:(record,score,notes)=>submitReview(client,record,score,notes),
     }, () => loadJobs(client));
     mountedUser = session.user.id;
     views.hidden = false;

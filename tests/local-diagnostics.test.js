@@ -54,7 +54,7 @@ test('local tracker diagnostic uses an explicit model with only a tracker read s
   const result=await diagnoseTracker({tracker,model:'gpt-5.6-terra',output:path,env:{SCOUT_OPENAI_API_KEY:'openai-key'},ledger,fetch:async(url,request)=>{
     if(url===source)return new Response('<main>BBNJ data workshop</main>',{headers:{'content-type':'text/html'}});
     assert.equal(url,'https://api.openai.com/v1/responses');generations++;
-    const event={description:'BBNJ data workshop',type:'event',priority:'high',organizations:['Organizer'],date:'2026-10-22',starttime:'13:30',timezone:'UTC'};
+    const event={description:'BBNJ data workshop',type:'event',score:85,organizations:['Organizer'],date:'2026-10-22',starttime:'13:30',timezone:'UTC'};
     const body=JSON.parse(request.body),output=body.input.find(i=>i.type==='function_call_output');
     assert.equal(body.model,'gpt-5.6-terra');assert.equal(body.reasoning.effort,'low');
     if(!output)return Response.json({status:'completed',output:[{type:'function_call',name:'search_findings',call_id:'search',arguments:JSON.stringify({queries:['Organizer'],urls:[]})}]});

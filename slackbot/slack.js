@@ -1,4 +1,4 @@
-import {sourceLink} from '../shared/records.js';
+import {sourceLink,PUBLICATION_SCORE} from '../shared/records.js';
 
 export const CHANNEL='C0C5PE21KN1';
 export const DM_CHANNEL='D0C5XA5RT41';
@@ -7,8 +7,8 @@ const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;')
 export async function readRecords(db,{kind,ids=[]}){
   if(kind==='findings'&&!ids.length)return [];
   const where=kind==='findings'?'r.id=any($1::uuid[])':"r.slack_channel_post is null or r.slack_channel_post->>'state'='uncertain'";
-  const priority=kind==='findings'?"r.priority in ('high','normal','low')":"r.priority='high'";
-  return (await db.query(`select r.*,r.modified::text[] as modified from scout.records r where ${priority} and (${where}) order by r.date nulls last,r.id`,
+  const scored=kind==='findings'?'r.score is not null':`r.score>=${PUBLICATION_SCORE}`;
+  return (await db.query(`select r.*,r.modified::text[] as modified from scout.records r where ${scored} and (${where}) order by r.date nulls last,r.id`,
     kind==='findings'?[ids]:[])).rows;
 }
 
@@ -17,7 +17,7 @@ export async function prepareMessages(db,{kind='unposted',ids=[],now=new Date()}
   const records=await readRecords(db,{kind,ids});
   const payloads=records.map(r=>{
     const url=(r.sources??[]).filter(s=>s.role==='finding').map(s=>sourceLink(s.url)).find(Boolean);
-    return {channel:r.priority==='high'?CHANNEL:DM_CHANNEL,text:`${escape(r.description)}${url?' · <'+escape(url)+'|Read more>':''}`,parse:'none',unfurl_links:false,unfurl_media:false,
+    return {channel:r.score>=PUBLICATION_SCORE?CHANNEL:DM_CHANNEL,text:`${escape(r.description)}${url?' · <'+escape(url)+'|Read more>':''}`,parse:'none',unfurl_links:false,unfurl_media:false,
       metadata:{event_type:'scout_finding',event_payload:{record_id:r.id}}};
   });
   return {records,payloads,prepared_at:now.toISOString()};
@@ -40,7 +40,7 @@ export async function sendMessages(db,preview,post,{now=()=>new Date(),deadline=
     if(+now()>=deadline)return {...outcome,status:'unknown',error:'runtime_bound'};
     if(channelPost){
       const claimed=await db.query(`update scout.records set slack_channel_post='{"state":"uncertain"}'::jsonb
-       where id=$1 and priority='high' and slack_channel_post is null
+       where id=$1 and score>=${PUBLICATION_SCORE} and slack_channel_post is null
        and modified[cardinality(modified)]=$2::timestamptz returning id`,[id,preview.records.find(r=>r.id===id).modified.at(-1)]);
       if(!claimed.rows.length){
         const receipt=(await db.query('select slack_channel_post from scout.records where id=$1',[id])).rows[0]?.slack_channel_post;
