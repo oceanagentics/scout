@@ -30,7 +30,7 @@ model using ordinary requests that Scout can make itself.
 
 ## The model adapter owns link investigation and native file inputs
 
-Modify [reader/models/openai.js](../reader/models/openai.js) so the model can
+Modify [reader/models/models.js](../reader/models/models.js) so the model can
 request relevant linked material and receive it in the format the provider can
 actually read.
 

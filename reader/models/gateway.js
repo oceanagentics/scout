@@ -1,5 +1,5 @@
 import {MODEL,gemini} from './gemini.js';
-import {OPENAI_MODEL,openai} from './openai.js';
+import {OPENAI_MODEL,openai} from './models.js';
 import {modelErrorReason} from './contract.js';
 
 const fallbackReasons=new Set(['url_retrieval_failed','retrieval_metadata_missing','model_unreadable','invalid_json','invalid_output',

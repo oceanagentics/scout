@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {trackerModel} from '../reader/models/gateway.js';
-import {strictSchema,openai,OPENAI_MODEL} from '../reader/models/openai.js';
+import {strictSchema,openai,OPENAI_MODEL} from '../reader/models/models.js';
 import {gemini} from '../reader/models/gemini.js';
 import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from '../reader/instructions.js';
 
