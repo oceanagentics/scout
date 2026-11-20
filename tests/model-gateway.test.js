@@ -31,6 +31,36 @@ const envelope=(text='[]',extra={})=>{try{const parsed=JSON.parse(text);if(Array
   urlContextMetadata:{urlMetadata:[{retrievedUrl:url,urlRetrievalStatus:'URL_RETRIEVAL_STATUS_SUCCESS'}]},
   content:{parts:[{text}]}}],...extra});};
 
+test('explicit OpenAI models preserve reasoning and tool continuations without falling back',async()=>{
+  for(const [model,effort] of [['gpt-6-luna','low'],['gpt-5.6-terra','low'],['gpt-6.1-sol','xhigh']]){
+    let calls=0,lookups=0;const signals=[];
+    const generate=trackerModel({model,source:{url,source_kind:'post'},openaiApiKey:'test',functions:[{
+      name:'lookup',description:'Look up a finding',parameters:{type:'object',properties:{},required:[],additionalProperties:false},
+      run:async()=>{lookups++;return {records:[]};}
+    }],fetch:async(target,options)=>{
+      calls++;signals.push(options.signal);assert.equal(target,'https://api.openai.com/v1/responses');
+      const body=JSON.parse(options.body);
+      assert.equal(body.model,model);assert.deepEqual(body.reasoning,{effort});assert.equal(body.store,false);
+      if(calls===1)return Response.json({status:'completed',output:[{type:'function_call',name:'lookup',call_id:'lookup',arguments:'{}'}]});
+      assert.ok(body.input.some(part=>part.type==='function_call_output'&&part.call_id==='lookup'));
+      return result([],[]);
+    }});
+    const answer=await generate('Read',{content:{text:'Supplied post'}},RESPONSE_SCHEMA);
+    assert.equal(calls,2);assert.equal(lookups,1);assert.equal(signals[0],signals[1]);
+    assert.equal(answer._diagnostics.model,model);assert.equal(answer._diagnostics.provider,'openai');
+    assert.equal(answer._diagnostics.attempts.length,1);
+
+    let failures=0;
+    const unavailable=trackerModel({model,source:{url,source_kind:'post'},openaiApiKey:'test',apiKey:'test',fetch:async()=>{
+      failures++;return new Response('{}',{status:503});
+    }});
+    await assert.rejects(unavailable('Read',{content:{}},RESPONSE_SCHEMA),{reason:'provider_unavailable'});
+    assert.equal(failures,1);
+  }
+  assert.throws(()=>trackerModel({model:'unsupported',source:{url}}),{reason:'model_configuration'});
+  assert.throws(()=>trackerModel({model:'gpt-5.6-terra',provider:'gemini',source:{url,source_kind:'post'}}),{reason:'model_configuration'});
+});
+
 test('provider calls accept large inputs and outputs without accounting or Scout content caps',async()=>{
   const records=Array.from({length:12},(_,i)=>({description:'Development '+i+' '+ 'x'.repeat(12000)}));
   for(const provider of ['gemini','openai']){

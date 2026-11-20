@@ -7,12 +7,14 @@ const fallbackReasons=new Set(['url_retrieval_failed','retrieval_metadata_missin
 const fail=(reason,details={})=>Object.assign(new Error(reason),{reason,...details});
 
 // One primary attempt and, for eligible failures, one fallback. No model ledger.
-export function trackerModel({apiKey,openaiApiKey,source,provider,deadline,readUrl,functions=[],validate,fetch:send=fetch}){
+export function trackerModel({apiKey,openaiApiKey,source,provider,model,deadline,readUrl,functions=[],validate,fetch:send=fetch}){
   if(provider!==undefined&&!['gemini','openai'].includes(provider))throw fail('configuration');
+  if(model!==undefined&&provider==='gemini')throw fail('model_configuration');
   if(provider==='gemini'&&source.source_kind==='web')throw fail('model_configuration');
-  const primary=provider??(source.source_kind==='post'?'gemini':'openai');
+  const primary=provider??(model!==undefined?'openai':source.source_kind==='post'?'gemini':'openai');
+  const openaiModel=model===undefined?OPENAI_MODEL:model;
   const providers={gemini:{model:MODEL,generate:gemini({apiKey,readUrl,functions,fetch:send})},
-    openai:{model:OPENAI_MODEL,generate:openai({apiKey:openaiApiKey,urls:[source.url],readUrl,functions,fetch:send})}};
+    openai:{model:openaiModel,generate:openai({apiKey:openaiApiKey,model:openaiModel,urls:[source.url],readUrl,functions,fetch:send})}};
   return async(instruction,input,schema)=>{
     const ends=deadline??Date.now()+100000,attempts=[];
     const call=async name=>{
@@ -34,7 +36,7 @@ export function trackerModel({apiKey,openaiApiKey,source,provider,deadline,readU
     try{
       let answer;
       try{answer=await call(primary);}catch(error){
-        if(provider||primary!=='gemini'||!error.dispatched||!fallbackReasons.has(error.reason))throw error;
+        if(provider||model!==undefined||primary!=='gemini'||!error.dispatched||!fallbackReasons.has(error.reason))throw error;
         answer=await call('openai');
       }
       return {...answer,_diagnostics:{provider:attempts.at(-1).provider,model:attempts.at(-1).model,attempts}};

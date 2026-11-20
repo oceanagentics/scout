@@ -42,7 +42,7 @@ test('local response capture is bounded without truncating the response consumed
   const response=(await lines(path))[1];assert.equal(response.truncated,true);assert.equal(Buffer.byteLength(response.body),131072);
 });
 
-test('local tracker diagnostic captures one model investigation with only a tracker read shared remotely',async t=>{
+test('local tracker diagnostic uses an explicit model with only a tracker read shared remotely',async t=>{
   t.mock.method(dns,'lookup',async()=>[{address:'93.184.216.34',family:4}]);
   const path=await output(t),tracker='11111111-1111-4111-8111-111111111111',source='https://example.org/event';
   let generations=0;const sql=[];
@@ -51,11 +51,12 @@ test('local tracker diagnostic captures one model investigation with only a trac
     if(q.startsWith('select id,name'))return {rows:[{id:tracker,name:'Diagnostic tracker',url:source,collector:'web_page',cadence:'6 hours'}]};
     assert.fail('Unexpected shared SQL: '+q);
   }};
-  const result=await diagnoseTracker({tracker,output:path,env:{SCOUT_OPENAI_API_KEY:'openai-key'},ledger,fetch:async(url,request)=>{
+  const result=await diagnoseTracker({tracker,model:'gpt-5.6-terra',output:path,env:{SCOUT_OPENAI_API_KEY:'openai-key'},ledger,fetch:async(url,request)=>{
     if(url===source)return new Response('<main>BBNJ data workshop</main>',{headers:{'content-type':'text/html'}});
     assert.equal(url,'https://api.openai.com/v1/responses');generations++;
     const event={description:'BBNJ data workshop',type:'event',priority:'high',organizations:['Organizer'],date:'2026-10-22',starttime:'13:30',timezone:'UTC'};
     const body=JSON.parse(request.body),output=body.input.find(i=>i.type==='function_call_output');
+    assert.equal(body.model,'gpt-5.6-terra');assert.equal(body.reasoning.effort,'low');
     if(!output)return Response.json({status:'completed',output:[{type:'function_call',name:'search_findings',call_id:'search',arguments:JSON.stringify({queries:['Organizer'],urls:[]})}]});
     return Response.json({status:'completed',usage:{input_tokens:400,output_tokens:200,total_tokens:600},
       output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({status:'complete',decisions:[{action:'create',id:null,fields:{...event,details:null,supporting_urls:[]},reason:null}]})}]}]});

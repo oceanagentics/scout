@@ -1,6 +1,11 @@
 import {modelErrorReason} from './contract.js';
 
 export const OPENAI_MODEL='gpt-6-luna';
+export const OPENAI_MODELS={
+  [OPENAI_MODEL]:'low',
+  'gpt-5.6-terra':'low',
+  'gpt-6.1-sol':'xhigh'
+};
 const fail=(reason,details={})=>Object.assign(new Error(reason),{reason,...details});
 
 // Strict transport schema only; the shared finding schema remains unchanged.
@@ -25,7 +30,8 @@ export function strictSchema(schema){
 
 // Retrieval, native inputs and continuations share one attempt and abort signal.
 export function openai({apiKey,urls=[],readUrl,functions=[],model=OPENAI_MODEL,fetch:send=fetch,now=Date.now}){
-  if(model!==OPENAI_MODEL)throw fail('model_configuration');
+  if(!Object.hasOwn(OPENAI_MODELS,model))throw fail('model_configuration');
+  const effort=OPENAI_MODELS[model];
   const initial=urls;
   return async(instruction,input,schema,{signal}={})=>{
     const started=now(),diagnostics={provider:'openai',model,retrieval:[],tool_calls:0,requests:0,usage:{input_tokens:0,output_tokens:0,total_tokens:0}};
@@ -58,7 +64,7 @@ export function openai({apiKey,urls=[],readUrl,functions=[],model=OPENAI_MODEL,f
           strict:true,parameters:{type:'object',properties:{url:{type:'string'}},required:['url'],additionalProperties:false}}]:[])];
       for(;;){
         if(signal?.aborted)throw fail('runtime_bound');
-        const body=JSON.stringify({model,store:false,service_tier:'default',reasoning:{effort:'low'},
+        const body=JSON.stringify({model,store:false,service_tier:'default',reasoning:{effort},
           instructions:instruction,
           input:history,...(tools.length?{tools,tool_choice:hasEvidence?'auto':'required'}:{}),
           include:['reasoning.encrypted_content',...(requested.length?['web_search_call.action.sources']:[])],

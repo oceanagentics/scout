@@ -10,10 +10,20 @@ npm run reader -- --diagnostic --tracker=UUID
 ```
 
 Add `--provider=gemini` or `--provider=openai` to test one model without fallback.
+Use `--model` to select an OpenAI model explicitly, also without fallback:
+
+```sh
+npm run reader -- --diagnostic --tracker=UUID --model=gpt-5.6-terra
+npm run reader -- --diagnostic --tracker=UUID --model=gpt-6.1-sol
+```
+
+The supported OpenAI selections are `gpt-6-luna` with low reasoning,
+`gpt-5.6-terra` with low reasoning and `gpt-6.1-sol` with xhigh reasoning.
+`--model` selects OpenAI and cannot be combined with `--provider=gemini`.
 Web investigations use OpenAI's linked-read/native-document loop; Gemini cannot
 be selected for that input. Supplied Bluesky posts retain the Gemini-to-OpenAI
 route. Omit the option to use the input's normal route. To retain separate captures when
-comparing runs, call `diagnoseTracker({tracker, env, provider, output})` with a
+comparing runs, call `diagnoseTracker({tracker, env, provider, model, output})` with a
 different local output path for each run.
 
 This runs the current checkout's workflow, not the deployed function. It saves
