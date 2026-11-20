@@ -4,8 +4,7 @@ set local statement_timeout='30s';
 
 -- Enable the http extension before using this RPC; keep its read-only token in Vault.
 create function scout.jobs() returns jsonb
- language plpgsql stable security definer set search_path=''
- set http.curlopt_timeout_ms='4000' set http.curlopt_connecttimeout_ms='1000' as $$
+ language plpgsql stable security definer set search_path='' as $$
 declare token text;response record;inventory jsonb;
 begin
  if scout.access_role() is null then
