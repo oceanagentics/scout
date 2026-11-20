@@ -1,4 +1,4 @@
-import { loadScout, mountDashboard } from './dashboard.js';
+import { loadScout, loadCron, mountDashboard } from './dashboard.js';
 import { loadReview, submitReview } from './review.js';
 
 export function mountAccess(client, root, mount = mountDashboard) {
@@ -46,7 +46,7 @@ export function mountAccess(client, root, mount = mountDashboard) {
     window.sessionStorage.removeItem('scout-record');
     closeDashboard = mount(workspace, options => loadScout(client,options), views, {
       load:()=>loadReview(client),submit:(record,priority,notes)=>submitReview(client,record,priority,notes),
-    });
+    }, () => loadCron(client));
     mountedUser = session.user.id;
     views.hidden = false;
   }

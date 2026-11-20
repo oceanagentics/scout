@@ -27,6 +27,12 @@ export async function loadScout(client,{filters={},after=null}={}) {
   return {records,trackers:inventory.data,next:records.length===50?{rank:filters.order==='date'?0:({high:0,normal:1,low:2}[last.priority]??3),day:findingInterval(last)[0],id:last.id}:null};
 }
 
+export async function loadCron(client) {
+  const {data,error}=await client.rpc('cron',undefined,{get:true});
+  if(error)throw error;
+  return data;
+}
+
 const node = (tag, text, className) => {
   const element = document.createElement(tag);
   if (text != null) element.textContent = text;
@@ -41,7 +47,7 @@ function link(text, url) {
   return element;
 }
 
-export function mountDashboard(root, load, views, reviews) {
+export function mountDashboard(root, load, views, reviews, cron) {
   // Static markup only; every source-supplied value is rendered with textContent.
   root.innerHTML = `<section id="review" aria-label="Review findings"></section><p id="load-status" role="status" hidden></p>
     <section id="findings" aria-label="Records" hidden><div class="findings-toolbar"><form id="filters" class="filters">
@@ -55,6 +61,15 @@ export function mountDashboard(root, load, views, reviews) {
       </div></div><p id="record-count" role="status"></p><div id="record-list" tabindex="0" role="region" aria-label="Records results"></div><button type="button" id="first-page" class="secondary">First page</button><button type="button" id="next-page" class="secondary">Next page</button></section>
     <section id="trackers" aria-label="Trackers" hidden>
       <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>
+    <section id="cron" aria-label="Cron" hidden>
+      <div class="workspace-heading"><h2>Cron</h2><button type="button" id="refresh-cron" class="secondary">Refresh</button></div>
+      <p class="hint">Live Supabase schedules. Refreshes every minute while this tab is visible. Times are New York; cron schedules are UTC.</p>
+      <p class="hint">Scheduler success confirms dispatch, not completion of the function it calls. Recent history is retained for about one day.</p>
+      <p id="cron-status" role="status"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Cron schedules"><table class="data-table">
+        <caption class="visually-hidden">Supabase cron schedules and latest scheduler runs</caption>
+        <thead><tr><th scope="col">Name</th><th scope="col">Schedule (UTC)</th><th scope="col">Enabled</th><th scope="col">Scheduler status</th><th scope="col">Started (New York)</th><th scope="col">Finished (New York)</th><th scope="col">Scheduler message</th></tr></thead><tbody id="cron-list"></tbody>
+      </table></div>
+    </section>
     <section id="calendar" aria-label="Calendar" hidden>
       <h1>Scout Calendar</h1><p class="calendar-intro">Keep Scout events alongside your own calendar. Add it once; new events appear automatically.</p>
       <div class="calendar-actions"><a class="calendar-add" href="https://calendar.google.com/calendar/u/0?cid=Y19jNGViYTU2OTdkM2EzZTMzYzQ1OTBkYWE3YzIwYzg3OTFkN2Q2MDhiNzg3ZmY5NTliZjMxMTdmM2E3ZDAyZGY1QGdyb3VwLmNhbGVuZGFyLmdvb2dsZS5jb20" target="_blank" rel="noopener noreferrer">
@@ -80,6 +95,8 @@ export function mountDashboard(root, load, views, reviews) {
   const status = root.querySelector('#load-status');
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
   let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table', after=null,request=0,filterTimer,started=false;
+  const cronSection=root.querySelector('#cron'),cronStatus=root.querySelector('#cron-status'),cronRefresh=root.querySelector('#refresh-cron');
+  let cronLoadedAt=null;
   const closeReview=mountReview(root.querySelector('#review'),reviews.load,reviews.submit);
   const sourceDialog = node('dialog', null, 'source-dialog'), sourceContent = node('div');
   sourceDialog.setAttribute('aria-labelledby', 'source-heading');
@@ -204,6 +221,28 @@ export function mountDashboard(root, load, views, reviews) {
       if (active&&sequence===request) status.textContent = `Could not load Scout data. ${data ? `Showing data loaded ${stamp(loadedAt)}. ` : ''}Reload the page to try again.`;
     } finally { if (active&&sequence===request) root.removeAttribute('aria-busy'); }
   }
+
+  async function reloadCron() {
+    if(!active||cronRefresh.disabled||cronSection.hidden||document.hidden)return;
+    cronRefresh.disabled=true;
+    cronStatus.textContent='Loading cron…';
+    try {
+      const rows=await cron();
+      if(!active)return;
+      const body=root.querySelector('#cron-list');body.replaceChildren();
+      for(const job of rows){
+        const row=node('tr');
+        for(const value of [job.name,job.schedule,job.enabled?'Yes':'No',job.status??'No recent history',
+          job.started_at?stamp(job.started_at):'—',job.finished_at?stamp(job.finished_at):'—',job.message??'—'])row.append(node('td',value));
+        body.append(row);
+      }
+      cronLoadedAt=new Date().toISOString();
+      cronStatus.textContent=`${rows.length} cron schedules · Updated ${stamp(cronLoadedAt)}`;
+    } catch {
+      if(active)cronStatus.textContent=`Could not load cron. ${cronLoadedAt?`Showing data loaded ${stamp(cronLoadedAt)}. `:''}Use Refresh to try again.`;
+    } finally {if(active)cronRefresh.disabled=false;}
+  }
+  cronRefresh.addEventListener('click',reloadCron);
   for (const link of views.querySelectorAll('[data-view]')) {
     if (link.dataset.view==='review') link.setAttribute('aria-current','page');
     else link.removeAttribute('aria-current');
@@ -219,6 +258,7 @@ export function mountDashboard(root, load, views, reviews) {
       root.querySelector(`#${other.dataset.view}`).hidden = !selected;
     }
     if(['findings','trackers'].includes(link.dataset.view)&&!started){started=true;void reload();}
+    if(link.dataset.view==='cron')void reloadCron();
     status.hidden=!['findings','trackers'].includes(link.dataset.view)||!status.textContent;
   };
   views.addEventListener('click', navigate);
@@ -248,9 +288,11 @@ export function mountDashboard(root, load, views, reviews) {
     if (data?.records.some(record => record.type === 'event' && timings.get(record.id) !== eventTiming(record))) renderRecords();
   };
   const timer = setInterval(tick, 30000);
+  const cronTimer=setInterval(reloadCron,60000);
   document.addEventListener('visibilitychange', tick);
+  document.addEventListener('visibilitychange',reloadCron);
   root.hidden = false;
   const initialView=new URLSearchParams(location.search).has('record')?'findings':location.hash.slice(1);
-  if(['findings','trackers','calendar'].includes(initialView))views.querySelector(`[data-view="${initialView}"]`).click();
-  return () => { active = false;closeReview(); views.removeEventListener('click', navigate);clearTimeout(filterTimer);if (sourceDialog.open) sourceDialog.close();clearInterval(timer); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
+  if(['findings','trackers','calendar','cron'].includes(initialView))views.querySelector(`[data-view="${initialView}"]`).click();
+  return () => { active = false;closeReview(); views.removeEventListener('click', navigate);clearTimeout(filterTimer);if (sourceDialog.open) sourceDialog.close();clearInterval(timer);clearInterval(cronTimer);document.removeEventListener('visibilitychange',reloadCron); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
 }
