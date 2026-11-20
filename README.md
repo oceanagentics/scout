@@ -239,4 +239,4 @@ With the Firebase CLI installed and authenticated, run an approved deployment fr
 
 The predeploy hook runs the root npm build and deploys `website/dist/`. It uses Firebase's documented [`PROJECT_DIR` hook variable](https://firebase.google.com/docs/cli#environment_variables). Keep the Scout target, security headers, shared-project capacity and disabled billing intact; verify the released assets after deployment.
 
-Backend releases follow [Supabase deployment](#supabase-deployment). A website deployment does not deploy functions or SQL. The legacy `scout-collect-hsa` function is a retirement response, not the current reader.
+Backend releases follow [Supabase deployment](#supabase-deployment). A website deployment does not deploy functions or SQL.

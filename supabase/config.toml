@@ -1,8 +1,3 @@
-[functions.scout-collect-hsa]
-verify_jwt = false
-entrypoint = "./functions/scout-collect-hsa/index.ts"
-import_map = "./functions/scout-reader/deno.json"
-
 # Google Calendar reconciliation requires the backend secret.
 [functions.scout-calendar]
 verify_jwt = false
