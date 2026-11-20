@@ -201,6 +201,32 @@ test('unreadable and incomplete items do not block later work, and successful re
  assert.ok((await raw.query('select * from scout.source_items')).rows.every(r=>!r.pending&&r.last_error===null&&r.request_fingerprint!==prior[0].request_fingerprint));
 });
 
+test('ignored web items survive changed listings, pruning and tracker resets without item reads',async t=>{
+ const {raw,db,tracker}=await setup(t),ignoredURL='https://portals.iucn.org/library/sites/library/files/resrecfiles/WCC_2020_RES_128_EN.pdf';
+ await raw.query("insert into scout.source_items(tracker_id,item_key,url,pending,ignored,last_error) values($1,$2,$2,false,true,'model_unreadable')",[tracker.id,ignoredURL]);
+ const original=(await raw.query('select * from scout.source_items where ignored')).rows[0];
+ let version=0,discoveries=0;const reads=[],investigations=[];
+ const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>{
+  reads.push(url);assert.notEqual(url,ignoredURL);
+  return new Response(url===feedURL?'<main>Index '+version+' '+(version===1?'':`<a href="${ignoredURL}">Ignored resolution</a>`)+`<a href="${publication}">Allowed article</a></main>`:`<main>Allowed article ${version}</main>`,{headers:{'content-type':'text/html'}});
+ },modelFor:item=>async(_instructions,_input,schema)=>{
+  if(schema.properties.items){discoveries++;return {items:(version===1?[publication]:[ignoredURL,publication]).map(url=>({url,summary:'Listed article'}))};}
+  investigations.push(item.url);assert.equal(item.url,publication);return answer([]);
+ }});
+ for(;version<3;version++){
+  assert.equal((await run()).processed,1);
+  assert.deepEqual((await raw.query('select * from scout.source_items where ignored')).rows,[original]);
+ }
+ assert.equal(discoveries,3);assert.deepEqual(investigations,[publication,publication,publication]);
+ assert.deepEqual(reads,[feedURL,publication,feedURL,publication,feedURL,publication]);
+ await assert.rejects(raw.query('update scout.source_items set pending=true where ignored'),{code:'23514'});
+ await raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]);
+ assert.deepEqual((await raw.query('select * from scout.source_items')).rows,[original]);
+ await raw.query('update scout.trackers set url=$2 where id=$1',[tracker.id,'https://example.org/new']);
+ assert.deepEqual((await raw.query('select * from scout.source_items')).rows,[original]);
+ t.diagnostic(JSON.stringify({mocked_http_and_models:true,changed_indexes:3,ignored_item_reads:0,ignored_item_investigations:0,cost:db.metrics}));
+});
+
 test('irrelevant and reasoned-skip items consume progress without finding writes; failed saves do not consume',async t=>{
  const {raw,db,tracker}=await setup(t);let mode='irrelevant';
  const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async()=>rss([['a',publication,mode]]),modelFor:model(async({search})=>{

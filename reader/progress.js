@@ -13,10 +13,10 @@ export async function registerItems(db,tracker,discovery,deadline){
    on conflict(tracker_id,item_key) do update set url=excluded.url,observed_version=excluded.observed_version,
    last_error=case when scout.source_items.url is distinct from excluded.url or scout.source_items.observed_version is distinct from excluded.observed_version then null else scout.source_items.last_error end,
    pending=scout.source_items.pending or excluded.observed_version is null or scout.source_items.consumed_version is distinct from excluded.observed_version
-   where scout.source_items.url is distinct from excluded.url or excluded.observed_version is null
-     or scout.source_items.observed_version is distinct from excluded.observed_version`,
+   where not scout.source_items.ignored and (scout.source_items.url is distinct from excluded.url or excluded.observed_version is null
+     or scout.source_items.observed_version is distinct from excluded.observed_version)`,
    [tracker.id,JSON.stringify(discovery.items.map(i=>({key:i.key,url:i.url,version:i.version??null})))]);
-  if(!discovery.unchanged&&!discovery.excluded)await tx.query('delete from scout.source_items where tracker_id=$1 and not pending and not(item_key=any($2::text[]))',[tracker.id,discovery.items.map(i=>i.key)]);
+  if(!discovery.unchanged&&!discovery.excluded)await tx.query('delete from scout.source_items where tracker_id=$1 and not pending and not ignored and not(item_key=any($2::text[]))',[tracker.id,discovery.items.map(i=>i.key)]);
   if(!discovery.excluded)await tx.query('update scout.trackers set discovery_request_url=$2,discovery_checked_at=$3,discovery_fingerprint=$4 where id=$1',
    [tracker.id,discovery.source.request_url,discovery.source.checked_at,discovery.source.fingerprint??null]);
  },{deadline});
