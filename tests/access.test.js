@@ -10,7 +10,7 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
   const previousWindow = globalThis.window;
   const storage = new Map([['scout-auth', 'test session'], ['scout-auth-code-verifier', 'test verifier']]);
   const record = '11111111-1111-4111-8111-111111111111';
-  let authChanged, role = null, renders = 0, closeCount = 0, oauth, redirected, finishSignOut, cron;
+  let authChanged, role = null, renders = 0, closeCount = 0, oauth, redirected, finishSignOut, jobs;
   globalThis.window = { location: { origin: 'https://bbnj-scout.web.app', href: 'https://bbnj-scout.web.app/', search: '?record=https://example.com', replace(path) { redirected = path; } },
     history: { replaceState(_state, _title, url) { window.location.href = String(url); window.location.search = url.search; } },
     sessionStorage: { removeItem(key) { storage.delete(key); }, getItem(key) { return storage.get(key) ?? null; }, setItem(key, value) { storage.set(key, value); } } };
@@ -22,8 +22,8 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
   const tick = () => new Promise(setImmediate);
   const session = { user: { id: 'test', user_metadata: { hd: 'oceanagentics.com', role: 'admin' } } };
   try {
-    mountAccess(client, { querySelector: selector => nodes[selector.slice(1)] }, (root,_load,_views,_reviews,loadCron) => {
-      cron=loadCron;
+    mountAccess(client, { querySelector: selector => nodes[selector.slice(1)] }, (root,_load,_views,_reviews,loadJobs) => {
+      jobs=loadJobs;
       renders++; root.hidden = false; root.textContent = 'private findings'; return () => { closeCount++; };
     });
     authChanged('INITIAL_SESSION', null);
@@ -45,7 +45,7 @@ test('Workspace UI trusts the server role, handles auth races and clears data be
     assert.equal(nodes['scout-views'].hidden, true);
     role = 'reader'; authChanged('SIGNED_IN', session); await tick();
     assert.equal(renders, 1);
-    assert.equal(typeof cron,'function');
+    assert.equal(typeof jobs,'function');
     assert.equal(nodes.workspace.textContent, 'private findings');
     assert.equal(nodes['scout-views'].hidden, false);
     assert.equal(new URL(window.location.href).searchParams.get('record'), record);

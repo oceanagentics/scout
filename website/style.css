@@ -104,6 +104,13 @@ td a { font-weight: 600; }
 .data-table pre.field-value { margin: 0; }
 .data-table .actions { margin: 0; flex-direction: column; align-items: flex-start; gap: 8px; }
 .data-table details { margin: 0; padding: 0; border: 0; }
+#jobs .cron-table thead { position: sticky; top: 0; z-index: 2; }
+#jobs .cron-table th { position: static; }
+#jobs .cron-table thead tr:first-child th:first-child { position: sticky; left: 0; }
+#jobs .cron-table th[scope="colgroup"] { text-align: center; }
+#jobs .cron-table .schedule-part { min-width: 0; max-width: none; width: 1%; padding: 6px; text-align: center; white-space: nowrap; font-variant-numeric: tabular-nums; }
+#jobs .cron-table .schedule-start { padding-left: 18px; }
+#jobs .cron-table .schedule-end { padding-right: 18px; }
 .source-dialog { width: min(760px, calc(100% - 32px)); max-height: calc(100dvh - 32px); padding: 24px; border: 1px solid #b5c9e1; border-radius: 12px; color: inherit; background: #fff; overflow: auto; }
 .source-dialog::backdrop { background: #19355266; }
 .source-entry { border-top: 1px solid #d5dfec; margin-top: 24px; }

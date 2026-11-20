@@ -27,8 +27,8 @@ export async function loadScout(client,{filters={},after=null}={}) {
   return {records,trackers:inventory.data,next:records.length===50?{rank:filters.order==='date'?0:({high:0,normal:1,low:2}[last.priority]??3),day:findingInterval(last)[0],id:last.id}:null};
 }
 
-export async function loadCron(client) {
-  const {data,error}=await client.rpc('cron',undefined,{get:true});
+export async function loadJobs(client) {
+  const {data,error}=await client.rpc('jobs',undefined,{get:true});
   if(error)throw error;
   return data;
 }
@@ -47,7 +47,7 @@ function link(text, url) {
   return element;
 }
 
-export function mountDashboard(root, load, views, reviews, cron) {
+export function mountDashboard(root, load, views, reviews, jobs) {
   // Static markup only; every source-supplied value is rendered with textContent.
   root.innerHTML = `<section id="review" aria-label="Review findings"></section><p id="load-status" role="status" hidden></p>
     <section id="findings" aria-label="Records" hidden><div class="findings-toolbar"><form id="filters" class="filters">
@@ -61,13 +61,20 @@ export function mountDashboard(root, load, views, reviews, cron) {
       </div></div><p id="record-count" role="status"></p><div id="record-list" tabindex="0" role="region" aria-label="Records results"></div><button type="button" id="first-page" class="secondary">First page</button><button type="button" id="next-page" class="secondary">Next page</button></section>
     <section id="trackers" aria-label="Trackers" hidden>
       <p id="tracker-count"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Tracker inventory"><table class="data-table"><caption class="visually-hidden">Tracker record fields</caption><thead id="tracker-head"></thead><tbody id="tracker-list"></tbody></table></div></section>
-    <section id="cron" aria-label="Cron" hidden>
-      <div class="workspace-heading"><h2>Cron</h2><button type="button" id="refresh-cron" class="secondary">Refresh</button></div>
-      <p class="hint">Live Supabase schedules. Refreshes every minute while this tab is visible. Times are New York; cron schedules are UTC.</p>
-      <p class="hint">Scheduler success confirms dispatch, not completion of the function it calls. Recent history is retained for about one day.</p>
-      <p id="cron-status" role="status"></p><div class="table-scroll" tabindex="0" role="region" aria-label="Cron schedules"><table class="data-table">
+    <section id="jobs" aria-label="Jobs" hidden>
+      <div class="workspace-heading"><h2>Jobs</h2><button type="button" id="refresh-jobs" class="secondary">Refresh</button></div>
+      <p class="hint">Live Supabase data. Refreshes every minute while this tab is visible. Times are New York; cron schedules are UTC.</p>
+      <p id="jobs-status" role="status"></p>
+      <h3>Supabase functions</h3><p class="hint">Supabase provides deployment status; trigger descriptions are not included in its metadata.</p>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Supabase functions"><table class="data-table">
+        <caption class="visually-hidden">Deployed Scout functions</caption>
+        <thead><tr><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Version</th><th scope="col">Updated (New York)</th></tr></thead><tbody id="function-list"></tbody>
+      </table></div>
+      <h3>Cron jobs</h3><p class="hint">Scheduler success confirms dispatch, not completion of the function it calls. Recent history is retained for about one day.</p>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Cron jobs"><table class="data-table cron-table">
         <caption class="visually-hidden">Supabase cron schedules and latest scheduler runs</caption>
-        <thead><tr><th scope="col">Name</th><th scope="col">Schedule (UTC)</th><th scope="col">Enabled</th><th scope="col">Scheduler status</th><th scope="col">Started (New York)</th><th scope="col">Finished (New York)</th><th scope="col">Scheduler message</th></tr></thead><tbody id="cron-list"></tbody>
+        <thead><tr><th scope="col" rowspan="2">Name</th><th scope="colgroup" colspan="5">Schedule (UTC)</th><th scope="col" rowspan="2">Enabled</th><th scope="col" rowspan="2">Scheduler status</th><th scope="col" rowspan="2">Started (New York)</th><th scope="col" rowspan="2">Finished (New York)</th><th scope="col" rowspan="2">Scheduler message</th></tr>
+          <tr><th scope="col" class="schedule-part schedule-start" title="Minute">min</th><th scope="col" class="schedule-part" title="Hour">hor</th><th scope="col" class="schedule-part" title="Day of month">day</th><th scope="col" class="schedule-part" title="Month">mon</th><th scope="col" class="schedule-part schedule-end" title="Day of week">dow</th></tr></thead><tbody id="cron-list"></tbody>
       </table></div>
     </section>
     <section id="calendar" aria-label="Calendar" hidden>
@@ -95,8 +102,8 @@ export function mountDashboard(root, load, views, reviews, cron) {
   const status = root.querySelector('#load-status');
   const filters = root.querySelector('#filters'), recordList = root.querySelector('#record-list');
   let data = null, active = true, loadedAt = null, timings = new Map(), layout = 'table', after=null,request=0,filterTimer,started=false;
-  const cronSection=root.querySelector('#cron'),cronStatus=root.querySelector('#cron-status'),cronRefresh=root.querySelector('#refresh-cron');
-  let cronLoadedAt=null;
+  const jobsSection=root.querySelector('#jobs'),jobsStatus=root.querySelector('#jobs-status'),jobsRefresh=root.querySelector('#refresh-jobs');
+  let jobsLoadedAt=null;
   const closeReview=mountReview(root.querySelector('#review'),reviews.load,reviews.submit);
   const sourceDialog = node('dialog', null, 'source-dialog'), sourceContent = node('div');
   sourceDialog.setAttribute('aria-labelledby', 'source-heading');
@@ -222,27 +229,35 @@ export function mountDashboard(root, load, views, reviews, cron) {
     } finally { if (active&&sequence===request) root.removeAttribute('aria-busy'); }
   }
 
-  async function reloadCron() {
-    if(!active||cronRefresh.disabled||cronSection.hidden||document.hidden)return;
-    cronRefresh.disabled=true;
-    cronStatus.textContent='Loading cron…';
+  async function reloadJobs() {
+    if(!active||jobsRefresh.disabled||jobsSection.hidden||document.hidden)return;
+    jobsRefresh.disabled=true;
+    jobsStatus.textContent='Loading jobs…';
     try {
-      const rows=await cron();
+      const next=await jobs();
       if(!active)return;
-      const body=root.querySelector('#cron-list');body.replaceChildren();
-      for(const job of rows){
+      const functions=root.querySelector('#function-list');functions.replaceChildren();
+      for(const fn of next.functions){
         const row=node('tr');
-        for(const value of [job.name,job.schedule,job.enabled?'Yes':'No',job.status??'No recent history',
+        for(const value of [fn.name,fn.status,fn.version,stamp(new Date(fn.updated_at).toISOString())])row.append(node('td',value));
+        functions.append(row);
+      }
+      const body=root.querySelector('#cron-list');body.replaceChildren();
+      for(const job of next.cron){
+        const row=node('tr');
+        row.append(node('td',job.name));
+        for(const [i,value] of job.schedule.split(/\s+/).entries())row.append(node('td',value,'schedule-part'+(i===0?' schedule-start':i===4?' schedule-end':'')));
+        for(const value of [job.enabled?'Yes':'No',job.status??'No recent history',
           job.started_at?stamp(job.started_at):'—',job.finished_at?stamp(job.finished_at):'—',job.message??'—'])row.append(node('td',value));
         body.append(row);
       }
-      cronLoadedAt=new Date().toISOString();
-      cronStatus.textContent=`${rows.length} cron schedules · Updated ${stamp(cronLoadedAt)}`;
+      jobsLoadedAt=new Date().toISOString();
+      jobsStatus.textContent=`${next.functions.length} functions · ${next.cron.length} cron jobs · Updated ${stamp(jobsLoadedAt)}`;
     } catch {
-      if(active)cronStatus.textContent=`Could not load cron. ${cronLoadedAt?`Showing data loaded ${stamp(cronLoadedAt)}. `:''}Use Refresh to try again.`;
-    } finally {if(active)cronRefresh.disabled=false;}
+      if(active)jobsStatus.textContent=`Could not load jobs. ${jobsLoadedAt?`Showing data loaded ${stamp(jobsLoadedAt)}. `:''}Use Refresh to try again.`;
+    } finally {if(active)jobsRefresh.disabled=false;}
   }
-  cronRefresh.addEventListener('click',reloadCron);
+  jobsRefresh.addEventListener('click',reloadJobs);
   for (const link of views.querySelectorAll('[data-view]')) {
     if (link.dataset.view==='review') link.setAttribute('aria-current','page');
     else link.removeAttribute('aria-current');
@@ -258,7 +273,7 @@ export function mountDashboard(root, load, views, reviews, cron) {
       root.querySelector(`#${other.dataset.view}`).hidden = !selected;
     }
     if(['findings','trackers'].includes(link.dataset.view)&&!started){started=true;void reload();}
-    if(link.dataset.view==='cron')void reloadCron();
+    if(link.dataset.view==='jobs')void reloadJobs();
     status.hidden=!['findings','trackers'].includes(link.dataset.view)||!status.textContent;
   };
   views.addEventListener('click', navigate);
@@ -288,11 +303,11 @@ export function mountDashboard(root, load, views, reviews, cron) {
     if (data?.records.some(record => record.type === 'event' && timings.get(record.id) !== eventTiming(record))) renderRecords();
   };
   const timer = setInterval(tick, 30000);
-  const cronTimer=setInterval(reloadCron,60000);
+  const jobsTimer=setInterval(reloadJobs,60000);
   document.addEventListener('visibilitychange', tick);
-  document.addEventListener('visibilitychange',reloadCron);
+  document.addEventListener('visibilitychange',reloadJobs);
   root.hidden = false;
   const initialView=new URLSearchParams(location.search).has('record')?'findings':location.hash.slice(1);
-  if(['findings','trackers','calendar','cron'].includes(initialView))views.querySelector(`[data-view="${initialView}"]`).click();
-  return () => { active = false;closeReview(); views.removeEventListener('click', navigate);clearTimeout(filterTimer);if (sourceDialog.open) sourceDialog.close();clearInterval(timer);clearInterval(cronTimer);document.removeEventListener('visibilitychange',reloadCron); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
+  if(['findings','trackers','calendar','jobs'].includes(initialView))views.querySelector(`[data-view="${initialView}"]`).click();
+  return () => { active = false;closeReview(); views.removeEventListener('click', navigate);clearTimeout(filterTimer);if (sourceDialog.open) sourceDialog.close();clearInterval(timer);clearInterval(jobsTimer);document.removeEventListener('visibilitychange',reloadJobs); document.removeEventListener('visibilitychange', tick); root.replaceChildren(); root.hidden = true; };
 }
