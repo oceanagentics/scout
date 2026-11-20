@@ -1,6 +1,6 @@
-// Each explicit request can send the same eligible finding again.
+// Daily reconciliation also supports an explicitly requested manual run.
 const args=process.argv.slice(2),kind=args.find(a=>a.startsWith('--kind='))?.slice(7);
-if(args.length!==2||!args.includes('--send')||!['morning','weekly'].includes(kind))throw new Error('Usage: npm run notify -- --send --kind=morning|weekly');
+if(args.length!==2||!args.includes('--send')||kind!=='unposted')throw new Error('Usage: npm run notify -- --send --kind=unposted');
 process.loadEnvFile('.env.local');
 if(!process.env.SCOUT_BACKEND_KEY)throw new Error('SCOUT_BACKEND_KEY required');
 const response=await fetch('https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-notify?kind='+kind,

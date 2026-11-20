@@ -140,6 +140,6 @@ test('Slack postings preserve existing reviews, accept missed findings and remai
     await db.query("select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000003',false)");
     assert.deepEqual((await db.query('select * from scout.finding_reviews')).rows,[]);
     await db.exec('reset role');
-    assert.deepEqual((await db.query('select * from scout.records')).rows,[record]);
+    assert.deepEqual((await db.query('select * from scout.records')).rows.map(({slack_channel_post,...finding})=>finding),[record]);
   } finally {await db.close();}
 });

@@ -3,14 +3,15 @@ create extension if not exists pg_cron;
 create extension if not exists pg_net;
 select cron.alter_job(jobid,active:=false) from cron.job
  where jobname in ('scout-collection','scout-findings','scout-health','scout-retention','scout-morning','scout-weekly','scout-calendar');
-select cron.unschedule(jobid) from cron.job where jobname in ('scout-findings','scout-health','scout-retention');
+delete from cron.job_run_details where jobid in(select jobid from cron.job where jobname='scout-weekly') and end_time is not null;
+select cron.unschedule(jobid) from cron.job where jobname in ('scout-findings','scout-health','scout-retention','scout-weekly');
 drop function if exists scout.loop_health();
 drop function if exists scout.loop_retention();
 create or replace function scout.loop_tick(mode text default 'next') returns void
 language plpgsql security definer set search_path='' as $$
 declare key text;endpoint text;local_now timestamp:=clock_timestamp() at time zone 'America/New_York';
 begin
- if mode not in ('next','morning','weekly','calendar') then return;end if;
+ if mode not in ('next','morning','calendar') then return;end if;
  -- pg_cron writes a row per wake even when no tracker is due. Retain one day,
  -- prune this job's completed rows in batches; never another service's.
  delete from cron.job_run_details where runid in (
@@ -32,8 +33,7 @@ begin
  else
  -- Supabase cron runs in GMT. Only one candidate hour matches New York time.
  if mode='morning' and extract(hour from local_now)<>8 then return;end if;
- if mode='weekly' and (extract(hour from local_now)<>9 or extract(isodow from local_now)<>1) then return;end if;
- endpoint:='scout-notify?kind='||mode;
+ endpoint:='scout-notify?kind=unposted';
  end if;
  select decrypted_secret into key from vault.decrypted_secrets where name='scout_loop_backend_key';
  if key is null then return;end if;
@@ -43,7 +43,6 @@ end $$;
 revoke all on function scout.loop_tick(text) from public,anon,authenticated,service_role;
 select cron.schedule('scout-collection','*/6 * * * *',$$select scout.loop_tick('next')$$);
 select cron.schedule('scout-morning','0 12,13 * * *',$$select scout.loop_tick('morning')$$);
-select cron.schedule('scout-weekly','0 13,14 * * 1',$$select scout.loop_tick('weekly')$$);
 select cron.schedule('scout-calendar','0 8,9 * * *',$$select scout.loop_tick('calendar')$$);
 select cron.alter_job(jobid,active:=false) from cron.job
- where jobname in ('scout-collection','scout-morning','scout-weekly','scout-calendar');
+ where jobname in ('scout-collection','scout-morning','scout-calendar');

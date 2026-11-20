@@ -32,7 +32,7 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,notif
    result.state=!updated.rows.length?'stale':(!result.processed&&tracker.failure_count>=3?'needs_attention':'deferred');
   }
   const notifications=[],calendar=[];const callbackDeadline=Date.parse(through)+115000;
-  if(notify&&result.createdIds.length&&Date.now()<callbackDeadline){try{notifications.push(await notify(result.createdIds,{deadline:callbackDeadline}));}catch{notifications.push({status:'unknown',communicated:0});}}
+  if(notify&&result.createdIds.length&&Date.now()<callbackDeadline){try{notifications.push(await notify(result.createdIds,{deadline:callbackDeadline}));}catch(error){notifications.push({status:'unknown',communicated:0,error:/^(slack_[a-z_]+|database_operation)$/.test(error?.reason??'')?error.reason:'notification_interrupted'});}}
   if(publishCalendar&&result.calendarIds.length&&Date.now()<callbackDeadline){try{calendar.push(await publishCalendar([...new Set(result.calendarIds)],{deadline:callbackDeadline}));}catch{calendar.push({status:'failed'});}}
   const {createdIds,calendarIds,...output}=result;
   return {...output,tracker_id:tracker.id,source:metrics,notifications,calendar};

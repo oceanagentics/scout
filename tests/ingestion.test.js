@@ -73,6 +73,18 @@ test('Index investigates linked publications without turning itself into a findi
  assert.deepEqual((await raw.query('select sources from scout.records')).rows[0].sources,[{url:publication,role:'finding'}]);
 });
 
+test('a notification configuration failure preserves the saved finding, reports its reason and does not replay collection',async t=>{
+ const {raw,db,tracker}=await setup(t);await raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]);
+ let sends=0;
+ const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async()=>new Response('<main>CHM technical webinar</main>',{headers:{'content-type':'text/html'}}),
+  modelFor:model(async({search})=>{await search({queries:['HSA'],urls:[]});return answer([create(finding)]);}),
+  notify:async()=>{sends++;throw Object.assign(new Error('Do not expose raw configuration'),{reason:'slack_configuration'});}});
+ const first=await run();assert.equal(first.created,1);assert.equal(first.state,'saved');
+ assert.deepEqual(first.notifications,[{status:'unknown',communicated:0,error:'slack_configuration'}]);
+ assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,1);
+ assert.equal((await run()).created,0);assert.equal(sends,1);
+});
+
 test('tracker modes preserve index progress, reset changed modes and replace Bloomberg without deleting findings',async t=>{
  const name='20261119180000_scout_tracker_modes.sql', {raw,tracker}=await setup(t,{before:name});
  await raw.query("update scout.trackers set collector='web',last_checked_at=now(),last_successful_check=now(),discovery_request_url=url,discovery_checked_at=now(),discovery_fingerprint='keep' where id=$1",[tracker.id]);
@@ -105,7 +117,7 @@ test('RSS -> real provider-tool mechanics -> duplicate update -> specific Slack 
   const output=body.input.find(i=>i.type==='function_call_output');
   if(!output){searches++;assert.ok(body.tools.some(f=>f.name==='search_findings'));return Response.json({status:'completed',output:[{type:'function_call',name:'search_findings',call_id:'lookup',arguments:JSON.stringify({queries:['HSA CHM'],urls:[]})}]});}
   const candidates=JSON.parse(output.output);assert.equal(candidates.records.length,1);
-  for(const key of ['revision','modified','pending'])assert.equal(Object.hasOwn(candidates.records[0],key),false);
+  for(const key of ['revision','modified','pending','slack_channel_post'])assert.equal(Object.hasOwn(candidates.records[0],key),false);
   return response(answer([update(candidates.records[0],finding)]));
  }})});
  const first=await run();assert.equal(first.changed,1);assert.equal(first.created,0);assert.equal(searches,1);

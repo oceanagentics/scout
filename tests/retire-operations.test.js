@@ -94,7 +94,7 @@ test('replacement scheduler bounds its own history without a policy table',async
  }finally{await db.close();}
 });
 
-test('digest and calendar schedules dispatch once at the New York hour in winter and summer',async()=>{
+test('daily catch-up and calendar dispatch once at the New York hour in winter and summer; weekly is retired',async()=>{
  const {db}=await fixture();try{
   await db.exec(`create view vault.decrypted_secrets as select name,secret as decrypted_secret from vault.secrets;
    insert into vault.secrets values('scout_loop_backend_key','fixture');
@@ -103,16 +103,19 @@ test('digest and calendar schedules dispatch once at the New York hour in winter
    language sql as $$insert into net.requests values(url) returning 1::bigint$$;`);
   const scheduler=(await readFile(new URL('../supabase/scout-loop.sql',import.meta.url),'utf8'))
    .match(/create or replace function scout\.loop_tick[\s\S]+?end \$\$;/)[0];
-  for(const [day,morning,weekly] of [['2026-11-09',13,14],['2026-07-06',12,13]]){
-   for(const [mode,hours,expected] of [['morning',[12,13],morning],['weekly',[13,14],weekly],['calendar',[8,9],morning-4]]){
+  for(const [day,morning] of [['2026-11-09',13],['2026-07-06',12]]){
+   for(const [mode,hours,expected] of [['morning',[12,13],morning],['weekly',[13,14],null],['calendar',[8,9],morning-4]]){
+    let dispatched=0;
     for(const hour of hours){
      await db.exec(scheduler.replaceAll('clock_timestamp()',`'${day}T${hour}:00:00Z'::timestamptz`));
      await db.query('select scout.loop_tick($1)',[mode]);
      const requests=(await db.query('select * from net.requests')).rows;
      assert.equal(requests.length,hour===expected?1:0);
-     if(requests.length)assert.ok(requests[0].url.endsWith(mode==='calendar'?'scout-calendar/reconcile':'scout-notify?kind='+mode));
+     dispatched+=requests.length;
+     if(requests.length)assert.ok(requests[0].url.endsWith(mode==='calendar'?'scout-calendar/reconcile':'scout-notify?kind=unposted'));
      await db.exec('delete from net.requests');
     }
+    assert.equal(dispatched,mode==='weekly'?0:1);
    }
   }
  }finally{await db.close();}
