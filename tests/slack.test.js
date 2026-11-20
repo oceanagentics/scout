@@ -41,7 +41,7 @@ test('daily selection includes all pending and uncertain High findings without a
   for(const [description,type,priority,date,receipt]of [
    ['Undated','event','high',null,null],['Past event','event','high','2020-01-01',null],
    ['Announcement','announcement','high',null,null],['Uncertain','event','high',null,{state:'uncertain'}],
-   ['Already posted','event','high',null,{state:'posted',ts:'123.456'}],
+   ['Already posted','event','high',null,{state:'posted',ts:'123.456'}],['Excluded','announcement','high',null,{state:'do_not_post'}],
    ['Dev normal','event','normal',null,null],['Dev low','announcement','low',null,null],['Unassessed','event',null,null,null]])
    await db.query('insert into scout.records(description,type,priority,date,slack_channel_post) values($1,$2,$3,$4,$5::jsonb)',[description,type,priority,date,receipt?JSON.stringify(receipt):null]);
   const preview=await prepareMessages(db,{kind:'unposted'});
@@ -72,6 +72,47 @@ test('dev DMs of High findings neither create nor consume channel receipts',asyn
   assert.equal((await sendMessages(db,await prepareMessages(db,{kind:'findings',ids:[id]}),async()=>ack())).communicated,1);
   assert.equal((await sendMessages(db,dev,async()=>ack(DM_CHANNEL))).communicated,1);
   assert.deepEqual((await db.query('select slack_channel_post from scout.records where id=$1',[id])).rows[0].slack_channel_post,{state:'posted',ts:'1234567890.123456'});
+ }finally{await db.close();}
+});
+
+test('do_not_post excludes existing inventory, preserves real receipts and does not suppress dev DMs or new findings',async()=>{
+ const db=await database();try{
+  const posted=await seed(db),pending=await seed(db),uncertain=await seed(db);
+  await db.query('update scout.records set slack_channel_post=$2::jsonb where id=$1',[posted,JSON.stringify({state:'posted',ts:'123.456'})]);
+  await db.query('update scout.records set slack_channel_post=$2::jsonb where id=$1',[uncertain,JSON.stringify({state:'uncertain'})]);
+  const before=(await db.query('select * from scout.records order by id')).rows;
+  await db.query(`update scout.records set slack_channel_post='{"state":"do_not_post"}'::jsonb
+   where slack_channel_post is null or slack_channel_post->>'state'='uncertain'`);
+  const after=(await db.query('select * from scout.records order by id')).rows;
+  for(const row of after){
+   const original=before.find(r=>r.id===row.id);
+   const {slack_channel_post,...facts}=row;const {slack_channel_post:old,...oldFacts}=original;
+   assert.deepEqual(facts,oldFacts);
+   assert.deepEqual(slack_channel_post,row.id===posted?old:{state:'do_not_post'});
+  }
+  assert.equal((await prepareMessages(db,{kind:'unposted'})).records.length,0);
+  const result=await sendMessages(db,await prepareMessages(db,{kind:'findings',ids:[posted,pending,uncertain]}),()=>assert.fail('Excluded inventory cannot post to the channel'));
+  assert.equal(result.skipped,3);assert.equal(result.communicated,0);assert.equal(result.uncertain,0);
+  const dev=await prepareMessages(db,{kind:'findings',ids:[pending]});dev.payloads[0].channel=DM_CHANNEL;
+  assert.equal((await sendMessages(db,dev,async()=>ack(DM_CHANNEL))).communicated,1);
+  assert.deepEqual((await db.query('select slack_channel_post from scout.records where id=$1',[pending])).rows[0].slack_channel_post,{state:'do_not_post'});
+  for(const invalid of [{state:'do_not_post',ts:'123.456'},{state:'do_not_post',reason:'No extra fields'},{state:'ignored'}])
+   await assert.rejects(db.query('update scout.records set slack_channel_post=$2::jsonb where id=$1',[pending,JSON.stringify(invalid)]),{code:'23514'});
+  const fresh=await seed(db);assert.equal((await db.query('select slack_channel_post from scout.records where id=$1',[fresh])).rows[0].slack_channel_post,null);
+  assert.equal((await sendMessages(db,await prepareMessages(db,{kind:'findings',ids:[fresh]}),async()=>ack())).communicated,1);
+ }finally{await db.close();}
+});
+
+test('an exclusion applied after preview validation prevents the pending channel claim',async()=>{
+ const db=await database();try{
+  const id=await seed(db),preview=await prepareMessages(db,{kind:'findings',ids:[id]});
+  const racing={query:async(q,p)=>{
+   const result=await db.query(q,p);
+   if(q.startsWith('select r.id,r.slack_channel_post'))await db.query('update scout.records set slack_channel_post=$2::jsonb where id=$1',[id,JSON.stringify({state:'do_not_post'})]);
+   return result;
+  }};
+  const result=await sendMessages(racing,preview,()=>assert.fail('A late exclusion must defeat the claim'));
+  assert.equal(result.skipped,1);assert.equal(result.communicated,0);assert.equal(result.status,'no_change');
  }finally{await db.close();}
 });
 

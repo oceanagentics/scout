@@ -34,7 +34,7 @@ export async function sendMessages(db,preview,post,{now=()=>new Date(),deadline=
   const receipts=new Map(current.map(r=>[r.id,r.slack_channel_post]));
   for(const payload of preview.payloads){
     const id=payload.metadata.event_payload.record_id,channelPost=payload.channel===CHANNEL;
-    if(channelPost&&receipts.get(id)?.state==='posted'){outcome.skipped++;continue;}
+    if(channelPost&&['posted','do_not_post'].includes(receipts.get(id)?.state)){outcome.skipped++;continue;}
     if(channelPost&&receipts.get(id)?.state==='uncertain'){outcome.uncertain++;continue;}
     if(outcome.communicated)await new Promise(resolve=>setTimeout(resolve,1000));
     if(+now()>=deadline)return {...outcome,status:'unknown',error:'runtime_bound'};
@@ -44,7 +44,7 @@ export async function sendMessages(db,preview,post,{now=()=>new Date(),deadline=
        and modified[cardinality(modified)]=$2::timestamptz returning id`,[id,preview.records.find(r=>r.id===id).modified.at(-1)]);
       if(!claimed.rows.length){
         const receipt=(await db.query('select slack_channel_post from scout.records where id=$1',[id])).rows[0]?.slack_channel_post;
-        if(receipt?.state==='posted')outcome.skipped++;
+        if(['posted','do_not_post'].includes(receipt?.state))outcome.skipped++;
         else if(receipt?.state==='uncertain')outcome.uncertain++;
         else return {...outcome,status:'failed',error:'preview_changed',record_id:id};
         continue;
