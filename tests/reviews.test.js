@@ -4,6 +4,17 @@ import {readFile,readdir} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {loadReview,submitReview} from '../website/review.js';
 
+test('category cutover refuses to discard a numeric human vote',async()=>{
+  const db=new PGlite();
+  try{
+    await db.exec('create schema scout;create table scout.finding_reviews(score integer,priority text);insert into scout.finding_reviews(score) values(58)');
+    const migration=await readFile(new URL('../supabase/migrations/20261120230000_scout_review_categories.sql',import.meta.url),'utf8');
+    await assert.rejects(db.exec(migration),{message:'Preserve existing numeric human reviews before removing their score column'});
+    await db.exec('rollback');
+    assert.deepEqual((await db.query('select * from scout.finding_reviews')).rows,[{score:58,priority:null}]);
+  }finally{await db.close();}
+});
+
 test('review feedback is private, durable, independent of model rankings and counted once per reviewer/finding',async()=>{
   const db=new PGlite();
   const reviewer='00000000-0000-0000-0000-000000000001',other='00000000-0000-0000-0000-000000000002',outsider='00000000-0000-0000-0000-000000000003';
@@ -31,35 +42,35 @@ test('review feedback is private, durable, independent of model rankings and cou
     await db.exec('reset role;set role authenticated');
     await db.query("select set_config('request.jwt.claim.sub',$1,false)",[outsider]);
     await assert.rejects(db.query('select scout.review_queue()'),{code:'42501'});
-    await assert.rejects(db.query("select scout.submit_review($1,now(),85,'forged')",[before[0].id]),{code:'42501'});
+    await assert.rejects(db.query("select scout.submit_review($1,now(),'high','forged')",[before[0].id]),{code:'42501'});
     assert.deepEqual((await db.query('select * from scout.finding_reviews')).rows,[]);
     await db.query("select set_config('request.jwt.claim.sub',$1,false)",[reviewer]);
     let state=(await db.query('select scout.review_queue() state')).rows[0].state;
     assert.equal(state.reviewed_count,0);
     const first=state.record;
-    const params=[first.id,first.modified,0,'A volunteer’s independent assessment'];
+    const params=[first.id,first.modified,'normal','A volunteer’s independent assessment'];
     state=(await db.query('select scout.submit_review($1,$2,$3,$4) state',params)).rows[0].state;
     assert.equal(state.reviewed_count,1);assert.notEqual(state.record.id,first.id);
     const retry=(await db.query('select scout.submit_review($1,$2,$3,$4) state',params)).rows[0].state;
     assert.deepEqual(retry,state);
     const saved=(await db.query('select * from scout.finding_reviews')).rows[0];
-    assert.equal(saved.score,0);assert.equal(saved.model_score,first.score);
+    assert.equal(saved.priority,'normal');assert.equal(saved.model_score,first.score);
     assert.equal(saved.notes,params[3]);assert.equal(saved.reviewer_id,reviewer);
-    await assert.rejects(db.query("update scout.finding_reviews set score=25"),{code:'42501'});
+    await assert.rejects(db.query("update scout.finding_reviews set priority='low'"),{code:'42501'});
     await assert.rejects(db.query('delete from scout.finding_reviews'),{code:'42501'});
-    await assert.rejects(db.query("insert into scout.finding_reviews(reviewer_id,record_id,score) values($1,$2,85)",[other,state.record.id]),{code:'42501'});
-    for(const score of [-1,101])await assert.rejects(db.query("select scout.submit_review($1,$2,$3,'Invalid score')",[state.record.id,state.record.modified,score]),{code:'22023'});
+    await assert.rejects(db.query("insert into scout.finding_reviews(reviewer_id,record_id,priority) values($1,$2,'high')",[other,state.record.id]),{code:'42501'});
+    for(const priority of ['urgent','','75'])await assert.rejects(db.query("select scout.submit_review($1,$2,$3,'Invalid score')",[state.record.id,state.record.modified,priority]),{code:'22023'});
     await assert.rejects(db.query("select scout.submit_review($1,$2,null,'')",[state.record.id,state.record.modified]),{code:'22023'});
     for(const notes of [null,'','   ','\t\n\r'])
-      await assert.rejects(db.query("select scout.submit_review($1,$2,85,$3)",[state.record.id,state.record.modified,notes]),{code:'22023',message:'Explain why you chose this ranking'});
-    await assert.rejects(db.query("select scout.submit_review($1,null,85,'Substantive treaty update')",[state.record.id]),{code:'40001'});
+      await assert.rejects(db.query("select scout.submit_review($1,$2,'high',$3)",[state.record.id,state.record.modified,notes]),{code:'22023',message:'Explain why you chose this ranking'});
+    await assert.rejects(db.query("select scout.submit_review($1,null,'high','Substantive treaty update')",[state.record.id]),{code:'40001'});
     await db.query("select set_config('request.jwt.claim.sub',$1,false)",[other]);
     assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.reviewed_count,0);
     assert.deepEqual((await db.query('select * from scout.finding_reviews')).rows,[]);
     await db.query('select scout.submit_review($1,$2,$3,$4)',params);
     await db.query("select set_config('request.jwt.claim.sub',$1,false)",[reviewer]);
     for(let n=2;n<=25;n++) {
-      state=(await db.query("select scout.submit_review($1,$2,25,'Limited relevance to BBNJ implementation') state",[state.record.id,state.record.modified])).rows[0].state;
+      state=(await db.query("select scout.submit_review($1,$2,$3,'A volunteer relevance assessment') state",[state.record.id,state.record.modified,n===2?'high':'low'])).rows[0].state;
       assert.equal(state.reviewed_count,n);
       if(n===12||n===24)assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.reviewed_count,n);
     }
@@ -77,7 +88,7 @@ test('review feedback is private, durable, independent of model rankings and cou
     await db.exec('reset role');
     await db.query("update scout.records set score=25,modified=array_append(modified,now()) where id=$1",[state.record.id]);
     await db.exec('set role authenticated');
-    await assert.rejects(db.query("select scout.submit_review($1,$2,85,'outdated')",[state.record.id,state.record.modified]),{code:'40001'});
+    await assert.rejects(db.query("select scout.submit_review($1,$2,'high','outdated')",[state.record.id,state.record.modified]),{code:'40001'});
     assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.reviewed_count,25);
   } finally {await db.close();}
 });
@@ -88,8 +99,8 @@ test('browser review calls preserve the exact finding revision and propagate sav
   const calls=[];
   const client={rpc:async(name,params)=>{calls.push({name,params});return name==='review_queue'?{data:{record,reviewed_count:11}}:{error:failure};}};
   assert.equal((await loadReview(client)).reviewed_count,11);
-  await assert.rejects(submitReview(client,record,25,'My notes'),error=>error===failure);
-  assert.deepEqual(calls,[{name:'review_queue',params:undefined},{name:'submit_review',params:{p_record_id:record.id,p_modified:record.modified,p_score:25,p_notes:'My notes'}}]);
+  await assert.rejects(submitReview(client,record,'low','My notes'),error=>error===failure);
+  assert.deepEqual(calls,[{name:'review_queue',params:undefined},{name:'submit_review',params:{p_record_id:record.id,p_modified:record.modified,p_priority:'low',p_notes:'My notes'}}]);
 });
 
 test('Slack postings preserve existing reviews, accept missed findings and remain distinct from volunteer feedback',async()=>{

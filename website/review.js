@@ -7,9 +7,9 @@ export async function loadReview(client) {
   return data;
 }
 
-export async function submitReview(client,record,score,notes) {
+export async function submitReview(client,record,priority,notes) {
   const {data,error}=await client.rpc('submit_review',{
-    p_record_id:record.id,p_modified:record.modified,p_score:score,p_notes:notes,
+    p_record_id:record.id,p_modified:record.modified,p_priority:priority,p_notes:notes,
   });
   if(error)throw error;
   return data;
@@ -28,8 +28,9 @@ export function mountReview(root,load,submit) {
       <div class="review-content"><div class="review-description-body" tabindex="0" role="region" aria-label="Finding description"><h2 id="review-description" tabindex="-1"></h2></div>
         <div class="review-source-meta"><div id="review-links" class="review-links"></div><span class="model-ranking">Model <strong id="review-model"></strong></span></div></div>
       <form id="review-form"><fieldset><legend>Your ranking</legend>
-        <label for="review-rating">Your score (0–100)</label>
-        <input id="review-rating" name="score" type="number" min="0" max="100" step="1" inputmode="numeric" required>
+        <div class="review-choices" role="group" aria-label="Your ranking"><button type="button" data-priority="high" aria-pressed="false">High</button>
+        <button type="button" data-priority="normal" aria-pressed="false">Normal</button>
+        <button type="button" data-priority="low" aria-pressed="false">Low</button></div>
         <label for="review-notes">Your notes</label>
         <textarea id="review-notes" name="notes" rows="2" placeholder="Explain your ranking and note any incorrect source URLs." required></textarea>
         <div class="review-submit" role="group" aria-label="Save review" tabindex="0" aria-describedby="review-save-hint"><button type="submit" disabled aria-describedby="review-save-hint">Save & next finding</button>
@@ -42,12 +43,12 @@ export function mountReview(root,load,submit) {
   const form=root.querySelector('#review-form'),fieldset=form.querySelector('fieldset');
   const status=root.querySelector('#review-status'),card=root.querySelector('#review-card');
   const retry=root.querySelector('#review-retry'),milestone=root.querySelector('.review-milestone');
-  const rating=form.querySelector('#review-rating'),notes=form.querySelector('#review-notes'),save=form.querySelector('[type="submit"]');
+  const choices=form.querySelectorAll('[data-priority]'),notes=form.querySelector('#review-notes'),save=form.querySelector('[type="submit"]');
   const links=root.querySelector('#review-links'),saveHelp=root.querySelector('.review-submit');
   let state,active=true,busy=false,sourceOpened=false;
 
   function updateSave() {
-    save.disabled=!state?.record||!sourceOpened||!notes.value.trim()||!rating.value||!rating.validity.valid;
+    save.disabled=!state?.record||!sourceOpened||!notes.value.trim()||!form.querySelector('[data-priority][aria-pressed="true"]');
     saveHelp.tabIndex=save.disabled?0:-1;
   }
 
@@ -60,6 +61,7 @@ export function mountReview(root,load,submit) {
     card.hidden=!state.record;
     root.querySelector('#review-empty').hidden=Boolean(state.record);
     form.reset();
+    for(const button of choices)button.setAttribute('aria-pressed','false');
     sourceOpened=false;notes.setCustomValidity('');updateSave();
     if(!state.record)return;
     root.querySelector('.review-description-body').scrollTop=0;
@@ -100,7 +102,10 @@ export function mountReview(root,load,submit) {
     } finally {if(active){busy=false;retry.disabled=false;fieldset.disabled=false;}}
   }
 
-  rating.addEventListener('input',updateSave);
+  for(const button of choices)button.addEventListener('click',()=>{
+    for(const other of choices)other.setAttribute('aria-pressed',String(other===button));
+    updateSave();
+  });
   notes.addEventListener('input',()=>{notes.setCustomValidity('');updateSave();});
   for(const type of ['click','auxclick'])links.addEventListener(type,event=>{
     if(event.type==='auxclick'&&event.button!==1)return;
@@ -112,13 +117,13 @@ export function mountReview(root,load,submit) {
     event.preventDefault();
     if(busy||!state?.record)return;
     updateSave();
-    const score=rating.valueAsNumber;
+    const priority=form.querySelector('[data-priority][aria-pressed="true"]')?.dataset.priority;
     notes.setCustomValidity(notes.value.trim()?'':'Explain why you chose this ranking.');
     if(save.disabled||!form.reportValidity())return;
     const previous=state.reviewed_count;
     busy=true;fieldset.disabled=true;retry.hidden=true;status.hidden=false;status.textContent='Saving your review…';
     try {
-      const next=await submit(state.record,score,notes.value);if(!active)return;
+      const next=await submit(state.record,priority,notes.value);if(!active)return;
       render(next);status.textContent='Review saved. Thank you!';celebrate(previous,next.reviewed_count);
       if(!milestone.open)(next.record?root.querySelector('#review-description'):root.querySelector('#review-empty')).focus();
     } catch(error) {
