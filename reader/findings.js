@@ -8,6 +8,7 @@ const fields=['description','type','score','organizations','date','starttime','t
 export function normalizeFinding(raw,url,invalidFields){
   const description=[...(text(raw?.description)??'')].slice(0,280).join('').trim();
   if(!description)return null;
+  const sourceName=text(raw.source_name);
   const date=value=>dateInterval({value,precision:{4:'year',7:'month',10:'day'}[value?.length]})?value:null;
   const starttime=/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(raw.starttime??'')?raw.starttime:null;
   let timezone=text(raw.timezone)||null;
@@ -16,7 +17,7 @@ export function normalizeFinding(raw,url,invalidFields){
     score:Number.isInteger(raw.score)&&raw.score>=0&&raw.score<=100?raw.score:null,
     organizations:[...new Map((Array.isArray(raw.organizations)?raw.organizations:[]).flatMap(o=>{
       const name=text(o);return name?[[name.toLowerCase(),name]]:[];
-    })).values()],date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[{url,role:'finding'},...(raw.supporting_urls??[]).filter(s=>sourceLink(s)&&sourceLink(s)!==sourceLink(url)).map(url=>({url,role:'supporting'}))],details:typeof raw.details==='string'?[...raw.details.toWellFormed().trim()].slice(0,4096).join('').trim()||null:null};
+    })).values()],date:date(raw.date),starttime,timezone,enddate:date(raw.enddate),endtime:raw.endtime,sources:[{url,role:'finding',...(sourceName?{name:sourceName}:{})},...(raw.supporting_urls??[]).filter(s=>sourceLink(s)&&sourceLink(s)!==sourceLink(url)).map(url=>({url,role:'supporting'}))],details:typeof raw.details==='string'?[...raw.details.toWellFormed().trim()].slice(0,4096).join('').trim()||null:null};
   const end=recordEnd(finding);finding.enddate=end?.value??null;finding.endtime=end?.time??null;
   if(invalidFields&&raw.details!=null&&finding.details===null)invalidFields.details=(invalidFields.details??0)+1;
   if(invalidFields)for(const key of ['date','starttime','timezone','enddate','endtime']){
@@ -42,7 +43,11 @@ export function mergeFinding(f,target){
   if(target?.enddate&&values.enddate!==target.enddate&&!f.endtime)values.endtime=null;
   const end=recordEnd(values);values.enddate=end?.value??null;values.endtime=end?.time??null;
   const sources=new Map((target?.sources??[]).map(s=>[sourceLink(s.url)??s.url,s]));
-  for(const s of f.sources){const key=sourceLink(s.url);if(key)sources.set(key,{url:key,role:s.role});}
+  for(const s of f.sources){
+    const key=sourceLink(s.url);if(!key)continue;
+    const name=s.name??sources.get(key)?.name;
+    sources.set(key,{url:key,role:s.role,...(name?{name}:{})});
+  }
   values.sources=[...sources.values()];
   if(target?.score!=null&&!fields.some(key=>!['score','sources'].includes(key)&&JSON.stringify(values[key])!==JSON.stringify(target[key])))values.score=target.score;
   return values;

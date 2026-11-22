@@ -16,8 +16,8 @@ export async function prepareMessages(db,{kind='unposted',ids=[],now=new Date()}
   if(!['findings','unposted'].includes(kind))throw new Error('Unknown notification kind');
   const records=await readRecords(db,{kind,ids});
   const payloads=records.map(r=>{
-    const url=(r.sources??[]).filter(s=>s.role==='finding').map(s=>sourceLink(s.url)).find(Boolean);
-    return {channel:r.score>=PUBLICATION_SCORE?CHANNEL:DM_CHANNEL,text:`${escape(r.description)}${url?' · <'+escape(url)+'|Read more>':''}`,parse:'none',unfurl_links:false,unfurl_media:false,
+    const source=(r.sources??[]).find(s=>s.role==='finding'&&sourceLink(s.url)),url=sourceLink(source?.url);
+    return {channel:r.score>=PUBLICATION_SCORE?CHANNEL:DM_CHANNEL,text:`${escape(r.description)}${url?' · <'+escape(url)+'|'+escape(source.name||'Read more')+'>':''}`,parse:'none',unfurl_links:false,unfurl_media:false,
       metadata:{event_type:'scout_finding',event_payload:{record_id:r.id}}};
   });
   return {records,payloads,prepared_at:now.toISOString()};

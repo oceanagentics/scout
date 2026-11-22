@@ -239,14 +239,27 @@ test('preview validation preserves microseconds and deadlines leave unattempted 
 test('bot delivery keeps saved format and metadata, routes dev DMs and validates actual destinations',async()=>{
  const db=await database();try{
   assert.equal((await sendMessages(db,await prepareMessages(db),()=>assert.fail('Empty notification'))).status,'no_change');
-  const ids=[];for(const score of [85,60,25,null])ids.push((await db.query("insert into scout.records(description,score,sources) values($1,$2,jsonb_build_array(jsonb_build_object('url','https://example.org/source','role','finding'))) returning id",[(score??'Unassessed')+' finding',score])).rows[0].id);
+  const ids=[];for(const score of [85,60,25,null])ids.push((await db.query("insert into scout.records(description,score,sources) values($1,$2,$3::jsonb) returning id",[(score??'Unassessed')+' finding',score,JSON.stringify([{url:'https://example.org/source',role:'finding',...(score>=60?{name:'Bloomberg'}:{})}])])).rows[0].id);
   const preview=await prepareMessages(db,{kind:'findings',ids}),sent=[];
   const post=botTransport('xoxb-test',async(url,options)=>{assert.equal(url,'https://slack.com/api/chat.postMessage');assert.equal(options.headers.Authorization,'Bearer xoxb-test');const payload=JSON.parse(options.body);sent.push(payload);return Response.json({ok:true,channel:payload.channel,ts:'1234567890.123456',message:{extra:'x'.repeat(5000)}});});
   assert.equal((await sendMessages(db,preview,post)).communicated,3);
-  assert.deepEqual(sent.map(p=>[p.text,p.channel]).sort(),[['25 finding · <https://example.org/source|Read more>',DM_CHANNEL],['60 finding · <https://example.org/source|Read more>',DM_CHANNEL],['85 finding · <https://example.org/source|Read more>',CHANNEL]]);
+  assert.deepEqual(sent.map(p=>[p.text,p.channel]).sort(),[['25 finding · <https://example.org/source|Read more>',DM_CHANNEL],['60 finding · <https://example.org/source|Bloomberg>',DM_CHANNEL],['85 finding · <https://example.org/source|Bloomberg>',CHANNEL]]);
   for(const payload of sent)assert.ok(ids.includes(payload.metadata.event_payload.record_id));
   const direct=await prepareMessages(db,{kind:'findings',ids:[ids[2]]});assert.equal((await sendMessages(db,direct,async()=>ack(CHANNEL))).status,'unknown');
   assert.equal((await db.query('select slack_channel_post from scout.records where id=$1',[ids[2]])).rows[0].slack_channel_post,null);
   assert.throws(()=>botTransport(undefined),{reason:'slack_configuration'});
+ }finally{await db.close();}
+});
+
+test('source labels stay paired with the first valid finding URL and escape Slack markup',async()=>{
+ const db=await database();try{
+  const sources=[{url:'https://example.org/support',role:'supporting',name:'Supporting publisher'},
+   {url:'javascript:alert(1)',role:'finding',name:'Invalid publisher'},
+   {url:'https://example.org/finding',role:'finding',name:'R&D <Ocean>|Group'},
+   {url:'https://example.org/other',role:'finding',name:'Other publisher'}];
+  const id=(await db.query("insert into scout.records(description,score,sources) values('Finding',85,$1::jsonb) returning id",[JSON.stringify(sources)])).rows[0].id;
+  assert.equal((await prepareMessages(db,{kind:'findings',ids:[id]})).payloads[0].text,'Finding · <https://example.org/finding|R&amp;D &lt;Ocean&gt;%7CGroup>');
+  await db.query('update scout.records set sources=$2::jsonb where id=$1',[id,JSON.stringify(sources.slice(0,2))]);
+  assert.equal((await prepareMessages(db,{kind:'findings',ids:[id]})).payloads[0].text,'Finding');
  }finally{await db.close();}
 });

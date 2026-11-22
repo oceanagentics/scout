@@ -44,6 +44,11 @@ Fields
 - score: Apply the shared ranking instructions.
 - organizations: Responsible organizations first, no duplicates or people;
   [] if unknown.
+- source_name: Brief, commonly used name of the organization publishing
+  the current source item, not the finding's subject or hosting platform.
+  Use "Bloomberg" for both "Bloomberg News" and "Bloomberg Blog"; omit
+  section names such as news, blog and press releases. For hosted pages
+  and social posts, name the publishing organization. Null if unknown.
 - date: Event's first day, original publication or official action date.
   Preserve precision: YYYY-MM-DD, YYYY-MM or YYYY.
 - starttime/endtime: Published start/finish associated with date/enddate, in HH:MM.
@@ -84,9 +89,10 @@ const finding={
   type:{type:['string','null'],enum:['event','announcement',null]},
   score:{type:['integer','null'],minimum:0,maximum:100},
   organizations:{type:'array',items:{type:'string'}},
+  source_name:{type:['string','null']},
   ...Object.fromEntries(['date','starttime','enddate','endtime','timezone'].map(k=>[k,{type:['string','null']}])),
   supporting_urls:{type:'array',items:{type:'string'}}
- },required:['description','details','type','score','organizations','date','starttime','enddate','endtime','timezone','supporting_urls'],additionalProperties:false
+ },required:['description','details','type','score','organizations','source_name','date','starttime','enddate','endtime','timezone','supporting_urls'],additionalProperties:false
 };
 export const RESPONSE_SCHEMA={type:'object',properties:{
  status:{type:'string',enum:['complete','unreadable']},decisions:{type:'array',items:{type:'object',properties:{

@@ -88,10 +88,10 @@ The investigation instructions provide OA's mission, research and original-date 
 | organizations | Organization name strings |
 | date, enddate | YYYY-MM-DD, YYYY-MM, YYYY, or null |
 | starttime, endtime, timezone | Published scalar strings or null |
-| sources | JSON array of objects with url and role: finding, supporting or unclassified |
+| sources | JSON array of objects with url, role (finding, supporting or unclassified), and optional brief publisher name |
 | modified | Creation and saved-change UTC timestamps |
 
-The one-time source conversion preserves every old URL as unclassified, along with IDs and timestamps; it does not fabricate a primary link. Merge sources by normalized URL, applying the incoming explicit role so a read supporting page can correct an earlier finding label. The current item URL always remains a finding source. Several publications can support one finding and an article can produce several findings. Slack Read more chooses the first evidenced finding URL; legacy records without one retain their description and omit Read more. The website labels source roles and exposes details; calendar descriptions retain all URLs.
+The one-time source conversion preserves every old URL as unclassified, along with IDs and timestamps; it does not fabricate a primary link. Merge sources by normalized URL, applying the incoming explicit role so a read supporting page can correct an earlier finding label. The current item URL always remains a finding source. Investigation supplies its publisher's brief organization name as source_name, saved as sources[].name; a later unnamed read preserves that name. Several publications can support one finding and an article can produce several findings. Slack chooses the first evidenced finding URL and labels it with its saved publisher name, such as Bloomberg. Existing unnamed sources retain Read more; legacy records without an evidenced finding URL retain their description and omit the link. The website labels source roles and exposes details; calendar descriptions retain all URLs.
 
 Treaty developments are announcements. The field-removal migration preserves their IDs, saved dates, sources and review feedback, and moves saved submission deadlines into searchable details within the details limit. Converted records retain prior modified timestamps and append one saved-change timestamp. A details overflow aborts the migration rather than losing a fact.
 

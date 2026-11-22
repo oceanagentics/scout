@@ -50,13 +50,15 @@ test('Page investigates the complete source, follows evidence links and skips un
   calls++;assert.ok(!schema.properties.items);assert.equal(item.url,feedURL);assert.match(JSON.stringify(input),/BBNJ implementation workshop/);
   assert.match(JSON.stringify(await readUrl(agenda)),/technical demonstration/);
   await functions[0].run({queries:['HSA'],urls:[]});
-  return answer([create({...finding,supporting_urls:[agenda]})]);
+  assert.ok(schema.properties.decisions.items.properties.fields.anyOf[0].required.includes('source_name'));
+  return answer([create({...finding,source_name:'  Bloomberg  ',supporting_urls:[agenda]})]);
  }});
  const first=await run();assert.equal(first.state,'saved');assert.equal(first.created,1);assert.equal(calls,1);
  const record=(await raw.query('select * from scout.records')).rows[0];
- assert.deepEqual(record.sources,[{url:feedURL,role:'finding'},{url:agenda,role:'supporting'}]);
+ assert.deepEqual(record.sources,[{url:feedURL,role:'finding',name:'Bloomberg'},{url:agenda,role:'supporting'}]);
  assert.deepEqual((await raw.query('select item_key,pending from scout.source_items')).rows,[{item_key:feedURL,pending:false}]);
- const preview=await prepareMessages(db,{kind:'findings',ids:[record.id]});assert.ok(preview.payloads[0].text.includes('<'+feedURL+'|Read more>'));
+ const preview=await prepareMessages(db,{kind:'findings',ids:[record.id]});assert.equal(preview.payloads[0].text,finding.description+' · <'+feedURL+'|Bloomberg>');
+ assert.deepEqual(mergeFinding(normalizeFinding({...finding,supporting_urls:[agenda]},feedURL),record).sources,record.sources);
  const cost={...db.metrics},repeat=await run();assert.equal(repeat.processed,0);assert.equal(calls,1);
  assert.deepEqual((await raw.query('select * from scout.records')).rows[0],record);
  t.diagnostic(JSON.stringify({mocked_model:true,page_sql_cost:cost,unchanged_sql_cost:Object.fromEntries(Object.keys(cost).map(k=>[k,db.metrics[k]-cost[k]]))}));
