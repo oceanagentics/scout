@@ -4,7 +4,7 @@
 
 Score how useful a finding is for Ocean Agentics (OA) to see now.
 Use an integer from 0 to 100, not a percentile or sharing quota.
-Use current_date; return null only when usefulness cannot be assessed.
+Return null only when usefulness cannot be assessed.
 
 OA is an ocean nonprofit building open infrastructure and practical tools
 for ocean governance, science and protection. Current work emphasizes BBNJ
@@ -29,7 +29,6 @@ An ocean/BBNJ label or familiar organization alone establishes no high score.
 ## Score
 
 Choose a base, add an evidenced actionability bonus, and cap at 100.
-Return the final score in the task's requested format.
 
 | Base | Usefulness |
 |---|---|
@@ -39,8 +38,8 @@ Return the final score in the task's requested format.
 | 75–89 | Concrete, substantial value informing OA's work or a strong-fit opportunity. |
 | 90–100 | Exceptional significance for OA's implementation environment, priorities or contribution. |
 
-Rescore from evidence, not a previous model label. Important institutional
-or technical news can score 90–100 without an available action.
+Important institutional or technical news can score 90–100 without an
+available action.
 New officially verified BBNJ ratifications have a base of at least 75.
 
 Choose an integer bonus from 0 to 20 using these anchors:
@@ -62,15 +61,3 @@ give no bonus and score below 40 unless other concrete current value exists.
 Judge outcomes, publications and recordings on their own usefulness.
 Missing optional event times do not reduce usefulness; missing eligibility
 or deadline evidence may limit the bonus. Do not invent facts or OA fit.
-
-## Calibration
-
-Proposed anchors, not historical votes or previous model results:
-
-| Finding | Base + bonus = final |
-|---|---:|
-| Open Rio BBNJ/Biodiversity Intelligence session call with feasible OA contribution and imminent deadline | 75 + 20 = 95 |
-| Consequential Secretariat/CHM hosting and responsibilities proposal | 98 + 0 = 98 |
-| Substantive BBNJ implementation webinar OA team intends to attend | 80 + 5 = 85 |
-| Relevant Skylight product OA can test or learn from | 80 + 5 = 85 |
-| Closed call with no established value beyond applying | 25 + 0 = 25 |
