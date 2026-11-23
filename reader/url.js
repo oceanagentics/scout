@@ -35,7 +35,7 @@ export function readable(html,url){
   const absolute=value=>{try{const u=new URL(value,base);return ['http:','https:'].includes(u.protocol)?u.href:null;}catch{return null;}};
   const render=node=>{
     if(node.nodeName==='#text')return node.value;
-    if(['script','style','nav','header','footer','noscript'].includes(node.tagName))return '';
+    if(['script','style','nav','footer','noscript'].includes(node.tagName)||node.tagName==='header'&&node.parentNode?.tagName!=='article')return '';
     const attrs=Object.fromEntries((node.attrs??[]).map(a=>[a.name,a.value]));
     if(attrs.hidden!==undefined||attrs['aria-hidden']==='true')return '';
     const children=(node.childNodes??[]).map(render).join('');

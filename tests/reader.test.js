@@ -58,14 +58,17 @@ test('HTTP freshness requires prior successful progress and positive unchanged e
   }
 });
 
-test('web reading preserves schedule rows, relative links, images and published structured data',async()=>{
+test('web reading preserves article headers and dates, schedule rows, links, images and structured data',async()=>{
   const page=await readUrl('https://example.org/events/list',{fetch:async()=>new Response(`
-    <nav>Unrelated navigation</nav><main><h1>Directory</h1><table><tr><td>Opening</td><td>09:30</td></tr>
-    <tr><td>Event B</td><td><a href="../agenda">Programme</a><img src="flyer.jpg" alt="Event flyer"></td></tr></table></main>
+    <header>Outer site banner</header><nav>Unrelated navigation</nav><main><header>Inner site banner</header>
+    <article><header><h1>Directory</h1><p>Published <time datetime="2026-11-16">16 November 2026</time></p></header>
+    <table><tr><td>Opening</td><td>09:30</td></tr>
+    <tr><td>Event B</td><td><a href="../agenda">Programme</a><img src="flyer.jpg" alt="Event flyer"></td></tr></table></article></main>
     <script type="application/ld+json">{"startDate":"2026-10-24T09:30:00+04:00"}</script><script>privateCode()</script>`,{headers:{'content-type':'text/html'}})});
+  assert.match(page.content,/Directory/);assert.match(page.content,/Published 16 November 2026/);
   assert.match(page.content,/Opening \| 09:30 \|/);assert.match(page.content,/\[Programme\]\(https:\/\/example.org\/agenda\)/);
   assert.match(page.content,/!\[Event flyer\]\(https:\/\/example.org\/events\/flyer.jpg\)/);
-  assert.match(page.content,/2026-10-24T09:30:00\+04:00/);assert.doesNotMatch(page.content,/Unrelated navigation|privateCode/);
+  assert.match(page.content,/2026-10-24T09:30:00\+04:00/);assert.doesNotMatch(page.content,/site banner|Unrelated navigation|privateCode/);
 });
 
 test('failed HTTP reads retain the redirected URL and status without reading the rejected body',async()=>{
