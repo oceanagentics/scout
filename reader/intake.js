@@ -24,7 +24,8 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,servi
   const {scrape}=createWebServices({keys:serviceKeys,fetch:sourceFetch,metrics});
   const read=(url,options={})=>{
    const remaining=deadline-Date.now();if(remaining<=0)throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});
-   return readUrl(url,{fetch:sourceFetch,signal:AbortSignal.timeout(remaining),cache,metrics,scrape,...options});
+   return readUrl(url,{fetch:sourceFetch,cache,metrics,scrape,...options,
+    signal:AbortSignal.any([AbortSignal.timeout(remaining),...(options.signal?[options.signal]:[])])});
   };
   const result=await ingestSource(db,tracker,{modelFor,readUrl:read,sourceFetch,through,deadline});
   if(result.state==='deferred'){

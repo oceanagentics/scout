@@ -48,6 +48,27 @@ test('a page failure does not disable that provider for another page',async()=>{
  assert.equal(calls.length,3);
 });
 
+test('each provider has a fresh deadline and a provider timeout permits failover',async t=>{
+ const timers=[],signals=[];
+ t.mock.method(AbortSignal,'timeout',ms=>{
+  assert.equal(ms,20000);const controller=new AbortController();timers.push(controller);return controller.signal;
+ });
+ const collection=new AbortController();
+ const services=createWebServices({keys:{tavily:'key',firecrawl:'key'},fetch:async(target,options)=>{
+  const index=signals.length;signals.push(options.signal);assert.equal(options.signal.aborted,false);
+  if(target.startsWith('https://r.jina.ai/'))assert.equal(options.headers['X-Timeout'],'15');
+  else assert.equal(JSON.parse(options.body).timeout,target==='https://api.tavily.com/extract'?15:15000);
+  if(index<2){timers[index].abort(new DOMException('Provider deadline','TimeoutError'));options.signal.throwIfAborted();}
+  return target.startsWith('https://r.jina.ai/')?jina('Recovered page'):firecrawl('Article after two provider timeouts');
+ }});
+ assert.equal((await services.scrape(url,{signal:collection.signal})).content,'Article after two provider timeouts');
+ assert.equal(signals.length,3);assert.equal(new Set(signals).size,3);
+ assert.equal(signals[0].aborted,true);assert.equal(signals[1].aborted,true);assert.equal(signals[2].aborted,false);
+ assert.equal(collection.signal.aborted,false);
+ assert.equal((await services.scrape(url+'-two',{signal:collection.signal})).content,'Recovered page');
+ assert.equal(signals.length,4);
+});
+
 test('HTTP 200 challenges, mismatched results and upstream error pages cannot become article content',async()=>{
  const services=createWebServices({keys:{tavily:'secret-tavily',firecrawl:'secret-firecrawl'},fetch:async target=>{
   if(target.startsWith('https://r.jina.ai/'))return Response.json({code:200,data:{httpStatus:200,title:'Just a moment...',content:'Checking your browser'}});

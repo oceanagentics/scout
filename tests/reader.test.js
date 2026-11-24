@@ -100,6 +100,23 @@ test('blocked pages use extraction after redirect validation and never inherit H
  assert.equal(extractions,2);
 });
 
+test('the direct HTTP deadline does not cancel an extraction attempt',async t=>{
+ const timers=[];
+ t.mock.method(AbortSignal,'timeout',ms=>{const controller=new AbortController();timers.push({ms,controller});return controller.signal;});
+ const collection=new AbortController(),url='https://example.org/blocked';
+ const fetch=async(target,options)=>{
+  if(target===url)return new Response(null,{status:403,headers:{'cf-mitigated':'challenge'}});
+  assert.equal(target,'https://r.jina.ai/'+url);
+  assert.deepEqual(timers.map(timer=>timer.ms),[15000,20000]);
+  timers[0].controller.abort(new DOMException('HTTP deadline','TimeoutError'));
+  assert.equal(options.signal.aborted,false);
+  return Response.json({code:200,data:{httpStatus:200,content:'Article retrieved after the HTTP deadline'}});
+ };
+ const {scrape}=createWebServices({fetch});
+ const page=await readUrl(url,{fetch,scrape,signal:collection.signal});
+ assert.equal(page.content,'Article retrieved after the HTTP deadline');assert.equal(collection.signal.aborted,false);
+});
+
 test('HTML challenges and empty application shells use fallback; working, missing and private resources do not',async()=>{
  let extractions=0;
  const scrape=async()=>{extractions++;return {media_type:'text/markdown',content:'Rendered article'};};
@@ -205,6 +222,23 @@ const due=raw=>raw.exec("update scout.trackers set last_checked_at=clock_timesta
 const event={description:'BBNJ implementation workshop',type:'event',score:85,organizations:['Ocean Institute'],date:'2026-10',starttime:null,timezone:null};
 const answer=(records=[event])=>({status:'complete',decisions:records.map(fields=>({action:'create',id:null,fields:{...fields,organizations:fields.organizations??[],supporting_urls:[]},reason:null}))});
 const secret='sb_secret_reader_test';
+
+test('caller cancellation cannot replace the collection deadline on source reads',async t=>{
+ const raw=await setup(t),tr=await tracker(raw),timers=[];let checked=false;
+ t.mock.method(AbortSignal,'timeout',ms=>{const controller=new AbortController();timers.push({ms,controller});return controller.signal;});
+ const caller=new AbortController(),detail='https://example.org/detail';
+ const result=await intake(database(driver(raw)),{trackerId:tr.id,sourceFetch:async(url,options)=>{
+  if(url===tr.url)return new Response('<main>Source article</main>',{headers:{'content-type':'text/html'}});
+  assert.equal(url,detail);
+  const collection=timers.filter(timer=>timer.ms>20000).at(-1);assert.ok(collection);
+  collection.controller.abort(new DOMException('Collection deadline','TimeoutError'));
+  assert.equal(options.signal.aborted,true);throw options.signal.reason;
+ },modelFor:(_source,{readUrl})=>async()=>{
+  await assert.rejects(readUrl(detail,{signal:caller.signal}),{reason:'runtime_bound'});checked=true;
+  return answer([]);
+ }});
+ assert.equal(checked,true);assert.equal(caller.signal.aborted,false);assert.equal(result.state,'no_findings');
+});
 
 const feedURL='https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=example.test&limit=20';
 const post=(key,at)=>({post:{uri:'at://did:plc:example/app.bsky.feed.post/'+key,indexedAt:at,

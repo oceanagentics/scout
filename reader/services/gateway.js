@@ -14,7 +14,8 @@ export function createWebServices({keys={},fetch:send=fetch,metrics}={}){
    if(unavailable.has(name)||name!=='jina'&&!apiKey)continue;
    if(metrics){metrics.scraping??={};metrics.scraping[name]=(metrics.scraping[name]??0)+1;}
    try{
-    const page=await read(url,{apiKey,fetch:send,signal,metrics});
+    const bounded=AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(20000)]);
+    const page=await read(url,{apiKey,fetch:send,signal:bounded,metrics});
     if(typeof page.content!=='string'||!page.content.trim()||isBlockedPage(page.title??'')||isBlockedPage(page.content))
      throw new Error('source_unavailable');
     return {media_type:'text/markdown',content:page.content};

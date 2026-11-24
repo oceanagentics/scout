@@ -115,7 +115,7 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
     if(result.blocked||html&&isBlockedPage(body)){
       if(!scrape)throw fail('source_unavailable');
       diagnostics.stage='scrape';
-      const page=await scrape(result.url.href,{signal:bounded});
+      const page=await scrape(result.url.href,{signal});
       return {url:result.url.href,request_url:null,checked_at:null,...page};
     }
     if(type==='application/json'||type.endsWith('+json')){try{content=JSON.parse(body);}catch{throw fail('source_invalid');}}
