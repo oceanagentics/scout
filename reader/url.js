@@ -84,11 +84,22 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
         if(!addresses.length||addresses.some(a=>!publicAddress(a.address)))throw fail('source_invalid');
         if(metrics)metrics.requests++;
         diagnostics.stage='fetch';
-        const {response,unchanged}=await checkFreshness(target.href,{lastSuccessfulCheck:target.href===previousRequestURL?lastSuccessfulCheck:null,signal:bounded,
-          fetch:(url,options)=>send(url,{...options,headers:{...options.headers,'User-Agent':'Scout/0.1'},redirect:'manual'})});
+        let checked,received=false;
+        try{
+          checked=await checkFreshness(target.href,{lastSuccessfulCheck:target.href===previousRequestURL?lastSuccessfulCheck:null,signal:bounded,
+            fetch:async(url,options)=>{
+              const response=await send(url,{...options,headers:{...options.headers,'User-Agent':'Scout/0.1'},redirect:'manual'});
+              received=true;return response;
+            }});
+        }catch(error){
+          const reset=error.code==='ECONNRESET'||error.cause?.code==='ECONNRESET'||/\bconnection reset\b/i.test([error.message,error.cause?.message].join(' '));
+          if(received||!scrape||bounded.aborted||!reset||/\.(?:pdf|png|jpe?g|webp|gif)$/i.test(target.pathname))throw error;
+          return {url:target,fallback:true};
+        }
+        const {response,unchanged}=checked;
         diagnostics.stage='response';diagnostics.http_status=response.status;
         if(scrape&&response.headers.get('cf-mitigated')==='challenge'&&!/\.(?:pdf|png|jpe?g|webp|gif)$/i.test(target.pathname)){
-          await response.body?.cancel();return {url:target,blocked:true};
+          await response.body?.cancel();return {url:target,fallback:true};
         }
         if([301,302,303,307,308].includes(response.status)){
           await response.body?.cancel();
@@ -110,9 +121,9 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
       await result.response.body?.cancel();
       return {url:result.url.href,request_url:result.url.href,checked_at,media_type:nativeType};
     }
-    const body=result.blocked?'':await readText(result.response);diagnostics.stage='prepare';let content;
+    const body=result.fallback?'':await readText(result.response);diagnostics.stage='prepare';let content;
     const html=type.includes('html')||/^\s*(?:<!doctype html|<html)/i.test(body);
-    if(result.blocked||html&&isBlockedPage(body)){
+    if(result.fallback||html&&isBlockedPage(body)){
       if(!scrape)throw fail('source_unavailable');
       diagnostics.stage='scrape';
       const page=await scrape(result.url.href,{signal});

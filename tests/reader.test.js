@@ -100,6 +100,51 @@ test('blocked pages use extraction after redirect validation and never inherit H
  assert.equal(extractions,2);
 });
 
+test('validated connection resets use extraction at the redirected URL and cache the recovered page',async()=>{
+ const errors=[Object.assign(new Error('Socket closed'),{code:'ECONNRESET'}),
+  new TypeError('fetch failed',{cause:Object.assign(new Error('Socket closed'),{code:'ECONNRESET'})}),
+  new TypeError('client error (SendRequest): connection error: connection reset: connection reset')];
+ for(const error of errors){
+  const url='https://example.org/list',target='https://example.org/article',cache=new Map();let requests=0,extractions=0;
+  const options={cache,fetch:async requested=>{requests++;if(requested===url)return new Response(null,{status:302,headers:{location:target}});throw error;},
+   scrape:async requested=>{extractions++;assert.equal(requested,target);return {media_type:'text/markdown',content:'Recovered article'};}};
+  const page=await readUrl(url,options);
+  assert.equal(page.url,target);assert.equal(page.content,'Recovered article');assert.equal(page.unchanged,false);
+  assert.equal(page.request_url,null);assert.equal(page.checked_at,null);assert.equal(page.fingerprint,null);
+  assert.equal((await readUrl(url,options)).content,'Recovered article');assert.equal(requests,2);assert.equal(extractions,1);
+ }
+});
+
+test('reset fallback excludes other failures, native files, private targets and expired deadlines',async t=>{
+ const timers=[];let extractions=0;
+ t.mock.method(AbortSignal,'timeout',()=>{const controller=new AbortController();timers.push(controller);return controller.signal;});
+ const scrape=async()=>{extractions++;return {content:'Unexpected extraction'};};
+ for(const error of [new TypeError('fetch failed'),Object.assign(new Error('Connection refused'),{code:'ECONNREFUSED'}),
+  new TypeError('fetch failed',{cause:Object.assign(new Error('Certificate expired'),{code:'CERT_HAS_EXPIRED'})})]){
+  await assert.rejects(readUrl('https://example.org/article',{scrape,fetch:async()=>{throw error;}}),{reason:'source_unavailable'});
+ }
+ for(const status of [403,404,503])await assert.rejects(readUrl('https://example.org/article',{scrape,fetch:async()=>new Response(null,{status})}),{reason:'source_unavailable'});
+ const reset=Object.assign(new Error('Socket closed'),{code:'ECONNRESET'});
+ await assert.rejects(readUrl('https://example.org/unchanged',{scrape,lastSuccessfulCheck:'2026-11-16T00:00:00Z',
+  fetch:async()=>new Response(new ReadableStream({cancel(){throw reset;}}),{headers:{'last-modified':'Sun, 15 Nov 2026 00:00:00 GMT'}})}),{reason:'source_unavailable'});
+ await assert.rejects(readUrl('https://example.org/programme.pdf',{scrape,fetch:async()=>{throw reset;}}),{reason:'source_unavailable'});
+ let requests=0;
+ await assert.rejects(readUrl('https://example.org/redirect',{scrape,fetch:async()=>{requests++;return new Response(null,{status:302,headers:{location:'http://127.0.0.1/private'}});}}),{reason:'source_invalid'});
+ assert.equal(requests,1);
+ await assert.rejects(readUrl('https://example.org/slow',{scrape,fetch:async()=>{timers.at(-1).abort(new DOMException('HTTP deadline','TimeoutError'));throw reset;}}),{reason:'source_unavailable'});
+ const collection=new AbortController();
+ await assert.rejects(readUrl('https://example.org/expired',{scrape,signal:collection.signal,fetch:async()=>{collection.abort();throw reset;}}),{reason:'runtime_bound'});
+ assert.equal(extractions,0);
+});
+
+test('DNS failures cannot start extraction before public-address validation',async t=>{
+ t.mock.method(dns,'lookup',async()=>{throw Object.assign(new Error('Connection reset during lookup'),{code:'ECONNRESET'});});
+ await assert.rejects(readUrl('https://example.org/article',{fetch:()=>assert.fail('Unvalidated URL must not be fetched'),
+  scrape:()=>assert.fail('Unvalidated URL must not be extracted')}),error=>{
+  assert.equal(error.reason,'source_unavailable');assert.equal(error.diagnostics.stage,'dns');return true;
+ });
+});
+
 test('the direct HTTP deadline does not cancel an extraction attempt',async t=>{
  const timers=[];
  t.mock.method(AbortSignal,'timeout',ms=>{const controller=new AbortController();timers.push({ms,controller});return controller.signal;});
@@ -375,12 +420,12 @@ const env={url:'https://example.supabase.co',secretKeys:{default:secret},publish
 const request=query=>new Request('https://example.test/reader'+(query?'?'+query:''),{method:'POST',headers:{apikey:secret}});
 const options=raw=>({env,databaseURL:'unused',apiKey:'test',connect:()=>({reserve:async()=>driver(raw),end:async()=>{}})});
 
-test('hosted collection carries credentials through quota failover and saves the public finding URL',async t=>{
+test('hosted collection recovers a connection reset through quota failover and saves the public finding URL',async t=>{
  const raw=await setup(t),tr=await tracker(raw);let generations=0;
  const response=await hostedReader(request('tracker_id='+tr.id),{...options(raw),openaiApiKey:'model-key',
   serviceKeys:{tavily:'tavily-key',firecrawl:'firecrawl-key'},post:()=>assert.fail('Unassessed finding must not send Slack'),
   sourceFetch:async(url,request)=>{
-   if(url===tr.url)return new Response(null,{status:403,headers:{'cf-mitigated':'challenge'}});
+   if(url===tr.url)throw new TypeError('client error (SendRequest): connection error: connection reset');
    if(url.startsWith('https://r.jina.ai/'))return Response.json({error:'rate limit'},{status:429});
    if(url==='https://api.tavily.com/extract'){
     assert.equal(request.headers.Authorization,'Bearer tavily-key');return Response.json({error:'quota exhausted'},{status:432});

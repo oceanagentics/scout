@@ -67,7 +67,7 @@ Omit `--tracker` to check the next due enabled tracker. An explicit tracker ID a
 
 ### Scraping fallback
 
-Scout reads source URLs directly first. A Cloudflare challenge or a recognized HTML challenge/empty Angular shell uses Jina, then Tavily Advanced Extract, then Firecrawl. Successful direct reads, unchanged responses, native PDF/images, ordinary HTTP errors and rejected private URLs do not call extractors. Direct HTTP retains its 15-second deadline. Each extractor receives a fresh 20-second client deadline and requests a 15-second server timeout; a timed-out extractor can fall through to the next service. Every read also respects the remaining 100-second collection deadline, which can cut any attempt short and stops further failover. Search is not connected to these services.
+Scout reads source URLs directly first. A Cloudflare challenge, recognized HTML challenge/empty Angular shell, or connection reset after public-address validation uses Jina, then Tavily Advanced Extract, then Firecrawl. Successful direct reads, unchanged responses, native PDF/images, ordinary HTTP errors, other transport failures and rejected private URLs do not call extractors. Direct HTTP retains its 15-second deadline; a reset after that deadline cannot start extraction. Each extractor receives a fresh 20-second client deadline and requests a 15-second server timeout; a timed-out extractor can fall through to the next service. Every read also respects the remaining 100-second collection deadline, which can cut any attempt short and stops further failover. Search is not connected to these services.
 
 | Service | Account and credential | Role |
 | --- | --- | --- |
