@@ -103,7 +103,7 @@ test('browser review calls preserve the exact finding revision and propagate sav
   assert.deepEqual(calls,[{name:'review_queue',params:undefined},{name:'submit_review',params:{p_record_id:record.id,p_modified:record.modified,p_priority:'low',p_notes:'My notes'}}]);
 });
 
-test('Slack postings preserve existing reviews, accept missed findings and remain distinct from volunteer feedback',async()=>{
+test('Slack references and feedback preserve reviews, remain private and do not count as volunteer feedback',async()=>{
   const db=new PGlite(),reviewer='00000000-0000-0000-0000-000000000001',other='00000000-0000-0000-0000-000000000002';
   const migration='20261120000000_scout_slack_reviews.sql';
   try {
@@ -131,8 +131,28 @@ test('Slack postings preserve existing reviews, accept missed findings and remai
     assert.equal((await db.query(insert)).rows.length,1);
     assert.equal((await db.query(insert)).rows.length,0);
     await assert.rejects(db.query("insert into scout.finding_reviews(origin,priority,notes) values('slack','high','Missing source and author')"),{code:'23514'});
+    const feedback=`insert into scout.finding_reviews(origin,record_id,description,slack_url,slack_author_id,slack_author_name,slack_posted_at,model_score,notes)
+      values('slack_feedback',$1,'Ocean governance webinar',$2,$3,$3,'2026-11-24T12:00:00Z',60,$4)
+      on conflict(slack_url,slack_author_id) where origin='slack_feedback' do update
+      set notes=excluded.notes,priority=excluded.priority,reviewed_at=now()
+      where scout.finding_reviews.notes is distinct from excluded.notes
+        or scout.finding_reviews.priority is distinct from excluded.priority
+      returning id,priority,model_score`;
+    const message='https://oceanagentics.slack.com/archives/SCOUT/p1795521600000000';
+    const reaction=[record.id,message,'DANNY','Reaction on Scout post: -1::skin-tone-2. No categorical rating inferred.'];
+    const captured=(await db.query(feedback,reaction)).rows[0];
+    assert.equal(captured.priority,null);assert.equal(captured.model_score,60);
+    assert.equal((await db.query(feedback,reaction)).rows.length,0);
+    const changed=(await db.query(feedback,[...reaction.slice(0,3),'No reactions currently present. Earlier feedback was withdrawn.'])).rows[0];
+    assert.equal(changed.id,captured.id);
+    assert.equal(changed.model_score,captured.model_score);
+    assert.equal((await db.query(feedback,[record.id,message,'AARON','Reaction on Scout post: +1. No categorical rating inferred.'])).rows.length,1);
+    assert.equal((await db.query(feedback,[record.id,'https://oceanagentics.slack.com/archives/SCOUT/p1795521600000001','AARON','Comment: The COP1 observer registration deadline is December 18.'])).rows.length,1);
+    await assert.rejects(db.query("update scout.finding_reviews set priority=null where origin='reviewer'"),{code:'23514'});
+    await assert.rejects(db.query("update scout.finding_reviews set priority=null where origin='slack'"),{code:'23514'});
+    await assert.rejects(db.query("update scout.finding_reviews set reviewer_id=$1 where origin='slack_feedback'",[reviewer]),{code:'23514'});
     await db.exec('set role anon');
-    await assert.rejects(db.query("select * from scout.finding_reviews where origin='slack'"),{code:'42501'});
+    await assert.rejects(db.query("select * from scout.finding_reviews where origin in ('slack','slack_feedback')"),{code:'42501'});
     await db.exec('reset role;set role authenticated');
     await db.query("select set_config('request.jwt.claim.sub',$1,false)",[reviewer]);
     assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.reviewed_count,1);
@@ -140,6 +160,7 @@ test('Slack postings preserve existing reviews, accept missed findings and remai
     assert.deepEqual((await db.query('select * from scout.finding_reviews')).rows,[]);
     assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.reviewed_count,0);
     await assert.rejects(db.query(insert),{code:'42501'});
+    await assert.rejects(db.query(feedback,reaction),{code:'42501'});
     await db.exec('reset role');
     await db.query('update auth.users set raw_app_meta_data=$1 where id=$2',[{scout:{admin:true}},other]);
     await db.exec('set role authenticated');
@@ -147,7 +168,11 @@ test('Slack postings preserve existing reviews, accept missed findings and remai
     assert.equal(rows.length,1);assert.equal(rows[0].origin,'slack');
     assert.equal(rows[0].reviewer_id,null);assert.equal(rows[0].record_id,null);
     assert.equal(rows[0].model_priority,'normal');assert.equal(rows[0].priority,'high');
+    const feedbackRows=(await db.query("select * from scout.finding_reviews where origin='slack_feedback'")).rows;
+    assert.equal(feedbackRows.length,3);
+    assert.ok(feedbackRows.every(row=>row.reviewer_id===null&&row.record_id===record.id&&row.source_url===null&&row.priority===null));
     assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.reviewed_count,0);
+    assert.equal((await db.query('select scout.review_queue() state')).rows[0].state.record.id,record.id);
     await db.query("select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000003',false)");
     assert.deepEqual((await db.query('select * from scout.finding_reviews')).rows,[]);
     await db.exec('reset role');
