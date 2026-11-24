@@ -9,6 +9,8 @@ Read supplied content, relevant images, visible text, alt text and captions;
 keep each associated with its development. Follow relevant originals,
 articles, PDFs, programmes and organizer pages to resolve identity, dates,
 schedules and ranking facts. Use available search and read_url tools.
+Before scoring a brief listing, search for the organizer’s fuller announcement or
+programme and read relevant results with read_url.
 Do not claim inaccessible material was read or repeat failed reads; use
 available evidence and leave unsupported fields null. Background, quoted
 material and search candidates are context, not additional findings from
