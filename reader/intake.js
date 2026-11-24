@@ -1,8 +1,9 @@
 import {randomUUID} from 'node:crypto';
 import {readUrl} from './url.js';
+import {createWebServices} from './services/gateway.js';
 import {ingestSource} from './ingestion.js';
 // Claim one tracker; commit each source-date group before moving to newer posts.
-export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,notify,publishCalendar}){
+export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,serviceKeys,notify,publishCalendar}){
   const tracker=(await db.query(`update scout.trackers set lease_id=$2,lease_until=clock_timestamp()+interval '120 seconds',
     last_checked_at=date_trunc('milliseconds',clock_timestamp()),
     failure_count=case when $1::uuid is not null and failure_count>=3 then 1 else failure_count+1 end
@@ -20,9 +21,10 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,notif
   if(!tracker)return {state:'idle',created:0,changed:0};
   const through=new Date(tracker.last_checked_at).toISOString(),deadline=Date.parse(through)+100000;
   const cache=new Map(),metrics={requests:0,bytes:0};
+  const {scrape}=createWebServices({keys:serviceKeys,fetch:sourceFetch,metrics});
   const read=(url,options={})=>{
    const remaining=deadline-Date.now();if(remaining<=0)throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});
-   return readUrl(url,{fetch:sourceFetch,signal:AbortSignal.timeout(remaining),cache,metrics,...options});
+   return readUrl(url,{fetch:sourceFetch,signal:AbortSignal.timeout(remaining),cache,metrics,scrape,...options});
   };
   const result=await ingestSource(db,tracker,{modelFor,readUrl:read,sourceFetch,through,deadline});
   if(result.state==='deferred'){

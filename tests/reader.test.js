@@ -6,6 +6,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {database} from '../reader/database.js';
 import {intake} from '../reader/intake.js';
 import {readUrl} from '../reader/url.js';
+import {createWebServices} from '../reader/services/gateway.js';
 import {discoverBluesky as readSource} from '../reader/sources/bluesky.js';
 import {discoverSource} from '../reader/sources/index.js';
 import {cbdRequest,prepareCBD} from '../reader/sources/cbd.js';
@@ -79,6 +80,43 @@ test('failed HTTP reads retain the redirected URL and status without reading the
   assert.deepEqual(error.diagnostics,{url:'https://example.org/blocked',stage:'response',http_status:403,error_name:'Error',error_code:null,error_message:'source_unavailable'});return true;
  });
  assert.equal(cancelled,true);
+});
+
+test('blocked pages use extraction after redirect validation and never inherit HTTP freshness',async()=>{
+ const cache=new Map(),metrics={requests:0,bytes:0};let cancelled=false,extractions=0;
+ const {scrape}=createWebServices({keys:{tavily:'key'},metrics,fetch:async(target,options)=>{
+  extractions++;
+  if(target.startsWith('https://r.jina.ai/'))return Response.json({error:'quota'},{status:429});
+  const url=JSON.parse(options.body).urls[0];assert.equal(url,'https://example.org/blocked');
+  return Response.json({results:[{url,raw_content:'# Actual article\n[Programme](https://example.org/agenda)'}]});
+ }});
+ const fetch=async url=>url.endsWith('/list')?new Response(null,{status:302,headers:{location:'/blocked'}}):
+  new Response(new ReadableStream({cancel(){cancelled=true;}}),{status:403,headers:{'cf-mitigated':'challenge'}});
+ const page=await readUrl('https://example.org/list',{fetch,scrape,cache,metrics,lastSuccessfulCheck:'2026-11-16T00:00:00Z',previousFingerprint:'old'});
+ assert.equal(page.url,'https://example.org/blocked');assert.match(page.content,/Actual article/);assert.match(page.content,/Programme/);
+ assert.equal(page.media_type,'text/markdown');assert.equal(cancelled,true);assert.equal(extractions,2);
+ assert.equal(page.request_url,null);assert.equal(page.checked_at,null);assert.equal(page.fingerprint,null);assert.equal(page.unchanged,false);
+ assert.equal((await readUrl('https://example.org/list',{fetch,scrape,cache,previousFingerprint:'old'})).unchanged,false);
+ assert.equal(extractions,2);
+});
+
+test('HTML challenges and empty application shells use fallback; working, missing and private resources do not',async()=>{
+ let extractions=0;
+ const scrape=async()=>{extractions++;return {media_type:'text/markdown',content:'Rendered article'};};
+ for(const body of ['<html><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/test"></script></html>','<html><body><ng-view></ng-view></body></html>']){
+  assert.equal((await readUrl('https://example.org/article',{scrape,fetch:async()=>new Response(body,{headers:{'content-type':'text/html'}})})).content,'Rendered article');
+ }
+ assert.equal(extractions,2);
+ const working=await readUrl('https://example.org/article',{scrape,fetch:async()=>new Response('<main>Real article</main>',{headers:{'content-type':'text/html'}})});
+ assert.equal(working.content,'Real article');
+ await readUrl('https://example.org/article',{scrape,lastSuccessfulCheck:'2026-11-16T00:00:00Z',fetch:async()=>new Response(null,{status:304})});
+ await readUrl('https://example.org/programme.pdf',{scrape,fetch:async()=>new Response(null,{headers:{'content-type':'application/pdf'}})});
+ await assert.rejects(readUrl('https://example.org/missing',{scrape,fetch:async()=>new Response(null,{status:404})}),{reason:'source_unavailable'});
+ await assert.rejects(readUrl('https://example.org/redirect',{scrape,fetch:async()=>new Response(null,{status:302,headers:{location:'http://127.0.0.1/private'}})}),{reason:'source_invalid'});
+ assert.equal(extractions,2);
+ const controller=new AbortController();
+ await assert.rejects(readUrl('https://example.org/blocked',{signal:controller.signal,scrape:async(_url,{signal})=>{controller.abort();signal.throwIfAborted();},
+  fetch:async()=>new Response(null,{status:403,headers:{'cf-mitigated':'challenge'}})}),{reason:'runtime_bound'});
 });
 
 test('transport and body-read failures retain distinct bounded diagnostics and existing timeout reasons',async()=>{
@@ -302,6 +340,34 @@ test('feed checkpoint is backend-owned, starts empty, preserves committed progre
 const env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{default:'sb_publishable_test'},jwks:null};
 const request=query=>new Request('https://example.test/reader'+(query?'?'+query:''),{method:'POST',headers:{apikey:secret}});
 const options=raw=>({env,databaseURL:'unused',apiKey:'test',connect:()=>({reserve:async()=>driver(raw),end:async()=>{}})});
+
+test('hosted collection carries credentials through quota failover and saves the public finding URL',async t=>{
+ const raw=await setup(t),tr=await tracker(raw);let generations=0;
+ const response=await hostedReader(request('tracker_id='+tr.id),{...options(raw),openaiApiKey:'model-key',
+  serviceKeys:{tavily:'tavily-key',firecrawl:'firecrawl-key'},post:()=>assert.fail('Unassessed finding must not send Slack'),
+  sourceFetch:async(url,request)=>{
+   if(url===tr.url)return new Response(null,{status:403,headers:{'cf-mitigated':'challenge'}});
+   if(url.startsWith('https://r.jina.ai/'))return Response.json({error:'rate limit'},{status:429});
+   if(url==='https://api.tavily.com/extract'){
+    assert.equal(request.headers.Authorization,'Bearer tavily-key');return Response.json({error:'quota exhausted'},{status:432});
+   }
+   assert.equal(url,'https://api.firecrawl.dev/v2/scrape');assert.equal(request.headers.Authorization,'Bearer firecrawl-key');
+   return Response.json({success:true,data:{metadata:{statusCode:200},markdown:'Ocean Institute: technical BBNJ workshop on 10 December 2099.'}});
+  },modelFetch:async(_url,request)=>{
+   generations++;const body=JSON.parse(request.body);assert.match(JSON.stringify(body.input),/technical BBNJ workshop/);
+   assert.doesNotMatch(JSON.stringify(body.input),/tavily-key|firecrawl-key/);
+   if(!body.input.some(i=>i.type==='function_call_output'))return Response.json({status:'completed',output:[{type:'function_call',name:'search_findings',call_id:'search',arguments:JSON.stringify({queries:['Ocean Institute'],urls:[]})}]});
+   return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(answer([{...event,source_name:'Ocean Institute',score:null,date:'2099-12-10'}]))}]}]});
+  }});
+ assert.equal(response.status,200);const result=await response.json();assert.equal(result.state,'saved');assert.equal(result.created,1);assert.equal(generations,2);
+ assert.deepEqual(result.source.scraping,{jina:1,tavily:1,firecrawl:1});assert.equal(result.source.requests,4);
+ assert.doesNotMatch(JSON.stringify(result),/tavily-key|firecrawl-key|model-key/);
+ const record=(await raw.query('select * from scout.records')).rows[0];
+ assert.deepEqual(record.sources,[{url:tr.url,role:'finding',name:'Ocean Institute'}]);
+ const state=(await raw.query('select * from scout.trackers where id=$1',[tr.id])).rows[0];
+ assert.equal(state.discovery_checked_at,null);assert.equal(state.discovery_fingerprint,null);
+ t.diagnostic(JSON.stringify({mocked_services_and_model:true,real_local_sql:true,cost:result.cost,source:result.source}));
+});
 
 test('reader migration removes source state and correction metadata, preserves findings/accounting, and restricts state writes',async t=>{
   const raw=await setup(t,{before:true}),tr=await tracker(raw);

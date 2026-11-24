@@ -63,6 +63,22 @@ npm run notify -- --send --kind=unposted
 
 Omit `--tracker` to check the next due enabled tracker. An explicit tracker ID also retries a tracker that stopped after three unsuccessful attempts. URLs come from the tracker row. Both commands require `SCOUT_BACKEND_KEY`. Local model diagnostics also make real model calls; use [diagnostics/README.md](diagnostics/README.md) for their separate behavior and capture exception.
 
+### Scraping fallback
+
+Scout reads source URLs directly first. A Cloudflare challenge or a recognized HTML challenge/empty Angular shell uses Jina, then Tavily Advanced Extract, then Firecrawl. Successful direct reads, unchanged responses, native PDF/images, ordinary HTTP errors and rejected private URLs do not call extractors. All attempts share the existing 15-second URL-read deadline. Search is not connected to these services.
+
+| Service | Account and credential | Role |
+| --- | --- | --- |
+| [Jina Reader](https://jina.ai/reader/) | Anonymous; no key | First extraction fallback. Requests browser rendering, fresh content and no server caching/logging with `DNT: 1`. |
+| [Tavily](https://app.tavily.com/) | Existing account; `TAVILY_API_KEY` | Advanced extraction. Search and extraction share the provider's credit balance. |
+| [Firecrawl](https://www.firecrawl.dev/) | Free account; `FIRECRAWL_API_KEY` | Final extraction fallback. Requests fresh Markdown with index/cache storage disabled. |
+
+Keep accounts on free plans without automatic paid top-ups. Add keys to the ignored root `.env.local` for diagnostics and to the same-named Supabase Edge Function secrets for hosted collection. Missing keys skip that service; Jina remains available anonymously. A local key is not automatically a hosted secret. No provider key belongs in browser settings or Git.
+
+Quota, authentication, rate-limit and server errors make a service unavailable for the rest of the current collection check; page-specific extraction failures only affect that URL. Each later check evaluates availability again, so renewed allowances recover without a manual switch. There is no local credit ledger or quota polling. Concurrent requests already in flight can encounter the same limit before its first rejection arrives.
+
+Extracted bodies remain in memory and preserve the public source URL. Provider API/cache metadata does not establish source freshness: fallback reads never claim `unchanged` or acknowledge HTTP freshness fields. Invocation diagnostics add numeric `source.scraping` attempt counts by provider alongside existing HTTP request/byte and SQL costs. Routing adds no SQL or model calls itself. At most three extraction requests are added per blocked URL, with known-unavailable services skipped; recovered pages can enable investigations that previously could not run. Before unattended use, measure real provider allowances and daily blocked-page activity from the hosted environment. The local diagnostic capture exception remains unchanged.
+
 ## Slack credentials
 
 Scout uses one Slack app, `A0C5P53NAPM`, in workspace `TFZ8FRLBV`. Its bot is `B0C5TDBU5UN`, user `U0C6PNRPX4G`, displayed as Scout. Findings scoring at least 75 post to private `#scout` (`C0C5PE21KN1`). Newly saved findings scoring below 75 go immediately to Danny Vallentyne (`U0AQY6J9SG7`) in Scout's existing DM (`D0C5XA5RT41`). Keep this app, bot and installation as the enduring identity; identify them by these IDs rather than a display name or username. Keep credentials in the ignored root `.env.local` and load them in memory without printing values.

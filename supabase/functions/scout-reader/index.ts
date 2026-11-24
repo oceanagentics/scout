@@ -6,7 +6,7 @@ import {intake} from '../../../reader/intake.js';
 import {prepareMessages,sendMessages,botTransport} from '../../../slackbot/slack.js';
 import {syncCalendar} from '../../../calendar/google.js';
 
-export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,slackToken,post,env,connect=postgres,modelFetch=fetch,sourceFetch=fetch,calendarFetch=fetch}={}){
+export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,slackToken,serviceKeys,post,env,connect=postgres,modelFetch=fetch,sourceFetch=fetch,calendarFetch=fetch}={}){
   const {error}=await verifyAuth(request,{auth:'secret:default',env});
   if(error)return Response.json({error:'Backend secret required'},{status:401});
   if(request.method!=='POST')return Response.json({error:'POST required'},{status:405});
@@ -21,7 +21,7 @@ export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,slac
       types:{json:{to:114,from:[114,3802],parse:JSON.parse,serialize:value=>typeof value==='string'?value:JSON.stringify(value)}},
       connection:{application_name:'scout-reader',statement_timeout:5000}});
     session=await sql.reserve();const db=database(session);
-    const result=await intake(db,{trackerId,sourceFetch,modelFor:(source,{deadline,readUrl,functions,validate})=>trackerModel({source,deadline,readUrl,functions,validate,apiKey,openaiApiKey,fetch:modelFetch}),
+    const result=await intake(db,{trackerId,sourceFetch,serviceKeys,modelFor:(source,{deadline,readUrl,functions,validate})=>trackerModel({source,deadline,readUrl,functions,validate,apiKey,openaiApiKey,fetch:modelFetch}),
       notify:async(ids,{deadline})=>sendMessages(db,await prepareMessages(db,{kind:'findings',ids}),post??botTransport(slackToken,undefined,{deadline}),{deadline}),
       publishCalendar:(ids,{deadline})=>syncCalendar(db,{ids,deadline,fetch:calendarFetch})});
     return Response.json({...result,cost:db.metrics});
@@ -31,4 +31,5 @@ export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,slac
 }
 
 if(typeof Deno!=='undefined')Deno.serve(request=>hostedReader(request,{databaseURL:Deno.env.get('SUPABASE_DB_URL'),
-  apiKey:Deno.env.get('SCOUT_GEMINI_API_KEY'),openaiApiKey:Deno.env.get('SCOUT_OPENAI_API_KEY'),slackToken:Deno.env.get('SCOUT_SLACK_BOT_TOKEN')}));
+  apiKey:Deno.env.get('SCOUT_GEMINI_API_KEY'),openaiApiKey:Deno.env.get('SCOUT_OPENAI_API_KEY'),slackToken:Deno.env.get('SCOUT_SLACK_BOT_TOKEN'),
+  serviceKeys:{tavily:Deno.env.get('TAVILY_API_KEY'),firecrawl:Deno.env.get('FIRECRAWL_API_KEY')}}));

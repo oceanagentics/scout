@@ -1,0 +1,70 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {createWebServices} from '../reader/services/gateway.js';
+
+const url='https://example.org/article';
+const jina=content=>Response.json({code:200,data:{httpStatus:200,title:'Ocean report',content}});
+const firecrawl=content=>Response.json({success:true,data:{metadata:{statusCode:200},markdown:content}});
+
+test('quota failover skips exhausted allowances across pages and a new check can recover',async()=>{
+ const calls=[],metrics={requests:0,bytes:0};let recovered=false;
+ const fetch=async(target,options)=>{
+  assert.equal(options.redirect,'error');calls.push(target);
+  if(target.startsWith('https://r.jina.ai/')){
+   assert.equal(options.headers.DNT,'1');assert.equal(options.headers['X-No-Cache'],'true');
+   return recovered?jina('Recovered article'):Response.json({error:'rate limited'},{status:429});
+  }
+  if(target==='https://api.tavily.com/extract'){
+   assert.equal(options.headers.Authorization,'Bearer tavily-key');
+   assert.equal(JSON.parse(options.body).extract_depth,'advanced');
+   return Response.json({error:'included credits exhausted'},{status:432});
+  }
+  assert.equal(target,'https://api.firecrawl.dev/v2/scrape');
+  assert.equal(options.headers.Authorization,'Bearer firecrawl-key');
+  assert.deepEqual(JSON.parse(options.body),{url:calls.length===3?url:url+'-two',formats:['markdown'],maxAge:0,storeInCache:false,timeout:15000});
+  return firecrawl('Full article with [source](https://example.org/evidence)');
+ };
+ const options={keys:{tavily:'tavily-key',firecrawl:'firecrawl-key'},fetch,metrics};
+ const services=createWebServices(options);
+ assert.match((await services.scrape(url)).content,/Full article/);
+ assert.match((await services.scrape(url+'-two')).content,/Full article/);
+ assert.equal(calls.length,4);
+ assert.deepEqual(metrics.scraping,{jina:1,tavily:1,firecrawl:2});assert.equal(metrics.requests,4);assert.ok(metrics.bytes>0);
+ recovered=true;
+ assert.equal((await createWebServices(options).scrape(url)).content,'Recovered article');
+ assert.equal(calls.length,5);
+});
+
+test('a page failure does not disable that provider for another page',async()=>{
+ const calls=[];
+ const services=createWebServices({keys:{tavily:'key'},fetch:async(target,options)=>{
+  calls.push(target);
+  if(target.startsWith('https://r.jina.ai/'))return target.endsWith('-two')?jina('Second page'):Response.json({code:200,data:{httpStatus:403,content:'Forbidden'}});
+  const requested=JSON.parse(options.body).urls[0];
+  return Response.json({results:[{url:requested,raw_content:'First page'}]});
+ }});
+ assert.equal((await services.scrape(url)).content,'First page');
+ assert.equal((await services.scrape(url+'-two')).content,'Second page');
+ assert.equal(calls.length,3);
+});
+
+test('HTTP 200 challenges, mismatched results and upstream error pages cannot become article content',async()=>{
+ const services=createWebServices({keys:{tavily:'secret-tavily',firecrawl:'secret-firecrawl'},fetch:async target=>{
+  if(target.startsWith('https://r.jina.ai/'))return Response.json({code:200,data:{httpStatus:200,title:'Just a moment...',content:'Checking your browser'}});
+  if(target==='https://api.tavily.com/extract')return Response.json({results:[{url:'https://other.org/article',raw_content:'Unrelated page'}]});
+  return Response.json({success:true,data:{metadata:{statusCode:403},markdown:'Access denied'}});
+ }});
+ await assert.rejects(services.scrape(url),error=>error.message==='source_unavailable'&&!JSON.stringify(error).includes('secret-'));
+});
+
+test('missing credentials are skipped and cancellation never starts another provider',async()=>{
+ let calls=0;
+ const unconfigured=createWebServices({fetch:async()=>{calls++;return Response.json(null);}});
+ await assert.rejects(unconfigured.scrape(url),/source_unavailable/);assert.equal(calls,1);
+ const controller=new AbortController();
+ const cancelled=createWebServices({keys:{tavily:'key',firecrawl:'key'},fetch:async()=>{calls++;controller.abort();throw controller.signal.reason;}});
+ await assert.rejects(cancelled.scrape(url,{signal:controller.signal}),{name:'AbortError'});
+ assert.equal(calls,2);
+ await assert.rejects(cancelled.scrape(url,{signal:controller.signal}),{name:'AbortError'});
+ assert.equal(calls,2);
+});

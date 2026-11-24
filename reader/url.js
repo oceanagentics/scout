@@ -6,6 +6,12 @@ import {checkFreshness,checkContentFreshness} from './freshness.js';
 
 const fail=reason=>Object.assign(new Error(reason),{reason});
 
+// Recognized bot challenges and the existing empty Angular application shell.
+export function isBlockedPage(content){
+ return /<title[^>]*>\s*(?:just a moment|attention required|access denied)|\/cdn-cgi\/challenge-platform\/|<ng-view\b[^>]*>\s*<\/ng-view>/i.test(content)||
+  /^\s*(?:#{1,6}\s*)?(?:just a moment|checking your browser|performing security verification|verify you are human)(?:[.!…\s]|$)/i.test(content);
+}
+
 function publicAddress(address){
   if(isIP(address)===6)return /^[23]/i.test(address)&&!/^2001:db8:/i.test(address);
   if(isIP(address)!==4)return false;
@@ -51,7 +57,7 @@ export function readable(html,url){
 }
 
 // Every HTTP operation is bounded, public, and cached only for this invocation.
-export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),metrics,lastSuccessfulCheck=null,previousRequestURL=value,previousFingerprint=null}={}){
+export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),metrics,scrape,lastSuccessfulCheck=null,previousRequestURL=value,previousFingerprint=null}={}){
   let url;try{url=new URL(value);url.hash='';}catch{throw fail('source_invalid');}
   if(!['https:','http:'].includes(url.protocol)||url.username||url.password)throw fail('source_invalid');
   // A cached body can serve different checkpoints; a 304 cannot.
@@ -81,6 +87,9 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
         const {response,unchanged}=await checkFreshness(target.href,{lastSuccessfulCheck:target.href===previousRequestURL?lastSuccessfulCheck:null,signal:bounded,
           fetch:(url,options)=>send(url,{...options,headers:{...options.headers,'User-Agent':'Scout/0.1'},redirect:'manual'})});
         diagnostics.stage='response';diagnostics.http_status=response.status;
+        if(scrape&&response.headers.get('cf-mitigated')==='challenge'&&!/\.(?:pdf|png|jpe?g|webp|gif)$/i.test(target.pathname)){
+          await response.body?.cancel();return {url:target,blocked:true};
+        }
         if([301,302,303,307,308].includes(response.status)){
           await response.body?.cancel();
           const location=response.headers.get('location');if(!location)throw fail('source_invalid');
@@ -94,17 +103,23 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
     const readText=async response=>{diagnostics.stage='body';const body=await response.text();if(metrics)metrics.bytes+=Buffer.byteLength(body);return body;};
     const result=await request(url);
     if(result.unchanged)return {url:result.url.href,request_url:result.url.href,checked_at,unchanged:true};
-    const type=(result.response.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
+    const type=(result.response?.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();
     const extension=result.url.pathname.match(/\.(pdf|png|jpe?g|webp|gif)$/i)?.[1].toLowerCase();
     const nativeType=type==='application/octet-stream'?{pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',gif:'image/gif'}[extension]:type;
     if(nativeType==='application/pdf'||/^image\/(?:png|jpeg|webp|gif)$/.test(nativeType??'')){
       await result.response.body?.cancel();
       return {url:result.url.href,request_url:result.url.href,checked_at,media_type:nativeType};
     }
-    const body=await readText(result.response);diagnostics.stage='prepare';let content;
+    const body=result.blocked?'':await readText(result.response);diagnostics.stage='prepare';let content;
+    const html=type.includes('html')||/^\s*(?:<!doctype html|<html)/i.test(body);
+    if(result.blocked||html&&isBlockedPage(body)){
+      if(!scrape)throw fail('source_unavailable');
+      diagnostics.stage='scrape';
+      const page=await scrape(result.url.href,{signal:bounded});
+      return {url:result.url.href,request_url:null,checked_at:null,...page};
+    }
     if(type==='application/json'||type.endsWith('+json')){try{content=JSON.parse(body);}catch{throw fail('source_invalid');}}
-    else if(type.includes('html')||/^\s*(?:<!doctype html|<html)/i.test(body)){
-      if(/<ng-view\b[^>]*>\s*<\/ng-view>/i.test(body))throw fail('source_unavailable');
+    else if(html){
       content=readable(body,result.url.href);
     }
     else if(type.startsWith('text/')||type.includes('xml'))content=body;
@@ -120,6 +135,8 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
     }});});
   cache.set(url.href,pending);
   const source=await pending,prior=source.request_url===previousRequestURL?previousFingerprint:null;
+  // An extractor's cached body or API metadata cannot prove source freshness.
+  if(source.request_url===null)return {...source,fingerprint:null,unchanged:false};
   if(source.unchanged)return {...source,fingerprint:prior};
   return Object.hasOwn(source,'content')?{...source,...checkContentFreshness(source,prior)}:source;
 }
