@@ -1,5 +1,5 @@
 // Manual invocation of the same hosted reader; no alternate collection pipeline.
-import {OPENAI_MODELS} from '../reader/models/models.js';
+import {OPENAI_MODELS} from '../reader/models/openai.js';
 const args=process.argv.slice(2),tracker=args.find(a=>a.startsWith('--tracker='))?.slice(10),diagnostic=args.includes('--diagnostic'),
   provider=args.find(a=>a.startsWith('--provider='))?.slice(11),model=args.find(a=>a.startsWith('--model='))?.slice(8);
 if(args.some(a=>a!=='--diagnostic'&&!a.startsWith('--tracker=')&&!a.startsWith('--provider=')&&!a.startsWith('--model='))||

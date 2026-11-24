@@ -1,5 +1,5 @@
 import {MODEL,gemini} from './gemini.js';
-import {OPENAI_MODEL,openai} from './models.js';
+import {OPENAI_MODEL,createOpenAIAdapter} from './openai.js';
 import {modelErrorReason} from './contract.js';
 
 const fallbackReasons=new Set(['url_retrieval_failed','retrieval_metadata_missing','model_unreadable','invalid_json','invalid_output',
@@ -14,7 +14,7 @@ export function trackerModel({apiKey,openaiApiKey,source,provider,model,deadline
   const primary=provider??(model!==undefined?'openai':source.source_kind==='post'?'gemini':'openai');
   const openaiModel=model===undefined?OPENAI_MODEL:model;
   const providers={gemini:{model:MODEL,generate:gemini({apiKey,readUrl,functions,fetch:send})},
-    openai:{model:openaiModel,generate:openai({apiKey:openaiApiKey,model:openaiModel,urls:[source.url],readUrl,functions,fetch:send})}};
+    openai:{model:openaiModel,generate:createOpenAIAdapter({apiKey:openaiApiKey,model:openaiModel,urls:[source.url],readUrl,functions,fetch:send})}};
   return async(instruction,input,schema)=>{
     const ends=deadline??Date.now()+100000,attempts=[];
     const call=async name=>{

@@ -29,7 +29,7 @@ export function strictSchema(schema){
 }
 
 // Retrieval, native inputs and continuations share one attempt and abort signal.
-export function openai({apiKey,urls=[],readUrl,functions=[],model=OPENAI_MODEL,fetch:send=fetch,now=Date.now}){
+export function createOpenAIAdapter({apiKey,urls=[],readUrl,functions=[],model=OPENAI_MODEL,fetch:send=fetch,now=Date.now}){
   if(!Object.hasOwn(OPENAI_MODELS,model))throw fail('model_configuration');
   const effort=OPENAI_MODELS[model];
   const initial=urls;
