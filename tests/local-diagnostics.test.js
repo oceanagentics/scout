@@ -48,7 +48,7 @@ test('local tracker diagnostic uses an explicit model with only a tracker read s
   let generations=0;const sql=[];
   const ledger={query:async(q,p)=>{
     sql.push(q);
-    if(q.startsWith('select id,name'))return {rows:[{id:tracker,name:'Diagnostic tracker',url:source,collector:'web_page',cadence:'6 hours'}]};
+    if(q.startsWith('select id,name'))return {rows:[{id:tracker,name:'Diagnostic tracker',url:source,collector:'web_page',cadence:'6 hours',search_topic:'news'}]};
     assert.fail('Unexpected shared SQL: '+q);
   }};
   const result=await diagnoseTracker({tracker,model:'gpt-5.6-terra',output:path,env:{SCOUT_OPENAI_API_KEY:'openai-key'},ledger,fetch:async(url,request)=>{
@@ -70,15 +70,15 @@ test('local tracker diagnostic uses an explicit model with only a tracker read s
   assert.equal(sql.length,1);assert.ok(sql[0].startsWith('select id,name'));
 });
 
-test('local diagnostics copy the search query and enumerate URLs without a discovery model',async t=>{
+test('local diagnostics copy the search query and topic and enumerate URLs without a discovery model',async t=>{
  t.mock.method(dns,'lookup',async()=>[{address:'93.184.216.34',family:4}]);
  const path=await output(t),tracker='11111111-1111-4111-8111-111111111111',source='https://example.org/news';
  let searches=0,generations=0;
  const result=await diagnoseTracker({tracker,output:path,env:{SCOUT_OPENAI_API_KEY:'model-key',TAVILY_API_KEY:'search-key'},
-  ledger:{query:async()=>({rows:[{id:tracker,name:'News',url:'https://api.tavily.com/search',collector:'web_index',cadence:'1 day',search_query:'BBNJ Secretariat news'}]})},
+  ledger:{query:async()=>({rows:[{id:tracker,name:'News',url:'https://api.tavily.com/search',collector:'web_index',cadence:'1 day',search_query:'BBNJ Secretariat news',search_topic:'general'}]})},
   fetch:async(url,request)=>{
    if(url==='https://api.tavily.com/search'){
-    searches++;assert.equal(request.method,'POST');assert.equal(JSON.parse(request.body).query,'BBNJ Secretariat news');
+    searches++;assert.equal(request.method,'POST');assert.equal(JSON.parse(request.body).query,'BBNJ Secretariat news');assert.equal(JSON.parse(request.body).topic,'general');
     return Response.json({results:[{url:source}],usage:{credits:1}});
    }
    if(url===source)return new Response('BBNJ news article',{headers:{'content-type':'text/plain'}});

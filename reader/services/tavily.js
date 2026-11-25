@@ -1,10 +1,10 @@
 import {Buffer} from 'node:buffer';
 
-export async function searchTavily(query,{apiKey,fetch:send=fetch,signal,metrics}={}){
+export async function searchTavily(query,{topic='news',apiKey,fetch:send=fetch,signal,metrics}={}){
  if(metrics){metrics.requests++;metrics.search??={requests:0,results:0};metrics.search.requests++;}
  const response=await send('https://api.tavily.com/search',{method:'POST',signal,redirect:'error',
   headers:{Authorization:'Bearer '+apiKey,'Content-Type':'application/json'},
-  body:JSON.stringify({query,topic:'news',search_depth:'basic',max_results:20,auto_parameters:false,
+  body:JSON.stringify({query,topic,search_depth:'basic',max_results:20,auto_parameters:false,
    include_answer:false,include_raw_content:false,include_usage:true})});
  const body=await response.text();if(metrics)metrics.bytes+=Buffer.byteLength(body);
  if(!response.ok)throw Object.assign(new Error('source_unavailable'),{reason:'source_unavailable',status:response.status});

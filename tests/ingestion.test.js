@@ -63,15 +63,17 @@ test('search URLs use item freshness even when result membership is unchanged an
  assert.equal((await raw.query('select count(*)::int n from scout.source_items where pending')).rows[0].n,0);
 });
 
-test('search tracker configuration is independent, unique and resets safely when its query changes',async t=>{
+test('search tracker configuration is independent, unique and resets safely when its query or topic changes',async t=>{
  const {raw,db,tracker}=await setup(t),endpoint='https://api.tavily.com/search';
  await raw.query("update scout.trackers set url=$2,search_query='BBNJ' where id=$1",[tracker.id,endpoint]);
  const second=(await raw.query("insert into scout.trackers(name,url,collector,cadence,search_query,enabled) values('Other query',$1,'web_index','1 day','Ai2 ocean',true) returning *",[endpoint])).rows[0];
  await assert.rejects(raw.query("insert into scout.trackers(name,url,collector,cadence,search_query) values('Duplicate',$1,'web_index','1 day','BBNJ')",[endpoint]),{code:'23505'});
  await assert.rejects(raw.query("update scout.trackers set search_query=' ' where id=$1",[tracker.id]),{code:'23514'});
  await assert.rejects(raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]),{code:'23514'});
+ await assert.rejects(raw.query("update scout.trackers set search_topic='invalid' where id=$1",[tracker.id]),{code:'23514'});
+ await raw.query("update scout.trackers set search_topic='general' where id=$1",[tracker.id]);
  let searches=0,investigations=0;
- const options={sourceFetch:async url=>{if(url===endpoint){searches++;return Response.json({results:[{url:publication}],usage:{credits:1}});}return new Response('BBNJ technical update',{headers:{'content-type':'text/plain'}});},
+ const options={sourceFetch:async(url,request)=>{if(url===endpoint){searches++;assert.equal(JSON.parse(request.body).topic,searches===1?'general':'news');return Response.json({results:[{url:publication}],usage:{credits:1}});}return new Response('BBNJ technical update',{headers:{'content-type':'text/plain'}});},
   serviceKeys:{tavily:'key'},modelFor:()=>async(_p,_input,schema)=>{assert.ok(schema.properties.decisions);investigations++;return answer([]);}};
  await intake(db,{...options,trackerId:tracker.id});assert.equal(searches,1);
  assert.equal((await raw.query('select last_successful_check from scout.trackers where id=$1',[second.id])).rows[0].last_successful_check,null);
@@ -83,7 +85,13 @@ test('search tracker configuration is independent, unique and resets safely when
  const changed=(await raw.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0];
  assert.equal(changed.enabled,false);for(const key of ['last_checked_at','last_successful_check','discovery_fingerprint','lease_id','lease_until'])assert.equal(changed[key],null);
  assert.deepEqual((await raw.query('select item_key from scout.source_items where tracker_id=$1',[tracker.id])).rows,[{item_key:'ignored'}]);
+ await raw.query('update scout.trackers set enabled=true where id=$1',[tracker.id]);
+ await raw.query("insert into scout.source_items(tracker_id,item_key,url,pending) values($1,'ordinary',$2,false)",[tracker.id,publication]);
+ await raw.query("update scout.trackers set search_topic='news' where id=$1",[tracker.id]);
+ assert.equal((await raw.query('select enabled from scout.trackers where id=$1',[tracker.id])).rows[0].enabled,false);
+ assert.deepEqual((await raw.query('select item_key from scout.source_items where tracker_id=$1',[tracker.id])).rows,[{item_key:'ignored'}]);
  await raw.exec('set role authenticated');await assert.rejects(raw.query('select search_query from scout.trackers'),{code:'42501'});await raw.exec('reset role');
+ await raw.exec('set role authenticated');await assert.rejects(raw.query('select search_topic from scout.trackers'),{code:'42501'});await raw.exec('reset role');
  assert.equal((await raw.query('select enabled from scout.trackers where id=$1',[second.id])).rows[0].enabled,true);
 });
 

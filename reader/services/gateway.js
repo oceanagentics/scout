@@ -8,10 +8,10 @@ import {isBlockedPage} from '../url.js';
 export function createWebServices({keys={},fetch:send=fetch,metrics}={}){
  const unavailable=new Set();
  const services=[['jina',scrapeJina,null],['tavily',scrapeTavily,keys.tavily],['firecrawl',scrapeFirecrawl,keys.firecrawl]];
- return {async search(query,{signal}={}){
+ return {async search(query,{topic,signal}={}){
   signal?.throwIfAborted();
   if(!keys.tavily)throw Object.assign(new Error('source_unavailable'),{reason:'source_unavailable'});
-  try{return await searchTavily(query,{apiKey:keys.tavily,fetch:send,metrics,
+  try{return await searchTavily(query,{topic,apiKey:keys.tavily,fetch:send,metrics,
    signal:AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(20000)])});}
   catch(error){const reason=signal?.aborted?'runtime_bound':error.reason??'source_unavailable';throw Object.assign(new Error(reason),{reason,...(error.status?{status:error.status}:{})});}
  },async scrape(url,{signal}={}){

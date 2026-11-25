@@ -2,7 +2,7 @@ import {sourceLink} from '../../shared/records.js';
 import {checkContentFreshness} from '../freshness.js';
 
 export async function discoverSearch(tracker,{search,signal}){
- const result=await search(tracker.search_query,{signal});
+ const result=await search(tracker.search_query,{topic:tracker.search_topic,signal});
  const urls=result.urls.map(sourceLink);
  if(urls.some(url=>!url))throw Object.assign(new Error('source_invalid'),{reason:'source_invalid'});
  const distinct=[...new Set(urls)].sort();

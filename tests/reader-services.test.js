@@ -6,18 +6,20 @@ const url='https://example.org/article';
 const jina=content=>Response.json({code:200,data:{httpStatus:200,title:'Ocean report',content}});
 const firecrawl=content=>Response.json({success:true,data:{metadata:{statusCode:200},markdown:content}});
 
-test('news search requests twenty URLs without answers or scraping and reports invocation-only usage',async()=>{
+test('news and general search request twenty URLs without answers or scraping and report invocation-only usage',async()=>{
+ for(const topic of ['news','general']){
  const metrics={requests:0,bytes:0};
  const services=createWebServices({keys:{tavily:'search-key'},metrics,fetch:async(target,options)=>{
   assert.equal(target,'https://api.tavily.com/search');assert.equal(options.redirect,'error');
   assert.equal(options.headers.Authorization,'Bearer search-key');
-  assert.deepEqual(JSON.parse(options.body),{query:'BBNJ Secretariat news',topic:'news',search_depth:'basic',max_results:20,
+  assert.deepEqual(JSON.parse(options.body),{query:'BBNJ Secretariat news',topic,search_depth:'basic',max_results:20,
    auto_parameters:false,include_answer:false,include_raw_content:false,include_usage:true});
   return Response.json({results:[{url,title:'Article',content:'Do not pass this to investigation',id:'volatile'}],usage:{credits:1}});
  }});
- assert.deepEqual(await services.search('BBNJ Secretariat news'),{urls:[url],credits:1});
+ assert.deepEqual(await services.search('BBNJ Secretariat news',{topic}),{urls:[url],credits:1});
  assert.equal(metrics.requests,1);assert.ok(metrics.bytes>0);
  assert.deepEqual(metrics.search,{requests:1,results:1,declared_credits:1});
+ }
 });
 
 test('search failures are bounded and sanitized; missing keys and cancellation do no HTTP work',async t=>{
