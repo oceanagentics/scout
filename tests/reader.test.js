@@ -435,7 +435,7 @@ test('hosted collection recovers a connection reset through quota failover and s
   },modelFetch:async(_url,request)=>{
    generations++;const body=JSON.parse(request.body);assert.match(JSON.stringify(body.input),/technical BBNJ workshop/);
    assert.equal(body.model,generations<=2?'gpt-6-luna':'gpt-6.1-terra');
-   assert.equal(body.temperature,body.model==='gpt-6.1-terra'?0:undefined);
+   assert.equal(body.reasoning.effort,'high');assert.equal(body.temperature,undefined);
    assert.doesNotMatch(JSON.stringify(body.input),/tavily-key|firecrawl-key/);
    if(!body.input.some(i=>i.type==='function_call_output'))return Response.json({status:'completed',output:[{type:'function_call',name:'search_findings',call_id:'search',arguments:JSON.stringify({queries:['Ocean Institute'],urls:[]})}]});
    return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(answer([{...event,source_name:'Ocean Institute',score:body.model==='gpt-6-luna'?85:null,date:'2099-12-10'}]))}]}]});
