@@ -34,7 +34,7 @@ export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,sear
     if(retained.length)entries.push({item,investigation:{...investigation,decisions:retained,
      lookups:retained.some(d=>d.action!=='skip')?investigation.lookups:[]}});
     try{
-     const terra=await investigate(db,item,{modelFor,model:'gpt-6.1-terra',deadline,readUrl,oldestDate:tracker.oldest_date,through,proposed:proposedFindings(entries),evidence});
+     const terra=await investigate(db,item,{modelFor,model:'gpt-6.1-terra',deadline,readUrl,oldestDate:tracker.oldest_date,through,proposed:proposedFindings(entries),evidence,previous:investigation});
      if(terra.diagnostics?.attempts?.some(attempt=>attempt.diagnostics?.retrieval?.some(r=>r.status==='NATIVE_INPUT_FAILED')))
       throw Object.assign(new Error('url_retrieval_failed'),{reason:'url_retrieval_failed',diagnostics:terra.diagnostics});
      entries.push({item,investigation:terra});result.diagnostics.push({...terra.diagnostics,invalid_fields:terra.invalid_fields});
@@ -70,7 +70,7 @@ export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,sear
      if(retained.length)entries.push({item,investigation:{...investigation,decisions:retained,
       lookups:retained.some(d=>d.action!=='skip')?investigation.lookups:[]}});
      try{
-      const terra=await investigate(db,item,{modelFor,model:'gpt-6.1-terra',deadline,readUrl,oldestDate:tracker.oldest_date,through,proposed:proposedFindings(entries),evidence});
+      const terra=await investigate(db,item,{modelFor,model:'gpt-6.1-terra',deadline,readUrl,oldestDate:tracker.oldest_date,through,proposed:proposedFindings(entries),evidence,previous:investigation});
       if(terra.diagnostics?.attempts?.some(attempt=>attempt.diagnostics?.retrieval?.some(r=>r.status==='NATIVE_INPUT_FAILED')))
        throw Object.assign(new Error('url_retrieval_failed'),{reason:'url_retrieval_failed',diagnostics:terra.diagnostics});
       terra.resource??=investigation.resource;investigation=terra;

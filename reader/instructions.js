@@ -62,6 +62,10 @@ Fields
   Scout supplies the current item's source URL.
 
 Decisions
+Suggested updates are provisional proposals from an earlier investigation,
+with proposed fields and a separate current_record. Verify identity and facts
+against source evidence; accept, correct or reject the suggestion, and assess
+the final score yourself.
 Skip wholly irrelevant or confirmed-too-old developments; provide a brief
 reason, with id and fields null. Low usefulness, missing optional fields or
 an existing match do not justify skipping. Return complete with no decisions

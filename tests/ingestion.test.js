@@ -73,6 +73,55 @@ test('promising URLs use full Terra decisions while mixed zero and null findings
  assert.deepEqual(models,['gpt-6-luna','gpt-6.1-terra','gpt-6-luna','gpt-6.1-terra','gpt-6-luna','gpt-6.1-terra']);
 });
 
+test('Terra receives provisional Luna updates for web and native sources and can accept or reject them',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-17T12:00:00Z')});
+ for(const native of [false,true])for(const accept of [false,true])await t.test(`${native?'native':'web'} ${accept?'accept':'reject'}`,async t=>{
+  const {raw,db,tracker}=await setup(t),feed='https://bsky.app/profile/example.test';
+  await raw.query("update scout.trackers set url=$2,collector='web_page' where id=$1",[tracker.id,native?feed:feedURL]);
+  const original=(await raw.query("insert into scout.records(description,type,score,organizations) values('HSA: original workshop','event',95,array['HSA']) returning *")).rows[0];
+  const fields={...finding,description:'HSA: Luna proposed workshop',score:60},models=[];
+  const post={post:{uri:'at://did:plc:example/app.bsky.feed.post/a',indexedAt:'2026-11-17T12:00:00Z',record:{text:'HSA workshop',createdAt:'2026-11-17T12:00:00Z'}}};
+  const result=await intake(db,{trackerId:tracker.id,sourceFetch:async()=>native?Response.json({feed:[post]}):new Response('<main>HSA workshop</main>',{headers:{'content-type':'text/html'}}),
+   modelFor:(item,options)=>async(_instructions,input)=>{
+    models.push(options.model);
+    if(options.model==='gpt-6-luna'){
+     assert.equal(Object.hasOwn(input,'suggested_updates'),false);
+     const found=await options.functions[0].run({queries:['HSA'],urls:[]});return answer([update(found.records[0],fields)]);
+    }
+    assert.equal(options.model,'gpt-6.1-terra');assert.equal(input.suggested_updates.length,1);
+    const suggestion=input.suggested_updates[0];assert.equal(suggestion.id,original.id);assert.deepEqual(suggestion.fields,fields);
+    assert.equal(suggestion.current_record.description,original.description);assert.equal(suggestion.current_record.score,95);
+    for(const key of ['revision','modified','pending','slack_channel_post'])assert.equal(Object.hasOwn(suggestion.current_record,key),false);
+    assert.deepEqual((await raw.query('select * from scout.records')).rows,[original]);
+    const missed=await options.functions[0].run({queries:['No matching organization'],urls:[]});assert.equal(missed.count,0);
+    return answer(accept?[update(suggestion.current_record,{...suggestion.fields,description:'HSA: Terra final workshop',score:80})]:[{action:'skip',id:null,fields:null,reason:'The source does not support the suggested development.'}]);
+   }});
+  assert.deepEqual(models,['gpt-6-luna','gpt-6.1-terra']);assert.equal(result.processed,1);assert.equal(result.created,0);assert.equal(result.changed,accept?1:0);
+  const records=(await raw.query('select * from scout.records')).rows;assert.equal(records.length,1);
+  if(accept){assert.equal(records[0].id,original.id);assert.equal(records[0].description,'HSA: Terra final workshop');assert.equal(records[0].score,80);assert.equal(records[0].sources[0].url,native?'https://bsky.app/profile/did:plc:example/post/a':feedURL);}
+  else assert.deepEqual(records,[original]);
+ });
+});
+
+test('Luna update handoff retains stale-record validation before saving or consuming progress',async t=>{
+ const {raw,db,tracker}=await setup(t);
+ await raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]);
+ const original=(await raw.query("insert into scout.records(description,type,score,organizations) values('HSA: original workshop','event',95,array['HSA']) returning *")).rows[0];
+ const result=await intake(db,{trackerId:tracker.id,sourceFetch:async()=>new Response('<main>HSA workshop</main>',{headers:{'content-type':'text/html'}}),
+  modelFor:(item,options)=>async(_instructions,input)=>{
+   if(options.model==='gpt-6-luna'){
+    const found=await options.functions[0].run({queries:['HSA'],urls:[]});return answer([update(found.records[0],finding)]);
+   }
+   const suggestion=input.suggested_updates[0];assert.equal(suggestion.id,original.id);
+   await raw.query("update scout.records set description='Concurrent correction',modified=array_append(modified,modified[cardinality(modified)]+interval '1 millisecond') where id=$1",[original.id]);
+   return answer([update(suggestion.current_record,{...suggestion.fields,score:80})]);
+  }});
+ assert.equal(result.state,'deferred');assert.equal(result.reason,'stale_record');assert.equal(result.processed,0);assert.equal(result.changed,0);
+ const saved=(await raw.query('select * from scout.records')).rows[0];assert.equal(saved.description,'Concurrent correction');assert.equal(saved.score,95);assert.deepEqual(saved.sources,original.sources);
+ assert.equal((await raw.query('select last_successful_check from scout.trackers')).rows[0].last_successful_check,null);
+ assert.equal((await raw.query('select pending from scout.source_items')).rows[0].pending,true);
+});
+
 test('zero and unassessed sources save without a Terra pass',async t=>{
  const {raw,db,tracker}=await setup(t);const models=[];
  const result=await intake(db,{trackerId:tracker.id,sourceFetch:async()=>rss(),modelFor:(item,options)=>async()=>{
@@ -629,6 +678,9 @@ test('tied native posts see proposed facts before commit and retain both specifi
   if(model==='gpt-6.1-terra'){
    assert.ok(input.evidence.some(s=>s.url.endsWith('/post/a')&&s.content.post.record.text==='a'));
    assert.equal(input.evidence.find(s=>s.url===pdf).media_type,'application/pdf');
+   assert.equal(input.suggested_updates[0].id,found.records[0].id);
+   assert.equal(input.suggested_updates[0].current_record.details,'Fact A.');
+   assert.equal(input.suggested_updates[0].fields.details,'Fact A. Fact B.');
    assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,0);
   }
   return answer([found.count?update(found.records[0],{...finding,details:found.records[0].details+' Fact B.'}):create({...finding,score:0,details:'Fact A.'})]);
