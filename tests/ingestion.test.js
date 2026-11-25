@@ -6,7 +6,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {database} from '../reader/database.js';
 import {intake} from '../reader/intake.js';
 import {normalizeFinding,mergeFinding,searchFindings,applyDecisions} from '../reader/findings.js';
-import {prepareMessages} from '../slackbot/slack.js';
+import {CHANNEL,DM_CHANNEL,prepareMessages,sendMessages} from '../slackbot/slack.js';
 import {rssItems} from '../reader/sources/rss.js';
 import {trackerModel} from '../reader/models/gateway.js';
 
@@ -153,16 +153,19 @@ test('Index investigates linked publications without turning itself into a findi
  assert.deepEqual((await raw.query('select sources from scout.records')).rows[0].sources,[{url:publication,role:'finding'}]);
 });
 
-test('a notification configuration failure preserves the saved finding, reports its reason and does not replay collection',async t=>{
+test('collection commits pending Slack delivery separately and unchanged checks do not enqueue it again',async t=>{
  const {raw,db,tracker}=await setup(t);await raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]);
- let sends=0;
  const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async()=>new Response('<main>CHM technical webinar</main>',{headers:{'content-type':'text/html'}}),
-  modelFor:model(async({search})=>{await search({queries:['HSA'],urls:[]});return answer([create(finding)]);}),
-  notify:async()=>{sends++;throw Object.assign(new Error('Do not expose raw configuration'),{reason:'slack_configuration'});}});
- const first=await run();assert.equal(first.created,1);assert.equal(first.state,'saved');
- assert.deepEqual(first.notifications,[{status:'unknown',communicated:0,error:'slack_configuration'}]);
- assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,1);
- assert.equal((await run()).created,0);assert.equal(sends,1);
+  modelFor:model(async({search})=>{await search({queries:['HSA'],urls:[]});return answer([create(finding),create({...finding,description:'Dev review',score:60}),create({...finding,description:'Unassessed',score:null})]);})});
+ const first=await run();assert.equal(first.created,3);assert.equal(first.state,'saved');
+ assert.equal('notifications' in first,false);assert.equal('calendar' in first,false);
+ const pending=await prepareMessages(db,{kind:'pending'}),sent=[];
+ assert.equal(pending.records.length,2);
+ assert.deepEqual(pending.payloads.map(p=>p.channel).sort(),[CHANNEL,DM_CHANNEL].sort());
+ assert.equal((await sendMessages(db,pending,async payload=>{sent.push(payload);return {status:200,body:JSON.stringify({ok:true,channel:payload.channel,ts:'123.456'})};})).communicated,2);
+ assert.equal((await run()).created,0);
+ assert.equal((await prepareMessages(db,{kind:'pending'})).records.length,0);assert.equal(sent.length,2);
+ assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,3);
 });
 
 test('tracker modes preserve index progress, reset changed modes and replace Bloomberg without deleting findings',async t=>{
@@ -234,10 +237,10 @@ test('matched updates retain new source URLs and unchanged facts; identical upda
  t.diagnostic(JSON.stringify({mocked_model:true,first_sql_cost:firstCost,identical_update_sql_cost:Object.fromEntries(Object.keys(firstCost).map(k=>[k,db.metrics[k]-firstCost[k]])),identical_finding_writes:0}));
 });
 
-test('collection can investigate past 100 seconds, commit after 120 and publish before its lease expires',async t=>{
+test('collection can investigate past 100 seconds and commit after 120 before its lease expires',async t=>{
  const {raw,db,tracker}=await setup(t);
  await raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]);
- const started=Date.now(),callbacks=[];let investigated=false,delayedCommit=false;
+ const started=Date.now();let investigated=false,delayedCommit=false;
  t.mock.timers.enable({apis:['Date'],now:started});
  const transaction=db.transaction.bind(db);
  t.mock.method(db,'transaction',(work,options)=>transaction(async tx=>{
@@ -254,12 +257,11 @@ test('collection can investigate past 100 seconds, commit after 120 and publish 
    await options.functions[0].run({queries:['HSA'],urls:[]});
    investigated=true;
    return answer([create({...finding,score:0})]);
-  },
-  notify:async(ids,{deadline})=>{callbacks.push('notify');assert.equal(ids.length,1);assert.equal(Date.now(),started+125000);assert.equal(deadline,started+135000);return {status:'sent'};},
-  publishCalendar:async(ids,{deadline})=>{callbacks.push('calendar');assert.equal(ids.length,1);assert.equal(Date.now(),started+125000);assert.equal(deadline,started+135000);return {status:'ok'};}
+  }
  });
  assert.equal(result.state,'saved');assert.equal(result.created,1);assert.equal(result.skipped,0);
- assert.deepEqual(callbacks,['notify','calendar']);
+ assert.equal(Date.now(),started+125000);
+ assert.equal((await raw.query('select slack_dm_post from scout.records')).rows[0].slack_dm_post,null);
  const saved=(await raw.query('select lease_until,last_successful_check from scout.trackers where id=$1',[tracker.id])).rows[0];
  assert.equal(saved.lease_until,null);assert.equal(new Date(saved.last_successful_check).getTime(),started);
 });
@@ -422,6 +424,7 @@ test('text limits clip Unicode, avoid identical repeat writes and validate exist
   await assert.rejects(raw.query('insert into scout.records(description,details) values($1,$2)',[description,details]),{code:'23514'});
  await raw.exec(await readFile(new URL('../supabase/migrations/20261119234000_scout_validate_description_limit.sql',import.meta.url),'utf8'));
  await raw.exec(await readFile(new URL('../supabase/migrations/20261120220000_scout_numeric_ranking.sql',import.meta.url),'utf8'));
+ await raw.exec(await readFile(new URL('../supabase/migrations/20261125180000_scout_slack_dm_post.sql',import.meta.url),'utf8'));
  const incoming={...finding,description:'🐟'.repeat(281),details:'🐟'.repeat(4097)},item={url:publication},args={queries:['HSA'],urls:[publication]};
  const first=await searchFindings(db,args);
  assert.equal((await db.transaction(tx=>applyDecisions(tx,[{item,investigation:{decisions:[create(incoming)],lookups:[{args,records:first.records}],invalid_fields:{}}}]))).created,1);

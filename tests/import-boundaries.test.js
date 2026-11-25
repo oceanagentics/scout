@@ -38,6 +38,7 @@ test('local modules stay acyclic and respect shared, hosted and website boundari
     for(const path of reachable(entry)){
       assert.ok(!(await readFile(resolve(root,path),'utf8')).includes('captureTraffic'),entry+' includes traffic capture: '+path);
       assert.ok(!path.startsWith('diagnostics/'),entry+' imports local diagnostics: '+path);
+      if(entry==='supabase/functions/scout-reader/index.ts')assert.ok(!path.startsWith('slackbot/')&&!path.startsWith('calendar/'),'Collection imports publishing: '+path);
     }
   }
 });

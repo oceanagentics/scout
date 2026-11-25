@@ -50,11 +50,10 @@ test('database failure rolls back and does not disclose connection or source det
  await assert.rejects(db.transaction(tx=>tx.query('broken')),e=>e.message==='database_operation'&&!e.message.includes('secret'));
  assert.deepEqual(queries,['begin','broken','rollback']);
 });
-test('scheduler installs daily catch-up and calendar reconciliation paused and retires the weekly repost job',async()=>{
+test('scheduler installs one Slack job and hourly calendars paused and retires obsolete notification jobs',async()=>{
  const text=await readFile(new URL('../supabase/scout-loop.sql',import.meta.url),'utf8');
  assert.match(text,/'\*\/6 \* \* \* \*'/);assert.match(text,/active:=false/);assert.ok(!text.includes('collection_runs'));
- assert.match(text,/'scout-morning','0 12,13 \* \* \*'/);assert.ok(!text.includes("cron.schedule('scout-weekly'"));
- assert.match(text,/scout-notify\?kind=unposted/);
- assert.match(text,/'scout-calendar','0 8,9 \* \* \*'/);assert.match(text,/extract\(hour from local_now\)<>4/);
- assert.ok(!text.includes('loop_tick(\'notify\')'));assert.ok(!text.includes("s.state<>'parked'"));
+ assert.match(text,/'scout-notify','\*\/6 \* \* \* \*'/);
+ for(const old of ['scout-morning','scout-weekly'])assert.ok(!text.includes("cron.schedule('"+old+"'"));
+ assert.match(text,/'scout-calendar','0 \* \* \* \*'/);
 });

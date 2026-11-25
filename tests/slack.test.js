@@ -14,7 +14,7 @@ async function database({before=false}={}){
  create table auth.users(id uuid primary key,raw_app_meta_data jsonb default '{}');create table auth.identities(user_id uuid,provider text,identity_data jsonb);
  create function auth.uid() returns uuid language sql as $$select null::uuid$$;`);
  for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort()){
-  if(before&&name===migration)break;
+  if(before&&name===(before===true?migration:before))break;
   await db.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
  }
  return db;
@@ -33,6 +33,23 @@ test('migration preserves existing findings as unconfirmed, starts new findings 
   for(const invalid of [{},{state:'posted'},{state:'posted',ts:123},{state:'posted',ts:'not-a-message'},
     {state:'posted',ts:'123.456',body:'No message bodies'},{state:'uncertain',ts:'123.456'},[]])
    await assert.rejects(db.query('update scout.records set slack_channel_post=$2::jsonb where id=$1',[fresh,JSON.stringify(invalid)]),{code:'23514'});
+ }finally{await db.close();}
+});
+
+test('DM receipt migration excludes historical and manually added findings without changing their facts or channel receipts',async()=>{
+ const migration='20261125180000_scout_slack_dm_post.sql',db=await database({before:migration});try{
+  const id=await seed(db),before=(await db.query('select * from scout.records where id=$1',[id])).rows[0];
+  await db.exec(await readFile(new URL('../supabase/migrations/'+migration,import.meta.url),'utf8'));
+  const {slack_dm_post,...after}=(await db.query('select * from scout.records where id=$1',[id])).rows[0];
+  assert.deepEqual(after,before);assert.deepEqual(slack_dm_post,{state:'do_not_post'});
+  await db.query('update scout.records set score=60 where id=$1',[id]);
+  assert.equal((await prepareMessages(db,{kind:'pending'})).records.length,0);
+  assert.equal((await prepareMessages(db,{kind:'unposted'})).records.length,0);
+  const fresh=await seed(db);
+  assert.deepEqual((await db.query('select slack_dm_post from scout.records where id=$1',[fresh])).rows[0].slack_dm_post,{state:'do_not_post'});
+  for(const invalid of [{},{state:'posted'},{state:'posted',ts:123},{state:'posted',ts:'not-a-message'},
+   {state:'posted',ts:'123.456',body:'No message bodies'},{state:'uncertain',ts:'123.456'},{state:'do_not_post',reason:'No extra fields'},[]])
+   await assert.rejects(db.query('update scout.records set slack_dm_post=$2::jsonb where id=$1',[fresh,JSON.stringify(invalid)]),{code:'23514'});
  }finally{await db.close();}
 });
 
@@ -146,14 +163,48 @@ test('hosted delivery retains rejection reasons, permits safe retry and stops ba
  }finally{await db.close();}
 });
 
-test('concurrent callers cannot both post the same finding',async()=>{
+test('concurrent automatic callers cannot both post the same finding to either destination',async()=>{
  const db=await database();try{
-  const id=await seed(db),preview=await prepareMessages(db,{kind:'findings',ids:[id]});
+  for(const score of [85,60]){
+  const id=await seed(db);await db.query('update scout.records set score=$2,slack_dm_post=null where id=$1',[id,score]);
+  const preview=await prepareMessages(db,{kind:'pending'}),channel=score>=75?CHANNEL:DM_CHANNEL;
   let started,release;const claimed=new Promise(resolve=>{started=resolve;}),finish=new Promise(resolve=>{release=resolve;});
-  const first=sendMessages(db,preview,async()=>{started();await finish;return ack();});await claimed;
+  const first=sendMessages(db,preview,async()=>{started();await finish;return ack(channel);});await claimed;
   const second=await sendMessages(db,preview,()=>assert.fail('Another sender owns the claim'));
   assert.equal(second.communicated,0);assert.equal(second.uncertain,1);release();assert.equal((await first).communicated,1);
   assert.equal((await sendMessages(db,preview,()=>assert.fail('Receipt prevents repost'))).skipped,1);
+  }
+ }finally{await db.close();}
+});
+
+test('pending DMs retry definite rejections, hold lost acknowledgements and reconcile only their own destination',async t=>{
+ const db=await database();try{
+  const id=await seed(db);await db.query('update scout.records set score=60,slack_dm_post=null where id=$1',[id]);
+  const preview=await prepareMessages(db,{kind:'pending'});
+  assert.equal((await sendMessages(db,preview,async()=>({status:200,body:JSON.stringify({ok:false,error:'ratelimited'})}))).status,'failed');
+  assert.equal((await db.query('select slack_dm_post from scout.records where id=$1',[id])).rows[0].slack_dm_post,null);
+  assert.equal((await sendMessages(db,preview,async()=>{throw new Error('Response lost');})).status,'unknown');
+  const secret='sb_secret_notify_test',env={url:'https://example.supabase.co',secretKeys:{default:secret},publishableKeys:{},jwks:null};
+  const connect=()=>({reserve:async()=>({unsafe:async(q,p=[])=>{const r=await db.query(q,p);return Object.assign(r.rows,{count:r.affectedRows??r.rows.length});},release(){}}),end:async()=>{}});
+  const idle=await hostedNotify(new Request('https://example.test/notify?kind=pending',{method:'POST',headers:{apikey:secret}}),{
+   env,databaseURL:'unused',connect,slackFetch:()=>assert.fail('Pending delivery must not scan history'),post:()=>assert.fail('An uncertain DM cannot retry blindly')
+  });
+  const idleResult=await idle.json();assert.equal(idle.status,200);assert.equal(idleResult.communicated,0);assert.equal(idleResult.cost.statements,1);
+  const high=await seed(db),channels=[],posts=[];
+  const response=await hostedNotify(new Request('https://example.test/notify?kind=unposted',{method:'POST',headers:{apikey:secret}}),{
+   env,databaseURL:'unused',connect,slackToken:'xoxb-test',
+   slackFetch:async input=>{const channel=new URL(input).searchParams.get('channel');channels.push(channel);
+    return Response.json({ok:true,messages:(channel===CHANNEL?[id]:[id,high]).map(record_id=>({user:'U0C6PNRPX4G',ts:'123.456',metadata:{event_type:'scout_finding',event_payload:{record_id}}}))});},
+   post:async payload=>{posts.push(payload);return ack(payload.channel);}
+  });
+  const result=await response.json();assert.equal(response.status,200);assert.equal(result.reconciled,1);assert.equal(result.communicated,1);
+  assert.deepEqual(channels.sort(),[CHANNEL,DM_CHANNEL].sort());assert.deepEqual(posts.map(p=>[p.channel,p.metadata.event_payload.record_id]),[[CHANNEL,high]]);
+  const low=(await db.query('select * from scout.records where id=$1',[id])).rows[0];
+  assert.equal(low.slack_channel_post,null);assert.deepEqual(low.slack_dm_post,{state:'posted',ts:'123.456'});
+  const manual=await prepareMessages(db,{kind:'findings',ids:[id]});
+  assert.equal((await sendMessages(db,manual,async()=>ack(DM_CHANNEL))).communicated,1);
+  assert.equal((await prepareMessages(db,{kind:'pending'})).records.length,0);
+  t.diagnostic(JSON.stringify({mocked_slack:true,model_calls:0,idle_cost:idleResult.cost,dm_receipt_bytes:(await db.query('select pg_column_size(slack_dm_post) as bytes from scout.records where id=$1',[id])).rows[0].bytes}));
  }finally{await db.close();}
 });
 
