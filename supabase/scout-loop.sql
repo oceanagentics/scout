@@ -38,7 +38,8 @@ begin
  select decrypted_secret into key from vault.decrypted_secrets where name='scout_loop_backend_key';
  if key is null then return;end if;
  perform net.http_post(url:='https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/'||endpoint,
-  headers:=jsonb_build_object('apikey',key),body:=null,timeout_milliseconds:=120000);
+  headers:=jsonb_build_object('apikey',key),body:=null,
+  timeout_milliseconds:=case when mode='next' then 145000 else 120000 end);
 end $$;
 revoke all on function scout.loop_tick(text) from public,anon,authenticated,service_role;
 select cron.schedule('scout-collection','*/6 * * * *',$$select scout.loop_tick('next')$$);

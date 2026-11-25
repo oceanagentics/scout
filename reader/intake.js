@@ -4,7 +4,7 @@ import {createWebServices} from './services/gateway.js';
 import {ingestSource} from './ingestion.js';
 // Claim one tracker; commit each source-date group before moving to newer posts.
 export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,serviceKeys,notify,publishCalendar}){
-  const tracker=(await db.query(`update scout.trackers set lease_id=$2,lease_until=clock_timestamp()+interval '120 seconds',
+  const tracker=(await db.query(`update scout.trackers set lease_id=$2,lease_until=clock_timestamp()+interval '140 seconds',
     last_checked_at=date_trunc('milliseconds',clock_timestamp()),
     failure_count=case when $1::uuid is not null and failure_count>=3 then 1 else failure_count+1 end
     where id=(select id from scout.trackers where url is not null
@@ -19,7 +19,7 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,servi
       ((last_checked_at at time zone 'America/New_York')::date
         - interval '1 month')::date::text as oldest_date`,[trackerId,randomUUID()])).rows[0];
   if(!tracker)return {state:'idle',created:0,changed:0};
-  const through=new Date(tracker.last_checked_at).toISOString(),deadline=Date.parse(through)+100000;
+  const through=new Date(tracker.last_checked_at).toISOString(),deadline=Date.parse(through)+120000;
   const cache=new Map(),metrics={requests:0,bytes:0};
   const {scrape,search}=createWebServices({keys:serviceKeys,fetch:sourceFetch,metrics});
   const read=(url,options={})=>{
@@ -34,7 +34,7 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,servi
     [tracker.id,tracker.lease_id,tracker.url,/^[a-z_]{1,48}$/.test(result.reason)?result.reason:'reader_failed',result.processed?1:tracker.failure_count]);
    result.state=!updated.rows.length?'stale':(!result.processed&&tracker.failure_count>=3?'needs_attention':'deferred');
   }
-  const notifications=[],calendar=[];const callbackDeadline=Date.parse(through)+115000;
+  const notifications=[],calendar=[];const callbackDeadline=Date.parse(through)+135000;
   if(notify&&result.createdIds.length&&Date.now()<callbackDeadline){try{notifications.push(await notify(result.createdIds,{deadline:callbackDeadline}));}catch(error){notifications.push({status:'unknown',communicated:0,error:/^(slack_[a-z_]+|database_operation)$/.test(error?.reason??'')?error.reason:'notification_interrupted'});}}
   if(publishCalendar&&result.calendarIds.length&&Date.now()<callbackDeadline){try{calendar.push(await publishCalendar([...new Set(result.calendarIds)],{deadline:callbackDeadline}));}catch{calendar.push({status:'failed'});}}
   const {createdIds,calendarIds,...output}=result;

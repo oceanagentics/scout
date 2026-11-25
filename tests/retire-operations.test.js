@@ -98,11 +98,15 @@ test('daily catch-up and calendar dispatch once at the New York hour in winter a
  const {db}=await fixture();try{
   await db.exec(`create view vault.decrypted_secrets as select name,secret as decrypted_secret from vault.secrets;
    insert into vault.secrets values('scout_loop_backend_key','fixture');
-   create table net.requests(url text);
+   create table net.requests(url text,timeout_milliseconds int);
    create function net.http_post(url text,headers jsonb,body jsonb,timeout_milliseconds int) returns bigint
-   language sql as $$insert into net.requests values(url) returning 1::bigint$$;`);
+   language sql as $$insert into net.requests values(url,timeout_milliseconds) returning 1::bigint$$;`);
   const scheduler=(await readFile(new URL('../supabase/scout-loop.sql',import.meta.url),'utf8'))
    .match(/create or replace function scout\.loop_tick[\s\S]+?end \$\$;/)[0];
+  await db.exec(`create table scout.source_items(tracker_id uuid,pending boolean);
+   alter table scout.trackers add column last_checked_at timestamptz,add column last_successful_check timestamptz,
+   add column retire_on date,add column lease_until timestamptz,add column failure_count int default 0;
+   update scout.trackers set enabled=true;`);
   for(const [day,morning] of [['2026-11-09',13],['2026-07-06',12]]){
    for(const [mode,hours,expected] of [['morning',[12,13],morning],['weekly',[13,14],null],['calendar',[8,9],morning-4]]){
     let dispatched=0;
@@ -112,11 +116,15 @@ test('daily catch-up and calendar dispatch once at the New York hour in winter a
      const requests=(await db.query('select * from net.requests')).rows;
      assert.equal(requests.length,hour===expected?1:0);
      dispatched+=requests.length;
-     if(requests.length)assert.ok(requests[0].url.endsWith(mode==='calendar'?'scout-calendar/reconcile':'scout-notify?kind=unposted'));
+     if(requests.length){assert.ok(requests[0].url.endsWith(mode==='calendar'?'scout-calendar/reconcile':'scout-notify?kind=unposted'));assert.equal(requests[0].timeout_milliseconds,120000);}
      await db.exec('delete from net.requests');
     }
     assert.equal(dispatched,mode==='weekly'?0:1);
    }
   }
+  await db.exec(scheduler);
+  await db.query("select scout.loop_tick('next')");
+  const collection=(await db.query('select * from net.requests')).rows;
+  assert.equal(collection.length,1);assert.ok(collection[0].url.endsWith('scout-reader'));assert.equal(collection[0].timeout_milliseconds,145000);
  }finally{await db.close();}
 });
