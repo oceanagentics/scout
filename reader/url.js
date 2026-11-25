@@ -8,7 +8,7 @@ const fail=reason=>Object.assign(new Error(reason),{reason});
 
 // Recognized bot challenges and the existing empty Angular application shell.
 export function isBlockedPage(content){
- return /<title[^>]*>\s*(?:just a moment|attention required|access denied)|\/cdn-cgi\/challenge-platform\/|<ng-view\b[^>]*>\s*<\/ng-view>/i.test(content)||
+ return /<title[^>]*>\s*(?:just a moment|attention required|access denied)|<ng-view\b[^>]*>\s*<\/ng-view>/i.test(content)||
   /^\s*(?:#{1,6}\s*)?(?:just a moment|checking your browser|performing security verification|verify you are human)(?:[.!…\s]|$)/i.test(content);
 }
 

@@ -162,6 +162,19 @@ test('the direct HTTP deadline does not cancel an extraction attempt',async t=>{
  assert.equal(page.content,'Article retrieved after the HTTP deadline');assert.equal(collection.signal.aborted,false);
 });
 
+test('Cloudflare background scripts preserve direct reading and structured event schedules',async()=>{
+ const url='https://example.org/event',schedule={'@context':'https://schema.org','@type':'Event',startDate:'2026-11-26T16:00:00.000+04:00',endDate:'2026-11-26T17:30:00.000+04:00'};
+ const page=await readUrl(url,{
+  fetch:async()=>new Response(`<html><head><title>Online training</title></head><body><main>Training agenda</main>
+   <script type="application/ld+json">${JSON.stringify(schedule)}</script>
+   <script>var script=document.createElement('script');script.src='/cdn-cgi/challenge-platform/scripts/precursor/main.js';document.head.appendChild(script);</script>
+   </body></html>`,{headers:{'content-type':'text/html'}}),
+  scrape:async()=>assert.fail('A usable page must not invoke extraction')
+ });
+ assert.equal(page.request_url,url);assert.match(page.content,/Training agenda/);
+ assert.ok(page.content.includes(JSON.stringify(schedule)));
+});
+
 test('HTML challenges and empty application shells use fallback; working, missing and private resources do not',async()=>{
  let extractions=0;
  const scrape=async()=>{extractions++;return {media_type:'text/markdown',content:'Rendered article'};};
