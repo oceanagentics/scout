@@ -100,10 +100,13 @@ test('blocked pages use extraction after redirect validation and never inherit H
  assert.equal(extractions,2);
 });
 
-test('validated connection resets use extraction at the redirected URL and cache the recovered page',async()=>{
+test('validated connection resets and unknown issuers use extraction at the redirected URL and cache the recovered page',async()=>{
  const errors=[Object.assign(new Error('Socket closed'),{code:'ECONNRESET'}),
   new TypeError('fetch failed',{cause:Object.assign(new Error('Socket closed'),{code:'ECONNRESET'})}),
-  new TypeError('client error (SendRequest): connection error: connection reset: connection reset')];
+  new TypeError('client error (SendRequest): connection error: connection reset: connection reset'),
+  Object.assign(new Error('Unable to verify the first certificate'),{code:'UNABLE_TO_VERIFY_LEAF_SIGNATURE'}),
+  new TypeError('fetch failed',{cause:Object.assign(new Error('Unable to verify the first certificate'),{code:'UNABLE_TO_VERIFY_LEAF_SIGNATURE'})}),
+  new TypeError('error sending request for url (https://example.org/article): client error (Connect): invalid peer certificate: UnknownIssuer')];
  for(const error of errors){
   const url='https://example.org/list',target='https://example.org/article',cache=new Map();let requests=0,extractions=0;
   const options={cache,fetch:async requested=>{requests++;if(requested===url)return new Response(null,{status:302,headers:{location:target}});throw error;},
@@ -115,7 +118,7 @@ test('validated connection resets use extraction at the redirected URL and cache
  }
 });
 
-test('reset fallback excludes other failures, native files, private targets and expired deadlines',async t=>{
+test('transport fallback excludes other failures, native files, private targets and expired deadlines',async t=>{
  const timers=[];let extractions=0;
  t.mock.method(AbortSignal,'timeout',()=>{const controller=new AbortController();timers.push(controller);return controller.signal;});
  const scrape=async()=>{extractions++;return {content:'Unexpected extraction'};};

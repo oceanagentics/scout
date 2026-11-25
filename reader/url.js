@@ -93,7 +93,8 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
             }});
         }catch(error){
           const reset=error.code==='ECONNRESET'||error.cause?.code==='ECONNRESET'||/\bconnection reset\b/i.test([error.message,error.cause?.message].join(' '));
-          if(received||!scrape||bounded.aborted||!reset||/\.(?:pdf|png|jpe?g|webp|gif)$/i.test(target.pathname))throw error;
+          const unknownIssuer=error.code==='UNABLE_TO_VERIFY_LEAF_SIGNATURE'||error.cause?.code==='UNABLE_TO_VERIFY_LEAF_SIGNATURE'||/invalid peer certificate: UnknownIssuer\b/i.test([error.message,error.cause?.message].join(' '));
+          if(received||!scrape||bounded.aborted||!(reset||unknownIssuer)||/\.(?:pdf|png|jpe?g|webp|gif)$/i.test(target.pathname))throw error;
           return {url:target,fallback:true};
         }
         const {response,unchanged}=checked;
