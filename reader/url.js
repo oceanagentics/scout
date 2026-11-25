@@ -8,7 +8,7 @@ const fail=reason=>Object.assign(new Error(reason),{reason});
 
 // Recognized bot challenges and the existing empty Angular application shell.
 export function isBlockedPage(content){
- return /<title[^>]*>\s*(?:just a moment|attention required|access denied)|\/cdn-cgi\/challenge-platform\/|<ng-view\b[^>]*>\s*<\/ng-view>/i.test(content)||
+ return /<title[^>]*>\s*(?:just a moment|attention required|access denied)|<ng-view\b[^>]*>\s*<\/ng-view>/i.test(content)||
   /^\s*(?:#{1,6}\s*)?(?:just a moment|checking your browser|performing security verification|verify you are human)(?:[.!…\s]|$)/i.test(content);
 }
 
@@ -93,7 +93,8 @@ export async function readUrl(value,{fetch:send=fetch,signal,cache=new Map(),met
             }});
         }catch(error){
           const reset=error.code==='ECONNRESET'||error.cause?.code==='ECONNRESET'||/\bconnection reset\b/i.test([error.message,error.cause?.message].join(' '));
-          if(received||!scrape||bounded.aborted||!reset||/\.(?:pdf|png|jpe?g|webp|gif)$/i.test(target.pathname))throw error;
+          const unknownIssuer=error.code==='UNABLE_TO_VERIFY_LEAF_SIGNATURE'||error.cause?.code==='UNABLE_TO_VERIFY_LEAF_SIGNATURE'||/invalid peer certificate: UnknownIssuer\b/i.test([error.message,error.cause?.message].join(' '));
+          if(received||!scrape||bounded.aborted||!(reset||unknownIssuer)||/\.(?:pdf|png|jpe?g|webp|gif)$/i.test(target.pathname))throw error;
           return {url:target,fallback:true};
         }
         const {response,unchanged}=checked;

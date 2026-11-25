@@ -100,10 +100,13 @@ test('blocked pages use extraction after redirect validation and never inherit H
  assert.equal(extractions,2);
 });
 
-test('validated connection resets use extraction at the redirected URL and cache the recovered page',async()=>{
+test('validated connection resets and unknown issuers use extraction at the redirected URL and cache the recovered page',async()=>{
  const errors=[Object.assign(new Error('Socket closed'),{code:'ECONNRESET'}),
   new TypeError('fetch failed',{cause:Object.assign(new Error('Socket closed'),{code:'ECONNRESET'})}),
-  new TypeError('client error (SendRequest): connection error: connection reset: connection reset')];
+  new TypeError('client error (SendRequest): connection error: connection reset: connection reset'),
+  Object.assign(new Error('Unable to verify the first certificate'),{code:'UNABLE_TO_VERIFY_LEAF_SIGNATURE'}),
+  new TypeError('fetch failed',{cause:Object.assign(new Error('Unable to verify the first certificate'),{code:'UNABLE_TO_VERIFY_LEAF_SIGNATURE'})}),
+  new TypeError('error sending request for url (https://example.org/article): client error (Connect): invalid peer certificate: UnknownIssuer')];
  for(const error of errors){
   const url='https://example.org/list',target='https://example.org/article',cache=new Map();let requests=0,extractions=0;
   const options={cache,fetch:async requested=>{requests++;if(requested===url)return new Response(null,{status:302,headers:{location:target}});throw error;},
@@ -115,7 +118,7 @@ test('validated connection resets use extraction at the redirected URL and cache
  }
 });
 
-test('reset fallback excludes other failures, native files, private targets and expired deadlines',async t=>{
+test('transport fallback excludes other failures, native files, private targets and expired deadlines',async t=>{
  const timers=[];let extractions=0;
  t.mock.method(AbortSignal,'timeout',()=>{const controller=new AbortController();timers.push(controller);return controller.signal;});
  const scrape=async()=>{extractions++;return {content:'Unexpected extraction'};};
@@ -160,6 +163,19 @@ test('the direct HTTP deadline does not cancel an extraction attempt',async t=>{
  const {scrape}=createWebServices({fetch});
  const page=await readUrl(url,{fetch,scrape,signal:collection.signal});
  assert.equal(page.content,'Article retrieved after the HTTP deadline');assert.equal(collection.signal.aborted,false);
+});
+
+test('Cloudflare background scripts preserve direct reading and structured event schedules',async()=>{
+ const url='https://example.org/event',schedule={'@context':'https://schema.org','@type':'Event',startDate:'2026-11-26T16:00:00.000+04:00',endDate:'2026-11-26T17:30:00.000+04:00'};
+ const page=await readUrl(url,{
+  fetch:async()=>new Response(`<html><head><title>Online training</title></head><body><main>Training agenda</main>
+   <script type="application/ld+json">${JSON.stringify(schedule)}</script>
+   <script>var script=document.createElement('script');script.src='/cdn-cgi/challenge-platform/scripts/precursor/main.js';document.head.appendChild(script);</script>
+   </body></html>`,{headers:{'content-type':'text/html'}}),
+  scrape:async()=>assert.fail('A usable page must not invoke extraction')
+ });
+ assert.equal(page.request_url,url);assert.match(page.content,/Training agenda/);
+ assert.ok(page.content.includes(JSON.stringify(schedule)));
 });
 
 test('HTML challenges and empty application shells use fallback; working, missing and private resources do not',async()=>{

@@ -9,13 +9,13 @@ export async function investigate(db,item,{modelFor,deadline,readUrl,oldestDate,
  const updates=previous?.decisions.filter(d=>d.action==='update'&&d.fields.score>0)??[];
  const lookups=updates.length?[...previous.lookups]:[],readURLs=new Set([item.url,...supplied.filter(source=>Object.hasOwn(source,'content')||source.media_type).map(source=>source.url)]),invalid_fields={};let resource=null;
  const suggestedUpdates=updates.map(({id,fields})=>{
-  const {revision,modified,pending,slack_channel_post,...current_record}=proposed.find(r=>r.id===id)??lookups.flatMap(l=>l.records).find(r=>r.id===id);
+  const {revision,modified,pending,slack_channel_post,slack_dm_post,...current_record}=proposed.find(r=>r.id===id)??lookups.flatMap(l=>l.records).find(r=>r.id===id);
   return {id,fields,current_record};
  });
  const read=async(url,options={})=>{const source=await readUrl(url,options);evidence.set(source.url,source);readURLs.add(source.url);if(new URL(url).href.split('#')[0]===item.url.split('#')[0])resource=source;return source;};
  const functions=[{name:'search_findings',description:'Search saved Scout findings. Text queries are ORed; each phrase uses all words. Include a responsible organization name ALONE alongside specific topic phrases. Broaden empty searches. Return complete finding candidates.',
   parameters:{type:'object',properties:{queries:{type:'array',items:{type:'string'}},urls:{type:'array',items:{type:'string'}}},required:['queries','urls'],additionalProperties:false},
-  run:async args=>{const result=await searchFindings(db,args);lookups.push({args,records:result.records});const records=[...new Map([...result.records,...proposed].map(r=>[r.id,r])).values()].map(({revision,modified,pending,slack_channel_post,...record})=>record);return {records,count:records.length};}}];
+  run:async args=>{const result=await searchFindings(db,args);lookups.push({args,records:result.records});const records=[...new Map([...result.records,...proposed].map(r=>[r.id,r])).values()].map(({revision,modified,pending,slack_channel_post,slack_dm_post,...record})=>record);return {records,count:records.length};}}];
  const validate=answer=>{
   if(answer.status==='unreadable')throw fail('model_unreadable');
   if(answer.status!=='complete'||!Array.isArray(answer.decisions))throw fail('invalid_output');

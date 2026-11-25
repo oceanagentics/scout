@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {sourceLink} from '../shared/records.js';
+import {sourceLink,PUBLICATION_SCORE} from '../shared/records.js';
 import {normalizeDate,dateInterval,recordEnd} from '../shared/finding-dates.js';
 
 const text=v=>typeof v==='string'?v.toWellFormed().replace(/\s+/g,' ').trim():null;
@@ -80,7 +80,7 @@ export function proposedFindings(entries){
 }
 
 export async function applyDecisions(tx,entries){
- const counts={created:0,changed:0,saved:0,ambiguous:0,createdIds:[],calendarIds:[]};
+ const counts={created:0,changed:0,saved:0,ambiguous:0};
  const operations=entries.flatMap(e=>e.investigation.decisions).filter(d=>d.action!=='skip');
  if(operations.length)await tx.query("select pg_advisory_xact_lock(hashtextextended('scout:findings',0))");
  const snapshots=new Map();
@@ -122,12 +122,11 @@ export async function applyDecisions(tx,entries){
   const record=target?(await tx.query(`update scout.records set ${fields.map((k,i)=>k+'='+expressions[i]).join(',')},
    modified=array_append(modified,greatest(date_trunc('milliseconds',clock_timestamp()),modified[cardinality(modified)]+interval '1 millisecond'))
    where id=$${params.length+1} returning id`,[...params,target.id])).rows[0]
-   :(await tx.query(`insert into scout.records(${fields.join(',')},id) values(${expressions.join(',')},$${params.length+1}) returning id`,[...params,createdID])).rows[0];
+   :(await tx.query(`insert into scout.records(${fields.join(',')},id,slack_dm_post) values(${expressions.join(',')},$${params.length+1},$${params.length+2}::jsonb) returning id`,
+    [...params,createdID,values.score!=null&&values.score<PUBLICATION_SCORE?null:JSON.stringify({state:'do_not_post'})])).rows[0];
   if(!record)throw fail('stale_record');
   working.set(record.id,{...values,id:record.id,revision:target?.revision??null});
   counts[target?'changed':'created']++;counts.saved++;
-  if(!target)counts.createdIds.push(record.id);
-  if(values.type==='event'||target?.type==='event')counts.calendarIds.push(record.id);
  }
  }
  return counts;

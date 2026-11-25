@@ -3,7 +3,7 @@ import {readUrl} from './url.js';
 import {createWebServices} from './services/gateway.js';
 import {ingestSource} from './ingestion.js';
 // Claim one tracker; commit each source-date group before moving to newer posts.
-export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,serviceKeys,notify,publishCalendar}){
+export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,serviceKeys}){
   const tracker=(await db.query(`update scout.trackers set lease_id=$2,lease_until=clock_timestamp()+interval '140 seconds',
     last_checked_at=date_trunc('milliseconds',clock_timestamp()),
     failure_count=case when $1::uuid is not null and failure_count>=3 then 1 else failure_count+1 end
@@ -34,9 +34,5 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,servi
     [tracker.id,tracker.lease_id,tracker.url,/^[a-z_]{1,48}$/.test(result.reason)?result.reason:'reader_failed',result.processed?1:tracker.failure_count]);
    result.state=!updated.rows.length?'stale':(!result.processed&&tracker.failure_count>=3?'needs_attention':'deferred');
   }
-  const notifications=[],calendar=[];const callbackDeadline=Date.parse(through)+135000;
-  if(notify&&result.createdIds.length&&Date.now()<callbackDeadline){try{notifications.push(await notify(result.createdIds,{deadline:callbackDeadline}));}catch(error){notifications.push({status:'unknown',communicated:0,error:/^(slack_[a-z_]+|database_operation)$/.test(error?.reason??'')?error.reason:'notification_interrupted'});}}
-  if(publishCalendar&&result.calendarIds.length&&Date.now()<callbackDeadline){try{calendar.push(await publishCalendar([...new Set(result.calendarIds)],{deadline:callbackDeadline}));}catch{calendar.push({status:'failed'});}}
-  const {createdIds,calendarIds,...output}=result;
-  return {...output,tracker_id:tracker.id,source:metrics,notifications,calendar};
+  return {...result,tracker_id:tracker.id,source:metrics};
 }

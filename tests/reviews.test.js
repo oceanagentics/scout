@@ -177,6 +177,6 @@ test('Slack references and feedback preserve reviews, remain private and do not 
     assert.deepEqual((await db.query('select * from scout.finding_reviews')).rows,[]);
     await db.exec('reset role');
     const {priority,...facts}=record;
-    assert.deepEqual((await db.query('select * from scout.records')).rows.map(({slack_channel_post,...finding})=>finding),[{...facts,score:60}]);
+    assert.deepEqual((await db.query('select * from scout.records')).rows.map(({slack_channel_post,slack_dm_post,...finding})=>finding),[{...facts,score:60}]);
   } finally {await db.close();}
 });

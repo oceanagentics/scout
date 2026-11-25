@@ -94,7 +94,7 @@ test('replacement scheduler bounds its own history without a policy table',async
  }finally{await db.close();}
 });
 
-test('daily catch-up and calendar dispatch once at the New York hour in winter and summer; weekly is retired',async()=>{
+test('one Slack job dispatches daily repair at 8 a.m. New York and pending delivery otherwise; calendars dispatch independently',async()=>{
  const {db}=await fixture();try{
   await db.exec(`create view vault.decrypted_secrets as select name,secret as decrypted_secret from vault.secrets;
    insert into vault.secrets values('scout_loop_backend_key','fixture');
@@ -108,19 +108,24 @@ test('daily catch-up and calendar dispatch once at the New York hour in winter a
    add column retire_on date,add column lease_until timestamptz,add column failure_count int default 0;
    update scout.trackers set enabled=true;`);
   for(const [day,morning] of [['2026-11-09',13],['2026-07-06',12]]){
-   for(const [mode,hours,expected] of [['morning',[12,13],morning],['weekly',[13,14],null],['calendar',[8,9],morning-4]]){
-    let dispatched=0;
-    for(const hour of hours){
-     await db.exec(scheduler.replaceAll('clock_timestamp()',`'${day}T${hour}:00:00Z'::timestamptz`));
-     await db.query('select scout.loop_tick($1)',[mode]);
-     const requests=(await db.query('select * from net.requests')).rows;
-     assert.equal(requests.length,hour===expected?1:0);
-     dispatched+=requests.length;
-     if(requests.length){assert.ok(requests[0].url.endsWith(mode==='calendar'?'scout-calendar/reconcile':'scout-notify?kind=unposted'));assert.equal(requests[0].timeout_milliseconds,120000);}
-     await db.exec('delete from net.requests');
-    }
-    assert.equal(dispatched,mode==='weekly'?0:1);
+   let repaired=0;
+   for(const hour of [12,13])for(const minute of ['00','06']){
+    await db.exec(scheduler.replaceAll('clock_timestamp()',`'${day}T${hour}:${minute}:00Z'::timestamptz`));
+    await db.query("select scout.loop_tick('notify')");
+    const requests=(await db.query('select * from net.requests')).rows;
+    assert.equal(requests.length,1);
+    const daily=hour===morning&&minute==='00';if(daily)repaired++;
+    assert.ok(requests[0].url.endsWith('scout-notify?kind='+(daily?'unposted':'pending')));
+    assert.equal(requests[0].timeout_milliseconds,120000);
+    await db.exec('delete from net.requests');
    }
+   assert.equal(repaired,1);
+   await db.query("select scout.loop_tick('calendar')");
+   const calendar=(await db.query('select * from net.requests')).rows;
+   assert.equal(calendar.length,1);assert.ok(calendar[0].url.endsWith('scout-calendar/reconcile'));assert.equal(calendar[0].timeout_milliseconds,120000);
+   await db.exec('delete from net.requests');
+   for(const mode of ['morning','weekly'])await db.query('select scout.loop_tick($1)',[mode]);
+   assert.equal((await db.query('select * from net.requests')).rows.length,0);
   }
   await db.exec(scheduler);
   await db.query("select scout.loop_tick('next')");
