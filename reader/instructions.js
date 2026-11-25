@@ -67,8 +67,7 @@ reason, with id and fields null. Low usefulness, missing optional fields or
 an existing match do not justify skipping. Return complete with no decisions
 when there are no identifiable developments.
 
-Before saving, search Scout using responsible-organization, topic/title and
-URL queries; broaden empty narrow searches before concluding no match exists.
+Before saving, include each responsible organization name individually as separate search queries. Add topic/title and URL queries separately; broaden empty searches before concluding no match exists.
 Read full candidates and compare subject, title, version, language, event
 occurrence and date. A shared organization or URL does not establish identity.
 Keep distinct releases, episodes and summary/full publications
