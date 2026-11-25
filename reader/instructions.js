@@ -31,10 +31,10 @@ sufficiently precise start. Resolve relative dates using publication context;
 never invent dates, times or duration.
 
 Fields
-- description: Specific development, responsible organization first; max
+- description: Specific development in English, responsible organization first; max
   280 characters, not a target. Preserve existing wording unless facts
   or corrections warrant change.
-- details: Identifying facts first: title/version, programme, location,
+- details: In English. Identifying facts first: title/version, programme, location,
   subject. For funding, include exact funder/programme and marine purpose,
   amount/scope. For actionable calls, capture evidenced eligibility,
   deadline with timezone and participation route. Keep one current account
@@ -71,7 +71,7 @@ Before saving, search Scout using responsible-organization, topic/title and
 URL queries; broaden empty narrow searches before concluding no match exists.
 Read full candidates and compare subject, title, version, language, event
 occurrence and date. A shared organization or URL does not establish identity.
-Keep distinct releases, languages, episodes and summary/full publications
+Keep distinct releases, episodes and summary/full publications
 separate. Calls, gatherings, announcements, reactions and endorsements can
 be distinct developments.
 
