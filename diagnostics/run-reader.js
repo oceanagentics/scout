@@ -15,7 +15,7 @@ if(diagnostic){
   if(!process.env.SCOUT_BACKEND_KEY)throw new Error('SCOUT_BACKEND_KEY required');
   const query=tracker?'?'+new URLSearchParams({tracker_id:tracker}):'';
   const response=await fetch('https://vhlfumeyhkeospnemukq.supabase.co/functions/v1/scout-reader'+query,
-    {method:'POST',headers:{apikey:process.env.SCOUT_BACKEND_KEY},signal:AbortSignal.timeout(125000)});
+    {method:'POST',headers:{apikey:process.env.SCOUT_BACKEND_KEY},signal:AbortSignal.timeout(150000)});
   if(!response.ok)throw new Error('Reader returned HTTP '+response.status);
   console.log(await response.text());
 }

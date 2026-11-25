@@ -49,7 +49,7 @@ or deploy this diagnostic. No production database receives traffic.
 
 The CLI prints normalized records and workflow diagnostics separately from the
 raw traffic, including request/token totals, source body bytes and any malformed
-optional scheduling fields. Continuation requests share the check's 100-second
+optional scheduling fields. Continuation requests share the check's 120-second
 deadline; a model attempt can contain several HTTP requests. Broken documents,
 incomplete coverage and conflicting saved dates do not block other findings or
 progress. There is no cleanup or scheduling follow-up. Provider retrieval metadata

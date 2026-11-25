@@ -5,7 +5,7 @@ import {verifyLease,pendingItems,registerItems,consumeItem,completeSource} from 
 import {cbdRequest,prepareCBD} from './sources/cbd.js';
 import {scoutDay} from '../shared/finding-dates.js';
 export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,search,deadline,through}){
- const commitDeadline=Date.parse(through)+110000;
+ const commitDeadline=Date.parse(through)+130000;
  const result={created:0,changed:0,saved:0,ambiguous:0,processed:0,skipped:0,createdIds:[],calendarIds:[],diagnostics:[]};
  const add=counts=>{for(const key of ['created','changed','saved','ambiguous'])result[key]+=counts[key];result.createdIds.push(...counts.createdIds);result.calendarIds.push(...counts.calendarIds);};
  try{

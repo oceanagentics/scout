@@ -234,11 +234,41 @@ test('matched updates retain new source URLs and unchanged facts; identical upda
  t.diagnostic(JSON.stringify({mocked_model:true,first_sql_cost:firstCost,identical_update_sql_cost:Object.fromEntries(Object.keys(firstCost).map(k=>[k,db.metrics[k]-firstCost[k]])),identical_finding_writes:0}));
 });
 
+test('collection can investigate past 100 seconds, commit after 120 and publish before its lease expires',async t=>{
+ const {raw,db,tracker}=await setup(t);
+ await raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]);
+ const started=Date.now(),callbacks=[];let investigated=false,delayedCommit=false;
+ t.mock.timers.enable({apis:['Date'],now:started});
+ const transaction=db.transaction.bind(db);
+ t.mock.method(db,'transaction',(work,options)=>transaction(async tx=>{
+  if(investigated&&!delayedCommit){t.mock.timers.tick(6000);delayedCommit=true;}
+  return work(tx);
+ },options));
+ const result=await intake(db,{trackerId:tracker.id,
+  sourceFetch:async()=>new Response('<main>HSA workshop</main>',{headers:{'content-type':'text/html'}}),
+  modelFor:(_item,options)=>async()=>{
+   assert.equal(options.deadline,started+120000);
+   const lease=(await raw.query('select extract(epoch from lease_until-last_checked_at)::float8 seconds from scout.trackers where id=$1',[tracker.id])).rows[0].seconds;
+   assert.ok(lease>=140&&lease<141);
+   t.mock.timers.tick(119000);
+   await options.functions[0].run({queries:['HSA'],urls:[]});
+   investigated=true;
+   return answer([create({...finding,score:0})]);
+  },
+  notify:async(ids,{deadline})=>{callbacks.push('notify');assert.equal(ids.length,1);assert.equal(Date.now(),started+125000);assert.equal(deadline,started+135000);return {status:'sent'};},
+  publishCalendar:async(ids,{deadline})=>{callbacks.push('calendar');assert.equal(ids.length,1);assert.equal(Date.now(),started+125000);assert.equal(deadline,started+135000);return {status:'ok'};}
+ });
+ assert.equal(result.state,'saved');assert.equal(result.created,1);assert.equal(result.skipped,0);
+ assert.deepEqual(callbacks,['notify','calendar']);
+ const saved=(await raw.query('select lease_until,last_successful_check from scout.trackers where id=$1',[tracker.id])).rows[0];
+ assert.equal(saved.lease_until,null);assert.equal(new Date(saved.last_successful_check).getTime(),started);
+});
+
 test('attempted timeout commits a skip, unattempted items stay pending, and resume moves forward',async t=>{
  const {raw,db,tracker}=await setup(t);const seen=[];
  t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const run=()=>intake(db,{trackerId:tracker.id,sourceFetch:async url=>url===feedURL?rss([['a',publication,'A'],['b',publication+'-b','B'],['c',publication+'-c','C']]):new Response('<main>Article</main>',{headers:{'content-type':'text/html'}}),modelFor:model(async({item,search})=>{
-  seen.push(item.url);if(item.url.endsWith('-b')){t.mock.timers.tick(100001);throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});}
+  seen.push(item.url);if(item.url.endsWith('-b')){t.mock.timers.tick(120001);throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});}
   await search({queries:['HSA'],urls:[]});return answer([create({...finding,description:item.url})]);
  })});
  const first=await run();assert.equal(first.processed,2);assert.equal(first.skipped,1);assert.equal(first.state,'deferred');
