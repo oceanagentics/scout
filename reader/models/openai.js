@@ -3,6 +3,7 @@ import {modelErrorReason} from './contract.js';
 export const OPENAI_MODEL='gpt-6-luna';
 export const OPENAI_MODELS={
   [OPENAI_MODEL]:'low',
+  'gpt-6.1-terra':'none',
   'gpt-5.6-terra':'low',
   'gpt-6.1-sol':'xhigh'
 };
@@ -51,12 +52,19 @@ export function createOpenAIAdapter({apiKey,urls=[],readUrl,functions=[],model=O
         }
         return parts;
       };
-      const first=[{type:'input_text',text:JSON.stringify({input,urls:requested})}];
+      const {evidence=[],...initialInput}=input;
+      const first=[{type:'input_text',text:JSON.stringify({input:initialInput,urls:requested})}];
       if(input.content&&input.content.url===input.url&&!input.content.error){
         supplied.add(input.url);
       }
       const history=[{role:'user',content:first}];
       if(input.content?.media_type&&!input.content.error&&!Object.hasOwn(input.content,'content'))history.push({role:'user',content:partsFor(input.content)});
+      for(const source of evidence){
+        history.push({role:'user',content:partsFor(source)});
+        if(!source.error&&(Object.hasOwn(source,'content')||source.media_type==='application/pdf'||source.media_type?.startsWith('image/'))){
+          supplied.add(source.url);hasEvidence=true;
+        }
+      }
       const tools=[
         ...functions.map(({name,description,parameters})=>({type:'function',name,description,parameters,strict:true})),
         ...(requested.length?[{type:'web_search',search_content_types:['text','image'],image_settings:{caption:true}}]:[]),
@@ -64,7 +72,7 @@ export function createOpenAIAdapter({apiKey,urls=[],readUrl,functions=[],model=O
           strict:true,parameters:{type:'object',properties:{url:{type:'string'}},required:['url'],additionalProperties:false}}]:[])];
       for(;;){
         if(signal?.aborted)throw fail('runtime_bound');
-        const body=JSON.stringify({model,store:false,service_tier:'default',reasoning:{effort},
+        const body=JSON.stringify({model,store:false,service_tier:'default',reasoning:{effort},...(model==='gpt-6.1-terra'?{temperature:0}:{}),
           instructions:instruction,
           input:history,...(tools.length?{tools,tool_choice:hasEvidence?'auto':'required'}:{}),
           include:['reasoning.encrypted_content',...(requested.length?['web_search_call.action.sources']:[])],

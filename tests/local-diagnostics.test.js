@@ -61,10 +61,10 @@ test('local tracker diagnostic uses an explicit model with only a tracker read s
     return Response.json({status:'completed',usage:{input_tokens:400,output_tokens:200,total_tokens:600},
       output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({status:'complete',decisions:[{action:'create',id:null,fields:{...event,details:null,supporting_urls:[]},reason:null}]})}]}]});
   }});
-  assert.equal(generations,2);assert.equal(result.result.state,'saved');
+  assert.equal(generations,4);assert.equal(result.result.state,'saved');
   assert.equal(result.records.length,1);assert.equal(result.records[0].date,'2099-12-10');assert.equal(result.records[0].starttime,'13:30');
   const entries=await lines(path),requests=entries.filter(e=>e.direction==='request'),responses=entries.filter(e=>e.direction==='response');
-  assert.equal(requests.length,2);assert.equal(responses.length,2);
+  assert.equal(requests.length,4);assert.equal(responses.length,4);
   assert.match(requests[0].body,/json_schema/);
   assert.match(responses.at(-1).body,/output_text/);
   assert.equal(sql.length,1);assert.ok(sql[0].startsWith('select id,name'));

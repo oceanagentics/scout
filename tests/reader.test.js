@@ -353,7 +353,7 @@ test('a first feed check resumes after committed dates; an unchanged feed makes 
   const state=(await raw.query('select * from scout.trackers')).rows[0];
   assert.equal(new Date(state.last_successful_check).toISOString(),'2026-10-24T12:00:00.000Z');
   broken=false;calls=[];
-  const resumed=await run();assert.deepEqual(calls,['newer']);assert.equal(resumed.processed,1);assert.equal(resumed.created,1);
+  const resumed=await run();assert.deepEqual(calls,['newer','newer']);assert.equal(resumed.processed,1);assert.equal(resumed.created,1);
   const records=(await raw.query('select sources from scout.records')).rows;
   assert.equal(records.length,2);assert.ok(records.every(r=>r.sources[0].url.includes('/post/')));
   calls=[];const before={...db.metrics};
@@ -434,11 +434,13 @@ test('hosted collection recovers a connection reset through quota failover and s
    return Response.json({success:true,data:{metadata:{statusCode:200},markdown:'Ocean Institute: technical BBNJ workshop on 10 December 2099.'}});
   },modelFetch:async(_url,request)=>{
    generations++;const body=JSON.parse(request.body);assert.match(JSON.stringify(body.input),/technical BBNJ workshop/);
+   assert.equal(body.model,generations<=2?'gpt-6-luna':'gpt-6.1-terra');
+   assert.equal(body.temperature,body.model==='gpt-6.1-terra'?0:undefined);
    assert.doesNotMatch(JSON.stringify(body.input),/tavily-key|firecrawl-key/);
    if(!body.input.some(i=>i.type==='function_call_output'))return Response.json({status:'completed',output:[{type:'function_call',name:'search_findings',call_id:'search',arguments:JSON.stringify({queries:['Ocean Institute'],urls:[]})}]});
-   return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(answer([{...event,source_name:'Ocean Institute',score:null,date:'2099-12-10'}]))}]}]});
+   return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(answer([{...event,source_name:'Ocean Institute',score:body.model==='gpt-6-luna'?85:null,date:'2099-12-10'}]))}]}]});
   }});
- assert.equal(response.status,200);const result=await response.json();assert.equal(result.state,'saved');assert.equal(result.created,1);assert.equal(generations,2);
+ assert.equal(response.status,200);const result=await response.json();assert.equal(result.state,'saved');assert.equal(result.created,1);assert.equal(generations,4);
  assert.deepEqual(result.source.scraping,{jina:1,tavily:1,firecrawl:1});assert.equal(result.source.requests,4);
  assert.doesNotMatch(JSON.stringify(result),/tavily-key|firecrawl-key|model-key/);
  const record=(await raw.query('select * from scout.records')).rows[0];

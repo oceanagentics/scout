@@ -21,7 +21,7 @@ export async function hostedReader(request,{databaseURL,apiKey,openaiApiKey,slac
       types:{json:{to:114,from:[114,3802],parse:JSON.parse,serialize:value=>typeof value==='string'?value:JSON.stringify(value)}},
       connection:{application_name:'scout-reader',statement_timeout:5000}});
     session=await sql.reserve();const db=database(session);
-    const result=await intake(db,{trackerId,sourceFetch,serviceKeys,modelFor:(source,{deadline,readUrl,functions,validate})=>trackerModel({source,deadline,readUrl,functions,validate,apiKey,openaiApiKey,fetch:modelFetch}),
+    const result=await intake(db,{trackerId,sourceFetch,serviceKeys,modelFor:(source,{model,deadline,readUrl,functions,validate})=>trackerModel({source,model,deadline,readUrl,functions,validate,apiKey,openaiApiKey,fetch:modelFetch}),
       notify:async(ids,{deadline})=>sendMessages(db,await prepareMessages(db,{kind:'findings',ids}),post??botTransport(slackToken,undefined,{deadline}),{deadline}),
       publishCalendar:(ids,{deadline})=>syncCalendar(db,{ids,deadline,fetch:calendarFetch})});
     return Response.json({...result,cost:db.metrics});

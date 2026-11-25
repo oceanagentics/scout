@@ -32,7 +32,7 @@ const envelope=(text='[]',extra={})=>{try{const parsed=JSON.parse(text);if(Array
   content:{parts:[{text}]}}],...extra});};
 
 test('explicit OpenAI models preserve reasoning and tool continuations without falling back',async()=>{
-  for(const [model,effort] of [['gpt-6-luna','low'],['gpt-5.6-terra','low'],['gpt-6.1-sol','xhigh']]){
+  for(const [model,effort] of [['gpt-6-luna','low'],['gpt-6.1-terra','none'],['gpt-5.6-terra','low'],['gpt-6.1-sol','xhigh']]){
     let calls=0,lookups=0;const signals=[];
     const generate=trackerModel({model,source:{url,source_kind:'post'},openaiApiKey:'test',functions:[{
       name:'lookup',description:'Look up a finding',parameters:{type:'object',properties:{},required:[],additionalProperties:false},
@@ -41,6 +41,7 @@ test('explicit OpenAI models preserve reasoning and tool continuations without f
       calls++;signals.push(options.signal);assert.equal(target,'https://api.openai.com/v1/responses');
       const body=JSON.parse(options.body);
       assert.equal(body.model,model);assert.deepEqual(body.reasoning,{effort});assert.equal(body.store,false);
+      assert.equal(body.temperature,model==='gpt-6.1-terra'?0:undefined);
       if(calls===1)return Response.json({status:'completed',output:[{type:'function_call',name:'lookup',call_id:'lookup',arguments:'{}'}]});
       assert.ok(body.input.some(part=>part.type==='function_call_output'&&part.call_id==='lookup'));
       return result([],[]);
@@ -176,6 +177,32 @@ test('web investigations use OpenAI directly and preserve batched linked/native 
   assert.equal(signals[0],signals[1]);assert.equal(answer._diagnostics.attempts.length,1);
   assert.equal(answer._diagnostics.attempts[0].diagnostics.usage.input_tokens,100);
   assert.throws(()=>trackerModel({provider:'gemini',source:{url,source_kind:'web'}}),{reason:'model_configuration'});
+});
+
+test('Terra receives complete prepared evidence once, native documents and readable provider references',async()=>{
+ const page=url+'/programme',pdf=page+'.pdf',image=page+'.png',reference=url+'/reference';
+ const proof='Full programme evidence '.repeat(4000)+'Decisive fact at the end.';
+ let calls=0;const reads=[];
+ const generate=createOpenAIAdapter({apiKey:'test',model:'gpt-6.1-terra',urls:[url],readUrl:async target=>{
+  reads.push(target);assert.equal(target,reference);return {url:reference,media_type:'text/html',content:'Reference opened by Terra'};
+ },fetch:async(_url,options)=>{
+  calls++;const body=JSON.parse(options.body),parts=body.input.flatMap(i=>i.content??[]);
+  assert.equal(body.reasoning.effort,'none');assert.equal(body.temperature,0);
+  assert.equal(JSON.parse(parts[0].text).input.evidence,undefined);
+  assert.equal(parts.filter(p=>p.text?.includes(proof)).length,1);
+  assert.ok(parts.some(p=>p.type==='input_file'&&p.file_url===pdf));
+  assert.ok(parts.some(p=>p.type==='input_image'&&p.image_url===image));
+  if(calls===1)return Response.json({status:'completed',output:[page,reference].map((target,i)=>({type:'function_call',name:'read_url',call_id:String(i),arguments:JSON.stringify({url:target})}))});
+  const outputs=body.input.filter(i=>i.type==='function_call_output');
+  assert.equal(JSON.parse(outputs[0].output).status,'already_supplied');
+  assert.match(outputs[1].output[0].text,/Reference opened by Terra/);
+  return result([],[]);
+ }});
+ await generate(INTAKE_INSTRUCTION,{url,content:{url,media_type:'text/html',content:'Original source'},evidence:[
+  {url:page,media_type:'text/html',content:proof},{url:pdf,media_type:'application/pdf'},
+  {url:image,media_type:'image/png'},{url:reference,status:'PROVIDER_WEB_REFERENCE',method:'provider_web'}
+ ]},RESPONSE_SCHEMA);
+ assert.equal(calls,2);assert.deepEqual(reads,[reference]);
 });
 
 test('broken linked reads return errors while other findings survive, without provider fallback',async()=>{

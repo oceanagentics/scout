@@ -4,6 +4,7 @@ import {applyDecisions,proposedFindings} from './findings.js';
 import {verifyLease,pendingItems,registerItems,consumeItem,completeSource} from './progress.js';
 import {cbdRequest,prepareCBD} from './sources/cbd.js';
 import {scoutDay} from '../shared/finding-dates.js';
+import {modelErrorReason} from './models/contract.js';
 export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,search,deadline,through}){
  const commitDeadline=Date.parse(through)+110000;
  const result={created:0,changed:0,saved:0,ambiguous:0,processed:0,skipped:0,createdIds:[],calendarIds:[],diagnostics:[]};
@@ -24,10 +25,20 @@ export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,sear
   const items=discovery.items;
   for(let start=0;start<items.length;){
    let end=start+1;while(end<items.length&&items[end].at===items[start].at)end++;
-   const entries=[];
+   const entries=[],evidence=new Map();
    for(const item of items.slice(start,end)){
-    const investigation=await investigate(db,item,{modelFor,deadline,readUrl,oldestDate:tracker.oldest_date,through,proposed:proposedFindings(entries)});
-    entries.push({item,investigation});result.diagnostics.push({...investigation.diagnostics,invalid_fields:investigation.invalid_fields});
+    const investigation=await investigate(db,item,{modelFor,deadline,readUrl,oldestDate:tracker.oldest_date,through,proposed:proposedFindings(entries),evidence});
+    result.diagnostics.push({...investigation.diagnostics,invalid_fields:investigation.invalid_fields});
+    if(!investigation.decisions.some(d=>['create','update'].includes(d.action)&&d.fields.score>0)){entries.push({item,investigation});continue;}
+    const retained=investigation.decisions.filter(d=>!['create','update'].includes(d.action)||d.fields.score===0||d.fields.score===null);
+    if(retained.length)entries.push({item,investigation:{...investigation,decisions:retained,
+     lookups:retained.some(d=>d.action!=='skip')?investigation.lookups:[]}});
+    try{
+     const terra=await investigate(db,item,{modelFor,model:'gpt-6.1-terra',deadline,readUrl,oldestDate:tracker.oldest_date,through,proposed:proposedFindings(entries),evidence});
+     if(terra.diagnostics?.attempts?.some(attempt=>attempt.diagnostics?.retrieval?.some(r=>r.status==='NATIVE_INPUT_FAILED')))
+      throw Object.assign(new Error('url_retrieval_failed'),{reason:'url_retrieval_failed',diagnostics:terra.diagnostics});
+     entries.push({item,investigation:terra});result.diagnostics.push({...terra.diagnostics,invalid_fields:terra.invalid_fields});
+    }catch(error){throw Object.assign(new Error('terra_failed'),{reason:'terra_failed',diagnostics:{...error.diagnostics,cause:modelErrorReason(error)}});}
    }
    const counts=await db.transaction(async tx=>{
     await verifyLease(tx,tracker);const counts=await applyDecisions(tx,entries);
@@ -40,6 +51,7 @@ export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,sear
   let item=available.get(row.item_key);
   const request=cbdRequest(row.url)??row.url;
   let content=item?.content?.request_url===request?item.content:null,investigation,lastError=null,errorDiagnostics;
+  const entries=[],evidence=new Map();
   try{
    if(!content)try{
     content=await readUrl(request,{lastSuccessfulCheck:row.request_checked_at,previousRequestURL:row.request_url,previousFingerprint:row.request_fingerprint});
@@ -51,7 +63,20 @@ export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,sear
    }
    if(!content.unchanged){
     item={...item,key:row.item_key,url:row.url,version:row.observed_version,source_kind:'web',content};
-    investigation=await investigate(db,item,{modelFor,deadline,readUrl,oldestDate:tracker.oldest_date,through});
+    investigation=await investigate(db,item,{modelFor,deadline,readUrl,oldestDate:tracker.oldest_date,through,evidence});
+    if(investigation.decisions.some(d=>['create','update'].includes(d.action)&&d.fields.score>0)){
+     result.diagnostics.push({...investigation.diagnostics,invalid_fields:investigation.invalid_fields});
+     const retained=investigation.decisions.filter(d=>!['create','update'].includes(d.action)||d.fields.score===0||d.fields.score===null);
+     if(retained.length)entries.push({item,investigation:{...investigation,decisions:retained,
+      lookups:retained.some(d=>d.action!=='skip')?investigation.lookups:[]}});
+     try{
+      const terra=await investigate(db,item,{modelFor,model:'gpt-6.1-terra',deadline,readUrl,oldestDate:tracker.oldest_date,through,proposed:proposedFindings(entries),evidence});
+      if(terra.diagnostics?.attempts?.some(attempt=>attempt.diagnostics?.retrieval?.some(r=>r.status==='NATIVE_INPUT_FAILED')))
+       throw Object.assign(new Error('url_retrieval_failed'),{reason:'url_retrieval_failed',diagnostics:terra.diagnostics});
+      terra.resource??=investigation.resource;investigation=terra;
+     }catch(error){throw Object.assign(new Error('terra_failed'),{reason:'terra_failed',diagnostics:{...error.diagnostics,cause:modelErrorReason(error)}});}
+    }
+    entries.push({item,investigation});
    }
   }catch(error){
    if(!['source_unavailable','source_invalid','runtime_bound','model_unreadable','output_incomplete','invalid_output','invalid_json','output_truncated','url_retrieval_failed','retrieval_metadata_missing'].includes(error.reason))throw error;
@@ -66,7 +91,7 @@ export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,sear
   result.diagnostics.push({...investigation.diagnostics,invalid_fields:investigation.invalid_fields});
   const counts=await db.transaction(async tx=>{
    await verifyLease(tx,tracker);
-   const counts=await applyDecisions(tx,[{item,investigation}]);
+   const counts=await applyDecisions(tx,entries);
    const resource=investigation.resource??(item.content?.request_url?item.content:null);
    await consumeItem(tx,tracker,row,resource,lastError);return counts;
   },{deadline:commitDeadline});

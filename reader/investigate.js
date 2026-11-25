@@ -2,9 +2,12 @@ import {INTAKE_INSTRUCTION,RESPONSE_SCHEMA} from './instructions.js';
 import {searchFindings,normalizeFinding} from './findings.js';
 import {findingInterval,scoutDay} from '../shared/finding-dates.js';
 const fail=reason=>Object.assign(new Error(reason),{reason});
-export async function investigate(db,item,{modelFor,deadline,readUrl,oldestDate,through,proposed=[]}){
- const lookups=[],readURLs=new Set([item.url]),invalid_fields={};let resource=null;
- const read=async(url,options={})=>{const source=await readUrl(url,options);readURLs.add(source.url);if(new URL(url).href.split('#')[0]===item.url.split('#')[0])resource=source;return source;};
+export async function investigate(db,item,{modelFor,deadline,readUrl,oldestDate,through,proposed=[],model='gpt-6-luna',evidence=new Map()}){
+ const original=item.content?.url?item.content:{url:item.url,content:item.content};
+ evidence.set(original.url,original);
+ const supplied=[...evidence.values()].filter(source=>source!==original);
+ const lookups=[],readURLs=new Set([item.url,...supplied.filter(source=>Object.hasOwn(source,'content')||source.media_type).map(source=>source.url)]),invalid_fields={};let resource=null;
+ const read=async(url,options={})=>{const source=await readUrl(url,options);evidence.set(source.url,source);readURLs.add(source.url);if(new URL(url).href.split('#')[0]===item.url.split('#')[0])resource=source;return source;};
  const functions=[{name:'search_findings',description:'Search saved Scout findings. Text queries are ORed; each phrase uses all words. Include a responsible organization name ALONE alongside specific topic phrases. Broaden empty searches. Return complete finding candidates.',
   parameters:{type:'object',properties:{queries:{type:'array',items:{type:'string'}},urls:{type:'array',items:{type:'string'}}},required:['queries','urls'],additionalProperties:false},
   run:async args=>{const result=await searchFindings(db,args);lookups.push({args,records:result.records});const records=[...new Map([...result.records,...proposed].map(r=>[r.id,r])).values()].map(({revision,modified,pending,slack_channel_post,...record})=>record);return {records,count:records.length};}}];
@@ -22,9 +25,11 @@ export async function investigate(db,item,{modelFor,deadline,readUrl,oldestDate,
    if(d.action==='create'&&!lookups.length)throw fail('invalid_output');
   }
  };
- const answer=await modelFor(item,{deadline,readUrl:read,functions,validate})(INTAKE_INSTRUCTION,{url:item.url,source_kind:item.source_kind,
-  current_date:scoutDay(new Date(through)),oldest_date:oldestDate,content:item.content},RESPONSE_SCHEMA);
+ const answer=await modelFor(item,{model,deadline,readUrl:read,functions,validate})(INTAKE_INSTRUCTION,{url:item.url,source_kind:item.source_kind,
+  current_date:scoutDay(new Date(through)),oldest_date:oldestDate,content:item.content,...(supplied.length?{evidence:supplied}:{})},RESPONSE_SCHEMA);
  validate(answer);
+ for(const reference of answer._diagnostics?.attempts?.flatMap(attempt=>attempt.diagnostics?.retrieval??[])??[])
+  if(reference.status==='PROVIDER_WEB_REFERENCE'&&!evidence.has(reference.url))evidence.set(reference.url,reference);
  const decisions=answer.decisions.filter(d=>{
   if(!['create','update'].includes(d.action))return true;
   d.fields.supporting_urls=d.fields.supporting_urls.filter(url=>readURLs.has(url));

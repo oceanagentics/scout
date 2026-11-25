@@ -31,7 +31,7 @@ const fail=reason=>Object.assign(new Error(reason),{reason});
 export function mergeFinding(f,target){
   const values={...f};
   for(const key of fields){
-    if(values[key]==null||Array.isArray(values[key])&&!values[key].length)values[key]=target?.[key]??values[key];
+    if(key!=='score'&&(values[key]==null||Array.isArray(values[key])&&!values[key].length))values[key]=target?.[key]??values[key];
   }
   if(target?.timezone&&target.timezone!==values.timezone&&target.endtime&&!f.endtime){
     const saved=recordEnd(target),reinterpreted=recordEnd({...target,timezone:values.timezone});
@@ -49,7 +49,6 @@ export function mergeFinding(f,target){
     sources.set(key,{url:key,role:s.role,...(name?{name}:{})});
   }
   values.sources=[...sources.values()];
-  if(target?.score!=null&&!fields.some(key=>!['score','sources'].includes(key)&&JSON.stringify(values[key])!==JSON.stringify(target[key])))values.score=target.score;
   return values;
 }
 export async function searchFindings(db,{queries,urls}){

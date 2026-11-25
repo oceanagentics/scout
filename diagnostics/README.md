@@ -18,11 +18,22 @@ npm run reader -- --diagnostic --tracker=UUID --model=gpt-6.1-sol
 ```
 
 The supported OpenAI selections are `gpt-6-luna` with low reasoning,
+`gpt-6.1-terra` with none reasoning and temperature zero,
 `gpt-5.6-terra` with low reasoning and `gpt-6.1-sol` with xhigh reasoning.
 `--model` selects OpenAI and cannot be combined with `--provider=gemini`.
 Web investigations use OpenAI's linked-read/native-document loop; Gemini cannot
-be selected for that input. Supplied Bluesky posts retain the Gemini-to-OpenAI
-route. Omit the option to use the input's normal route. To retain separate captures when
+be selected for that input. Without an override, both web items and supplied
+Bluesky posts first use Luna low. Accepted positive findings promote the whole
+source item to a full Terra 6.1 none/temperature-zero investigation, using the
+same instruction and schema. Zero/null-only items bypass Terra; mixed items
+retain zero/null findings as pending candidates. The second pass receives full
+prepared evidence and native PDFs/images in memory. Terra failures leave progress
+pending through the existing finite retries.
+
+An explicit `--model` overrides both passes; a promising item still runs twice.
+`--provider=gemini` uses Gemini for both passes on supported post inputs.
+`--provider=openai` preserves the requested Luna/Terra models. These overrides
+are diagnostic experiments, not the normal production route. To retain separate captures when
 comparing runs, call `diagnoseTracker({tracker, env, provider, model, output})` with a
 different local output path for each run.
 

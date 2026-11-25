@@ -29,7 +29,89 @@ async function setup(t,{before=false}={}){
  const tracker=(await raw.query("insert into scout.trackers(name,url,collector,cadence,enabled) values('HSA', $1,'web_index','1 day',true) returning *",[feedURL])).rows[0];
  return {raw,db,tracker};
 }
-const model=decide=>(item,{functions,readUrl})=>async(_instructions,input)=>decide({item,input,readUrl,search:args=>functions[0].run(args)});
+const model=decide=>(item,{model,functions,readUrl})=>async(_instructions,input)=>decide({item,input,model,readUrl,search:args=>functions[0].run(args)});
+
+test('promising URLs use full Terra decisions while mixed zero and null findings remain pending until commit',async t=>{
+ const {raw,db,tracker}=await setup(t);
+ await raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]);
+ const target=(await raw.query("insert into scout.records(description,type,score,organizations) values('HSA: saved workshop','event',95,array['HSA']) returning *")).rows[0];
+ const page='https://example.org/programme',pdf=page+'.pdf',image=page+'.png',reference='https://example.org/search-reference';
+ const fullText='Programme evidence '.repeat(2000)+'Decisive eligibility at the end.';
+ let version=0,before,instruction;const models=[];
+ const run=async()=>{
+  before=(await raw.query('select * from scout.records order by id')).rows;
+  return intake(db,{trackerId:tracker.id,sourceFetch:async url=>new Response(url===page?fullText:url===feedURL?'<main>Workshop revision '+version+'</main>':null,
+   {headers:{'content-type':url===pdf?'application/pdf':url===image?'image/png':'text/html'}}),modelFor:(item,options)=>async(prompt,input,schema)=>{
+    models.push(options.model);assert.equal(item.url,feedURL);assert.ok(schema.properties.decisions);
+    const found=await options.functions[0].run({queries:['HSA'],urls:[]});
+    if(options.model==='gpt-6-luna'){
+     instruction=prompt;for(const url of [page,pdf,image])await options.readUrl(url);
+     return {...answer([create({...finding,description:'Luna preliminary positive',score:60}),...[0,null].map(score=>{
+      const fields={...finding,description:score===0?'HSA: zero finding':'HSA: unassessed finding',score};
+      const old=found.records.find(r=>r.description===fields.description);return old?update(old,fields):create(fields);
+     })]),_diagnostics:{model:options.model,attempts:[{diagnostics:{retrieval:[{url:reference,status:'PROVIDER_WEB_REFERENCE',method:'provider_web'}]}}]}};
+    }
+    assert.equal(options.model,'gpt-6.1-terra');assert.equal(prompt,instruction);
+    assert.deepEqual((await raw.query('select * from scout.records order by id')).rows,before);
+    assert.ok(found.records.some(r=>r.description==='HSA: zero finding'&&r.score===0));
+    assert.ok(found.records.some(r=>r.description==='HSA: unassessed finding'&&r.score===null));
+    assert.equal(input.evidence.find(s=>s.url===page).content,fullText);
+    assert.equal(input.evidence.find(s=>s.url===pdf).media_type,'application/pdf');
+    assert.equal(input.evidence.find(s=>s.url===image).media_type,'image/png');
+    assert.equal(input.evidence.find(s=>s.url===reference).status,'PROVIDER_WEB_REFERENCE');
+    assert.ok(!JSON.stringify(input).includes('Luna preliminary positive'));
+    return answer([update(found.records.find(r=>r.id===target.id),{...finding,description:'HSA: corrected workshop',score:version===0?0:null,supporting_urls:[page,pdf,image,reference]})]);
+   }});
+ };
+ const first=await run();assert.equal(first.created,2);assert.equal(first.changed,1);
+ let records=(await raw.query('select * from scout.records')).rows;assert.equal(records.length,3);
+ const final=records.find(r=>r.id===target.id);assert.equal(final.description,'HSA: corrected workshop');assert.equal(final.score,0);
+ assert.deepEqual(final.sources.map(s=>s.url),[feedURL,page,pdf,image]);
+ version++;assert.equal((await run()).changed,1);
+ records=(await raw.query('select * from scout.records order by id')).rows;assert.equal(records.find(r=>r.id===target.id).score,null);
+ version++;assert.equal((await run()).changed,0);assert.deepEqual((await raw.query('select * from scout.records order by id')).rows,records);
+ assert.deepEqual(models,['gpt-6-luna','gpt-6.1-terra','gpt-6-luna','gpt-6.1-terra','gpt-6-luna','gpt-6.1-terra']);
+});
+
+test('zero and unassessed sources save without a Terra pass',async t=>{
+ const {raw,db,tracker}=await setup(t);const models=[];
+ const result=await intake(db,{trackerId:tracker.id,sourceFetch:async()=>rss(),modelFor:(item,options)=>async()=>{
+  models.push(options.model);await options.functions[0].run({queries:['HSA'],urls:[]});
+  return answer([0,null].map(score=>create({...finding,description:'HSA: '+String(score),score})));
+ }});
+ assert.equal(result.created,2);assert.deepEqual(models,['gpt-6-luna']);
+ assert.deepEqual((await raw.query('select score from scout.records order by score nulls last')).rows,[{score:0},{score:null}]);
+});
+
+test('Terra failures retain web and native progress, save no provisional findings and use finite retries',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-17T12:00:00Z')});
+ for(const native of [false,true]){
+  const {raw,db,tracker}=await setup(t),feed='https://bsky.app/profile/example.test';
+  await raw.query('update scout.trackers set url=$2,collector=$3 where id=$1',[tracker.id,native?feed:feedURL,'web_page']);
+  const post={post:{uri:'at://did:plc:example/app.bsky.feed.post/a',indexedAt:'2026-11-17T12:00:00Z',record:{text:'HSA workshop',createdAt:'2026-11-17T12:00:00Z'}}};
+  let failure='runtime_bound',deadlines=[];
+  const run=()=>intake(db,{trackerId:tracker.id,notify:()=>assert.fail('No provisional notification'),publishCalendar:()=>assert.fail('No provisional calendar'),
+   sourceFetch:async()=>native?Response.json({feed:[post]}):new Response('<main>Workshop</main>',{headers:{'content-type':'text/html'}}),
+   modelFor:(item,options)=>async()=>{
+    deadlines.push(options.deadline);await options.functions[0].run({queries:['HSA'],urls:[]});
+    if(options.model==='gpt-6-luna')return answer([create(finding),create({...finding,description:'HSA: retained zero',score:0})]);
+    assert.equal(options.model,'gpt-6.1-terra');
+    if(failure==='native')return {...answer([create(finding)]),_diagnostics:{attempts:[{diagnostics:{retrieval:[{url:item.url,status:'NATIVE_INPUT_FAILED'}]}}]}};
+    throw Object.assign(new Error('Private transport body'),{reason:failure});
+   }});
+  for(const [index,reason] of ['runtime_bound','invalid_json','invalid_output','provider_context_limit','native','provider_unavailable'].entries()){
+   failure=reason;deadlines=[];const result=await run();
+   assert.equal(result.reason,'terra_failed');assert.equal(result.state,(index+1)%3===0?'needs_attention':'deferred');assert.equal(result.processed,0);
+   assert.equal(result.diagnostics.at(-1).cause,reason==='native'?'url_retrieval_failed':reason);
+   assert.ok(!JSON.stringify(result).includes('Private transport body'));
+   assert.equal(deadlines[0],deadlines[1]);assert.equal(deadlines[0],Date.now()+100000);
+   assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,0);
+   assert.equal((await raw.query('select last_successful_check from scout.trackers')).rows[0].last_successful_check,null);
+   if(!native){const pending=(await raw.query('select * from scout.source_items')).rows[0];assert.equal(pending.pending,true);assert.equal(pending.request_fingerprint,null);assert.equal(pending.consumed_at,null);}
+  }
+  assert.equal((await intake(db,{modelFor:()=>assert.fail('Finite retries exhausted')})).state,'idle');
+ }
+});
 
 test('search URLs use item freshness even when result membership is unchanged and retain missing receipts',async t=>{
  const {raw,db,tracker}=await setup(t),endpoint='https://api.tavily.com/search',other=publication+'-other';
@@ -131,13 +213,13 @@ test('Page investigates the complete source, follows evidence links and skips un
   assert.ok(schema.properties.decisions.items.properties.fields.anyOf[0].required.includes('source_name'));
   return answer([create({...finding,source_name:'  Bloomberg  ',supporting_urls:[agenda]})]);
  }});
- const first=await run();assert.equal(first.state,'saved');assert.equal(first.created,1);assert.equal(calls,1);
+ const first=await run();assert.equal(first.state,'saved');assert.equal(first.created,1);assert.equal(calls,2);
  const record=(await raw.query('select * from scout.records')).rows[0];
  assert.deepEqual(record.sources,[{url:feedURL,role:'finding',name:'Bloomberg'},{url:agenda,role:'supporting'}]);
  assert.deepEqual((await raw.query('select item_key,pending from scout.source_items')).rows,[{item_key:feedURL,pending:false}]);
  const preview=await prepareMessages(db,{kind:'findings',ids:[record.id]});assert.equal(preview.payloads[0].text,finding.description+' · <'+feedURL+'|Bloomberg>');
  assert.deepEqual(mergeFinding(normalizeFinding({...finding,supporting_urls:[agenda]},feedURL),record).sources,record.sources);
- const cost={...db.metrics},repeat=await run();assert.equal(repeat.processed,0);assert.equal(calls,1);
+ const cost={...db.metrics},repeat=await run();assert.equal(repeat.processed,0);assert.equal(calls,2);
  assert.deepEqual((await raw.query('select * from scout.records')).rows[0],record);
  t.diagnostic(JSON.stringify({mocked_model:true,page_sql_cost:cost,unchanged_sql_cost:Object.fromEntries(Object.keys(cost).map(k=>[k,db.metrics[k]-cost[k]]))}));
 });
@@ -148,7 +230,7 @@ test('Index investigates linked publications without turning itself into a findi
   if(schema.properties.items){discoveries++;return {items:[{url:feedURL,summary:'Index'},{url:publication,summary:'CHM webinar'}]};}
   investigations++;assert.equal(item.url,publication);await functions[0].run({queries:['HSA'],urls:[]});return answer([create(finding)]);
  }});
- assert.equal(result.state,'saved');assert.equal(discoveries,1);assert.equal(investigations,1);
+ assert.equal(result.state,'saved');assert.equal(discoveries,1);assert.equal(investigations,2);
  assert.deepEqual((await raw.query('select item_key from scout.source_items')).rows,[{item_key:publication}]);
  assert.deepEqual((await raw.query('select sources from scout.records')).rows[0].sources,[{url:publication,role:'finding'}]);
 });
@@ -200,7 +282,7 @@ test('RSS -> real provider-tool mechanics -> duplicate update -> specific Slack 
   for(const key of ['revision','modified','pending','slack_channel_post'])assert.equal(Object.hasOwn(candidates.records[0],key),false);
   return response(answer([update(candidates.records[0],finding)]));
  }})});
- const first=await run();assert.equal(first.changed,1);assert.equal(first.created,0);assert.equal(searches,1);
+ const first=await run();assert.equal(first.changed,1);assert.equal(first.created,0);assert.equal(searches,2);
  const record=(await raw.query('select * from scout.records where id=$1',[id])).rows[0];
  assert.ok(record.sources.some(s=>s.role==='finding'&&s.url===publication));assert.equal(record.details,finding.details);
  const preview=await prepareMessages(db,{kind:'findings',ids:[id]});assert.match(preview.payloads[0].text,/<https:\/\/example.org\/articles\/chm\|Read more>/);
@@ -228,7 +310,7 @@ test('matched updates retain new source URLs and unchanged facts; identical upda
  assert.deepEqual(record.modified.slice(0,-1),original.modified);
  const firstCost={...db.metrics};version++;
  const second=await run();assert.equal(second.state,'saved');assert.equal(second.created,0);assert.equal(second.changed,0);assert.equal(second.saved,1);assert.equal(second.processed,1);
- assert.equal(searches,2);assert.equal(requests,4);
+ assert.equal(searches,4);assert.equal(requests,8);
  assert.deepEqual((await raw.query('select * from scout.records where id=$1',[id])).rows[0],record);
  assert.equal((await raw.query('select pending from scout.source_items')).rows[0].pending,false);
  t.diagnostic(JSON.stringify({mocked_model:true,first_sql_cost:firstCost,identical_update_sql_cost:Object.fromEntries(Object.keys(firstCost).map(k=>[k,db.metrics[k]-firstCost[k]])),identical_finding_writes:0}));
@@ -244,7 +326,7 @@ test('attempted timeout commits a skip, unattempted items stay pending, and resu
  const first=await run();assert.equal(first.processed,2);assert.equal(first.skipped,1);assert.equal(first.state,'deferred');
  assert.deepEqual((await raw.query('select pending,last_error from scout.source_items order by item_key')).rows,[{pending:false,last_error:null},{pending:false,last_error:'runtime_bound'},{pending:true,last_error:null}]);
  assert.equal((await raw.query("select request_checked_at from scout.source_items where item_key='b'")).rows[0].request_checked_at,null);
- t.mock.timers.reset();seen.length=0;const second=await run();assert.equal(second.processed,1);assert.deepEqual(seen,[publication+'-c']);
+ t.mock.timers.reset();seen.length=0;const second=await run();assert.equal(second.processed,1);assert.deepEqual(seen,[publication+'-c',publication+'-c']);
  assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,2);
  assert.ok((await raw.query('select * from scout.source_items')).rows.every(r=>!r.pending));
 });
@@ -256,7 +338,7 @@ test('an unavailable pending link is reported and consumed without a model call,
  const result=await intake(db,{trackerId:tracker.id,sourceFetch:async url=>{if(url===bad)throw new Error('Unavailable');return new Response('<main>CHM webinar</main>',{headers:{'content-type':'text/html'}});},modelFor:model(async({item,search})=>{
   seen.push(item.url);await search({queries:['HSA'],urls:[]});return answer([create(finding)]);
  })});
- assert.equal(result.state,'saved');assert.equal(result.created,1);assert.equal(result.processed,2);assert.equal(result.skipped,1);assert.deepEqual(seen,[publication]);
+ assert.equal(result.state,'saved');assert.equal(result.created,1);assert.equal(result.processed,2);assert.equal(result.skipped,1);assert.deepEqual(seen,[publication,publication]);
  assert.ok(result.diagnostics.some(d=>d.url===bad&&d.reason==='source_unavailable'));
  const skipped=(await raw.query("select * from scout.source_items where item_key='a'")).rows[0];
  assert.equal(skipped.pending,false);assert.equal(skipped.last_error,'source_unavailable');assert.ok(skipped.consumed_at);
@@ -343,12 +425,13 @@ test('details preserve exact saved text without new facts, retain multibyte text
  assert.equal(mergeFinding(normalizeFinding({...finding,details:'海'.repeat(1366)},publication),old).details,'海'.repeat(1366));
 });
 
-test('unchanged facts preserve the saved score while substantive corrections accept a new score',()=>{
+test('incoming scores replace saved scores, including zero and unassessed, independently of fact changes',()=>{
  const old=normalizeFinding({...finding,score:92},publication);
- assert.equal(mergeFinding(normalizeFinding({...finding,score:20},'https://example.org/another-source'),old).score,92);
+ assert.equal(mergeFinding(normalizeFinding({...finding,score:20},'https://example.org/another-source'),old).score,20);
  assert.equal(mergeFinding(normalizeFinding({...finding,score:20,details:'Corrected implementation facts.'},publication),old).score,20);
- assert.equal(mergeFinding(normalizeFinding({...finding,score:20},publication),{...old,score:0}).score,0);
+ assert.equal(mergeFinding(normalizeFinding({...finding,score:20},publication),{...old,score:0}).score,20);
  assert.equal(mergeFinding(normalizeFinding({...finding,score:20},publication),{...old,score:null}).score,20);
+ for(const score of [0,null])assert.equal(mergeFinding(normalizeFinding({...finding,score},publication),old).score,score);
 });
 
 test('rescheduled dates and less precise corrections save their source before consumption; identical repeats make no finding write',async t=>{
@@ -376,7 +459,7 @@ test('rescheduled dates and less precise corrections save their source before co
  assert.deepEqual(partial.sources,exact.sources);assert.deepEqual(partial.modified.slice(0,-1),exact.modified);
  const cost={...db.metrics};version++;
  const repeat=await run();
- assert.equal(repeat.changed,0);assert.equal(repeat.saved,1);assert.equal(repeat.processed,1);assert.equal(modelCalls,3);
+ assert.equal(repeat.changed,0);assert.equal(repeat.saved,1);assert.equal(repeat.processed,1);assert.equal(modelCalls,6);
  assert.deepEqual((await raw.query('select * from scout.records')).rows,[partial]);
  assert.equal((await raw.query('select pending from scout.source_items where tracker_id=$1',[tracker.id])).rows[0].pending,false);
  t.diagnostic(JSON.stringify({mocked_model:true,real_local_sql:true,identical_finding_writes:0,repeat_cost:Object.fromEntries(Object.keys(cost).map(k=>[k,db.metrics[k]-cost[k]]))}));
@@ -478,7 +561,7 @@ test('RSS handles GUIDs, entities and Atom links, while webpage discovery keeps 
   if(schema.properties.items){discoveries++;return {items:[{url:publication,summary:'CHM news'},{url:'https://example.org/invented',summary:'Unobserved'}]};}
   investigations++;await options.functions[0].run({queries:['HSA'],urls:[]});return answer([create(finding)]);
  }});
- assert.equal(discoveries,1);assert.equal(investigations,1);assert.equal(result.created,1);
+ assert.equal(discoveries,1);assert.equal(investigations,2);assert.equal(result.created,1);
  assert.equal(result.state,'deferred');assert.ok(result.diagnostics.some(d=>d.excluded_items===1));
  const progress=(await raw.query('select discovery_checked_at,discovery_fingerprint from scout.trackers where id=$1',[tracker.id])).rows[0];
  assert.equal(progress.discovery_checked_at,null);assert.equal(progress.discovery_fingerprint,null);
@@ -518,7 +601,7 @@ test('UN linked document index updates three existing findings with PDF message 
  const firstCost={...db.metrics};version++;
  const second=await run();assert.equal(second.created,0);assert.equal(second.changed,0);assert.equal(second.processed,3);
  assert.deepEqual((await raw.query('select * from scout.records order by id')).rows,records);
- assert.deepEqual([discoveries,investigations],[2,6]);
+ assert.deepEqual([discoveries,investigations],[2,12]);
  assert.deepEqual((await raw.query('select url from scout.source_items order by url')).rows.map(r=>r.url),documents.map(doc=>doc.url).sort());
  t.diagnostic(JSON.stringify({mocked_model:true,first_sql_cost:firstCost,repeat_sql_cost:Object.fromEntries(Object.keys(firstCost).map(k=>[k,db.metrics[k]-firstCost[k]])),finding_writes_on_repeat:0}));
 });
@@ -539,12 +622,18 @@ test('tied native posts see proposed facts before commit and retain both specifi
  const feed='https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=example.test';
  await raw.query('update scout.trackers set url=$2 where id=$1',[tracker.id,feed]);
  const post=key=>({post:{uri:'at://did:plc:example/app.bsky.feed.post/'+key,indexedAt:'2026-11-17T12:00:00Z',record:{text:key,createdAt:'2026-11-17T12:00:00Z'}}});
- let calls=0;
- const result=await intake(db,{trackerId:tracker.id,sourceFetch:async()=>Response.json({feed:[post('a'),post('b')]}),modelFor:model(async({search})=>{
+ let calls=0;const pdf='https://example.org/programme.pdf';
+ const result=await intake(db,{trackerId:tracker.id,sourceFetch:async url=>url===pdf?new Response(null,{headers:{'content-type':'application/pdf'}}):Response.json({feed:[post('a'),post('b')]}),modelFor:model(async({search,input,model,readUrl})=>{
   const found=await search({queries:['HSA'],urls:[]});calls++;
-  return answer([found.count?update(found.records[0],{...finding,details:found.records[0].details+' Fact B.'}):create({...finding,details:'Fact A.'})]);
+  if(input.content.post.record.text==='a')await readUrl(pdf);
+  if(model==='gpt-6.1-terra'){
+   assert.ok(input.evidence.some(s=>s.url.endsWith('/post/a')&&s.content.post.record.text==='a'));
+   assert.equal(input.evidence.find(s=>s.url===pdf).media_type,'application/pdf');
+   assert.equal((await raw.query('select count(*)::int n from scout.records')).rows[0].n,0);
+  }
+  return answer([found.count?update(found.records[0],{...finding,details:found.records[0].details+' Fact B.'}):create({...finding,score:0,details:'Fact A.'})]);
  })});
- assert.equal(calls,2);assert.equal(result.created,1);assert.equal(result.changed,1);assert.equal(result.processed,2);
+ assert.equal(calls,3);assert.equal(result.created,1);assert.equal(result.changed,1);assert.equal(result.processed,2);
  const records=(await raw.query('select * from scout.records')).rows;assert.equal(records.length,1);assert.equal(records[0].details,'Fact A. Fact B.');
  assert.deepEqual(records[0].sources.map(s=>s.url).sort(),['https://bsky.app/profile/did:plc:example/post/a','https://bsky.app/profile/did:plc:example/post/b']);
 });
@@ -572,13 +661,13 @@ test('Bluesky parent announcements keep their own URLs when the following replie
   }
   return answer(decisions);
  })});
- const first=await run();assert.equal(first.created,2);assert.equal(first.changed,0);assert.equal(first.processed,4);assert.equal(calls,4);
+ const first=await run();assert.equal(first.created,2);assert.equal(first.changed,0);assert.equal(first.processed,4);assert.equal(calls,6);
  const records=(await raw.query('select * from scout.records order by id')).rows;
  for(const source of cases)assert.deepEqual(records.find(r=>r.description===source.description).sources,[{url:'https://bsky.app/profile/'+did+'/post/'+source.key,role:'finding'}]);
  const preview=await prepareMessages(db,{kind:'findings',ids:records.map(r=>r.id)});
  assert.equal(preview.payloads.length,2);
  for(const source of cases)assert.ok(preview.payloads.some(p=>p.text.includes('<https://bsky.app/profile/'+did+'/post/'+source.key+'|Read more>')));
- const cost={...db.metrics};const repeat=await run();assert.equal(repeat.processed,0);assert.equal(calls,4);
+ const cost={...db.metrics};const repeat=await run();assert.equal(repeat.processed,0);assert.equal(calls,6);
  assert.deepEqual((await raw.query('select * from scout.records order by id')).rows,records);
  t.diagnostic(JSON.stringify({mocked_model:true,sql_cost:cost,repeat_model_calls:0}));
 });
@@ -626,8 +715,8 @@ test('old web and RSS publication hints permit new and changed content; confirme
   }});
   assert.equal((await run()).created,1);version++;assert.equal((await run()).changed,1);
   const records=(await raw.query('select description,details from scout.records')).rows;
-  assert.deepEqual(records,[{description:finding.description,details:'Revision 1'}]);assert.equal(investigations,2);
-  assert.equal((await run()).processed,0);assert.equal(investigations,2);
+  assert.deepEqual(records,[{description:finding.description,details:'Revision 1'}]);assert.equal(investigations,4);
+  assert.equal((await run()).processed,0);assert.equal(investigations,4);
  }
 });
 
