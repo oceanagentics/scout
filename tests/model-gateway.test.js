@@ -32,7 +32,7 @@ const envelope=(text='[]',extra={})=>{try{const parsed=JSON.parse(text);if(Array
   content:{parts:[{text}]}}],...extra});};
 
 test('explicit OpenAI models preserve reasoning and tool continuations without falling back',async()=>{
-  for(const [model,effort] of [['gpt-6-luna','high'],['gpt-6.1-terra','high'],['gpt-5.6-terra','low'],['gpt-6.1-sol','xhigh']]){
+  for(const [model,effort] of [['gpt-6-luna','high'],['gpt-6.1-terra','none'],['gpt-5.6-terra','low'],['gpt-6.1-sol','xhigh']]){
     let calls=0,lookups=0;const signals=[];
     const generate=trackerModel({model,source:{url,source_kind:'post'},openaiApiKey:'test',functions:[{
       name:'lookup',description:'Look up a finding',parameters:{type:'object',properties:{},required:[],additionalProperties:false},
@@ -41,7 +41,7 @@ test('explicit OpenAI models preserve reasoning and tool continuations without f
       calls++;signals.push(options.signal);assert.equal(target,'https://api.openai.com/v1/responses');
       const body=JSON.parse(options.body);
       assert.equal(body.model,model);assert.deepEqual(body.reasoning,{effort});assert.equal(body.store,false);
-      assert.equal(body.temperature,undefined);
+      assert.equal(body.temperature,model==='gpt-6.1-terra'?0:undefined);
       if(calls===1)return Response.json({status:'completed',output:[{type:'function_call',name:'lookup',call_id:'lookup',arguments:'{}'}]});
       assert.ok(body.input.some(part=>part.type==='function_call_output'&&part.call_id==='lookup'));
       return result([],[]);
@@ -187,7 +187,7 @@ test('Terra receives complete prepared evidence once, native documents and reada
   reads.push(target);assert.equal(target,reference);return {url:reference,media_type:'text/html',content:'Reference opened by Terra'};
  },fetch:async(_url,options)=>{
   calls++;const body=JSON.parse(options.body),parts=body.input.flatMap(i=>i.content??[]);
-  assert.equal(body.reasoning.effort,'high');assert.equal(body.temperature,undefined);
+  assert.equal(body.reasoning.effort,'none');assert.equal(body.temperature,0);
   assert.equal(JSON.parse(parts[0].text).input.evidence,undefined);
   assert.equal(parts.filter(p=>p.text?.includes(proof)).length,1);
   assert.ok(parts.some(p=>p.type==='input_file'&&p.file_url===pdf));

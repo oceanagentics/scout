@@ -18,13 +18,13 @@ npm run reader -- --diagnostic --tracker=UUID --model=gpt-6.1-sol
 ```
 
 The supported OpenAI selections are `gpt-6-luna` with high reasoning,
-`gpt-6.1-terra` with high reasoning,
+`gpt-6.1-terra` with none reasoning and temperature zero,
 `gpt-5.6-terra` with low reasoning and `gpt-6.1-sol` with xhigh reasoning.
 `--model` selects OpenAI and cannot be combined with `--provider=gemini`.
 Web investigations use OpenAI's linked-read/native-document loop; Gemini cannot
 be selected for that input. Without an override, both web items and supplied
 Bluesky posts first use Luna high. Accepted positive findings promote the whole
-source item to a full Terra 6.1 high-effort investigation, using the
+source item to a full Terra 6.1 none/temperature-zero investigation, using the
 same instruction and schema. Zero/null-only items bypass Terra; mixed items
 retain zero/null findings as pending candidates. The second pass receives full
 prepared evidence and native PDFs/images in memory. Terra failures leave progress
