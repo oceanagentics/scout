@@ -69,3 +69,24 @@ test('local tracker diagnostic uses an explicit model with only a tracker read s
   assert.match(responses.at(-1).body,/output_text/);
   assert.equal(sql.length,1);assert.ok(sql[0].startsWith('select id,name'));
 });
+
+test('local diagnostics copy the search query and enumerate URLs without a discovery model',async t=>{
+ t.mock.method(dns,'lookup',async()=>[{address:'93.184.216.34',family:4}]);
+ const path=await output(t),tracker='11111111-1111-4111-8111-111111111111',source='https://example.org/news';
+ let searches=0,generations=0;
+ const result=await diagnoseTracker({tracker,output:path,env:{SCOUT_OPENAI_API_KEY:'model-key',TAVILY_API_KEY:'search-key'},
+  ledger:{query:async()=>({rows:[{id:tracker,name:'News',url:'https://api.tavily.com/search',collector:'web_index',cadence:'1 day',search_query:'BBNJ Secretariat news'}]})},
+  fetch:async(url,request)=>{
+   if(url==='https://api.tavily.com/search'){
+    searches++;assert.equal(request.method,'POST');assert.equal(JSON.parse(request.body).query,'BBNJ Secretariat news');
+    return Response.json({results:[{url:source}],usage:{credits:1}});
+   }
+   if(url===source)return new Response('BBNJ news article',{headers:{'content-type':'text/plain'}});
+   assert.equal(url,'https://api.openai.com/v1/responses');generations++;
+   const body=JSON.parse(request.body);assert.ok(body.text.format.schema.properties.decisions);
+   assert.equal(JSON.parse(body.input[0].content[0].text).input.url,source);
+   return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({status:'complete',decisions:[]})}]}]});
+  }});
+ assert.equal(searches,1);assert.equal(generations,1);assert.equal(result.result.processed,1);assert.equal(result.result.state,'no_findings');
+ assert.deepEqual(result.result.source.search,{requests:1,results:1,declared_credits:1});
+});

@@ -6,6 +6,35 @@ const url='https://example.org/article';
 const jina=content=>Response.json({code:200,data:{httpStatus:200,title:'Ocean report',content}});
 const firecrawl=content=>Response.json({success:true,data:{metadata:{statusCode:200},markdown:content}});
 
+test('news search requests twenty URLs without answers or scraping and reports invocation-only usage',async()=>{
+ const metrics={requests:0,bytes:0};
+ const services=createWebServices({keys:{tavily:'search-key'},metrics,fetch:async(target,options)=>{
+  assert.equal(target,'https://api.tavily.com/search');assert.equal(options.redirect,'error');
+  assert.equal(options.headers.Authorization,'Bearer search-key');
+  assert.deepEqual(JSON.parse(options.body),{query:'BBNJ Secretariat news',topic:'news',search_depth:'basic',max_results:20,
+   auto_parameters:false,include_answer:false,include_raw_content:false,include_usage:true});
+  return Response.json({results:[{url,title:'Article',content:'Do not pass this to investigation',id:'volatile'}],usage:{credits:1}});
+ }});
+ assert.deepEqual(await services.search('BBNJ Secretariat news'),{urls:[url],credits:1});
+ assert.equal(metrics.requests,1);assert.ok(metrics.bytes>0);
+ assert.deepEqual(metrics.search,{requests:1,results:1,declared_credits:1});
+});
+
+test('search failures are bounded and sanitized; missing keys and cancellation do no HTTP work',async t=>{
+ for(const response of [Response.json({error:'secret-key'},{status:429}),new Response('invalid JSON'),Response.json({results:[{}]})]){
+  const services=createWebServices({keys:{tavily:'secret-key'},fetch:async()=>response});
+  await assert.rejects(services.search('BBNJ'),error=>['source_unavailable','source_invalid'].includes(error.reason)&&!JSON.stringify(error).includes('secret-key'));
+ }
+ let calls=0;
+ await assert.rejects(createWebServices({fetch:async()=>{calls++;}}).search('BBNJ'),{reason:'source_unavailable'});
+ const cancelled=new AbortController();cancelled.abort();
+ await assert.rejects(createWebServices({keys:{tavily:'key'},fetch:async()=>{calls++;}}).search('BBNJ',{signal:cancelled.signal}),{name:'AbortError'});
+ assert.equal(calls,0);
+ const timeout=new AbortController();t.mock.method(AbortSignal,'timeout',ms=>{assert.equal(ms,20000);return timeout.signal;});
+ await assert.rejects(createWebServices({keys:{tavily:'key'},fetch:async(_url,{signal})=>{calls++;timeout.abort();signal.throwIfAborted();}}).search('BBNJ'),{reason:'source_unavailable'});
+ assert.equal(calls,1);
+});
+
 test('quota failover skips exhausted allowances across pages and a new check can recover',async()=>{
  const calls=[],metrics={requests:0,bytes:0};let recovered=false;
  const fetch=async(target,options)=>{

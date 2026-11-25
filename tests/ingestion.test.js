@@ -31,6 +31,76 @@ async function setup(t,{before=false}={}){
 }
 const model=decide=>(item,{functions,readUrl})=>async(_instructions,input)=>decide({item,input,readUrl,search:args=>functions[0].run(args)});
 
+test('search URLs use item freshness even when result membership is unchanged and retain missing receipts',async t=>{
+ const {raw,db,tracker}=await setup(t),endpoint='https://api.tavily.com/search',other=publication+'-other';
+ await raw.query("update scout.trackers set url=$2,search_query='BBNJ Secretariat news' where id=$1",[tracker.id,endpoint]);
+ let version=0,searches=0,investigations=0,reads=0,failure=false,listed=[publication,publication,other];
+ const run=()=>intake(db,{trackerId:tracker.id,serviceKeys:{tavily:'key'},sourceFetch:async(url,options)=>{
+  if(url===endpoint){searches++;assert.equal(JSON.parse(options.body).query,'BBNJ Secretariat news');
+   return Response.json({request_id:String(searches),results:listed.map(url=>({url,id:searches,title:'Search title '+searches,content:'Snippet '+searches})),usage:{credits:1}});}
+  reads++;return new Response('<main>CHM technical publication '+url+' version '+version+'</main>',{headers:{'content-type':'text/html'}});
+ },modelFor:(item,{functions})=>async(_instruction,input,schema)=>{
+  assert.ok(schema.properties.decisions);assert.equal(item.url,input.url);assert.ok(item.url!==endpoint);
+  assert.match(input.content.content,/CHM technical publication/);assert.doesNotMatch(input.content.content,/Snippet/);
+  investigations++;if(failure)throw Object.assign(new Error('provider_unavailable'),{reason:'provider_unavailable'});return answer([]);
+ }});
+ const first=await run();assert.equal(first.processed,2);assert.equal(investigations,2);
+ const fingerprint=(await raw.query('select discovery_fingerprint from scout.trackers where id=$1',[tracker.id])).rows[0].discovery_fingerprint;
+ assert.match(fingerprint,/^[a-f0-9]{64}$/);
+ assert.equal((await raw.query('select discovery_checked_at from scout.trackers where id=$1',[tracker.id])).rows[0].discovery_checked_at,null);
+ listed.reverse();const before={...db.metrics},repeat=await run();assert.equal(repeat.processed,2);assert.equal(investigations,2);assert.equal(reads,4);
+ assert.equal((await raw.query('select discovery_fingerprint from scout.trackers where id=$1',[tracker.id])).rows[0].discovery_fingerprint,fingerprint);
+ t.diagnostic(JSON.stringify({unchanged_search_sql:Object.fromEntries(Object.keys(before).map(k=>[k,db.metrics[k]-before[k]])),model_calls:0}));
+ version++;await run();assert.equal(investigations,4);
+ listed=[publication];await run();assert.equal((await raw.query('select count(*)::int n from scout.source_items')).rows[0].n,2);
+ listed=[other,publication];await run();assert.equal(investigations,4);assert.equal(searches,5);
+ const receipts=(await raw.query('select pending,last_error,request_fingerprint from scout.source_items')).rows;
+ assert.ok(receipts.every(r=>!r.pending&&r.last_error===null&&r.request_fingerprint));
+ const committed=(await raw.query('select item_key,request_fingerprint from scout.source_items order by item_key')).rows;
+ version++;failure=true;assert.equal((await run()).state,'deferred');assert.equal(searches,6);
+ assert.deepEqual((await raw.query('select item_key,request_fingerprint from scout.source_items order by item_key')).rows,committed);
+ failure=false;assert.equal((await run()).processed,2);assert.equal(searches,6);
+ assert.equal((await raw.query('select count(*)::int n from scout.source_items where pending')).rows[0].n,0);
+});
+
+test('search tracker configuration is independent, unique and resets safely when its query changes',async t=>{
+ const {raw,db,tracker}=await setup(t),endpoint='https://api.tavily.com/search';
+ await raw.query("update scout.trackers set url=$2,search_query='BBNJ' where id=$1",[tracker.id,endpoint]);
+ const second=(await raw.query("insert into scout.trackers(name,url,collector,cadence,search_query,enabled) values('Other query',$1,'web_index','1 day','Ai2 ocean',true) returning *",[endpoint])).rows[0];
+ await assert.rejects(raw.query("insert into scout.trackers(name,url,collector,cadence,search_query) values('Duplicate',$1,'web_index','1 day','BBNJ')",[endpoint]),{code:'23505'});
+ await assert.rejects(raw.query("update scout.trackers set search_query=' ' where id=$1",[tracker.id]),{code:'23514'});
+ await assert.rejects(raw.query("update scout.trackers set collector='web_page' where id=$1",[tracker.id]),{code:'23514'});
+ let searches=0,investigations=0;
+ const options={sourceFetch:async url=>{if(url===endpoint){searches++;return Response.json({results:[{url:publication}],usage:{credits:1}});}return new Response('BBNJ technical update',{headers:{'content-type':'text/plain'}});},
+  serviceKeys:{tavily:'key'},modelFor:()=>async(_p,_input,schema)=>{assert.ok(schema.properties.decisions);investigations++;return answer([]);}};
+ await intake(db,{...options,trackerId:tracker.id});assert.equal(searches,1);
+ assert.equal((await raw.query('select last_successful_check from scout.trackers where id=$1',[second.id])).rows[0].last_successful_check,null);
+ await intake(db,{...options,trackerId:second.id});assert.equal(investigations,2);
+ assert.equal((await raw.query('select count(*)::int n from scout.source_items where url=$1',[publication])).rows[0].n,2);
+ await raw.query('update scout.trackers set enabled=true,lease_id=gen_random_uuid(),lease_until=now()+interval \'1 minute\' where id=$1',[tracker.id]);
+ await raw.query("insert into scout.source_items(tracker_id,item_key,url,pending,ignored) values($1,'ordinary',$2,false,false),($1,'ignored',$2,false,true)",[tracker.id,publication]);
+ await raw.query("update scout.trackers set search_query='Changed query' where id=$1",[tracker.id]);
+ const changed=(await raw.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0];
+ assert.equal(changed.enabled,false);for(const key of ['last_checked_at','last_successful_check','discovery_fingerprint','lease_id','lease_until'])assert.equal(changed[key],null);
+ assert.deepEqual((await raw.query('select item_key from scout.source_items where tracker_id=$1',[tracker.id])).rows,[{item_key:'ignored'}]);
+ await raw.exec('set role authenticated');await assert.rejects(raw.query('select search_query from scout.trackers'),{code:'42501'});await raw.exec('reset role');
+ assert.equal((await raw.query('select enabled from scout.trackers where id=$1',[second.id])).rows[0].enabled,true);
+});
+
+test('failed search discovery acknowledges nothing and leaves another tracker eligible',async t=>{
+ const {raw,db,tracker}=await setup(t),endpoint='https://api.tavily.com/search';
+ await raw.query("update scout.trackers set url=$2,search_query='BBNJ',enabled=true where id=$1",[tracker.id,endpoint]);
+ const other=(await raw.query("insert into scout.trackers(name,url,collector,cadence,search_query,enabled) values('Healthy query',$1,'web_index','1 day','Ai2 ocean',true) returning *",[endpoint])).rows[0];
+ const options={serviceKeys:{tavily:'key'},modelFor:()=>assert.fail('No model for a failed search'),sourceFetch:async(_url,{body})=>JSON.parse(body).query==='BBNJ'?Response.json({error:'quota'},{status:429}):Response.json({results:[],usage:{credits:1}})};
+ for(let n=0;n<3;n++)await intake(db,{...options,trackerId:tracker.id});
+ const failed=(await raw.query('select * from scout.trackers where id=$1',[tracker.id])).rows[0];
+ assert.equal(failed.failure_count,3);assert.equal(failed.last_successful_check,null);assert.equal(failed.discovery_fingerprint,null);
+ assert.equal((await raw.query('select count(*)::int n from scout.source_items where tracker_id=$1',[tracker.id])).rows[0].n,0);
+ assert.equal((await intake(db,options)).tracker_id,other.id);
+ const invalid=await intake(db,{...options,trackerId:other.id,sourceFetch:async()=>Response.json({results:[{url:'javascript:alert(1)'}]})});
+ assert.equal(invalid.reason,'source_invalid');
+});
+
 test('root fetch failure returns HTTP diagnostics without discovery, model calls or acknowledged progress',async t=>{
  const {raw,db,tracker}=await setup(t);
  const result=await intake(db,{trackerId:tracker.id,sourceFetch:async()=>new Response('Do not return this body',{status:403}),modelFor:()=>assert.fail('Root retrieval failed before discovery')});

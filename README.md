@@ -65,14 +65,20 @@ npm run notify -- --send --kind=unposted
 
 Omit `--tracker` to check the next due enabled tracker. An explicit tracker ID also retries a tracker that stopped after three unsuccessful attempts. URLs come from the tracker row. Both commands require `SCOUT_BACKEND_KEY`. Local model diagnostics also make real model calls; use [diagnostics/README.md](diagnostics/README.md) for their separate behavior and capture exception.
 
+### News search
+
+Each news search is an independent Index tracker with URL `https://api.tavily.com/search` and a backend-managed `search_query`. It has its own cadence, lease, retries and item progress. Tavily Basic News search returns up to 20 URLs with generated answers and automatic extraction disabled; code enumerates these without a discovery model. The sorted distinct URL set supplies the discovery fingerprint, excluding provider IDs and ordering. Matching that fingerprint never skips item checks: each URL uses its own HTTP freshness and content fingerprint. Search receipts survive disappearance and reappearance and remain separate across trackers. Snippets and API metadata do not become findings or source freshness evidence. Changing a query disables its tracker and resets ordinary progress while preserving findings and ignored receipts.
+
+Search requests have a 20-second bound clipped to the existing 100-second collection deadline. Pending items resume before another search request. Nine successful daily Basic searches use 270–279 credits per month before retries and shared extraction usage. Invocation-only `source.search` counters report requests, returned results and provider-declared credits. Source bodies and provider replies remain in memory.
+
 ### Scraping fallback
 
-Scout reads source URLs directly first. A Cloudflare challenge, recognized HTML challenge/empty Angular shell, or connection reset after public-address validation uses Jina, then Tavily Advanced Extract, then Firecrawl. Successful direct reads, unchanged responses, native PDF/images, ordinary HTTP errors, other transport failures and rejected private URLs do not call extractors. Direct HTTP retains its 15-second deadline; a reset after that deadline cannot start extraction. Each extractor receives a fresh 20-second client deadline and requests a 15-second server timeout; a timed-out extractor can fall through to the next service. Every read also respects the remaining 100-second collection deadline, which can cut any attempt short and stops further failover. Search is not connected to these services.
+Scout reads source URLs directly first. A Cloudflare challenge, recognized HTML challenge/empty Angular shell, or connection reset after public-address validation uses Jina, then Tavily Advanced Extract, then Firecrawl. Successful direct reads, unchanged responses, native PDF/images, ordinary HTTP errors, other transport failures and rejected private URLs do not call extractors. Direct HTTP retains its 15-second deadline; a reset after that deadline cannot start extraction. Each extractor receives a fresh 20-second client deadline and requests a 15-second server timeout; a timed-out extractor can fall through to the next service. Every read also respects the remaining 100-second collection deadline, which can cut any attempt short and stops further failover. Tavily News discovery uses the same gateway and credential.
 
 | Service | Account and credential | Role |
 | --- | --- | --- |
 | [Jina Reader](https://jina.ai/reader/) | Anonymous; no key | First extraction fallback. Requests browser rendering, fresh content and no server caching/logging with `DNT: 1`. |
-| [Tavily](https://app.tavily.com/) | Existing account; `TAVILY_API_KEY` | Advanced extraction. Search and extraction share the provider's credit balance. |
+| [Tavily](https://app.tavily.com/) | Existing account; `TAVILY_API_KEY` | Basic News search and Advanced extraction share the provider's credit balance. |
 | [Firecrawl](https://www.firecrawl.dev/) | Free account; `FIRECRAWL_API_KEY` | Final extraction fallback. Requests fresh Markdown with index/cache storage disabled. |
 
 Keep accounts on free plans without automatic paid top-ups. Add keys to the ignored root `.env.local` for diagnostics and to the same-named Supabase Edge Function secrets for hosted collection. Missing keys skip that service; Jina remains available anonymously. A local key is not automatically a hosted secret. No provider key belongs in browser settings or Git.

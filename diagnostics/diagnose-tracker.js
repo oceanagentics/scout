@@ -43,7 +43,7 @@ export function captureTraffic(path,{fetch:send=fetch,secrets=[]}={}){
 
 export async function diagnoseTracker({tracker,env,provider,model,ledger=managementDatabase(env.SUPABASE_ACCESS_TOKEN),fetch:send=fetch,
   output=fileURLToPath(new URL('../.cache/model-traffic/latest.jsonl',import.meta.url))}){
-  const selected=(await ledger.query('select id,name,url,collector,cadence,last_successful_check,retire_on from scout.trackers where id=$1',[tracker])).rows[0];
+  const selected=(await ledger.query('select id,name,url,collector,cadence,last_successful_check,retire_on,search_query from scout.trackers where id=$1',[tracker])).rows[0];
   if(!selected)throw new Error('Existing tracker required');
   const raw=new PGlite();let traffic;
   try{
@@ -54,8 +54,8 @@ export async function diagnoseTracker({tracker,env,provider,model,ledger=managem
       create function auth.uid() returns uuid language sql as $$select null::uuid$$;`);
     for(const name of (await readdir(new URL('../supabase/migrations/',import.meta.url))).sort())
       await raw.exec(await readFile(new URL('../supabase/migrations/'+name,import.meta.url),'utf8'));
-    await raw.query('insert into scout.trackers(id,name,url,collector,cadence,last_successful_check,retire_on) values($1,$2,$3,$4,$5,$6,$7)',
-      [selected.id,selected.name,selected.url,selected.collector,selected.cadence,selected.last_successful_check??null,selected.retire_on??null]);
+    await raw.query('insert into scout.trackers(id,name,url,collector,cadence,last_successful_check,retire_on,search_query) values($1,$2,$3,$4,$5,$6,$7,$8)',
+      [selected.id,selected.name,selected.url,selected.collector,selected.cadence,selected.last_successful_check??null,selected.retire_on??null,selected.search_query??null]);
     traffic=captureTraffic(output,{fetch:send,secrets:[env.GEMINI_API_KEY,env.SCOUT_OPENAI_API_KEY,env.SUPABASE_ACCESS_TOKEN]});
     const db=database({unsafe:async(q,p=[])=>{const r=await raw.query(q,p);r.rows.count=r.affectedRows??r.rows.length;return r.rows;}});
     const result=await intake(db,{trackerId:tracker,sourceFetch:send,serviceKeys:{tavily:env.TAVILY_API_KEY,firecrawl:env.FIRECRAWL_API_KEY},modelFor:(source,{deadline,readUrl,functions,validate})=>trackerModel({source,deadline,readUrl,functions,validate,provider,model,

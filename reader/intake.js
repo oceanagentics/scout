@@ -21,13 +21,13 @@ export async function intake(db,{trackerId=null,modelFor,sourceFetch=fetch,servi
   if(!tracker)return {state:'idle',created:0,changed:0};
   const through=new Date(tracker.last_checked_at).toISOString(),deadline=Date.parse(through)+100000;
   const cache=new Map(),metrics={requests:0,bytes:0};
-  const {scrape}=createWebServices({keys:serviceKeys,fetch:sourceFetch,metrics});
+  const {scrape,search}=createWebServices({keys:serviceKeys,fetch:sourceFetch,metrics});
   const read=(url,options={})=>{
    const remaining=deadline-Date.now();if(remaining<=0)throw Object.assign(new Error('runtime_bound'),{reason:'runtime_bound'});
    return readUrl(url,{fetch:sourceFetch,cache,metrics,scrape,...options,
     signal:AbortSignal.any([AbortSignal.timeout(remaining),...(options.signal?[options.signal]:[])])});
   };
-  const result=await ingestSource(db,tracker,{modelFor,readUrl:read,sourceFetch,through,deadline});
+  const result=await ingestSource(db,tracker,{modelFor,readUrl:read,sourceFetch,search,through,deadline});
   if(result.state==='deferred'){
    const updated=await db.query(`update scout.trackers set last_error=$4,failure_count=$5,lease_id=null,lease_until=null
     where id=$1 and lease_id=$2 and url=$3 and lease_until>clock_timestamp() returning id`,

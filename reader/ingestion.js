@@ -4,14 +4,14 @@ import {applyDecisions,proposedFindings} from './findings.js';
 import {verifyLease,pendingItems,registerItems,consumeItem,completeSource} from './progress.js';
 import {cbdRequest,prepareCBD} from './sources/cbd.js';
 import {scoutDay} from '../shared/finding-dates.js';
-export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,deadline,through}){
+export async function ingestSource(db,tracker,{modelFor,readUrl,sourceFetch,search,deadline,through}){
  const commitDeadline=Date.parse(through)+110000;
  const result={created:0,changed:0,saved:0,ambiguous:0,processed:0,skipped:0,createdIds:[],calendarIds:[],diagnostics:[]};
  const add=counts=>{for(const key of ['created','changed','saved','ambiguous'])result[key]+=counts[key];result.createdIds.push(...counts.createdIds);result.calendarIds.push(...counts.calendarIds);};
  try{
  let pending=isBluesky(tracker.url)?[]:await pendingItems(db,tracker),discovery,available=new Map();
  if(!pending.length){
-  discovery=await discoverSource(tracker,{through,readUrl,modelFor,deadline,fetch:sourceFetch,signal:AbortSignal.timeout(Math.max(1,deadline-Date.now()))});
+  discovery=await discoverSource(tracker,{through,readUrl,modelFor,search,deadline,fetch:sourceFetch,signal:AbortSignal.timeout(Math.max(1,deadline-Date.now()))});
   discovery.items=discovery.items.filter(item=>item.source_kind!=='post'||scoutDay(new Date(item.published_at))>=tracker.oldest_date);
   if(!discovery.native){
    discovery.items=[...new Map(discovery.items.map(i=>[i.key,i])).values()];

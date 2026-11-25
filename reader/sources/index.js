@@ -2,8 +2,10 @@ import {discoverBluesky,isBluesky} from './bluesky.js';
 import {rssItems} from './rss.js';
 import {webItems} from './web.js';
 import {cbdRequest,prepareCBD} from './cbd.js';
+import {discoverSearch} from './search.js';
 export {isBluesky};
 export async function discoverSource(tracker,options){
+ if(tracker.search_query!=null)return discoverSearch(tracker,options);
  if(isBluesky(tracker.url))return {native:true,items:await discoverBluesky(tracker,options)};
  const requestURL=cbdRequest(tracker.url)??tracker.url;
  const source=await options.readUrl(requestURL,{lastSuccessfulCheck:tracker.discovery_checked_at,previousRequestURL:tracker.discovery_request_url,previousFingerprint:tracker.discovery_fingerprint});
